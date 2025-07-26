@@ -52,11 +52,6 @@ if __name__ == "__main__":
     for art in articles:
         print(f"{art['date']} - {art['title']}\n{art['url']}\n")
 
-    print("=== Myanmar Now ===")
-    articles2 = get_myanmar_now_articles_for(yesterday)
-    for art in articles2:
-        print(f"{art['date']} - {art['title']}\n{art['url']}\n")
-
     print("=== Mizzima ===")
     articles3 = get_mizzima_articles_for(yesterday)
     for art in articles3:
@@ -84,7 +79,6 @@ if __name__ == "__main__":
 
     all_summaries = []
     all_summaries += process_and_summarize_articles(get_frontier_articles_for(yesterday), "Frontier Myanmar")
-    all_summaries += process_and_summarize_articles(get_myanmar_now_articles_for(yesterday), "Myanmar Now")
     all_summaries += process_and_summarize_articles(get_mizzima_articles_for(yesterday), "Mizzima")
     all_summaries += process_and_summarize_articles(get_vom_articles_for(yesterday), "Voice of Myanmar")
     all_summaries += process_and_summarize_articles(get_ludu_articles_for(yesterday), "Ludu Wayoo")
@@ -92,38 +86,6 @@ if __name__ == "__main__":
     all_summaries += process_and_summarize_articles(get_yktnews_articles_for(yesterday), "YKT News")
 
     send_email_digest(all_summaries)
-
-def get_myanmar_now_articles_for(date_obj):
-    base_url = "https://myanmar-now.org"
-    list_url = base_url + "/en/news"
-    res = requests.get(list_url, timeout=10)
-    soup = BeautifulSoup(res.content, "html.parser")
-    links = soup.select("div.card-body a")
-    article_urls = [base_url + a["href"] for a in links if a.get("href", "").startswith("/en/")]
-
-    filtered_articles = []
-    for url in article_urls:
-        try:
-            res_article = requests.get(url, timeout=10)
-            soup_article = BeautifulSoup(res_article.content, "html.parser")
-            time_tag = soup_article.find("time")
-            if not time_tag:
-                continue
-            date_str = time_tag.get("datetime", "")
-            if not date_str:
-                continue
-            article_date = datetime.fromisoformat(date_str).date()
-            if article_date == date_obj:
-                title = soup_article.find("h1").get_text(strip=True)
-                filtered_articles.append({
-                    "url": url,
-                    "title": title,
-                    "date": article_date.isoformat()
-                })
-        except Exception:
-            continue
-
-    return filtered_articles
 
 def get_mizzima_articles_for(date_obj):
     base_url = "https://www.mizzima.com"
