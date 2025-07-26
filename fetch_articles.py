@@ -3,8 +3,12 @@ from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 import re
 import openai
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+import os
 
-openai.api_key = "YOUR_OPENAI_API_KEY"  # ← 後ほど安全に管理
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
 def get_yesterday_date_mmt():
     mm_yesterday = datetime.utcnow() + timedelta(hours=6.5) - timedelta(days=1)
@@ -78,13 +82,16 @@ if __name__ == "__main__":
     for art in articles7:
         print(f"{art['date']} - {art['title']}\n{art['url']}\n")
 
-    process_and_summarize_articles(get_frontier_articles_for(yesterday), "Frontier Myanmar")
-    process_and_summarize_articles(get_myanmar_now_articles_for(yesterday), "Myanmar Now")
-    process_and_summarize_articles(get_mizzima_articles_for(yesterday), "Mizzima")
-    process_and_summarize_articles(get_vom_articles_for(yesterday), "Voice of Myanmar")
-    process_and_summarize_articles(get_ludu_articles_for(yesterday), "Ludu Wayoo")
-    process_and_summarize_articles(get_bbc_burmese_articles_for(yesterday), "BBC Burmese")
-    process_and_summarize_articles(get_yktnews_articles_for(yesterday), "YKT News")
+    all_summaries = []
+    all_summaries += process_and_summarize_articles(get_frontier_articles_for(yesterday), "Frontier Myanmar")
+    all_summaries += process_and_summarize_articles(get_myanmar_now_articles_for(yesterday), "Myanmar Now")
+    all_summaries += process_and_summarize_articles(get_mizzima_articles_for(yesterday), "Mizzima")
+    all_summaries += process_and_summarize_articles(get_vom_articles_for(yesterday), "Voice of Myanmar")
+    all_summaries += process_and_summarize_articles(get_ludu_articles_for(yesterday), "Ludu Wayoo")
+    all_summaries += process_and_summarize_articles(get_bbc_burmese_articles_for(yesterday), "BBC Burmese")
+    all_summaries += process_and_summarize_articles(get_yktnews_articles_for(yesterday), "YKT News")
+
+    send_email_digest(all_summaries)
 
 def get_myanmar_now_articles_for(date_obj):
     base_url = "https://myanmar-now.org"
@@ -306,7 +313,7 @@ def translate_and_summarize(text):
         return "（翻訳・要約に失敗しました）"
 
 def process_and_summarize_articles(articles, source_name):
-    print(f"=== {source_name} ===")
+    results = []
     for art in articles:
         try:
             res = requests.get(art['url'], timeout=10)
@@ -314,9 +321,42 @@ def process_and_summarize_articles(articles, source_name):
             paragraphs = soup.find_all("p")
             text = "\n".join(p.get_text(strip=True) for p in paragraphs)
             summary = translate_and_summarize(text)
-            print(f"{art['date']} - {art['title']}")
-            print(art['url'])
-            print(summary)
-            print("-" * 80)
+            results.append({
+                "source": source_name,
+                "url": art["url"],
+                "title": art["title"],
+                "summary": summary
+            })
         except Exception as e:
-            print(f"記事取得エラー: {e}")
+            continue
+    return results
+
+def send_email_digest(summaries, subject="Daily Myanmar News Digest"):
+    sender_email = "YOUR_GMAIL@gmail.com"
+    sender_pass = os.getenv("GMAIL_APP_PASSWORD")  # GitHub Secretに保存推奨
+    recipient_emails = ["user1@example.com", "user2@example.com"]
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = sender_email
+    msg["To"] = ", ".join(recipient_emails)
+
+    html_content = "<html><body>"
+    html_content += "<h2>🇲🇲 ミャンマー関連ニュース（日本語要約）</h2>"
+
+    for item in summaries:
+        html_content += f"<h3>{item['source']}: {item['title']}</h3>"
+        html_content += f"<p><a href='{item['url']}'>{item['url']}</a></p>"
+        html_content += f"<p>{item['summary']}</p><hr>"
+
+    html_content += "</body></html>"
+
+    msg.attach(MIMEText(html_content, "html"))
+
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(sender_email, sender_pass)
+            server.sendmail(sender_email, recipient_emails, msg.as_string())
+            print("✅ メール送信完了")
+    except Exception as e:
+        print(f"❌ メール送信エラー: {e}")
