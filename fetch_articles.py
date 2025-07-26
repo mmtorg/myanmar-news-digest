@@ -6,27 +6,6 @@ import openai
 
 openai.api_key = "YOUR_OPENAI_API_KEY"  # ← 後ほど安全に管理
 
-def translate_and_summarize(text):
-    prompt = (
-        "以下の記事の内容について重要なポイントをまとめ、具体的に解説してください。"
-        "文字数は800文字までとします。文章は自然な日本語に訳してください。\n\n"
-        f"{text}"
-    )
-
-    try:
-        response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",  # 必要に応じて 4 に変更可能
-            messages=[
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.7,
-            max_tokens=1024
-        )
-        return response["choices"][0]["message"]["content"].strip()
-    except Exception as e:
-        print(f"OpenAI API エラー: {e}")
-        return "（翻訳・要約に失敗しました）"
-
 def get_yesterday_date_mmt():
     mm_yesterday = datetime.utcnow() + timedelta(hours=6.5) - timedelta(days=1)
     return mm_yesterday.date()
@@ -98,6 +77,14 @@ if __name__ == "__main__":
     articles7 = get_yktnews_articles_for(yesterday)
     for art in articles7:
         print(f"{art['date']} - {art['title']}\n{art['url']}\n")
+
+    process_and_summarize_articles(get_frontier_articles_for(yesterday), "Frontier Myanmar")
+    process_and_summarize_articles(get_myanmar_now_articles_for(yesterday), "Myanmar Now")
+    process_and_summarize_articles(get_mizzima_articles_for(yesterday), "Mizzima")
+    process_and_summarize_articles(get_vom_articles_for(yesterday), "Voice of Myanmar")
+    process_and_summarize_articles(get_ludu_articles_for(yesterday), "Ludu Wayoo")
+    process_and_summarize_articles(get_bbc_burmese_articles_for(yesterday), "BBC Burmese")
+    process_and_summarize_articles(get_yktnews_articles_for(yesterday), "YKT News")
 
 def get_myanmar_now_articles_for(date_obj):
     base_url = "https://myanmar-now.org"
@@ -297,3 +284,39 @@ def get_yktnews_articles_for(date_obj):
 
     return filtered_articles
 
+def translate_and_summarize(text):
+    prompt = (
+        "以下の記事の内容について重要なポイントをまとめ、具体的に解説してください。"
+        "文字数は800文字までとします。文章は自然な日本語に訳してください。\n\n"
+        f"{text}"
+    )
+
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",  # 必要に応じて 4 に変更可能
+            messages=[
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.7,
+            max_tokens=1024
+        )
+        return response["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        print(f"OpenAI API エラー: {e}")
+        return "（翻訳・要約に失敗しました）"
+
+def process_and_summarize_articles(articles, source_name):
+    print(f"=== {source_name} ===")
+    for art in articles:
+        try:
+            res = requests.get(art['url'], timeout=10)
+            soup = BeautifulSoup(res.content, "html.parser")
+            paragraphs = soup.find_all("p")
+            text = "\n".join(p.get_text(strip=True) for p in paragraphs)
+            summary = translate_and_summarize(text)
+            print(f"{art['date']} - {art['title']}")
+            print(art['url'])
+            print(summary)
+            print("-" * 80)
+        except Exception as e:
+            print(f"記事取得エラー: {e}")
