@@ -2,6 +2,30 @@ import requests
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 import re
+import openai
+
+openai.api_key = "YOUR_OPENAI_API_KEY"  # ← 後ほど安全に管理
+
+def translate_and_summarize(text):
+    prompt = (
+        "以下の記事の内容について重要なポイントをまとめ、具体的に解説してください。"
+        "文字数は800文字までとします。文章は自然な日本語に訳してください。\n\n"
+        f"{text}"
+    )
+
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",  # 必要に応じて 4 に変更可能
+            messages=[
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.7,
+            max_tokens=1024
+        )
+        return response["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        print(f"OpenAI API エラー: {e}")
+        return "（翻訳・要約に失敗しました）"
 
 def get_yesterday_date_mmt():
     mm_yesterday = datetime.utcnow() + timedelta(hours=6.5) - timedelta(days=1)
