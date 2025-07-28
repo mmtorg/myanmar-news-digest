@@ -7,6 +7,7 @@ import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import os
+import sys
 
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
@@ -280,8 +281,8 @@ def send_email_digest(summaries, subject="Daily Myanmar News Digest"):
             server.sendmail(sender_email, recipient_emails, msg.as_string())
             print("✅ メール送信完了")
     except Exception as e:
-        print(f"❌ メール送信エラー: {e}")
-        exit(1) 
+            print(f"❌ メール送信エラー: {e}")
+            sys.exit(1)
 
 if __name__ == "__main__":
     yesterday = get_yesterday_date_mmt()
