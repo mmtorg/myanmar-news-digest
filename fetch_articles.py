@@ -253,9 +253,9 @@ def process_and_summarize_articles(articles, source_name):
     return results
 
 def send_email_digest(summaries, subject="Daily Myanmar News Digest"):
-    sender_email = "YOUR_GMAIL@gmail.com"
+    sender_email = "yasu.23721740311@gmail.com"
     sender_pass = os.getenv("GMAIL_APP_PASSWORD")  # GitHub Secretに保存推奨
-    recipient_emails = ["user1@example.com", "user2@example.com"]
+    recipient_emails = ["yasu.23721740311@gmail.com", "yasu.23721740311+1@gmail.com"]
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
