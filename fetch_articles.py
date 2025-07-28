@@ -273,6 +273,11 @@ def send_email_digest(summaries, subject="Daily Myanmar News Digest"):
 
     html_content += "</body></html>"
 
+    # ⚠️ ここで repr 出力
+    print("=== HTML メール本文（repr） ===")
+    print(repr(html_content))
+    print("=== ここまで ===")
+
     msg.attach(MIMEText(html_content, "html", "utf-8"))
 
     try:
