@@ -46,47 +46,6 @@ def get_frontier_articles_for(date_obj):
 
     return filtered_articles
 
-if __name__ == "__main__":
-    yesterday = get_yesterday_date_mmt()
-    articles = get_frontier_articles_for(yesterday)
-    for art in articles:
-        print(f"{art['date']} - {art['title']}\n{art['url']}\n")
-
-    print("=== Mizzima ===")
-    articles3 = get_mizzima_articles_for(yesterday)
-    for art in articles3:
-        print(f"{art['date']} - {art['title']}\n{art['url']}\n")
-
-    print("=== Voice of Myanmar ===")
-    articles4 = get_vom_articles_for(yesterday)
-    for art in articles4:
-        print(f"{art['date']} - {art['title']}\n{art['url']}\n")
-
-    print("=== Ludu Wayoo ===")
-    articles5 = get_ludu_articles_for(yesterday)
-    for art in articles5:
-        print(f"{art['date']} - {art['title']}\n{art['url']}\n")
-
-    print("=== BBC Burmese ===")
-    articles6 = get_bbc_burmese_articles_for(yesterday)
-    for art in articles6:
-        print(f"{art['date']} - {art['title']}\n{art['url']}\n")
-
-    print("=== YKT News ===")
-    articles7 = get_yktnews_articles_for(yesterday)
-    for art in articles7:
-        print(f"{art['date']} - {art['title']}\n{art['url']}\n")
-
-    all_summaries = []
-    all_summaries += process_and_summarize_articles(get_frontier_articles_for(yesterday), "Frontier Myanmar")
-    all_summaries += process_and_summarize_articles(get_mizzima_articles_for(yesterday), "Mizzima")
-    all_summaries += process_and_summarize_articles(get_vom_articles_for(yesterday), "Voice of Myanmar")
-    all_summaries += process_and_summarize_articles(get_ludu_articles_for(yesterday), "Ludu Wayoo")
-    all_summaries += process_and_summarize_articles(get_bbc_burmese_articles_for(yesterday), "BBC Burmese")
-    all_summaries += process_and_summarize_articles(get_yktnews_articles_for(yesterday), "YKT News")
-
-    send_email_digest(all_summaries)
-
 def get_mizzima_articles_for(date_obj):
     base_url = "https://www.mizzima.com"
     list_url = base_url + "/news/domestic"
@@ -322,3 +281,46 @@ def send_email_digest(summaries, subject="Daily Myanmar News Digest"):
             print("✅ メール送信完了")
     except Exception as e:
         print(f"❌ メール送信エラー: {e}")
+
+if __name__ == "__main__":
+    yesterday = get_yesterday_date_mmt()
+    articles = get_frontier_articles_for(yesterday)
+    for art in articles:
+        print(f"{art['date']} - {art['title']}\n{art['url']}\n")
+
+    print("=== Mizzima ===")
+    articles3 = get_mizzima_articles_for(yesterday)
+    for art in articles3:
+        print(f"{art['date']} - {art['title']}\n{art['url']}\n")
+
+    print("=== Voice of Myanmar ===")
+    articles4 = get_vom_articles_for(yesterday)
+    for art in articles4:
+        print(f"{art['date']} - {art['title']}\n{art['url']}\n")
+
+    print("=== Ludu Wayoo ===")
+    articles5 = get_ludu_articles_for(yesterday)
+    for art in articles5:
+        print(f"{art['date']} - {art['title']}\n{art['url']}\n")
+
+    print("=== BBC Burmese ===")
+    articles6 = get_bbc_burmese_articles_for(yesterday)
+    for art in articles6:
+        print(f"{art['date']} - {art['title']}\n{art['url']}\n")
+
+    print("=== YKT News ===")
+    articles7 = get_yktnews_articles_for(yesterday)
+    for art in articles7:
+        print(f"{art['date']} - {art['title']}\n{art['url']}\n")
+
+    all_summaries = []
+    all_summaries += process_and_summarize_articles(get_frontier_articles_for(yesterday), "Frontier Myanmar")
+    all_summaries += process_and_summarize_articles(get_mizzima_articles_for(yesterday), "Mizzima")
+    all_summaries += process_and_summarize_articles(get_vom_articles_for(yesterday), "Voice of Myanmar")
+    all_summaries += process_and_summarize_articles(get_ludu_articles_for(yesterday), "Ludu Wayoo")
+    all_summaries += process_and_summarize_articles(get_bbc_burmese_articles_for(yesterday), "BBC Burmese")
+    all_summaries += process_and_summarize_articles(get_yktnews_articles_for(yesterday), "YKT News")
+
+    send_email_digest(all_summaries)
+
+
