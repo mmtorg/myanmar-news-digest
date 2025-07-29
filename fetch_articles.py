@@ -272,8 +272,11 @@ def send_email_digest(summaries, subject="Daily Myanmar News Digest"):
         html_content += f"<p><a href='{item['url']}'>{item['url']}</a></p>"
         html_content += f"<p>{item['summary']}</p><hr>"
 
-        html_content = html_content.replace("\xa0", " ")
-        msg.attach(MIMEText(html_content, "html", "utf-8"))
+    html_content += "</body></html>"
+
+    # 非ASCII文字の処理（特に \xa0 ノーブレークスペース）
+    html_content = html_content.replace("\xa0", " ")
+    msg.attach(MIMEText(html_content, "html", "utf-8"))
 
     try:
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
@@ -281,8 +284,8 @@ def send_email_digest(summaries, subject="Daily Myanmar News Digest"):
             server.sendmail(sender_email, recipient_emails, msg.as_string())
             print("✅ メール送信完了")
     except Exception as e:
-            print(f"❌ メール送信エラー: {e}")
-            sys.exit(1)
+        print(f"❌ メール送信エラー: {e}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     yesterday = get_yesterday_date_mmt()
