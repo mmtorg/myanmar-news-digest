@@ -261,7 +261,7 @@ def send_email_digest(summaries, subject="Daily Myanmar News Digest"):
     recipient_emails = os.getenv("EMAIL_RECIPIENTS", "").split(",")
 
     msg = MIMEMultipart("alternative", policy=policy.SMTPUTF8)
-    msg["Subject"] = Header(subject, "utf-8")
+    msg["Subject"] = str(Header(subject, "utf-8")) 
     msg["From"] = sender_email
     msg["To"] = ", ".join(recipient_emails)
 
