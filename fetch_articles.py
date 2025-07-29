@@ -273,7 +273,7 @@ def send_email_digest(summaries, subject="Daily Myanmar News Digest"):
 
     html_content += "</body></html>"
 
-    msg.attach(MIMEText(html_content.encode("utf-8"), "html", "utf-8"))
+    html_content = html_content.replace("\xa0", " ")
 
     try:
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
