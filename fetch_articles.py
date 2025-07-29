@@ -8,6 +8,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import os
 import sys
+from email import policy  # ← 追加
 
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
@@ -258,7 +259,7 @@ def send_email_digest(summaries, subject="Daily Myanmar News Digest"):
     sender_pass = os.getenv("GMAIL_APP_PASSWORD")
     recipient_emails = os.getenv("EMAIL_RECIPIENTS", "").split(",")
 
-    msg = MIMEMultipart("alternative")
+    msg = MIMEMultipart("alternative", policy=policy.SMTPUTF8)
     msg["Subject"] = subject
     msg["From"] = sender_email
     msg["To"] = ", ".join(recipient_emails)
@@ -271,9 +272,8 @@ def send_email_digest(summaries, subject="Daily Myanmar News Digest"):
         html_content += f"<p><a href='{item['url']}'>{item['url']}</a></p>"
         html_content += f"<p>{item['summary']}</p><hr>"
 
-    html_content += "</body></html>"
-    html_content = html_content.replace("\xa0", " ")
-    msg.attach(MIMEText(html_content, "html", "utf-8"))
+        html_content = html_content.replace("\xa0", " ")
+        msg.attach(MIMEText(html_content, "html", "utf-8"))
 
     try:
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
