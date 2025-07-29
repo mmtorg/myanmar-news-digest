@@ -10,6 +10,7 @@ import os
 import sys
 from email import policy  # ← 追加
 from email.header import Header  # ← 追加必要
+from email.message import EmailMessage
 
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
@@ -260,29 +261,28 @@ def send_email_digest(summaries, subject="Daily Myanmar News Digest"):
     sender_pass = os.getenv("GMAIL_APP_PASSWORD")
     recipient_emails = os.getenv("EMAIL_RECIPIENTS", "").split(",")
 
-    msg = MIMEMultipart("alternative", policy=policy.SMTPUTF8)
-    msg["Subject"] = str(Header(subject, "utf-8")) 
-    msg["From"] = sender_email
-    msg["To"] = ", ".join(recipient_emails)
-
+    # メール本文のHTML生成
     html_content = "<html><body>"
     html_content += "<h2>🇲🇲 ミャンマー関連ニュース（日本語要約）</h2>"
-
     for item in summaries:
         html_content += f"<h3>{item['source']}: {item['title']}</h3>"
         html_content += f"<p><a href='{item['url']}'>{item['url']}</a></p>"
         html_content += f"<p>{item['summary']}</p><hr>"
-
     html_content += "</body></html>"
-
-    # 非ASCII文字の処理（特に \xa0 ノーブレークスペース）
     html_content = html_content.replace("\xa0", " ")
-    msg.attach(MIMEText(html_content, "html", _charset="utf-8"))
-    
+
+    # EmailMessageを使ってUTF-8対応
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = sender_email
+    msg["To"] = ", ".join(recipient_emails)
+    msg.set_content("HTMLメールを開ける環境でご確認ください。")
+    msg.add_alternative(html_content, subtype="html")
+
     try:
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
             server.login(sender_email, sender_pass)
-            server.sendmail(sender_email, recipient_emails, msg.as_bytes())
+            server.send_message(msg)
             print("✅ メール送信完了")
     except Exception as e:
         print(f"❌ メール送信エラー: {e}")
