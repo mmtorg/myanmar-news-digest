@@ -277,8 +277,8 @@ def send_email_digest(summaries, subject="Daily Myanmar News Digest"):
 
     # 非ASCII文字の処理（特に \xa0 ノーブレークスペース）
     html_content = html_content.replace("\xa0", " ")
-    msg.attach(MIMEText(html_content, "html", "utf-8"))
-
+    msg.attach(MIMEText(html_content, "html", _charset="utf-8"))
+    
     try:
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
             server.login(sender_email, sender_pass)
