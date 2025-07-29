@@ -1,3 +1,5 @@
+# -*- coding: utf-8 -*-
+
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
@@ -272,9 +274,8 @@ def send_email_digest(summaries, subject="Daily Myanmar News Digest"):
         html_content += f"<p>{item['summary']}</p><hr>"
 
     html_content += "</body></html>"
-    html_content = html_content.replace("\xa0", " ")  # 最後に置換！
-    
-    msg.attach(MIMEText(html_content, "html", "utf-8"))  # 置換後に使う
+    html_content = html_content.replace("\xa0", " ").encode("utf-8").decode("utf-8")
+    msg.attach(MIMEText(html_content, "html", "utf-8"))
 
     try:
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
