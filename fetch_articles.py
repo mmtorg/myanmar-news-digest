@@ -265,9 +265,10 @@ def clean_html_content(html: str) -> str:
     return ''.join(c for c in html if unicodedata.category(c)[0] != 'C')
 
 def clean_text(text: str) -> str:
-    # Unicode 制御文字やノーブレークスペースを除去
+    if not text:
+        return ""
     return ''.join(
-        c if unicodedata.category(c)[0] != 'C' and c != '\xa0' else ' '
+        c if (unicodedata.category(c)[0] != 'C' and c != '\xa0') else ' '
         for c in text
     )
 
@@ -311,7 +312,7 @@ def send_email_digest(summaries, subject="Daily Myanmar News Digest"):
     for item in summaries:
         print("Source:", repr(item["source"]))
         print("Title:", repr(item["title"]))
-        print("Summary:", repr(item["summary"]))
+        print("Summary (safe repr):", item["summary"].encode("unicode_escape").decode("ascii"))
         print("URL:", repr(item["url"]))
         print("---")
 
