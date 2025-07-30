@@ -31,11 +31,13 @@ def clean_text(text: str) -> str:
     import unicodedata
     if not text:
         return ""
-    text = unicodedata.normalize("NFKC", text)  # 正規化
+    text = unicodedata.normalize("NFKC", text)  # 全角→半角、類似文字統一
+    text = text.replace("\xa0", " ")            # ノーブレークスペース → 通常スペース
     return ''.join(
-        c if (unicodedata.category(c)[0] != 'C' and c != '\xa0') else ' '
+        c if unicodedata.category(c)[0] != 'C' else ' '  # 制御文字も除去
         for c in text
     )
+
 
 def get_frontier_articles_for(date_obj):
     base_url = "https://www.frontiermyanmar.net"
@@ -294,35 +296,39 @@ def process_and_summarize_articles(articles, source_name):
 
 def send_email_digest(summaries, subject="Daily Myanmar News Digest"):
     sender_email = os.getenv("EMAIL_SENDER")
+    sender_pass = os.getenv("GMAIL_APP_PASSWORD")
     recipient_emails = [e.strip() for e in os.getenv("EMAIL_RECIPIENTS", "").split(",")]
     sender_name = clean_text("ミャンマーニュース配信")
 
-    msg = EmailMessage(policy=SMTPUTF8)
-    msg["Subject"] = subject
-    msg["From"] = formataddr((str(Header(sender_name, "utf-8")), sender_email))
-    msg["To"] = ", ".join(recipient_emails)
-
+    # メール本文 HTML を構築
     html = ["<html><body><h2>ミャンマー関連ニュース（日本語要約）</h2>"]
     for item in summaries:
         source = clean_text(item["source"])
         title = clean_text(item["title"])
         summary = clean_text(item["summary"])
         url = item["url"]
+
         html.append(f"<h3>{source}: {title}</h3>")
         html.append(f"<p><a href='{url}'>{url}</a></p>")
         html.append(f"<p>{summary}</p><hr>")
     html.append("</body></html>")
-    html_content = clean_html_content("".join(html))
 
+    html_content = "".join(html).replace("\xa0", " ")  # 念押しのNBSP除去
+
+    # メール構築
+    msg = EmailMessage(policy=SMTPUTF8)
+    msg["Subject"] = subject
+    msg["From"] = formataddr((str(Header(sender_name, "utf-8")), sender_email))
+    msg["To"] = ", ".join(recipient_emails)
     msg.set_content("HTMLメールを開ける環境でご確認ください。", charset="utf-8")
     msg.add_alternative(html_content, subtype="html", charset="utf-8")
 
-    print_debug_data(subject, sender_email, recipient_emails, sender_name, html_content, summaries)
-
+    # 送信
     try:
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-            server.login(sender_email, os.getenv("GMAIL_APP_PASSWORD"))
-            server.send_message(msg)
+            server.login(sender_email, sender_pass)
+            # 重要：bytesで送ることで ascii encode エラー完全回避
+            server.sendmail(sender_email, recipient_emails, msg.as_bytes())
             print("✅ メール送信完了")
     except Exception as e:
         print(f"❌ メール送信エラー: {e}")
