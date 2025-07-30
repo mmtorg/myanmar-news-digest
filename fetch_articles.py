@@ -265,6 +265,7 @@ def clean_html_content(html: str) -> str:
     return ''.join(c for c in html if unicodedata.category(c)[0] != 'C')
 
 def clean_text(text: str) -> str:
+    import unicodedata
     if not text:
         return ""
     return ''.join(
@@ -293,10 +294,11 @@ def send_email_digest(summaries, subject="Daily Myanmar News Digest"):
 
     html_content = clean_html_content(html_content)
 
-    # EmailMessageを使ってUTF-8対応
+    from_display_name = clean_text("ミャンマーニュース配信")
+    
     msg = EmailMessage(policy=SMTPUTF8)
     msg["Subject"] = subject
-    msg["From"] = formataddr(("ミャンマーニュース配信", sender_email))
+    msg["From"] = formataddr((from_display_name, sender_email))
     msg["To"] = ", ".join(recipient_emails)
     msg.set_content("HTMLメールを開ける環境でご確認ください。", charset="utf-8")
     msg.add_alternative(html_content, subtype="html", charset="utf-8")
