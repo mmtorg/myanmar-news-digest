@@ -263,7 +263,7 @@ def process_and_summarize_articles(articles, source_name):
             paragraphs = soup.find_all("p")
             text = "\n".join(p.get_text(strip=True) for p in paragraphs)
             summary = translate_and_summarize(text)
-            summary = clean_text(summary_raw)  # ← ここでクリーンにする
+            summary = clean_text(summary)  # ← ここでクリーンにする
             results.append({
                 "source": source_name,
                 "url": art["url"],
