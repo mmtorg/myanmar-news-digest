@@ -30,10 +30,12 @@ def clean_text(text: str) -> str:
     import unicodedata
     if not text:
         return ""
+    text = unicodedata.normalize("NFKC", text)  # ←追加：Unicode正規化
     return ''.join(
         c if (unicodedata.category(c)[0] != 'C' and c != '\xa0') else ' '
         for c in text
     )
+
 
 def get_frontier_articles_for(date_obj):
     base_url = "https://www.frontiermyanmar.net"
@@ -299,7 +301,7 @@ def send_email_digest(summaries, subject="Daily Myanmar News Digest"):
     
     msg = EmailMessage(policy=SMTPUTF8)
     msg["Subject"] = subject
-    msg["From"] = formataddr((from_display_name, sender_email))
+    msg["From"] = formataddr((str(Header(from_display_name, 'utf-8')), sender_email))
     msg["To"] = ", ".join(recipient_emails)
     msg.set_content("HTMLメールを開ける環境でご確認ください。", charset="utf-8")
     msg.add_alternative(html_content, subtype="html", charset="utf-8")
