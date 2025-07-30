@@ -13,6 +13,7 @@ from email.header import Header  # ← 追加必要
 from email.message import EmailMessage
 from email.policy import SMTPUTF8
 from email.utils import formataddr
+import unicodedata
 
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
@@ -258,6 +259,11 @@ def process_and_summarize_articles(articles, source_name):
             continue
     return results
 
+def clean_html_content(html: str) -> str:
+    html = html.replace("\xa0", " ").replace("&nbsp;", " ")
+    # 制御文字（カテゴリC）を除外、可視Unicodeはそのまま
+    return ''.join(c for c in html if unicodedata.category(c)[0] != 'C')
+
 def send_email_digest(summaries, subject="Daily Myanmar News Digest"):
     sender_email = os.getenv("EMAIL_SENDER")
     sender_pass = os.getenv("GMAIL_APP_PASSWORD")
@@ -271,7 +277,7 @@ def send_email_digest(summaries, subject="Daily Myanmar News Digest"):
         html_content += f"<p><a href='{item['url']}'>{item['url']}</a></p>"
         html_content += f"<p>{item['summary']}</p><hr>"
     html_content += "</body></html>"
-    html_content = html_content.replace("\xa0", " ")
+    html_content = clean_html_content(html_content)
 
     # EmailMessageを使ってUTF-8対応
     msg = EmailMessage(policy=SMTPUTF8)
