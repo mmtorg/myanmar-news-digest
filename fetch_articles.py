@@ -300,6 +300,21 @@ def send_email_digest(summaries, subject="Daily Myanmar News Digest"):
     msg.set_content("HTMLメールを開ける環境でご確認ください。", charset="utf-8")
     msg.add_alternative(html_content, subtype="html", charset="utf-8")
 
+    print("\n========== DEBUG: メール送信直前データ ==========")
+    print("Subject:", repr(subject))
+    print("Sender Email:", repr(sender_email))
+    print("Recipients:", repr(recipient_emails))
+    print("From Header (formataddr):", repr(formataddr(("ミャンマーニュース配信", sender_email))))
+    print("---- HTML Content Preview (先頭300文字) ----")
+    print(repr(html_content[:300]))
+    print("---- 各Summary要素 ----")
+    for item in summaries:
+        print("Source:", repr(item["source"]))
+        print("Title:", repr(item["title"]))
+        print("Summary:", repr(item["summary"]))
+        print("URL:", repr(item["url"]))
+        print("---")
+
     try:
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
             server.login(sender_email, sender_pass)
