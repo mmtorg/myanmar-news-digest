@@ -11,7 +11,8 @@ import sys
 from email import policy  # ← 追加
 from email.header import Header  # ← 追加必要
 from email.message import EmailMessage
-from email.policy import default  # ← これを追加
+from email.policy import SMTPUTF8
+from email.utils import formataddr
 
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
@@ -273,10 +274,12 @@ def send_email_digest(summaries, subject="Daily Myanmar News Digest"):
     html_content = html_content.replace("\xa0", " ")
 
     # EmailMessageを使ってUTF-8対応
-    msg = EmailMessage(policy=default)
-    msg["Subject"] = subject  # ← 日本語含んでいてOK
-    msg["From"] = sender_email
+    msg = EmailMessage(policy=SMTPUTF8)
+    msg["Subject"] = subject
+    msg["From"] = formataddr(("ミャンマーニュース配信", sender_email))
     msg["To"] = ", ".join(recipient_emails)
+    # \xa0 を安全に除去
+    html_content = html_content.replace("\xa0", " ").replace("&nbsp;", " ")
     msg.set_content("HTMLメールを開ける環境でご確認ください。")
     msg.add_alternative(html_content, subtype="html")
 
