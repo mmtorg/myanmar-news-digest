@@ -284,7 +284,8 @@ def send_email_digest(summaries, subject="Daily Myanmar News Digest"):
     html_content += "<h2>ミャンマー関連ニュース（日本語要約）</h2>"
     for item in summaries:
         source = clean_text(item["source"])
-        title = clean_text(item["title"])
+        title = ("title")
+        # title = clean_text(item["title"])
         summary = clean_text("summary")
         # summary = clean_text(item["summary"])
         url = item["url"]
