@@ -278,6 +278,7 @@ def send_email_digest(summaries, subject="Daily Myanmar News Digest"):
         html_content += f"<p>{item['summary']}</p><hr>"
     html_content += "</body></html>"
     html_content = clean_html_content(html_content)
+    repr(html_content)
 
     # EmailMessageを使ってUTF-8対応
     msg = EmailMessage(policy=SMTPUTF8)
