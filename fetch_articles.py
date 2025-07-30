@@ -273,7 +273,7 @@ def send_email_digest(summaries, subject="Daily Myanmar News Digest"):
 
     # EmailMessageを使ってUTF-8対応
     msg = EmailMessage()
-    msg["Subject"] = Header(subject, "utf-8")
+    msg["Subject"] = str(Header(subject, "utf-8"))
     msg["From"] = sender_email
     msg["To"] = ", ".join(recipient_emails)
     msg.set_content("HTMLメールを開ける環境でご確認ください。")
