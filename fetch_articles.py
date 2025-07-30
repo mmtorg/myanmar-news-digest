@@ -277,52 +277,34 @@ def process_and_summarize_articles(articles, source_name):
 
 def send_email_digest(summaries, subject="Daily Myanmar News Digest"):
     sender_email = os.getenv("EMAIL_SENDER")
-    sender_pass = os.getenv("GMAIL_APP_PASSWORD")
-    recipient_emails = [email.strip() for email in os.getenv("EMAIL_RECIPIENTS", "").split(",")]
+    recipient_emails = [e.strip() for e in os.getenv("EMAIL_RECIPIENTS", "").split(",")]
+    sender_name = clean_text("ミャンマーニュース配信")
 
-    # メール本文のHTML生成
-    html_content = "<html><body>"
-    html_content += "<h2>ミャンマー関連ニュース（日本語要約）</h2>"
+    msg = EmailMessage(policy=SMTPUTF8)
+    msg["Subject"] = subject
+    msg["From"] = formataddr((str(Header(sender_name, "utf-8")), sender_email))
+    msg["To"] = ", ".join(recipient_emails)
+
+    html = ["<html><body><h2>ミャンマー関連ニュース（日本語要約）</h2>"]
     for item in summaries:
         source = clean_text(item["source"])
         title = clean_text(item["title"])
         summary = clean_text(item["summary"])
         url = item["url"]
+        html.append(f"<h3>{source}: {title}</h3>")
+        html.append(f"<p><a href='{url}'>{url}</a></p>")
+        html.append(f"<p>{summary}</p><hr>")
+    html.append("</body></html>")
+    html_content = clean_html_content("".join(html))
 
-        html_content += f"<h3>{source}: {title}</h3>"
-        html_content += f"<p><a href='{url}'>{url}</a></p>"
-        html_content += f"<p>{summary}</p><hr>"
-    html_content += "</body></html>"
-
-    html_content = clean_html_content(html_content)
-
-    from_display_name = clean_text("ミャンマーニュース配信")
-    
-    msg = EmailMessage(policy=SMTPUTF8)
-    msg["Subject"] = subject
-    msg["From"] = formataddr((str(Header(from_display_name, 'utf-8')), sender_email))
-    msg["To"] = ", ".join(recipient_emails)
     msg.set_content("HTMLメールを開ける環境でご確認ください。", charset="utf-8")
     msg.add_alternative(html_content, subtype="html", charset="utf-8")
 
-    print("\n========== DEBUG: メール送信直前データ ==========")
-    print("Subject:", repr(subject))
-    print("Sender Email:", repr(sender_email))
-    print("Recipients:", repr(recipient_emails))
-    print("From Header (formataddr):", repr(formataddr(("ミャンマーニュース配信", sender_email))))
-    print("---- HTML Content Preview (先頭300文字) ----")
-    print(repr(html_content[:300]))
-    print("---- 各Summary要素 ----")
-    for item in summaries:
-        print("Source:", repr(item["source"]))
-        print("Title:", repr(item["title"]))
-        print("Summary (safe repr):", item["summary"].encode("unicode_escape").decode("ascii"))
-        print("URL:", repr(item["url"]))
-        print("---")
+    print_debug_data(subject, sender_email, recipient_emails, sender_name, html_content, summaries)
 
     try:
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-            server.login(sender_email, sender_pass)
+            server.login(sender_email, os.getenv("GMAIL_APP_PASSWORD"))
             server.send_message(msg)
             print("✅ メール送信完了")
     except Exception as e:
