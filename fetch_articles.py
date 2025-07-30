@@ -1,3 +1,4 @@
+
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
@@ -254,6 +255,22 @@ def translate_and_summarize(text):
     except Exception as e:
         print(f"OpenAI API エラー: {e}")
         return "（翻訳・要約に失敗しました）"
+
+def print_debug_data(subject, sender_email, recipient_emails, sender_name, html_content, summaries):
+    print("\n========== DEBUG: メール送信直前データ ==========")
+    print("Subject:", repr(subject))
+    print("Sender Email:", repr(sender_email))
+    print("Recipients:", repr(recipient_emails))
+    print("From Header:", repr(formataddr((str(Header(sender_name, 'utf-8')), sender_email))))
+    print("---- HTML Content Preview (先頭300文字) ----")
+    print(repr(html_content[:300]))
+    print("---- 各Summary要素 ----")
+    for item in summaries:
+        print("Source:", repr(item["source"]))
+        print("Title:", repr(item["title"]))
+        print("Summary:", item["summary"].encode("unicode_escape").decode("ascii"))
+        print("URL:", repr(item["url"]))
+        print("---")
 
 def process_and_summarize_articles(articles, source_name):
     results = []
