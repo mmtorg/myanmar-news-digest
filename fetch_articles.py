@@ -278,7 +278,6 @@ def send_email_digest(summaries, subject="Daily Myanmar News Digest"):
         html_content += f"<p>{item['summary']}</p><hr>"
     html_content += "</body></html>"
     html_content = clean_html_content(html_content)
-    repr(html_content)
 
     # EmailMessageを使ってUTF-8対応
     msg = EmailMessage(policy=SMTPUTF8)
@@ -289,6 +288,21 @@ def send_email_digest(summaries, subject="Daily Myanmar News Digest"):
     html_content = html_content.replace("\xa0", " ").replace("&nbsp;", " ")
     msg.set_content("HTMLメールを開ける環境でご確認ください。")
     msg.add_alternative(html_content, subtype="html")
+
+    print("\n========== DEBUG: メール送信直前データ ==========")
+    print("Subject:", repr(subject))
+    print("Sender Email:", repr(sender_email))
+    print("Recipients:", repr(recipient_emails))
+    print("From Header (formataddr):", repr(formataddr(("ミャンマーニュース配信", sender_email))))
+    print("---- HTML Content Preview (先頭300文字) ----")
+    print(repr(html_content[:300]))
+    print("---- 各Summary要素 ----")
+    for item in summaries:
+        print("Source:", repr(item["source"]))
+        print("Title:", repr(item["title"]))
+        print("Summary:", repr(item["summary"]))
+        print("URL:", repr(item["url"]))
+        print("---")
 
     try:
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
