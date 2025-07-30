@@ -298,7 +298,7 @@ def send_email_digest(summaries, subject="Daily Myanmar News Digest"):
 
     html_content = clean_html_content(html_content)
 
-    from_display_name = clean_text("ミャンマーニュース配信")
+    from_display_name = clean_text("myanmar-news-digest")
     
     msg = EmailMessage(policy=SMTPUTF8)
     msg["Subject"] = subject
