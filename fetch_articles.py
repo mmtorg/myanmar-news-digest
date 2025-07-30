@@ -263,7 +263,7 @@ def send_email_digest(summaries, subject="Daily Myanmar News Digest"):
 
     # メール本文のHTML生成
     html_content = "<html><body>"
-    html_content += "<h2>🇲🇲 ミャンマー関連ニュース（日本語要約）</h2>"
+    html_content += "<h2>ミャンマー関連ニュース（日本語要約）</h2>"
     for item in summaries:
         html_content += f"<h3>{item['source']}: {item['title']}</h3>"
         html_content += f"<p><a href='{item['url']}'>{item['url']}</a></p>"
@@ -273,7 +273,7 @@ def send_email_digest(summaries, subject="Daily Myanmar News Digest"):
 
     # EmailMessageを使ってUTF-8対応
     msg = EmailMessage()
-    msg["Subject"] = subject
+    msg["Subject"] = Header(subject, "utf-8")
     msg["From"] = sender_email
     msg["To"] = ", ".join(recipient_emails)
     msg.set_content("HTMLメールを開ける環境でご確認ください。")
