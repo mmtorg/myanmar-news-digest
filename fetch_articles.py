@@ -21,6 +21,20 @@ def get_yesterday_date_mmt():
     mm_yesterday = datetime.utcnow() + timedelta(hours=6.5) - timedelta(days=1)
     return mm_yesterday.date()
 
+def clean_html_content(html: str) -> str:
+    html = html.replace("\xa0", " ").replace("&nbsp;", " ")
+    # 制御文字（カテゴリC）を除外、可視Unicodeはそのまま
+    return ''.join(c for c in html if unicodedata.category(c)[0] != 'C')
+
+def clean_text(text: str) -> str:
+    import unicodedata
+    if not text:
+        return ""
+    return ''.join(
+        c if (unicodedata.category(c)[0] != 'C' and c != '\xa0') else ' '
+        for c in text
+    )
+
 def get_frontier_articles_for(date_obj):
     base_url = "https://www.frontiermyanmar.net"
     list_url = base_url + "/en/news"
@@ -249,6 +263,7 @@ def process_and_summarize_articles(articles, source_name):
             paragraphs = soup.find_all("p")
             text = "\n".join(p.get_text(strip=True) for p in paragraphs)
             summary = translate_and_summarize(text)
+            summary = clean_text(summary_raw)  # ← ここでクリーンにする
             results.append({
                 "source": source_name,
                 "url": art["url"],
@@ -258,20 +273,6 @@ def process_and_summarize_articles(articles, source_name):
         except Exception as e:
             continue
     return results
-
-def clean_html_content(html: str) -> str:
-    html = html.replace("\xa0", " ").replace("&nbsp;", " ")
-    # 制御文字（カテゴリC）を除外、可視Unicodeはそのまま
-    return ''.join(c for c in html if unicodedata.category(c)[0] != 'C')
-
-def clean_text(text: str) -> str:
-    import unicodedata
-    if not text:
-        return ""
-    return ''.join(
-        c if (unicodedata.category(c)[0] != 'C' and c != '\xa0') else ' '
-        for c in text
-    )
 
 def send_email_digest(summaries, subject="Daily Myanmar News Digest"):
     sender_email = os.getenv("EMAIL_SENDER")
