@@ -236,7 +236,7 @@ def get_yktnews_articles_for(date_obj):
 def translate_and_summarize(text):
     prompt = (
         "以下の記事の内容について重要なポイントをまとめ、具体的に解説してください。"
-        "文字数は800文字までとします。文章は自然な日本語に訳してください。\n\n"
+        "文字数は800文字までとします。アウトプットの文章は自然な日本語に訳してください。"
         f"{text}"
     )
 
