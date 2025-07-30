@@ -30,12 +30,11 @@ def clean_text(text: str) -> str:
     import unicodedata
     if not text:
         return ""
-    text = unicodedata.normalize("NFKC", text)  # ←追加：Unicode正規化
+    text = unicodedata.normalize("NFKC", text)  # 正規化
     return ''.join(
         c if (unicodedata.category(c)[0] != 'C' and c != '\xa0') else ' '
         for c in text
     )
-
 
 def get_frontier_articles_for(date_obj):
     base_url = "https://www.frontiermyanmar.net"
@@ -279,7 +278,7 @@ def process_and_summarize_articles(articles, source_name):
 def send_email_digest(summaries, subject="Daily Myanmar News Digest"):
     sender_email = os.getenv("EMAIL_SENDER")
     sender_pass = os.getenv("GMAIL_APP_PASSWORD")
-    recipient_emails = os.getenv("EMAIL_RECIPIENTS", "").split(",")
+    recipient_emails = [email.strip() for email in os.getenv("EMAIL_RECIPIENTS", "").split(",")]
 
     # メール本文のHTML生成
     html_content = "<html><body>"
