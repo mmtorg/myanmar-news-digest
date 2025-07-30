@@ -321,9 +321,9 @@ def send_email_digest(summaries, subject="Daily Myanmar News Digest"):
         print("---")
 
     try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-            server.login(sender_email, sender_pass)
-            server.send_message(msg)
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+        server.login(sender_email, sender_pass)
+        server.send_message(msg)
             print("✅ メール送信完了")
     except Exception as e:
         print(f"❌ メール送信エラー: {e}")
