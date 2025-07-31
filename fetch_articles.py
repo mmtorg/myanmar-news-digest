@@ -283,8 +283,8 @@ def send_email_digest(summaries, subject="Daily Myanmar News Digest"):
     # recipient_emails = os.getenv("EMAIL_RECIPIENTS", "").split(",")
 
     # メール本文のHTML生成
-    html_content = "<html><body>"
-    html_content += "<h2>Myanmar News Digest</h2>"
+    # html_content = "<html><body>"
+    # html_content += "<h2>Myanmar News Digest</h2>"
     # html_content += "<h2>ミャンマー関連ニュース（日本語要約）</h2>"
     for item in summaries:
         source = "source"
@@ -299,8 +299,9 @@ def send_email_digest(summaries, subject="Daily Myanmar News Digest"):
         # html_content += f"<h3>{source}: {title}</h3>"
         # html_content += f"<p><a href='{url}'>{url}</a></p>"
         # html_content += f"<p>{summary}</p><hr>"
-    html_content += "</body></html>"
+    # html_content += "</body></html>"
 
+    html_content = "text"
     html_content = clean_html_content(html_content)
 
     from_display_name = "Myanmar News Digest"
