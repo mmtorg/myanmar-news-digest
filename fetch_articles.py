@@ -170,7 +170,7 @@ def get_bbc_burmese_articles_for(date_obj):
     list_url = base_url + "/burmese"
     res = requests.get(list_url, timeout=10)
     soup = BeautifulSoup(res.content, "html.parser")
-    inks = soup.select("a[href^='/burmese/']")
+    links = soup.select("a[href^='/burmese/']")
     article_urls = [
         base_url + a["href"]
         for a in links
