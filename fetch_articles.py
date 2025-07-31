@@ -306,7 +306,7 @@ def send_email_digest(summaries, subject="Daily Myanmar News Digest"):
     from_display_name = clean_text("Myanmar News Digest")
     
     msg = EmailMessage(policy=SMTPUTF8)
-    msg["Subject"] = subject
+    # msg["Subject"] = subject
     # msg["From"] = formataddr((from_display_name, sender_email))
     # msg["To"] = ", ".join(recipient_emails)
     # msg.set_content("HTMLメールを開ける環境でご確認ください。", charset="utf-8")
