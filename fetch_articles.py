@@ -302,7 +302,7 @@ def send_email_digest(summaries, subject="Daily Myanmar News Digest"):
     # html_content += "</body></html>"
 
     html_content = "text"
-    html_content = clean_html_content(html_content)
+    # html_content = clean_html_content(html_content)
 
     from_display_name = "Myanmar News Digest"
     # from_display_name = clean_text("Myanmar News Digest")
@@ -323,12 +323,12 @@ def send_email_digest(summaries, subject="Daily Myanmar News Digest"):
     print("---- HTML Content Preview (先頭300文字) ----")
     print(repr(html_content[:300]))
     print("---- 各Summary要素 ----")
-    for item in summaries:
-        print("Source:", repr(item["source"]))
-        print("Title:", repr(item["title"]))
-        print("Summary (safe repr):", item["summary"].encode("unicode_escape").decode("ascii"))
-        print("URL:", repr(item["url"]))
-        print("---")
+    # for item in summaries:
+    #     print("Source:", repr(item["source"]))
+    #     print("Title:", repr(item["title"]))
+    #     print("Summary (safe repr):", item["summary"].encode("unicode_escape").decode("ascii"))
+    #     print("URL:", repr(item["url"]))
+    #     print("---")
 
     try:
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
