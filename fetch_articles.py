@@ -307,7 +307,7 @@ def send_email_digest(summaries, subject="Daily Myanmar News Digest"):
     msg["From"] = formataddr((from_display_name, sender_email))
     msg["To"] = ", ".join(recipient_emails)
     msg.set_content("HTMLメールを開ける環境でご確認ください。", charset="utf-8")
-    msg.add_alternative(html_content, subtype="html", charset="utf-8")
+    # msg.add_alternative(html_content, subtype="html", charset="utf-8")
 
     print("\n========== DEBUG: メール送信直前データ ==========")
     print("Subject:", repr(subject))
