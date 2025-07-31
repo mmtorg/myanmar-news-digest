@@ -276,7 +276,8 @@ def process_and_summarize_articles(articles, source_name):
 
 def send_email_digest(summaries, subject="Daily Myanmar News Digest"):
     sender_email = "yasu.23721740311@gmail.com"
-    sender_pass = "mwdr ewpr ncfk vuuw"
+    sender_pass = "mwdr_ewpr_ncfk_vuuw"
+    # sender_pass = "mwdr ewpr ncfk vuuw"
     recipient_emails = ["yasu.23721740311@gmail.com"]
     # sender_email = os.getenv("EMAIL_SENDER")
     # sender_pass = os.getenv("GMAIL_APP_PASSWORD")
