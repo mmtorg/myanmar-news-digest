@@ -357,14 +357,6 @@ if __name__ == "__main__":
     all_summaries += process_and_summarize_articles(get_bbc_burmese_articles_for(yesterday), "BBC Burmese")
     # all_summaries += process_and_summarize_articles(get_yktnews_articles_for(yesterday), "YKT News")
 
-    # ログ出力
-    print("\n=== BBC Burmese 要約ログ ===")
-    for item in bbc_summaries:
-        print("Source:", item["source"])
-        print("Title:", item["title"])
-        print("URL:", item["url"])
-        print("Summary:")
-        print(item["summary"])
-        print("-" * 60)
+    print(all_summaries)
 
     send_email_digest(all_summaries)
