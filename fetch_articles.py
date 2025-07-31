@@ -199,6 +199,9 @@ def get_bbc_burmese_articles_for(date_obj):
         except Exception:
             continue
 
+    print(filtered_articles)
+    sys.exit(1)
+    
     return filtered_articles
 
 def get_yktnews_articles_for(date_obj):
@@ -356,7 +359,5 @@ if __name__ == "__main__":
     # all_summaries += process_and_summarize_articles(get_ludu_articles_for(yesterday), "Ludu Wayoo")
     all_summaries += process_and_summarize_articles(get_bbc_burmese_articles_for(yesterday), "BBC Burmese")
     # all_summaries += process_and_summarize_articles(get_yktnews_articles_for(yesterday), "YKT News")
-
-    print(all_summaries)
 
     send_email_digest(all_summaries)
