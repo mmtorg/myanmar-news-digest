@@ -256,22 +256,22 @@ def translate_and_summarize(text):
 
 def process_and_summarize_articles(articles, source_name):
     results = []
-    for art in articles:
-        try:
-            res = requests.get(art['url'], timeout=10)
-            soup = BeautifulSoup(res.content, "html.parser")
-            paragraphs = soup.find_all("p")
-            text = "\n".join(p.get_text(strip=True) for p in paragraphs)
-            summary = translate_and_summarize(text)
-            summary = clean_text(summary)  # ← ここでクリーンにする
-            results.append({
-                "source": source_name,
-                "url": art["url"],
-                "title": art["title"],
-                "summary": summary
-            })
-        except Exception as e:
-            continue
+    # for art in articles:
+    #     try:
+    #         res = requests.get(art['url'], timeout=10)
+    #         soup = BeautifulSoup(res.content, "html.parser")
+    #         paragraphs = soup.find_all("p")
+    #         text = "\n".join(p.get_text(strip=True) for p in paragraphs)
+    #         summary = translate_and_summarize(text)
+    #         summary = clean_text(summary)  # ← ここでクリーンにする
+    #         results.append({
+    #             "source": source_name,
+    #             "url": art["url"],
+    #             "title": art["title"],
+    #             "summary": summary
+    #         })
+    #     except Exception as e:
+    #         continue
     return results
 
 def send_email_digest(summaries, subject="Daily Myanmar News Digest"):
@@ -284,11 +284,11 @@ def send_email_digest(summaries, subject="Daily Myanmar News Digest"):
     html_content += "<h2>Myanmar News Digest</h2>"
     # html_content += "<h2>ミャンマー関連ニュース（日本語要約）</h2>"
     for item in summaries:
-        source = clean_text("source")
+        source = "source"
         # source = clean_text(item["source"])
-        title = clean_text("title")
+        title = "title"
         # title = clean_text(item["title"])
-        summary = clean_text("summary")
+        summary = "summary"
         # summary = clean_text(item["summary"])
         url = "url"
         # url = item["url"]
