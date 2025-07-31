@@ -170,8 +170,12 @@ def get_bbc_burmese_articles_for(date_obj):
     list_url = base_url + "/burmese"
     res = requests.get(list_url, timeout=10)
     soup = BeautifulSoup(res.content, "html.parser")
-    links = soup.select("a[href^='/burmese/articles/']")
-    article_urls = [base_url + a["href"] for a in links]
+    inks = soup.select("a[href^='/burmese/']")
+    article_urls = [
+        base_url + a["href"]
+        for a in links
+        if any(part in a["href"] for part in ["articles", "media"])
+    ]
 
     seen = set()
     filtered_articles = []
@@ -199,9 +203,6 @@ def get_bbc_burmese_articles_for(date_obj):
         except Exception:
             continue
 
-    print(filtered_articles)
-    sys.exit(1)
-    
     return filtered_articles
 
 def get_yktnews_articles_for(date_obj):
