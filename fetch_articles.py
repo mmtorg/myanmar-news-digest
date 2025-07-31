@@ -296,8 +296,8 @@ def send_email_digest(summaries, subject="Daily Myanmar News Digest"):
         url = "url"
         # url = item["url"]
 
-        html_content += f"<h3>{source}: {title}</h3>"
-        html_content += f"<p><a href='{url}'>{url}</a></p>"
+        # html_content += f"<h3>{source}: {title}</h3>"
+        # html_content += f"<p><a href='{url}'>{url}</a></p>"
         # html_content += f"<p>{summary}</p><hr>"
     html_content += "</body></html>"
 
