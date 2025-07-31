@@ -256,22 +256,22 @@ def translate_and_summarize(text):
 
 def process_and_summarize_articles(articles, source_name):
     results = []
-    # for art in articles:
-    #     try:
-    #         res = requests.get(art['url'], timeout=10)
-    #         soup = BeautifulSoup(res.content, "html.parser")
-    #         paragraphs = soup.find_all("p")
-    #         text = "\n".join(p.get_text(strip=True) for p in paragraphs)
-    #         summary = translate_and_summarize(text)
-    #         summary = clean_text(summary)  # ← ここでクリーンにする
-    #         results.append({
-    #             "source": source_name,
-    #             "url": art["url"],
-    #             "title": art["title"],
-    #             "summary": summary
-    #         })
-    #     except Exception as e:
-    #         continue
+    for art in articles:
+        try:
+            res = requests.get(art['url'], timeout=10)
+            soup = BeautifulSoup(res.content, "html.parser")
+            paragraphs = soup.find_all("p")
+            text = "\n".join(p.get_text(strip=True) for p in paragraphs)
+            summary = translate_and_summarize(text)
+            summary = clean_text(summary)  # ← ここでクリーンにする
+            results.append({
+                "source": source_name,
+                "url": art["url"],
+                "title": art["title"],
+                "summary": summary
+            })
+        except Exception as e:
+            continue
     return results
 
 def send_email_digest(summaries, subject="Daily Myanmar News Digest"):
@@ -288,14 +288,10 @@ def send_email_digest(summaries, subject="Daily Myanmar News Digest"):
     html_content += "<h2>Myanmar News Digest</h2>"
     html_content += "<h2>ミャンマー関連ニュース（日本語要約）</h2>"
     for item in summaries:
-        source = "source"
-        # source = clean_text(item["source"])
-        title = "title"
-        # title = clean_text(item["title"])
-        summary = "summary"
-        # summary = clean_text(item["summary"])
-        url = "url"
-        # url = item["url"]
+        source = clean_text(item["source"])
+        title = clean_text(item["title"])
+        summary = clean_text(item["summary"])
+        url = item["url"]
 
         html_content += f"<h3>{source}: {title}</h3>"
         html_content += f"<p><a href='{url}'>{url}</a></p>"
@@ -305,7 +301,6 @@ def send_email_digest(summaries, subject="Daily Myanmar News Digest"):
     html_content = clean_html_content(html_content)
 
     from_display_name = "Myanmar News Digest"
-    # from_display_name = clean_text("Myanmar News Digest")
 
     msg = EmailMessage(policy=SMTPUTF8)
     msg["Subject"] = subject
@@ -313,21 +308,6 @@ def send_email_digest(summaries, subject="Daily Myanmar News Digest"):
     msg["To"] = ", ".join(recipient_emails)
     msg.set_content("HTMLメールを開ける環境でご確認ください。", charset="utf-8")
     msg.add_alternative(html_content, subtype="html", charset="utf-8")
-
-    print("\n========== DEBUG: メール送信直前データ ==========")
-    print("Subject:", repr(subject))
-    print("Sender Email:", repr(sender_email))
-    print("Recipients:", repr(recipient_emails))
-    print("From Header (formataddr):", repr(formataddr(("ミャンマーニュース配信", sender_email))))
-    print("---- HTML Content Preview (先頭300文字) ----")
-    print(repr(html_content[:300]))
-    print("---- 各Summary要素 ----")
-    # for item in summaries:
-    #     print("Source:", repr(item["source"]))
-    #     print("Title:", repr(item["title"]))
-    #     print("Summary (safe repr):", item["summary"].encode("unicode_escape").decode("ascii"))
-    #     print("URL:", repr(item["url"]))
-    #     print("---")
 
     try:
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
