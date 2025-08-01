@@ -406,7 +406,7 @@ def markdown_to_html(text):
         html_lines.append("</ul>")
     return "\n".join(html_lines)
 
-def send_email_digest(summaries, subject="Daily Myanmar News Digest"):
+def send_email_digest(summaries):
     sender_email = "yasu.23721740311@gmail.com"
     sender_pass = "sfqy saao bhhj dlwu"
     # sender_pass = "mwdr ewpr ncfk vuuw"
@@ -423,6 +423,9 @@ def send_email_digest(summaries, subject="Daily Myanmar News Digest"):
     media_grouped = defaultdict(list)
     for item in summaries:
         media_grouped[item["source"]].append(item)
+
+    # メールタイトル
+    subject = "ミャンマー関連ニュース【" + date_str + "】"
 
     # メール本文のHTML生成
     html_content = f"""
