@@ -383,7 +383,7 @@ def send_email_digest(summaries, subject="Daily Myanmar News Digest"):
         sys.exit(1)
 
 if __name__ == "__main__":
-    yesterday = get_yesterday_date_mmt()
+    yesterday = get_yesterday_date_utc()
     articles = get_frontier_articles_for(yesterday)
     for art in articles:
         print(f"{art['date']} - {art['title']}\n{art['url']}\n")
