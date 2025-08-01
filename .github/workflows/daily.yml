@@ -14,6 +14,7 @@ jobs:
       GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
       EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
       EMAIL_RECIPIENTS: ${{ secrets.EMAIL_RECIPIENTS }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
 
     steps:
       - uses: actions/checkout@v3
