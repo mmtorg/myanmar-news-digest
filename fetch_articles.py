@@ -1,9 +1,9 @@
 import requests
 from bs4 import BeautifulSoup
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta, date, timezone
 from dateutil.parser import parse as parse_date
 import re
-from openai import OpenAI
+from openai import OpenAI, OpenAIError
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -18,9 +18,8 @@ import unicodedata
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-def get_yesterday_date_mmt():
-    mm_yesterday = datetime.utcnow() + timedelta(hours=6.5) - timedelta(days=1)
-    return mm_yesterday.date()
+def get_yesterday_date_utc():
+    return datetime.utcnow().date() - timedelta(days=1)
 
 def clean_html_content(html: str) -> str:
     html = html.replace("\xa0", " ").replace("&nbsp;", " ")
@@ -167,7 +166,7 @@ def get_ludu_articles_for(date_obj):
     return filtered_articles
 
 # BCCはRSSあるのでそれ使う
-def get_bbc_burmese_articles_for(target_date):
+def get_bbc_burmese_articles_for(target_date_utc):
     rss_url = "https://feeds.bbci.co.uk/burmese/rss.xml"
     res = requests.get(rss_url, timeout=10)
     soup = BeautifulSoup(res.content, "xml")
@@ -175,17 +174,25 @@ def get_bbc_burmese_articles_for(target_date):
     articles = []
     for item in soup.find_all("item"):
         pub_date_tag = item.find("pubDate")
-        if pub_date_tag is None:
-            continue  # pubDate がない記事はスキップ
-        pub_date = parse_date(pub_date_tag.text).date()
-        if pub_date == target_date:
+        if not pub_date_tag:
+            continue
+
+        try:
+            pub_date = parse_date(pub_date_tag.text)
+            pub_date_utc = pub_date.astimezone(timezone.utc).date()
+        except Exception as e:
+            print(f"❌ pubDate parse error: {e}")
+            continue
+
+        if pub_date_utc == target_date_utc:
             title = item.find("title").text
             link = item.find("link").text
             articles.append({
                 "title": title,
                 "url": link,
-                "date": pub_date.isoformat()
+                "date": pub_date_utc.isoformat()
             })
+
     return articles
 
 # def get_bbc_burmese_articles_for(date_obj):
@@ -397,7 +404,8 @@ if __name__ == "__main__":
     #     print(f"{art['date']} - {art['title']}\n{art['url']}\n")
 
     print("=== BBC Burmese ===")
-    articles6 = get_bbc_burmese_articles_for(yesterday)
+    yesterday_utc = datetime.utcnow().date() - timedelta(days=1)
+    articles6 = get_bbc_burmese_articles_for(yesterday_utc)
     for art in articles6:
         print(f"{art['date']} - {art['title']}\n{art['url']}\n")
 
