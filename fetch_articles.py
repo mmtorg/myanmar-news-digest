@@ -179,6 +179,9 @@ def get_bbc_burmese_articles_for(target_date_utc):
     res = requests.get(rss_url, timeout=10)
     soup = BeautifulSoup(res.content, "xml")
 
+     # ✅ タイトルまたは本文にミャンマー関連ワードを含むか判定
+    keywords = ["မြန်မာ", "ဗမာ", "အောင်ဆန်းစုကြည်", "မင်းအောင်လှိုင်", "Myanmar", "Burma"]
+
     articles = []
     for item in soup.find_all("item"):
         pub_date_tag = item.find("pubDate")
@@ -193,30 +196,30 @@ def get_bbc_burmese_articles_for(target_date_utc):
             continue
 
         if pub_date_utc == target_date_utc:
-            title = item.find("title").text
-            link = item.find("link").text
+            title = item.find("title").text.strip()
+            link = item.find("link").text.strip()
 
-            # ✅ 本文も取得してキーワード判定
             try:
                 article_res = requests.get(link, timeout=10)
                 article_soup = BeautifulSoup(article_res.content, "html.parser")
-                body_text = article_soup.get_text()
-            except Exception as e:
-                print(f"❌ 本文取得失敗: {e}")
-                body_text = ""
+                paragraphs = article_soup.find_all("p")
+                body_text = "\n".join(p.get_text(strip=True) for p in paragraphs)
 
-            # ✅ タイトルまたは本文にミャンマー関連ワードを含むか判定
-            keywords = ["မြန်မာ", "ဗမာ", "အောင်ဆန်းစုကြည်", "မင်းအောင်လှိုင်", "Myanmar", "Burma"]
-            if not any(kw in title or kw in body_text for kw in keywords):
+                if not any(keyword in title or keyword in body_text for keyword in keywords):
+                    continue  # キーワードが含まれていなければスキップ
+
+                articles.append({
+                    "title": title,
+                    "url": link,
+                    "date": pub_date_utc.isoformat()
+                })
+
+            except Exception as e:
+                print(f"❌ 記事取得エラー: {e}")
                 continue
 
-            articles.append({
-                "title": title,
-                "url": link,
-                "date": pub_date_utc.isoformat()
-            })
-
     return articles
+
 
 # def get_bbc_burmese_articles_for(date_obj):
 #     base_url = "https://www.bbc.com"
@@ -295,7 +298,7 @@ def translate_text_only(text: str) -> str:
     if not text or not text.strip():
         return "（翻訳に失敗しました）"
 
-    prompt = f"以下の文章を日本語に翻訳してください。\n\n{text.strip()}"
+    prompt = f"記事のタイトル箇所だけを日本語に訳してください。\n\n{text.strip()}"
 
     try:
         resp = client.models.generate_content(
@@ -315,7 +318,7 @@ def translate_and_summarize(text: str) -> str:
 
     prompt = (
         "記事の内容について重要なポイントをまとめ、具体的に解説してください。\n\n"
-        "箇条書きやマークダウン形式を使って見やすく整理してください。\n\n"
+        "改行と箇条書きを適切に使って見やすく整理してください。\n\n"
         "文字数は最大700文字までとします。自然な日本語に訳してください。\n\n"
         "全体に対する解説は不要です、各記事に対する個別の解説のみとしてください。"
         f"{text[:2000]}"
