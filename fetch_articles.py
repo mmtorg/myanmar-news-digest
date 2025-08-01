@@ -18,6 +18,7 @@ from email.utils import formataddr
 import unicodedata
 from google import genai
 from google.api_core.exceptions import GoogleAPICallError
+from collections import defaultdict
 
 # Gemini
 client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
