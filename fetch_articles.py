@@ -373,10 +373,20 @@ def send_email_digest(summaries, subject="Daily Myanmar News Digest"):
     # sender_pass = os.getenv("GMAIL_APP_PASSWORD")
     # recipient_emails = os.getenv("EMAIL_RECIPIENTS", "").split(",")
 
+    # ✅ 昨日の日付を取得してフォーマット
+    digest_date = get_yesterday_date_utc()
+    date_str = digest_date.strftime("%Y年%-m月%-d日") + "分"
+
+    # メディアごとにまとめる
+    media_grouped = defaultdict(list)
+    for item in summaries:
+        media_grouped[item["source"]].append(item)
+
     # メール本文のHTML生成
     html_content = """
     <html>
     <body style="font-family: Arial, sans-serif; background-color: #ffffff; color: #333333;">
+        <h3>ミャンマー関連ニュース【{date_str}】</h3>
     """
 
     for media, articles in media_grouped.items():
