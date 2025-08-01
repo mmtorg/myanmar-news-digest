@@ -418,7 +418,7 @@ if __name__ == "__main__":
     # all_summaries += process_and_summarize_articles(get_mizzima_articles_for(yesterday), "Mizzima")
     # all_summaries += process_and_summarize_articles(get_vom_articles_for(yesterday), "Voice of Myanmar")
     # all_summaries += process_and_summarize_articles(get_ludu_articles_for(yesterday), "Ludu Wayoo")
-    all_summaries += process_and_summarize_articles(get_bbc_burmese_articles_for(yesterday), "BBC Burmese")
+    all_summaries += process_and_summarize_articles(get_bbc_burmese_articles_for(yesterday_utc), "BBC Burmese")
     # all_summaries += process_and_summarize_articles(get_yktnews_articles_for(yesterday), "YKT News")
 
     send_email_digest(all_summaries)
