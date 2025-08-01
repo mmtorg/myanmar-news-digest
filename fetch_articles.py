@@ -173,34 +173,34 @@ def get_ludu_articles_for(date_obj):
     return filtered_articles
 
 # BCCはRSSあるのでそれ使う
-# def get_bbc_burmese_articles_for(target_date_utc):
-#     rss_url = "https://feeds.bbci.co.uk/burmese/rss.xml"
-#     res = requests.get(rss_url, timeout=10)
-#     soup = BeautifulSoup(res.content, "xml")
+def get_bbc_burmese_articles_for(target_date_utc):
+    rss_url = "https://feeds.bbci.co.uk/burmese/rss.xml"
+    res = requests.get(rss_url, timeout=10)
+    soup = BeautifulSoup(res.content, "xml")
 
-#     articles = []
-#     for item in soup.find_all("item"):
-#         pub_date_tag = item.find("pubDate")
-#         if not pub_date_tag:
-#             continue
+    articles = []
+    for item in soup.find_all("item"):
+        pub_date_tag = item.find("pubDate")
+        if not pub_date_tag:
+            continue
 
-#         try:
-#             pub_date = parse_date(pub_date_tag.text)
-#             pub_date_utc = pub_date.astimezone(timezone.utc).date()
-#         except Exception as e:
-#             print(f"❌ pubDate parse error: {e}")
-#             continue
+        try:
+            pub_date = parse_date(pub_date_tag.text)
+            pub_date_utc = pub_date.astimezone(timezone.utc).date()
+        except Exception as e:
+            print(f"❌ pubDate parse error: {e}")
+            continue
 
-#         if pub_date_utc == target_date_utc:
-#             title = item.find("title").text
-#             link = item.find("link").text
-#             articles.append({
-#                 "title": title,
-#                 "url": link,
-#                 "date": pub_date_utc.isoformat()
-#             })
+        if pub_date_utc == target_date_utc:
+            title = item.find("title").text
+            link = item.find("link").text
+            articles.append({
+                "title": title,
+                "url": link,
+                "date": pub_date_utc.isoformat()
+            })
 
-#     return articles
+    return articles
 
 # def get_bbc_burmese_articles_for(date_obj):
 #     base_url = "https://www.bbc.com"
