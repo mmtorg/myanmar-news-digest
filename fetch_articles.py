@@ -3,7 +3,7 @@ from bs4 import BeautifulSoup
 from datetime import datetime, timedelta, date
 from dateutil.parser import parse as parse_date
 import re
-import openai
+from openai import OpenAI
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -16,8 +16,7 @@ from email.policy import SMTPUTF8
 from email.utils import formataddr
 import unicodedata
 
-
-openai.api_key = os.getenv("OPENAI_API_KEY")
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 def get_yesterday_date_mmt():
     mm_yesterday = datetime.utcnow() + timedelta(hours=6.5) - timedelta(days=1)
@@ -261,29 +260,56 @@ def get_yktnews_articles_for(date_obj):
 
     return filtered_articles
 
-def translate_and_summarize(text):
-    if not text.strip():
-        print("⚠️ 入力本文が空です")
+def translate_and_summarize(text: str) -> str:
+    if not text or not text.strip():
+        print("⚠️ 入力テキストが空です。")
         return "（翻訳・要約に失敗しました）"
+
     prompt = (
-        "以下の記事の内容について重要なポイントをまとめ、具体的に解説してください。"
-        "文字数は400文字までとします。アウトプットの文章は自然な日本語に訳してください。"
-        f"{text[:1000]}"  # 長すぎると切る（例）
+        "以下の記事の内容について重要なポイントをまとめ、具体的に解説してください。" 
+        "文字数は800文字までとします。自然な日本語に訳してください。\n\n"
+        f"{text[:2000]}"  # 入力長を適切に制限（APIの入力トークン制限を超えないように）
     )
 
     try:
-        response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",  # 必要に応じて 4 に変更可能
-            messages=[
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.7,
-            max_tokens=1024
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": prompt}]
         )
-        return response["choices"][0]["message"]["content"].strip()
-    except Exception as e:
-        print(f"OpenAI API エラー: {e}")
+        return response.choices[0].message.content.strip()
+
+    except OpenAIError as api_err:
+        # OpenAI全体の例外を網羅
+        print(f"🛑 OpenAI API エラー: {api_err}")
         return "（翻訳・要約に失敗しました）"
+    except Exception as e:
+        # その他の予期しない例外
+        print(f"予期せぬエラー: {e}")
+        return "（翻訳・要約に失敗しました）"
+
+# def translate_and_summarize(text):
+#     if not text.strip():
+#         print("⚠️ 入力本文が空です")
+#         return "（翻訳・要約に失敗しました）"
+#     prompt = (
+#         "以下の記事の内容について重要なポイントをまとめ、具体的に解説してください。"
+#         "文字数は400文字までとします。アウトプットの文章は自然な日本語に訳してください。"
+#         f"{text[:1000]}"  # 長すぎると切る（例）
+#     )
+
+#     try:
+#         response = openai.ChatCompletion.create(
+#             model="gpt-3.5-turbo",  # 必要に応じて 4 に変更可能
+#             messages=[
+#                 {"role": "user", "content": prompt}
+#             ],
+#             temperature=0.7,
+#             max_tokens=1024
+#         )
+#         return response["choices"][0]["message"]["content"].strip()
+#     except Exception as e:
+#         print(f"OpenAI API エラー: {e}")
+#         return "（翻訳・要約に失敗しました）"
 
 def process_and_summarize_articles(articles, source_name):
     results = []
