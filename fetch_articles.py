@@ -206,7 +206,7 @@ def get_bbc_burmese_articles_for(target_date_utc):
                 body_text = ""
 
             # ✅ タイトルまたは本文にミャンマー関連ワードを含むか判定
-            keywords = ["မြန်မာ", "ဗမာ", , "အောင်ဆန်းစုကြည်", "မင်းအောင်လှိုင်", "Myanmar", "Burma"]
+            keywords = ["မြန်မာ", "ဗမာ", "အောင်ဆန်းစုကြည်", "မင်းအောင်လှိုင်", "Myanmar", "Burma"]
             if not any(kw in title or kw in body_text for kw in keywords):
                 continue
 
