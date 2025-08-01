@@ -175,8 +175,10 @@ def get_bbc_burmese_articles_for(target_date):
 
     articles = []
     for item in soup.find_all("item"):
-        pub_date = item.find("pubDate").text
-        pub_date = parse_date(pub_date).date()
+        pub_date_tag = item.find("pubDate")
+        if pub_date_tag is None:
+            continue  # pubDate がない記事はスキップ
+        pub_date = parse_date(pub_date_tag.text).date()
         if pub_date == target_date:
             title = item.find("title").text
             link = item.find("link").text
