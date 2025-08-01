@@ -20,7 +20,7 @@ from google import genai
 from google.api_core.exceptions import GoogleAPICallError
 
 # Gemini
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 model = genai.GenerativeModel("gemini-2.5‑flash")
 
 # Chat GPT
@@ -176,23 +176,24 @@ def get_ludu_articles_for(date_obj):
 # BCCはRSSあるのでそれ使う、GeminiAPIを使う場合
 def translate_and_summarize_gemini(text: str) -> str:
     if not text or not text.strip():
-        print("⚠️ 入力テキストが空です。")
+        print("⚠️ 入力テキストが空です")
         return "（翻訳・要約に失敗しました）"
 
     prompt = (
-        "以下の記事の内容について重要なポイントをまとめ、具体的に解説してください。"
-        "文字数は800文字までとします。自然な日本語に訳してください。\n\n"
+        "以下の記事の内容を日本語で要約してください。重要ポイントを具体的に説明してください。\n\n"
         f"{text[:2000]}"
     )
 
     try:
-        resp = model.generate_content(prompt)
+        resp = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt
+        )
         return resp.text.strip()
-    except GoogleAPICallError as api_err:
-        print(f"🛑 Gemini API エラー: {api_err}")
-        return "（翻訳・要約に失敗しました）"
+
     except Exception as e:
-        print(f"予期せぬエラー: {e}")
+        print(f"🛑 Gemini API エラー: {e}")
+        return "（翻訳・要約に失敗しました）"
 
 # BCCはRSSあるのでそれ使う、ChatGPTAPIを使う場合
 # def get_bbc_burmese_articles_for(target_date_utc):
