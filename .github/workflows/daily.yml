@@ -31,5 +31,8 @@ jobs:
         run: |
           pip install requests beautifulsoup4 python-dateutil lxml
 
+      - name: Install dependencies
+        run: pip install --upgrade google-genai
+
       - name: Run script
         run: python fetch_articles.py
