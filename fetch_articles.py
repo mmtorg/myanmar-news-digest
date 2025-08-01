@@ -300,6 +300,7 @@ def translate_text_only(text: str) -> str:
 
     prompt = (
         "以下はbbc burmeseの記事のタイトルです。日本語に訳してください。\n\n"
+        "レスポンスではタイトルの日本語訳のみを返してください、それ以外の文言は不要です。\n\n"
         "###\n\n"
         f"{text.strip()}\n\n"
         "###"
@@ -323,9 +324,10 @@ def translate_and_summarize(text: str) -> str:
 
     prompt = (
         "以下はbbc burmeseの記事です。記事の内容について重要なポイントをまとめ、具体的に解説してください。\n\n"
-        "マークダウン形式は使わずに改行と箇条書きを適切に使って見やすく整理してください。\n\n"
+        "改行や箇条書きを適切に使って見やすく整理してください。マークダウン形式を使ってもよいです。\n\n"
         "文字数は最大700文字までとします。自然な日本語に訳してください。\n\n"
-        "全体に対する解説は不要です、各記事に対する個別の解説のみとしてください。"
+        "全体に対する解説は不要です、各記事に対する個別の解説のみとしてください。\n\n"
+        "レスポンスでは解説のみを返してください、それ以外の文言は不要です。\n\n"
         "###\n\n"
         f"{text[:2000]}\n\n"
         "###"
@@ -381,7 +383,8 @@ def process_and_summarize_articles(articles, source_name):
             text = "\n".join(p.get_text(strip=True) for p in paragraphs)
             translated_title = translate_text_only(art["title"])  # ← 要約なし翻訳
             summary = translate_and_summarize(text)  # ← 要約＋翻訳
-            summary = clean_text(summary)  # ← ここでクリーンにする
+            summary = clean_text(item["summary"])  # ← ここは元の要約がすでに HTMLとして適切か不明なので
+            summary_html = markdown_to_html(summary)
             results.append({
                 "source": source_name,
                 "url": art["url"],
@@ -454,7 +457,7 @@ def send_email_digest(summaries):
                 f"<h4 style='margin-bottom: 5px;'>{title_jp}</h4>"
                 f"<p><a href='{url}' style='color: #1a0dab;'>記事を読む</a></p>"
                 f"<div style='background-color: #f9f9f9; padding: 10px; border-radius: 8px;'>"
-                f"<p style='white-space: pre-wrap;'>{summary_html}</p>"
+                f"{summary_html}"  # ← <p>タグや<ul>がすでに含まれている
                 f"</div></div><hr style='border-top: 1px solid #cccccc;'>"
             )
 
