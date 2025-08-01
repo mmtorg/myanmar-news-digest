@@ -298,10 +298,12 @@ def translate_text_only(text: str) -> str:
     if not text or not text.strip():
         return "（翻訳に失敗しました）"
 
-    print(text.strip())
-    sys.exit(1)
-    
-    prompt = f"記事のタイトル箇所だけを日本語に訳してください。\n\n{text.strip()}"
+    prompt = (
+        "以下はbbc burmeseの記事のタイトルです。日本語に訳してください。\n\n"
+        "###\n\n"
+        f"{text.strip()}\n\n"
+        "###"
+    )
 
     try:
         resp = client.models.generate_content(
@@ -320,11 +322,13 @@ def translate_and_summarize(text: str) -> str:
         return "（翻訳・要約に失敗しました）"
 
     prompt = (
-        "記事の内容について重要なポイントをまとめ、具体的に解説してください。\n\n"
+        "以下はbbc burmeseの記事です。記事の内容について重要なポイントをまとめ、具体的に解説してください。\n\n"
         "マークダウン形式は使わずに改行と箇条書きを適切に使って見やすく整理してください。\n\n"
         "文字数は最大700文字までとします。自然な日本語に訳してください。\n\n"
         "全体に対する解説は不要です、各記事に対する個別の解説のみとしてください。"
+        "###\n\n"
         f"{text[:2000]}"
+        "###\n\n"
     )
 
     try:
