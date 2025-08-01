@@ -172,29 +172,7 @@ def get_ludu_articles_for(date_obj):
 
     return filtered_articles
 
-# BCCはRSSあるのでそれ使う、GeminiAPIを使う場合
-def get_bbc_burmese_articles_for(text: str) -> str:
-    if not text or not text.strip():
-        print("⚠️ 入力テキストが空です")
-        return "（翻訳・要約に失敗しました）"
-
-    prompt = (
-        "以下の記事の内容を日本語で要約してください。重要ポイントを具体的に説明してください。\n\n"
-        f"{text[:2000]}"
-    )
-
-    try:
-        resp = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt
-        )
-        return resp.text.strip()
-
-    except Exception as e:
-        print(f"🛑 Gemini API エラー: {e}")
-        return "（翻訳・要約に失敗しました）"
-
-# BCCはRSSあるのでそれ使う、ChatGPTAPIを使う場合
+# BCCはRSSあるのでそれ使う
 # def get_bbc_burmese_articles_for(target_date_utc):
 #     rss_url = "https://feeds.bbci.co.uk/burmese/rss.xml"
 #     res = requests.get(rss_url, timeout=10)
@@ -296,55 +274,55 @@ def get_yktnews_articles_for(date_obj):
 
     return filtered_articles
 
+# GeminiAPIを使う場合
 def translate_and_summarize(text: str) -> str:
     if not text or not text.strip():
-        print("⚠️ 入力テキストが空です。")
+        print("⚠️ 入力テキストが空です")
         return "（翻訳・要約に失敗しました）"
 
     prompt = (
-        "以下の記事の内容について重要なポイントをまとめ、具体的に解説してください。" 
-        "文字数は800文字までとします。自然な日本語に訳してください。\n\n"
-        f"{text[:2000]}"  # 入力長を適切に制限（APIの入力トークン制限を超えないように）
+        "以下の記事の内容を日本語で要約してください。重要ポイントを具体的に説明してください。\n\n"
+        f"{text[:2000]}"
     )
 
     try:
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[{"role": "user", "content": prompt}]
+        resp = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt
         )
-        return response.choices[0].message.content.strip()
+        return resp.text.strip()
 
-    except OpenAIError as api_err:
-        # OpenAI全体の例外を網羅
-        print(f"🛑 OpenAI API エラー: {api_err}")
-        return "（翻訳・要約に失敗しました）"
     except Exception as e:
-        # その他の予期しない例外
-        print(f"予期せぬエラー: {e}")
+        print(f"🛑 Gemini API エラー: {e}")
         return "（翻訳・要約に失敗しました）"
 
-# def translate_and_summarize(text):
-#     if not text.strip():
-#         print("⚠️ 入力本文が空です")
+
+# Chat GPT使う場合
+# def translate_and_summarize(text: str) -> str:
+#     if not text or not text.strip():
+#         print("⚠️ 入力テキストが空です。")
 #         return "（翻訳・要約に失敗しました）"
+
 #     prompt = (
-#         "以下の記事の内容について重要なポイントをまとめ、具体的に解説してください。"
-#         "文字数は400文字までとします。アウトプットの文章は自然な日本語に訳してください。"
-#         f"{text[:1000]}"  # 長すぎると切る（例）
+#         "以下の記事の内容について重要なポイントをまとめ、具体的に解説してください。" 
+#         "文字数は800文字までとします。自然な日本語に訳してください。\n\n"
+#         f"{text[:2000]}"  # 入力長を適切に制限（APIの入力トークン制限を超えないように）
 #     )
 
 #     try:
-#         response = openai.ChatCompletion.create(
-#             model="gpt-3.5-turbo",  # 必要に応じて 4 に変更可能
-#             messages=[
-#                 {"role": "user", "content": prompt}
-#             ],
-#             temperature=0.7,
-#             max_tokens=1024
+#         response = client.chat.completions.create(
+#             model="gpt-3.5-turbo",
+#             messages=[{"role": "user", "content": prompt}]
 #         )
-#         return response["choices"][0]["message"]["content"].strip()
+#         return response.choices[0].message.content.strip()
+
+#     except OpenAIError as api_err:
+#         # OpenAI全体の例外を網羅
+#         print(f"🛑 OpenAI API エラー: {api_err}")
+#         return "（翻訳・要約に失敗しました）"
 #     except Exception as e:
-#         print(f"OpenAI API エラー: {e}")
+#         # その他の予期しない例外
+#         print(f"予期せぬエラー: {e}")
 #         return "（翻訳・要約に失敗しました）"
 
 def process_and_summarize_articles(articles, source_name):
@@ -447,7 +425,7 @@ if __name__ == "__main__":
     # all_summaries += process_and_summarize_articles(get_mizzima_articles_for(yesterday), "Mizzima")
     # all_summaries += process_and_summarize_articles(get_vom_articles_for(yesterday), "Voice of Myanmar")
     # all_summaries += process_and_summarize_articles(get_ludu_articles_for(yesterday), "Ludu Wayoo")
-    all_summaries += process_and_summarize_articles(get_bbc_burmese_articles_for(yesterday_utc), "BBC Burmese")
+    all_summaries += process_and_summarize_articles(articles6, "BBC Burmese")
     # all_summaries += process_and_summarize_articles(get_yktnews_articles_for(yesterday), "YKT News")
 
     send_email_digest(all_summaries)
