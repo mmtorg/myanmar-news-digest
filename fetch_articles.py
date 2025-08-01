@@ -262,10 +262,13 @@ def get_yktnews_articles_for(date_obj):
     return filtered_articles
 
 def translate_and_summarize(text):
+    if not text.strip():
+        print("⚠️ 入力本文が空です")
+        return "（翻訳・要約に失敗しました）"
     prompt = (
         "以下の記事の内容について重要なポイントをまとめ、具体的に解説してください。"
-        "文字数は800文字までとします。アウトプットの文章は自然な日本語に訳してください。"
-        f"{text}"
+        "文字数は400文字までとします。アウトプットの文章は自然な日本語に訳してください。"
+        f"{text[:1000]}"  # 長すぎると切る（例）
     )
 
     try:
