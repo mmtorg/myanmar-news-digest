@@ -173,7 +173,7 @@ def get_ludu_articles_for(date_obj):
     return filtered_articles
 
 # BCCはRSSあるのでそれ使う、GeminiAPIを使う場合
-def translate_and_summarize_gemini(text: str) -> str:
+def get_bbc_burmese_articles_for(text: str) -> str:
     if not text or not text.strip():
         print("⚠️ 入力テキストが空です")
         return "（翻訳・要約に失敗しました）"
