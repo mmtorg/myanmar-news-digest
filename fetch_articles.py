@@ -21,7 +21,6 @@ from google.api_core.exceptions import GoogleAPICallError
 
 # Gemini
 client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-model = genai.GenerativeModel("gemini-2.5‑flash")
 
 # Chat GPT
 # client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
