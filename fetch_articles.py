@@ -274,14 +274,32 @@ def get_yktnews_articles_for(date_obj):
 
     return filtered_articles
 
-# GeminiAPIを使う場合
+# タイトル翻訳のみ、GeminiAPIを使う場合
+def translate_text_only(text: str) -> str:
+    if not text or not text.strip():
+        return "（翻訳に失敗しました）"
+
+    prompt = f"以下の文章を日本語に翻訳してください。\n\n{text.strip()}"
+
+    try:
+        resp = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt
+        )
+        return resp.text.strip()
+    except Exception as e:
+        print(f"🛑 タイトル翻訳エラー: {e}")
+        return "（翻訳に失敗しました）"
+
+# 本文翻訳＆要約、GeminiAPIを使う場合
 def translate_and_summarize(text: str) -> str:
     if not text or not text.strip():
         print("⚠️ 入力テキストが空です")
         return "（翻訳・要約に失敗しました）"
 
     prompt = (
-        "以下の記事の内容を日本語で要約してください。重要ポイントを具体的に説明してください。\n\n"
+        "以下の記事の内容について重要なポイントをまとめ、具体的に解説してください。"
+         "文字数は最大で500文字までとします。自然な日本語に訳してください。\n\n"
         f"{text[:2000]}"
     )
 
@@ -333,12 +351,13 @@ def process_and_summarize_articles(articles, source_name):
             soup = BeautifulSoup(res.content, "html.parser")
             paragraphs = soup.find_all("p")
             text = "\n".join(p.get_text(strip=True) for p in paragraphs)
-            summary = translate_and_summarize(text)
+            translated_title = translate_text_only(art["title"])  # ← 要約なし翻訳
+            summary = translate_and_summarize(text)  # ← 要約＋翻訳
             summary = clean_text(summary)  # ← ここでクリーンにする
             results.append({
                 "source": source_name,
                 "url": art["url"],
-                "title": art["title"],
+                "title": translated_title,
                 "summary": summary
             })
         except Exception as e:
@@ -355,20 +374,29 @@ def send_email_digest(summaries, subject="Daily Myanmar News Digest"):
     # recipient_emails = os.getenv("EMAIL_RECIPIENTS", "").split(",")
 
     # メール本文のHTML生成
-    html_content = "<html><body>"
-    html_content += "<h2>Myanmar News Digest</h2>"
-    html_content += "<h2>ミャンマー関連ニュース（日本語要約）</h2>"
-    for item in summaries:
-        source = clean_text(item["source"])
-        title = clean_text(item["title"])
-        summary = clean_text(item["summary"])
-        url = item["url"]
+    html_content = """
+    <html>
+    <body style="font-family: Arial, sans-serif; background-color: #ffffff; color: #333333;">
+    """
 
-        html_content += f"<h3>{source}: {title}</h3>"
-        html_content += f"<p><a href='{url}'>{url}</a></p>"
-        html_content += f"<p>{summary}</p><hr>"
+    for media, articles in media_grouped.items():
+        html_content += f"<h3 style='color: #2a2a2a; margin-top: 30px;'>{media} からのニュース</h3>"
+
+        for item in articles:
+            title_jp = translate_text_only(item["title"])  # タイトル翻訳
+            summary = clean_text(item["summary"])
+            url = item["url"]
+
+            html_content += (
+                f"<div style='margin-bottom: 20px;'>"
+                f"<h4 style='margin-bottom: 5px;'>{title_jp}</h4>"
+                f"<p><a href='{url}' style='color: #1a0dab;'>記事を読む</a></p>"
+                f"<div style='background-color: #f9f9f9; padding: 10px; border-radius: 8px;'>"
+                f"<p style='white-space: pre-wrap;'>{summary}</p>"
+                f"</div></div>"
+            )
+
     html_content += "</body></html>"
-
     html_content = clean_html_content(html_content)
 
     from_display_name = "Myanmar News Digest"
