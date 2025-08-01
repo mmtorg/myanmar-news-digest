@@ -3,7 +3,8 @@ from bs4 import BeautifulSoup
 from datetime import datetime, timedelta, date, timezone
 from dateutil.parser import parse as parse_date
 import re
-from openai import OpenAI, OpenAIError
+# Chat GPT
+# from openai import OpenAI, OpenAIError
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -15,8 +16,15 @@ from email.message import EmailMessage
 from email.policy import SMTPUTF8
 from email.utils import formataddr
 import unicodedata
+from google import genai
+from google.api_core.exceptions import GoogleAPICallError
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# Gemini
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+model = genai.GenerativeModel("gemini-2.5‑flash")
+
+# Chat GPT
+# client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 def get_yesterday_date_utc():
     return datetime.utcnow().date() - timedelta(days=1)
@@ -165,35 +173,56 @@ def get_ludu_articles_for(date_obj):
 
     return filtered_articles
 
-# BCCはRSSあるのでそれ使う
-def get_bbc_burmese_articles_for(target_date_utc):
-    rss_url = "https://feeds.bbci.co.uk/burmese/rss.xml"
-    res = requests.get(rss_url, timeout=10)
-    soup = BeautifulSoup(res.content, "xml")
+# BCCはRSSあるのでそれ使う、GeminiAPIを使う場合
+def translate_and_summarize_gemini(text: str) -> str:
+    if not text or not text.strip():
+        print("⚠️ 入力テキストが空です。")
+        return "（翻訳・要約に失敗しました）"
 
-    articles = []
-    for item in soup.find_all("item"):
-        pub_date_tag = item.find("pubDate")
-        if not pub_date_tag:
-            continue
+    prompt = (
+        "以下の記事の内容について重要なポイントをまとめ、具体的に解説してください。"
+        "文字数は800文字までとします。自然な日本語に訳してください。\n\n"
+        f"{text[:2000]}"
+    )
 
-        try:
-            pub_date = parse_date(pub_date_tag.text)
-            pub_date_utc = pub_date.astimezone(timezone.utc).date()
-        except Exception as e:
-            print(f"❌ pubDate parse error: {e}")
-            continue
+    try:
+        resp = model.generate_content(prompt)
+        return resp.text.strip()
+    except GoogleAPICallError as api_err:
+        print(f"🛑 Gemini API エラー: {api_err}")
+        return "（翻訳・要約に失敗しました）"
+    except Exception as e:
+        print(f"予期せぬエラー: {e}")
 
-        if pub_date_utc == target_date_utc:
-            title = item.find("title").text
-            link = item.find("link").text
-            articles.append({
-                "title": title,
-                "url": link,
-                "date": pub_date_utc.isoformat()
-            })
+# BCCはRSSあるのでそれ使う、ChatGPTAPIを使う場合
+# def get_bbc_burmese_articles_for(target_date_utc):
+#     rss_url = "https://feeds.bbci.co.uk/burmese/rss.xml"
+#     res = requests.get(rss_url, timeout=10)
+#     soup = BeautifulSoup(res.content, "xml")
 
-    return articles
+#     articles = []
+#     for item in soup.find_all("item"):
+#         pub_date_tag = item.find("pubDate")
+#         if not pub_date_tag:
+#             continue
+
+#         try:
+#             pub_date = parse_date(pub_date_tag.text)
+#             pub_date_utc = pub_date.astimezone(timezone.utc).date()
+#         except Exception as e:
+#             print(f"❌ pubDate parse error: {e}")
+#             continue
+
+#         if pub_date_utc == target_date_utc:
+#             title = item.find("title").text
+#             link = item.find("link").text
+#             articles.append({
+#                 "title": title,
+#                 "url": link,
+#                 "date": pub_date_utc.isoformat()
+#             })
+
+#     return articles
 
 # def get_bbc_burmese_articles_for(date_obj):
 #     base_url = "https://www.bbc.com"
