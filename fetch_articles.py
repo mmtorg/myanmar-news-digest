@@ -1,6 +1,7 @@
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
+from dateutil.parser import parse as parse_date
 import re
 import openai
 import smtplib
@@ -14,6 +15,7 @@ from email.message import EmailMessage
 from email.policy import SMTPUTF8
 from email.utils import formataddr
 import unicodedata
+
 
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
@@ -165,45 +167,65 @@ def get_ludu_articles_for(date_obj):
 
     return filtered_articles
 
-def get_bbc_burmese_articles_for(date_obj):
-    base_url = "https://www.bbc.com"
-    list_url = base_url + "/burmese"
-    res = requests.get(list_url, timeout=10)
-    soup = BeautifulSoup(res.content, "html.parser")
-    links = soup.select("a[href^='/burmese/']")
-    article_urls = [
-        base_url + a["href"]
-        for a in links
-        if any(part in a["href"] for part in ["articles", "media"])
-    ]
+# BCCはRSSあるのでそれ使う
+def get_bbc_burmese_articles_for(target_date):
+    rss_url = "https://feeds.bbci.co.uk/burmese/rss.xml"
+    res = requests.get(rss_url, timeout=10)
+    soup = BeautifulSoup(res.content, "xml")
 
-    seen = set()
-    filtered_articles = []
-    for url in article_urls:
-        if url in seen:
-            continue
-        seen.add(url)
-        try:
-            res_article = requests.get(url, timeout=10)
-            soup_article = BeautifulSoup(res_article.content, "html.parser")
-            time_tag = soup_article.find("time")
-            if not time_tag:
-                continue
-            date_str = time_tag.get("datetime", "")
-            if not date_str:
-                continue
-            article_date = datetime.fromisoformat(date_str).date()
-            if article_date == date_obj:
-                title = soup_article.find("h1").get_text(strip=True)
-                filtered_articles.append({
-                    "url": url,
-                    "title": title,
-                    "date": article_date.isoformat()
-                })
-        except Exception:
-            continue
+    articles = []
+    for item in soup.find_all("item"):
+        pub_date = item.find("pubDate").text
+        pub_date = parse_date(pub_date).date()
+        if pub_date == target_date:
+            title = item.find("title").text
+            link = item.find("link").text
+            articles.append({
+                "title": title,
+                "url": link,
+                "date": pub_date.isoformat()
+            })
+    return articles
 
-    return filtered_articles
+# def get_bbc_burmese_articles_for(date_obj):
+#     base_url = "https://www.bbc.com"
+#     list_url = base_url + "/burmese"
+#     res = requests.get(list_url, timeout=10)
+#     soup = BeautifulSoup(res.content, "html.parser")
+#     links = soup.select("a[href^='/burmese/']")
+#     article_urls = [
+#         base_url + a["href"]
+#         for a in links
+#         if any(part in a["href"] for part in ["articles", "media"])
+#     ]
+
+#     seen = set()
+#     filtered_articles = []
+#     for url in article_urls:
+#         if url in seen:
+#             continue
+#         seen.add(url)
+#         try:
+#             res_article = requests.get(url, timeout=10)
+#             soup_article = BeautifulSoup(res_article.content, "html.parser")
+#             time_tag = soup_article.find("time")
+#             if not time_tag:
+#                 continue
+#             date_str = time_tag.get("datetime", "")
+#             if not date_str:
+#                 continue
+#             article_date = datetime.fromisoformat(date_str).date()
+#             if article_date == date_obj:
+#                 title = soup_article.find("h1").get_text(strip=True)
+#                 filtered_articles.append({
+#                     "url": url,
+#                     "title": title,
+#                     "date": article_date.isoformat()
+#                 })
+#         except Exception:
+#             continue
+
+#     return filtered_articles
 
 def get_yktnews_articles_for(date_obj):
     base_url = "https://yktnews.com"
