@@ -26,5 +26,9 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Install dependencies
+        run: |
+          pip install requests beautifulsoup4 python-dateutil lxml
+
       - name: Run script
         run: python fetch_articles.py
