@@ -383,10 +383,10 @@ def send_email_digest(summaries, subject="Daily Myanmar News Digest"):
         sys.exit(1)
 
 if __name__ == "__main__":
-    yesterday = get_yesterday_date_utc()
-    articles = get_frontier_articles_for(yesterday)
-    for art in articles:
-        print(f"{art['date']} - {art['title']}\n{art['url']}\n")
+    yesterday_utc = get_yesterday_date_utc()
+    # articles = get_frontier_articles_for(yesterday)
+    # for art in articles:
+    #     print(f"{art['date']} - {art['title']}\n{art['url']}\n")
 
     # print("=== Mizzima ===")
     # articles3 = get_mizzima_articles_for(yesterday)
@@ -404,7 +404,6 @@ if __name__ == "__main__":
     #     print(f"{art['date']} - {art['title']}\n{art['url']}\n")
 
     print("=== BBC Burmese ===")
-    yesterday_utc = datetime.utcnow().date() - timedelta(days=1)
     articles6 = get_bbc_burmese_articles_for(yesterday_utc)
     for art in articles6:
         print(f"{art['date']} - {art['title']}\n{art['url']}\n")
