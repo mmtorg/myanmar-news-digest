@@ -195,6 +195,20 @@ def get_bbc_burmese_articles_for(target_date_utc):
         if pub_date_utc == target_date_utc:
             title = item.find("title").text
             link = item.find("link").text
+
+            # ✅ 本文も取得してキーワード判定
+            try:
+                article_res = requests.get(link, timeout=10)
+                article_soup = BeautifulSoup(article_res.content, "html.parser")
+                body_text = article_soup.get_text()
+            except Exception as e:
+                print(f"❌ 本文取得失敗: {e}")
+                body_text = ""
+
+            # ✅ タイトルまたは本文にミャンマー関連ワードを含むか判定
+            if not ("မြန်မာ" in title or "ဗမာ" in title or "မြန်မာ" in body_text or "ဗမာ" in body_text):
+                continue
+
             articles.append({
                 "title": title,
                 "url": link,
@@ -367,6 +381,26 @@ def process_and_summarize_articles(articles, source_name):
             continue
     return results
 
+def markdown_to_html(text):
+    # 「-」や「*」で始まる箇条書きを <ul><li>…</li></ul> に変換
+    lines = text.splitlines()
+    html_lines = []
+    in_list = False
+    for line in lines:
+        if re.match(r"^\s*[-*・]", line):
+            if not in_list:
+                html_lines.append("<ul>")
+                in_list = True
+            html_lines.append(f"<li>{line.lstrip('-*・ ').strip()}</li>")
+        else:
+            if in_list:
+                html_lines.append("</ul>")
+                in_list = False
+            html_lines.append(f"<p>{line.strip()}</p>")
+    if in_list:
+        html_lines.append("</ul>")
+    return "\n".join(html_lines)
+
 def send_email_digest(summaries, subject="Daily Myanmar News Digest"):
     sender_email = "yasu.23721740311@gmail.com"
     sender_pass = "sfqy saao bhhj dlwu"
@@ -400,12 +434,13 @@ def send_email_digest(summaries, subject="Daily Myanmar News Digest"):
             summary = clean_text(item["summary"])
             url = item["url"]
 
+            summary_html = markdown_to_html(summary)
             html_content += (
                 f"<div style='margin-bottom: 20px;'>"
                 f"<h4 style='margin-bottom: 5px;'>{title_jp}</h4>"
                 f"<p><a href='{url}' style='color: #1a0dab;'>記事を読む</a></p>"
                 f"<div style='background-color: #f9f9f9; padding: 10px; border-radius: 8px;'>"
-                f"<p style='white-space: pre-wrap;'>{summary}</p>"
+                f"<p style='white-space: pre-wrap;'>{summary_html}</p>"
                 f"</div></div><hr style='border-top: 1px solid #cccccc;'>"
             )
 
