@@ -299,8 +299,10 @@ def translate_and_summarize(text: str) -> str:
         return "（翻訳・要約に失敗しました）"
 
     prompt = (
-        "以下の記事の内容について重要なポイントをまとめ、具体的に解説してください。"
-         "文字数は最大800文字までとします。自然な日本語に訳してください。\n\n"
+        "記事の内容について重要なポイントをまとめ、具体的に解説してください。\n\n"
+        "箇条書きやマークダウン形式を使って見やすく整理してください。\n\n"
+        "文字数は最大700文字までとします。自然な日本語に訳してください。\n\n"
+        "全体に対する解説は不要です、各記事に対する個別の解説のみとしてください。"
         f"{text[:2000]}"
     )
 
@@ -384,7 +386,7 @@ def send_email_digest(summaries, subject="Daily Myanmar News Digest"):
         media_grouped[item["source"]].append(item)
 
     # メール本文のHTML生成
-    html_content = """
+    html_content = f"""
     <html>
     <body style="font-family: Arial, sans-serif; background-color: #ffffff; color: #333333;">
         <h3>ミャンマー関連ニュース【{date_str}】</h3>
@@ -394,7 +396,7 @@ def send_email_digest(summaries, subject="Daily Myanmar News Digest"):
         html_content += f"<h3 style='color: #2a2a2a; margin-top: 30px;'>{media} からのニュース</h3>"
 
         for item in articles:
-            title_jp = translate_text_only(item["title"])  # タイトル翻訳
+            title_jp = "タイトル: " + translate_text_only(item["title"]) # タイトル翻訳
             summary = clean_text(item["summary"])
             url = item["url"]
 
@@ -404,7 +406,7 @@ def send_email_digest(summaries, subject="Daily Myanmar News Digest"):
                 f"<p><a href='{url}' style='color: #1a0dab;'>記事を読む</a></p>"
                 f"<div style='background-color: #f9f9f9; padding: 10px; border-radius: 8px;'>"
                 f"<p style='white-space: pre-wrap;'>{summary}</p>"
-                f"</div></div>"
+                f"</div></div><hr style='border-top: 1px solid #cccccc;'>"
             )
 
     html_content += "</body></html>"
