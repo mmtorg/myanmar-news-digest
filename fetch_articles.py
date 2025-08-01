@@ -383,13 +383,13 @@ def process_and_summarize_articles(articles, source_name):
             text = "\n".join(p.get_text(strip=True) for p in paragraphs)
             translated_title = translate_text_only(art["title"])  # ← 要約なし翻訳
             summary = translate_and_summarize(text)  # ← 要約＋翻訳
-            summary = clean_text(item["summary"])  # ← ここは元の要約がすでに HTMLとして適切か不明なので
+            summary = clean_text(summary)  # ← ここは元の要約がすでに HTMLとして適切か不明なので
             summary_html = markdown_to_html(summary)
             results.append({
                 "source": source_name,
                 "url": art["url"],
                 "title": translated_title,
-                "summary": summary
+                "summary": summary_html 
             })
         except Exception as e:
             continue
