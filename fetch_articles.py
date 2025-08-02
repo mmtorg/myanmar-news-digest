@@ -421,6 +421,8 @@ def process_and_summarize_articles(articles, source_name, seen_urls=None):
             continue  # 重複URLはスキップ
         seen_urls.add(art['url'])
 
+        print(art['url'])
+
         try:
             res = requests.get(art['url'], timeout=10)
             soup = BeautifulSoup(res.content, "html.parser")
@@ -429,6 +431,9 @@ def process_and_summarize_articles(articles, source_name, seen_urls=None):
 
             translated_title = translate_text_only(art["title"])  # タイトル翻訳
             summary = translate_and_summarize(text)  # 本文要約・翻訳
+
+            print(summary)
+            sys.exit(1)
             
             # 改行を <br> に置換
             summary_html = summary.replace("\n", "<br>")
