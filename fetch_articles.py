@@ -292,26 +292,67 @@ def get_yktnews_articles_for(date_obj):
     links = soup.select("h3.entry-title a")
     article_urls = [a["href"] for a in links if a.get("href", "").startswith("http")]
 
+    # YYYY/MM フィルタ (例: /2025/08/)
+    target_month_str = date_obj.strftime("/%Y/%m/")  # 例: "/2025/08/"
+
+    keywords = ["မြန်မာ", "ဗမာ", "အောင်ဆန်းစုကြည်", "မင်းအောင်လှိုင်", "Myanmar", "Burma"]
+
     filtered_articles = []
+    seen_urls = set()
+
     for url in article_urls:
+        if target_month_str not in url:
+            continue  # URLにその月の文字列がなければスキップ
+
+        if url in seen_urls:
+            continue  # 重複URLは無視
+        seen_urls.add(url)
+
         try:
             res_article = requests.get(url, timeout=10)
             soup_article = BeautifulSoup(res_article.content, "html.parser")
-            time_tag = soup_article.find("time")
+
+            # 記事の日付を取得
+            time_tag = soup_article.find("time", class_="entry-date updated td-module-date")
             if not time_tag:
                 continue
             date_str = time_tag.get("datetime", "")
             if not date_str:
                 continue
             article_date = datetime.fromisoformat(date_str).date()
-            if article_date == date_obj:
-                title = soup_article.find("h1").get_text(strip=True)
-                filtered_articles.append({
-                    "url": url,
-                    "title": title,
-                    "date": article_date.isoformat()
-                })
-        except Exception:
+
+            if article_date != date_obj:
+                continue  # 昨日の日付でなければスキップ
+
+            # タイトル取得
+            title_tag = soup_article.find("h1")
+            if not title_tag:
+                continue
+            title = title_tag.get_text(strip=True)
+
+            # 本文取得（entry-contentのみ）
+            entry_content_div = soup_article.find("div", class_="entry-content")
+            if not entry_content_div:
+                continue
+
+            # 不要部分除去
+            for unwanted in entry_content_div.select(".site-footer-top, .related-posts, .ads-section"):
+                unwanted.decompose()
+
+            body_text = entry_content_div.get_text(separator="\n", strip=True)
+
+            # キーワードフィルタ
+            if not any(keyword in title or keyword in body_text for keyword in keywords):
+                continue
+
+            filtered_articles.append({
+                "url": url,
+                "title": title,
+                "date": date_obj.isoformat()
+            })
+
+        except Exception as e:
+            print(f"Error processing {url}: {e}")
             continue
 
     return filtered_articles
@@ -433,61 +474,6 @@ def process_and_summarize_articles(articles, source_name, seen_urls=None):
             continue
     return results
 
-def markdown_to_html(markdown_text):
-    html_lines = []
-    lines = markdown_text.splitlines()
-    i = 0
-    while i < len(lines):
-        line = lines[i].strip()
-
-        # 太字変換 (**text** → <strong>text</strong>)
-        line = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', line)
-
-        # セクション見出し（###）
-        if line.startswith("### "):
-            content = line[4:].strip()
-            html_lines.append(f"<h3 style='margin:0; padding:0;'>{content}</h3>")
-            i += 1
-            continue
-
-        # 箇条書きリスト ( - または * )
-        if line.startswith("- ") or line.startswith("* "):
-            content = line[2:].strip()
-            html_lines.append(f"<li style='margin:0; padding:0;'>{content}</li>")
-            i += 1
-            continue
-
-        # 番号付きリスト
-        if re.match(r"^\d+\.\s+", line):
-            content = re.sub(r"^\d+\.\s+", "", line)
-            html_lines.append(f"<li style='margin:0; padding:0;'>{content}</li>")
-            i += 1
-            continue
-
-        # 段落
-        if line:
-            html_lines.append(f"<p style='margin:0; padding:0;'>{line}</p>")
-        i += 1
-
-    # <li>タグを<ul>で囲む（ulにも左寄せ指定）
-    html_output = []
-    in_list = False
-    for line in html_lines:
-        if line.startswith("<li"):
-            if not in_list:
-                html_output.append("<ul style='margin:0; padding-left:0;'>")
-                in_list = True
-            html_output.append(line)
-        else:
-            if in_list:
-                html_output.append("</ul>")
-                in_list = False
-            html_output.append(line)
-    if in_list:
-        html_output.append("</ul>")
-
-    return "\n".join(html_output)
-
 def send_email_digest(summaries):
     sender_email = "yasu.23721740311@gmail.com"
     sender_pass = "sfqy saao bhhj dlwu"
@@ -579,10 +565,10 @@ if __name__ == "__main__":
     for art in articles6:
         print(f"{art['date']} - {art['title']}\n{art['url']}\n")
 
-    # print("=== YKT News ===")
-    # articles7 = get_yktnews_articles_for(yesterday)
-    # for art in articles7:
-    #     print(f"{art['date']} - {art['title']}\n{art['url']}\n")
+    print("=== YKT News ===")
+    articles7 = get_yktnews_articles_for(yesterday_mmt)
+    for art in articles7:
+        print(f"{art['date']} - {art['title']}\n{art['url']}\n")
 
     all_summaries = []
     # all_summaries += process_and_summarize_articles(get_frontier_articles_for(yesterday), "Frontier Myanmar")
@@ -590,6 +576,6 @@ if __name__ == "__main__":
     # all_summaries += process_and_summarize_articles(get_vom_articles_for(yesterday), "Voice of Myanmar")
     # all_summaries += process_and_summarize_articles(get_ludu_articles_for(yesterday), "Ludu Wayoo")
     all_summaries += process_and_summarize_articles(articles6, "BBC Burmese")
-    # all_summaries += process_and_summarize_articles(get_yktnews_articles_for(yesterday), "YKT News")
+    all_summaries += process_and_summarize_articles(articles7, "YKT News")
 
     send_email_digest(all_summaries)
