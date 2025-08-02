@@ -446,6 +446,8 @@ def process_and_summarize_articles(articles, source_name, seen_urls=None):
                 "summary": summary_html,
             })
         except Exception as e:
+            print(f"❌ Error processing article: {art['url']}")
+            print(f"Exception: {e}")
             continue
     return results
 
