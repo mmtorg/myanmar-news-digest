@@ -82,19 +82,22 @@ def get_frontier_articles_for(date_obj):
 
 def get_mizzima_articles_for(date_obj):
     base_url = "https://eng.mizzima.com"
-    list_url = base_url + "/news/domestic"
+    list_url = base_url  # トップページ
     res = requests.get(list_url, timeout=10)
     soup = BeautifulSoup(res.content, "html.parser")
-    links = soup.select("div.views-row a")
-    article_urls = [base_url + a["href"] for a in links if a.get("href", "").startswith("/")]
+    links = soup.find_all("a", href=True)
 
-    target_date_str = date_obj.strftime("%Y/%m/%d")  # 例: "2025/08/01"
+    # URLに /YYYY/MM/DD/ が含まれるもののみ
+    date_pattern = re.compile(r"/\d{4}/\d{2}/\d{2}/")
+    article_urls = [a["href"] for a in links if date_pattern.search(a["href"])]
+
+    target_date_str = date_obj.strftime("%Y/%m/%d")  # 例: "2025/08/02"
     keywords = ["မြန်မာ", "ဗမာ", "အောင်ဆန်းစုကြည်", "မင်းအောင်လှိုင်", "Myanmar", "Burma"]
 
     filtered_articles = []
     for url in article_urls:
         if target_date_str not in url:
-            continue  # URLに昨日の日付がなければスキップ
+            continue  # URLに昨日の日付が無ければスキップ
 
         try:
             res_article = requests.get(url, timeout=10)
@@ -106,13 +109,13 @@ def get_mizzima_articles_for(date_obj):
                 continue
             title = title_tag.get_text(strip=True)
 
-            # 本文パース
+            # 本文取得
             paragraphs = soup_article.select("div.entry-content p")
             body_text = "\n".join(p.get_text(strip=True) for p in paragraphs)
 
             # タイトルor本文にキーワードがあれば対象とする
             if not any(keyword in title or keyword in body_text for keyword in keywords):
-                continue  # キーワードが無ければスキップ
+                continue
 
             filtered_articles.append({
                 "url": url,
@@ -120,7 +123,8 @@ def get_mizzima_articles_for(date_obj):
                 "date": date_obj.isoformat()
             })
 
-        except Exception:
+        except Exception as e:
+            print(f"Error processing {url}: {e}")
             continue
 
     return filtered_articles
@@ -191,12 +195,12 @@ def get_ludu_articles_for(date_obj):
 
     return filtered_articles
 
-# BCCはRSSあるのでそれ使う
 def get_yesterday_date_mmt():
     now_mmt = datetime.now(MMT)
     yesterday_mmt = now_mmt - timedelta(days=1)
     return yesterday_mmt.date()
 
+# BCCはRSSあるのでそれ使う
 def get_bbc_burmese_articles_for(target_date_mmt):
     rss_url = "https://feeds.bbci.co.uk/burmese/rss.xml"
     res = requests.get(rss_url, timeout=10)
