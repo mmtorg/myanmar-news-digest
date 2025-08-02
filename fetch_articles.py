@@ -295,6 +295,9 @@ def get_yktnews_articles_for(date_obj):
     date_pattern = re.compile(r"/\d{4}/\d{2}/")
     article_urls = [a["href"] for a in links if date_pattern.search(a["href"])]
 
+    print(article_urls)
+    sys.exit(1)
+
     target_date_str = date_obj.strftime("%Y-%m-%d")  # 例: "2025-08-02"
     target_month_str = date_obj.strftime("%Y/%m")  # 例: "2025/08"
     keywords = ["မြန်မာ", "ဗမာ", "အောင်ဆန်းစုကြည်", "မင်းအောင်လှိုင်", "Myanmar", "Burma"]
