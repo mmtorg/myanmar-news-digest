@@ -311,17 +311,18 @@ def get_yktnews_articles_for(date_obj):
             
             soup_article = BeautifulSoup(res_article.content, "html.parser")
 
-            print(soup_article)
-            sys.exit(1)
-
             # 日付チェック
             time_tag = soup_article.select_one("div.tdb-block-inner time.entry-date")
             if not time_tag or not time_tag.has_attr("datetime"):
+                print(f"❌ 日付タグが見つからない or datetime属性が無い: {url}")
                 continue
 
             date_str = time_tag["datetime"][:10]  # "2025-08-02"
             if date_str != target_date_str:
+                print(f"⏩ 日付不一致: {date_str} != {target_date_str} → {url}")
                 continue  # 昨日の日付でなければスキップ
+
+            print(f"✅ 日付一致: {date_str} == {target_date_str} → {url}")
 
             # タイトル取得
             title_tag = soup_article.find("h1")
