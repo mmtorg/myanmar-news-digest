@@ -296,7 +296,6 @@ def get_yktnews_articles_for(date_obj):
     article_urls = [a["href"] for a in links if date_pattern.search(a["href"])]
 
     print(article_urls)
-    sys.exit(1)
 
     target_date_str = date_obj.strftime("%Y-%m-%d")  # 例: "2025-08-02"
     target_month_str = date_obj.strftime("%Y/%m")  # 例: "2025/08"
@@ -309,6 +308,10 @@ def get_yktnews_articles_for(date_obj):
 
         try:
             res_article = requests.get(url, timeout=10)
+
+            print(res_article)
+            sys.exit(1)
+            
             soup_article = BeautifulSoup(res_article.content, "html.parser")
 
             # 日付チェック
