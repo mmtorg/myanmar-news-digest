@@ -81,32 +81,45 @@ def get_frontier_articles_for(date_obj):
     return filtered_articles
 
 def get_mizzima_articles_for(date_obj):
-    base_url = "https://www.mizzima.com"
+    base_url = "https://eng.mizzima.com"
     list_url = base_url + "/news/domestic"
     res = requests.get(list_url, timeout=10)
     soup = BeautifulSoup(res.content, "html.parser")
     links = soup.select("div.views-row a")
     article_urls = [base_url + a["href"] for a in links if a.get("href", "").startswith("/")]
 
+    target_date_str = date_obj.strftime("%Y/%m/%d")  # 例: "2025/08/01"
+    keywords = ["မြန်မာ", "ဗမာ", "အောင်ဆန်းစုကြည်", "မင်းအောင်လှိုင်", "Myanmar", "Burma"]
+
     filtered_articles = []
     for url in article_urls:
+        if target_date_str not in url:
+            continue  # URLに昨日の日付がなければスキップ
+
         try:
             res_article = requests.get(url, timeout=10)
             soup_article = BeautifulSoup(res_article.content, "html.parser")
-            meta_tag = soup_article.find("meta", {"property": "article:published_time"})
-            if not meta_tag:
+
+            # タイトル取得
+            title_tag = soup_article.find("h1")
+            if not title_tag:
                 continue
-            date_str = meta_tag.get("content", "")
-            if not date_str:
-                continue
-            article_date = datetime.fromisoformat(date_str).date()
-            if article_date == date_obj:
-                title = soup_article.find("h1").get_text(strip=True)
-                filtered_articles.append({
-                    "url": url,
-                    "title": title,
-                    "date": article_date.isoformat()
-                })
+            title = title_tag.get_text(strip=True)
+
+            # 本文パース
+            paragraphs = soup_article.select("div.entry-content p")
+            body_text = "\n".join(p.get_text(strip=True) for p in paragraphs)
+
+            # タイトルor本文にキーワードがあれば対象とする
+            if not any(keyword in title or keyword in body_text for keyword in keywords):
+                continue  # キーワードが無ければスキップ
+
+            filtered_articles.append({
+                "url": url,
+                "title": title,
+                "date": date_obj.isoformat()
+            })
+
         except Exception:
             continue
 
@@ -502,10 +515,10 @@ if __name__ == "__main__":
     # for art in articles:
     #     print(f"{art['date']} - {art['title']}\n{art['url']}\n")
 
-    # print("=== Mizzima ===")
-    # articles3 = get_mizzima_articles_for(yesterday)
-    # for art in articles3:
-    #     print(f"{art['date']} - {art['title']}\n{art['url']}\n")
+    print("=== Mizzima ===")
+    articles3 = get_mizzima_articles_for(yesterday_mmt)
+    for art in articles3:
+        print(f"{art['date']} - {art['title']}\n{art['url']}\n")
 
     # print("=== Voice of Myanmar ===")
     # articles4 = get_vom_articles_for(yesterday)
@@ -529,7 +542,7 @@ if __name__ == "__main__":
 
     all_summaries = []
     # all_summaries += process_and_summarize_articles(get_frontier_articles_for(yesterday), "Frontier Myanmar")
-    # all_summaries += process_and_summarize_articles(get_mizzima_articles_for(yesterday), "Mizzima")
+    all_summaries += process_and_summarize_articles(articles3, "Mizzima")
     # all_summaries += process_and_summarize_articles(get_vom_articles_for(yesterday), "Voice of Myanmar")
     # all_summaries += process_and_summarize_articles(get_ludu_articles_for(yesterday), "Ludu Wayoo")
     all_summaries += process_and_summarize_articles(articles6, "BBC Burmese")
