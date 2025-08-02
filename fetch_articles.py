@@ -435,7 +435,7 @@ def send_email_digest(summaries):
     # recipient_emails = os.getenv("EMAIL_RECIPIENTS", "").split(",")
 
     # ✅ 昨日の日付を取得してフォーマット
-    digest_date = get_yesterday_date_utc()
+    digest_date = get_yesterday_date_mmt()
     date_str = digest_date.strftime("%Y年%-m月%-d日") + "分"
 
     # メディアごとにまとめる
