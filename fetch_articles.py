@@ -26,8 +26,13 @@ client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 # Chat GPT
 # client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-def get_yesterday_date_utc():
-    return datetime.utcnow().date() - timedelta(days=1)
+# ミャンマー標準時 (UTC+6:30)
+MMT = timezone(timedelta(hours=6, minutes=30))
+
+def get_yesterday_date_mmt():
+    now_mmt = datetime.now(MMT)
+    yesterday_mmt = now_mmt - timedelta(days=1)
+    return yesterday_mmt.date()
 
 def clean_html_content(html: str) -> str:
     html = html.replace("\xa0", " ").replace("&nbsp;", " ")
@@ -174,12 +179,16 @@ def get_ludu_articles_for(date_obj):
     return filtered_articles
 
 # BCCはRSSあるのでそれ使う
-def get_bbc_burmese_articles_for(target_date_utc):
+def get_yesterday_date_mmt():
+    now_mmt = datetime.now(MMT)
+    yesterday_mmt = now_mmt - timedelta(days=1)
+    return yesterday_mmt.date()
+
+def get_bbc_burmese_articles_for(target_date_mmt):
     rss_url = "https://feeds.bbci.co.uk/burmese/rss.xml"
     res = requests.get(rss_url, timeout=10)
     soup = BeautifulSoup(res.content, "xml")
 
-     # ✅ タイトルまたは本文にミャンマー関連ワードを含むか判定
     keywords = ["မြန်မာ", "ဗမာ", "အောင်ဆန်းစုကြည်", "မင်းအောင်လှိုင်", "Myanmar", "Burma"]
 
     articles = []
@@ -189,37 +198,39 @@ def get_bbc_burmese_articles_for(target_date_utc):
             continue
 
         try:
-            pub_date = parse_date(pub_date_tag.text)
-            pub_date_utc = pub_date.astimezone(timezone.utc).date()
+            pub_date = parse_date(pub_date_tag.text)  # RSSはUTC基準
+            pub_date_mmt = pub_date.astimezone(MMT).date()  # ← MMTに変換して日付抽出
         except Exception as e:
             print(f"❌ pubDate parse error: {e}")
             continue
 
-        if pub_date_utc == target_date_utc:
-            title = item.find("title").text.strip()
-            link = item.find("link").text.strip()
+        if pub_date_mmt != target_date_mmt:
+            continue  # 昨日(MMT基準)の日付と一致しない記事はスキップ
 
-            try:
-                article_res = requests.get(link, timeout=10)
-                article_soup = BeautifulSoup(article_res.content, "html.parser")
-                paragraphs = article_soup.find_all("p")
-                body_text = "\n".join(p.get_text(strip=True) for p in paragraphs)
+        title = item.find("title").text.strip()
+        link = item.find("link").text.strip()
 
-                if not any(keyword in title or keyword in body_text for keyword in keywords):
-                    continue  # キーワードが含まれていなければスキップ
+        try:
+            article_res = requests.get(link, timeout=10)
+            article_soup = BeautifulSoup(article_res.content, "html.parser")
+            paragraphs = article_soup.find_all("p")
+            body_text = "\n".join(p.get_text(strip=True) for p in paragraphs)
 
-                articles.append({
-                    "title": title,
-                    "url": link,
-                    "date": pub_date_utc.isoformat()
-                })
+            if not any(keyword in title or keyword in body_text for keyword in keywords):
+                continue  # キーワードが含まれていなければ除外
 
-            except Exception as e:
-                print(f"❌ 記事取得エラー: {e}")
-                continue
+            print(f"✅ 抽出記事: {title} ({link})")  # ログ出力で抽出記事確認
+            articles.append({
+                "title": title,
+                "url": link,
+                "date": pub_date_mmt.isoformat()
+            })
+
+        except Exception as e:
+            print(f"❌ 記事取得エラー: {e}")
+            continue
 
     return articles
-
 
 # def get_bbc_burmese_articles_for(date_obj):
 #     base_url = "https://www.bbc.com"
@@ -383,7 +394,6 @@ def process_and_summarize_articles(articles, source_name):
             text = "\n".join(p.get_text(strip=True) for p in paragraphs)
             translated_title = translate_text_only(art["title"])  # ← 要約なし翻訳
             summary = translate_and_summarize(text)  # ← 要約＋翻訳
-            summary = clean_text(summary)  # ← ここは元の要約がすでに HTMLとして適切か不明なので
             summary_html = markdown_to_html(summary)
             results.append({
                 "source": source_name,
@@ -455,9 +465,9 @@ def send_email_digest(summaries):
             html_content += (
                 f"<div style='margin-bottom: 20px;'>"
                 f"<h4 style='margin-bottom: 5px;'>{title_jp}</h4>"
-                f"<p><a href='{url}' style='color: #1a0dab;'>記事を読む</a></p>"
+                f"<p><a href='{url}' style='color: #1a0dab;'>本文を読む</a></p>"
                 f"<div style='background-color: #f9f9f9; padding: 10px; border-radius: 8px;'>"
-                f"{summary_html}"  # ← <p>タグや<ul>がすでに含まれている
+                f"{item['summary']}"  # ← <p>タグや<ul>がすでに含まれている
                 f"</div></div><hr style='border-top: 1px solid #cccccc;'>"
             )
 
@@ -483,7 +493,7 @@ def send_email_digest(summaries):
         sys.exit(1)
 
 if __name__ == "__main__":
-    yesterday_utc = get_yesterday_date_utc()
+    yesterday_mmt = get_yesterday_date_mmt()
     # articles = get_frontier_articles_for(yesterday)
     # for art in articles:
     #     print(f"{art['date']} - {art['title']}\n{art['url']}\n")
@@ -504,7 +514,7 @@ if __name__ == "__main__":
     #     print(f"{art['date']} - {art['title']}\n{art['url']}\n")
 
     print("=== BBC Burmese ===")
-    articles6 = get_bbc_burmese_articles_for(yesterday_utc)
+    articles6 = get_bbc_burmese_articles_for(yesterday_mmt)
     for art in articles6:
         print(f"{art['date']} - {art['title']}\n{art['url']}\n")
 
