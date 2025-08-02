@@ -409,41 +409,29 @@ def process_and_summarize_articles(articles, source_name):
             continue
     return results
 
-def markdown_to_html(text):
-    lines = text.splitlines()
+def markdown_to_html(markdown_text):
     html_lines = []
-    current_heading = ""
-    current_content = []
-    
-    def flush_block():
-        if not current_heading and not current_content:
-            return
-        # 擬似リストブロックを作成
-        html_lines.append("<div style='margin-bottom: 10px;'>")
-        if current_heading:
-            html_lines.append(f"<div style='font-weight: bold; margin-bottom: 5px;'>● {current_heading}</div>")
-        if current_content:
-            body_html = "<br>".join(current_content)
-            html_lines.append(f"<div style='padding-left: 1.5em;'>{body_html}</div>")
-        html_lines.append("</div>")
-    
+    lines = markdown_text.splitlines()
     for line in lines:
         stripped = line.strip()
-        if re.match(r"^\s*[-*・]", stripped):
-            # リストヘッダー検出時に前ブロックをflush
-            flush_block()
-            current_heading = re.sub(r"^[-*・]\s*", "", stripped)
-            current_content = []
+
+        if stripped.startswith("### "):
+            content = stripped[4:].strip()
+            html_lines.append(f"<h3>{content}</h3>")
+
+        elif re.match(r"^\*\s+\*\*(.+?)\*\*:\s*(.+)$", stripped):
+            # パターン: * **タイトル**: 説明文
+            m = re.match(r"^\*\s+\*\*(.+?)\*\*:\s*(.+)$", stripped)
+            if m:
+                title, desc = m.group(1), m.group(2)
+                html_lines.append(
+                    f"<div style='margin-bottom:10px;'>"
+                    f"<div style='font-weight:bold;'>● {title}</div>"
+                    f"<div style='padding-left:1.5em;'>{desc}</div>"
+                    f"</div>"
+                )
         elif stripped:
-            current_content.append(stripped)
-        else:
-            # 空行ならflush
-            flush_block()
-            current_heading = ""
-            current_content = []
-    
-    # 最後のブロックをflush
-    flush_block()
+            html_lines.append(f"<p>{stripped}</p>")  # 通常段落
     return "\n".join(html_lines)
 
 def send_email_digest(summaries):
