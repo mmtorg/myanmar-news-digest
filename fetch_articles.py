@@ -346,10 +346,10 @@ def translate_and_summarize(text: str) -> str:
         return "（翻訳・要約に失敗しました）"
 
     prompt = (
-        "以下はbbc burmeseの記事です。記事の本文について重要なポイントをまとめ、具体的に解説してください。\n\n"
-        "改行や箇条書きを適切に使って見やすく整理してください。番号付きリスト形式を使ってください。\n\n"
-        "文字数は最大500文字までとします。自然な日本語に訳してください。\n\n"
-        "全体に対する解説は不要です、各記事に対する個別の解説のみとしてください。\n\n"
+        "以下の記事の本文について重要なポイントをまとめ、具体的に解説してください。\n\n"
+        "改行や箇条書きを適切に使って見やすく整理してください。マークダウン形式を使ってください。\n\n"
+        "レスポンスの文字数は最大500文字です。自然な日本語に訳してください。\n\n"
+        "全体に対する解説は不要です、個別記事の本文の解説のみとしてください。\n\n"
         "レスポンスでは解説のみを返してください、それ以外の文言は不要です。\n\n"
         "###\n\n"
         f"{text[:2000]}\n\n"
@@ -434,39 +434,42 @@ def markdown_to_html(markdown_text):
     while i < len(lines):
         line = lines[i].strip()
 
+        # 太字変換 (**text** → <strong>text</strong>)
+        line = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', line)
+
         # セクション見出し（###）
         if line.startswith("### "):
             content = line[4:].strip()
-            html_lines.append(f"<h3>{content}</h3>")
+            html_lines.append(f"<h3 style='margin:0; padding:0;'>{content}</h3>")
             i += 1
             continue
 
-        # 箇条書きリスト項目 (例: - 項目)
+        # 箇条書きリスト
         if line.startswith("- "):
             content = line[2:].strip()
-            html_lines.append(f"<li>{content}</li>")
+            html_lines.append(f"<li style='margin:0; padding:0;'>{content}</li>")
             i += 1
             continue
 
-        # 番号付きリスト項目 (例: 1. 項目)
+        # 番号付きリスト
         if re.match(r"^\d+\.\s+", line):
             content = re.sub(r"^\d+\.\s+", "", line)
-            html_lines.append(f"<li>{content}</li>")
+            html_lines.append(f"<li style='margin:0; padding:0;'>{content}</li>")
             i += 1
             continue
 
-        # リストでなければ段落扱い
+        # 段落
         if line:
-            html_lines.append(f"<p>{line}</p>")
+            html_lines.append(f"<p style='margin:0; padding:0;'>{line}</p>")
         i += 1
 
-    # リスト項目を <ul> で囲む
+    # <li>を<ul>で囲む（ulにも左寄せ指定）
     html_output = []
     in_list = False
     for line in html_lines:
-        if line.startswith("<li>"):
+        if line.startswith("<li"):
             if not in_list:
-                html_output.append("<ul>")
+                html_output.append("<ul style='margin:0; padding-left:0;'>")
                 in_list = True
             html_output.append(line)
         else:
@@ -478,7 +481,6 @@ def markdown_to_html(markdown_text):
         html_output.append("</ul>")
 
     return "\n".join(html_output)
-
 
 def send_email_digest(summaries):
     sender_email = "yasu.23721740311@gmail.com"
