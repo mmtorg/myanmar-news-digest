@@ -310,6 +310,7 @@ def get_yktnews_articles_for(date_obj):
             res_article = requests.get(url, timeout=10)
 
             print(res_article)
+            print(res_article.text[:500]) 
             sys.exit(1)
             
             soup_article = BeautifulSoup(res_article.content, "html.parser")
