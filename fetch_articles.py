@@ -411,11 +411,7 @@ def translate_and_summarize(text: str) -> str:
 #         print(f"予期せぬエラー: {e}")
 #         return "（翻訳・要約に失敗しました）"
 
-def process_and_summarize_articles(articles, source_name, seen_urls=None):
-    print(seen_urls)
-    sys.exit(1)
-
-    
+def process_and_summarize_articles(articles, source_name, seen_urls=None):    
     if seen_urls is None:
         seen_urls = set()
 
