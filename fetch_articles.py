@@ -95,19 +95,12 @@ def get_mizzima_articles_for(date_obj):
     keywords = ["မြန်မာ", "ဗမာ", "အောင်ဆန်းစုကြည်", "မင်းအောင်လှိုင်", "Myanmar", "Burma"]
 
     filtered_articles = []
-    seen_urls = set()  # 重複除去
-
     for url in article_urls:
         if target_date_str not in url:
             continue  # URLに昨日の日付が無ければスキップ
 
-        full_url = url if url.startswith("http") else base_url + url
-        if full_url in seen_urls:
-            continue  # 重複URLスキップ
-        seen_urls.add(full_url)
-
         try:
-            res_article = requests.get(full_url, timeout=10)
+            res_article = requests.get(url, timeout=10)
             soup_article = BeautifulSoup(res_article.content, "html.parser")
 
             # タイトル取得
@@ -116,29 +109,22 @@ def get_mizzima_articles_for(date_obj):
                 continue
             title = title_tag.get_text(strip=True)
 
-            # 本文取得（entry-contentのみ対象）
-            entry_content_div = soup_article.find("div", class_="entry-content")
-            if not entry_content_div:
-                continue
-
-            # 不要部分削除（フッター、関連記事、広告等）
-            for unwanted in entry_content_div.select(".site-footer-top, .related-posts, .ads-section"):
-                unwanted.decompose()
-
-            body_text = entry_content_div.get_text(separator="\n", strip=True)
+            # 本文取得
+            paragraphs = soup_article.select("div.entry-content p")
+            body_text = "\n".join(p.get_text(strip=True) for p in paragraphs)
 
             # タイトルor本文にキーワードがあれば対象とする
             if not any(keyword in title or keyword in body_text for keyword in keywords):
                 continue
 
             filtered_articles.append({
-                "url": full_url,
+                "url": url,
                 "title": title,
                 "date": date_obj.isoformat()
             })
 
         except Exception as e:
-            print(f"Error processing {full_url}: {e}")
+            print(f"Error processing {url}: {e}")
             continue
 
     return filtered_articles
@@ -361,10 +347,22 @@ def translate_and_summarize(text: str) -> str:
 
     prompt = (
         "以下の記事の本文について重要なポイントをまとめ、具体的に解説してください。\n\n"
-        "改行や箇条書きを適切に使って見やすく整理してください。\n\n"
-        "レスポンスの文字数は最大500文字です。自然な日本語に訳してください。\n\n"
         "全体に対する解説は不要です、個別記事の本文の解説のみとしてください。\n\n"
         "レスポンスでは解説のみを返してください、それ以外の文言は不要です。\n\n"
+        "【出力フォーマットの指定】\n"
+        "・「見出し」を太字で表示する形で設定してください。\n"
+        "・その後、要点を2〜5項目程度、箇条書きで簡潔にまとめてください。\n"
+        "・見出しや箇条書きにはマークダウン記号（#, *, - など）は使わず、単純なテキストとして出力してください。\n"
+        "・全体をHTMLで送るわけではないので、特殊記号は使わないでください。\n"
+        "・箇条書きは「・」を使ってください。\n"
+        "・500文字以内に収めてください。\n\n"
+        "【例】\n"
+        "＜見出し＞\n"
+        "ロヒンギャ問題に関するICJの暫定命令\n"
+        "＜要点＞\n"
+        "・国際司法裁判所（ICJ）は2020年にミャンマー政府に対して暫定措置命令を発出。\n"
+        "・ロヒンギャ族への人権侵害行為の停止と証拠保全を命じた。\n"
+        "・命令の履行状況について、定期報告の義務も課した。\n\n"
         "###\n\n"
         f"{text[:2000]}\n\n"
         "###"
@@ -429,13 +427,14 @@ def process_and_summarize_articles(articles, source_name, seen_urls=None):
 
             translated_title = translate_text_only(art["title"])  # タイトル翻訳
             summary = translate_and_summarize(text)  # 本文要約・翻訳
-            summary_html = markdown_to_html(summary)  # HTML整形
+            # summary_html = markdown_to_html(summary)  # HTML整形
 
             results.append({
                 "source": source_name,
                 "url": art["url"],
                 "title": translated_title,
-                "summary": summary_html
+                "summary": summary,
+                # "summary": summary_html,
             })
         except Exception as e:
             continue
