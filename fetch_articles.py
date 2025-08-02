@@ -80,59 +80,50 @@ def get_frontier_articles_for(date_obj):
 
     return filtered_articles
 
-def get_mizzima_articles_for(date_obj):
+def get_mizzima_articles_for(date_obj, seen_urls):
     base_url = "https://eng.mizzima.com"
-    list_url = base_url  # トップページ
+    list_url = base_url
     res = requests.get(list_url, timeout=10)
     soup = BeautifulSoup(res.content, "html.parser")
     links = soup.find_all("a", href=True)
 
-    # URLに /YYYY/MM/DD/ が含まれるもののみ
     date_pattern = re.compile(r"/\d{4}/\d{2}/\d{2}/")
     article_urls = [a["href"] for a in links if date_pattern.search(a["href"])]
 
-    target_date_str = date_obj.strftime("%Y/%m/%d")  # 例: "2025/08/02"
+    target_date_str = date_obj.strftime("%Y/%m/%d")
     keywords = ["မြန်မာ", "ဗမာ", "အောင်ဆန်းစုကြည်", "မင်းအောင်လှိုင်", "Myanmar", "Burma"]
 
     filtered_articles = []
-    seen_urls = set()  # ← 追加 (forループの前に追加)
-    
     for url in article_urls:
         full_url = url if url.startswith("http") else base_url + url
-    
         if full_url in seen_urls:
-            continue  # 重複URL除外
+            continue  # 重複URL排除
         seen_urls.add(full_url)
-    
+
         if target_date_str not in full_url:
-            continue  # URLに昨日の日付が無ければスキップ
-    
+            continue
+
         try:
             res_article = requests.get(full_url, timeout=10)
             soup_article = BeautifulSoup(res_article.content, "html.parser")
-    
-            # タイトル取得
             title_tag = soup_article.find("h1")
             if not title_tag:
                 continue
             title = title_tag.get_text(strip=True)
-    
-            # 本文取得
+
             paragraphs = soup_article.select("div.entry-content p")
             body_text = "\n".join(p.get_text(strip=True) for p in paragraphs)
-    
-            # タイトルor本文にキーワードがあれば対象とする
+
             if not any(keyword in title or keyword in body_text for keyword in keywords):
                 continue
-    
+
             filtered_articles.append({
                 "url": full_url,
                 "title": title,
                 "date": date_obj.isoformat()
             })
-    
-        except Exception as e:
-            print(f"Error processing {full_url}: {e}")
+
+        except Exception:
             continue
 
     return filtered_articles
@@ -292,7 +283,7 @@ def get_bbc_burmese_articles_for(target_date_mmt):
 
 #     return filtered_articles
 
-def get_yktnews_articles_for(date_obj):
+def get_yktnews_articles_for(date_obj, seen_urls):
     base_url = "https://yktnews.com"
     list_url = base_url + "/category/news/"
     res = requests.get(list_url, timeout=10)
@@ -300,21 +291,17 @@ def get_yktnews_articles_for(date_obj):
     links = soup.select("h3.entry-title a")
     article_urls = [a["href"] for a in links if a.get("href", "").startswith("http")]
 
-    target_month_str = date_obj.strftime("%Y/%m")  # 例: "2025/08"
+    target_month_str = date_obj.strftime("%Y/%m")
     keywords = ["မြန်မာ", "ဗမာ", "အောင်ဆန်းစုကြည်", "မင်းအောင်လှိုင်", "Myanmar", "Burma"]
 
     filtered_articles = []
-    seen_urls = set()
-
     for url in article_urls:
-        # URLから /YYYY/MM/ を抽出してフィルタ
         match = re.search(r"https?://[^/]+/(\d{4}/\d{2})/", url)
         if not match:
-            continue  # 該当しないURLはスキップ
-        url_month_str = match.group(1)  # 例: "2025/08"
-
+            continue
+        url_month_str = match.group(1)
         if url_month_str != target_month_str:
-            continue  # 月が違えばスキップ
+            continue
 
         if url in seen_urls:
             continue  # 重複URLスキップ
@@ -323,8 +310,6 @@ def get_yktnews_articles_for(date_obj):
         try:
             res_article = requests.get(url, timeout=10)
             soup_article = BeautifulSoup(res_article.content, "html.parser")
-
-            # 記事の日付を取得 (timeタグ)
             time_tag = soup_article.find("time", class_="entry-date updated td-module-date")
             if not time_tag:
                 continue
@@ -332,28 +317,23 @@ def get_yktnews_articles_for(date_obj):
             if not date_str:
                 continue
             article_date = datetime.fromisoformat(date_str).date()
-
             if article_date != date_obj:
-                continue  # 昨日の日付でなければスキップ
+                continue
 
-            # タイトル取得
             title_tag = soup_article.find("h1")
             if not title_tag:
                 continue
             title = title_tag.get_text(strip=True)
 
-            # 本文取得（entry-contentのみ）
             entry_content_div = soup_article.find("div", class_="entry-content")
             if not entry_content_div:
                 continue
 
-            # 不要部分除去
             for unwanted in entry_content_div.select(".site-footer-top, .related-posts, .ads-section"):
                 unwanted.decompose()
 
             body_text = entry_content_div.get_text(separator="\n", strip=True)
 
-            # タイトルor本文にキーワードが含まれていれば対象
             if not any(keyword in title or keyword in body_text for keyword in keywords):
                 continue
 
