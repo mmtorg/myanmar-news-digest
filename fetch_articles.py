@@ -322,7 +322,7 @@ def translate_text_only(text: str) -> str:
         return "（翻訳に失敗しました）"
 
     prompt = (
-        "以下はbbc burmeseの記事のタイトルです。日本語に訳してください。\n\n"
+        "以下は記事のタイトルです。日本語に訳してください。\n\n"
         "レスポンスではタイトルの日本語訳のみを返してください、それ以外の文言は不要です。\n\n"
         "###\n\n"
         f"{text.strip()}\n\n"
@@ -346,23 +346,15 @@ def translate_and_summarize(text: str) -> str:
         return "（翻訳・要約に失敗しました）"
 
     prompt = (
-        "以下の記事の本文について重要なポイントをまとめ、具体的に解説してください。\n\n"
+        "以下の記事の本文について重要なポイントをまとめ、具体的に解説してください。自然な日本語に訳してください。\n\n"
         "全体に対する解説は不要です、個別記事の本文の解説のみとしてください。\n\n"
         "レスポンスでは解説のみを返してください、それ以外の文言は不要です。\n\n"
-        "【出力フォーマットの指定】\n"
-        "・「見出し」を太字で表示する形で設定してください。\n"
-        "・その後、要点を2〜5項目程度、箇条書きで簡潔にまとめてください。\n"
-        "・見出しや箇条書きにはマークダウン記号（#, *, - など）は使わず、単純なテキストとして出力してください。\n"
-        "・全体をHTMLで送るわけではないので、特殊記号は使わないでください。\n"
-        "・箇条書きは「・」を使ってください。\n"
-        "・500文字以内に収めてください。\n\n"
-        "【例】\n"
-        "＜見出し＞\n"
-        "ロヒンギャ問題に関するICJの暫定命令\n"
-        "＜要点＞\n"
-        "・国際司法裁判所（ICJ）は2020年にミャンマー政府に対して暫定措置命令を発出。\n"
-        "・ロヒンギャ族への人権侵害行為の停止と証拠保全を命じた。\n"
-        "・命令の履行状況について、定期報告の義務も課した。\n\n"
+        "以下、出力の条件です\n\n"
+        "- 改行や箇条書きを適切に使って見やすく整理してください。\n\n"
+        "- 見出しや箇条書きにはマークダウン記号（#, *, - など）は使わず、単純なテキストとして出力してください。\n\n"
+        "- 全体をHTMLで送るわけではないので、特殊記号は使わないでください。\n\n"
+        "- 箇条書きは「・」を使ってください。\n\n"
+        "- 文字数は最大500文字としてください。\n\n"
         "###\n\n"
         f"{text[:2000]}\n\n"
         "###"
@@ -427,14 +419,15 @@ def process_and_summarize_articles(articles, source_name, seen_urls=None):
 
             translated_title = translate_text_only(art["title"])  # タイトル翻訳
             summary = translate_and_summarize(text)  # 本文要約・翻訳
+            # 改行を <br> に置換
+            summary_html = summary_text.replace("\n", "<br>")
             # summary_html = markdown_to_html(summary)  # HTML整形
 
             results.append({
                 "source": source_name,
                 "url": art["url"],
                 "title": translated_title,
-                "summary": summary,
-                # "summary": summary_html,
+                "summary": summary_html,
             })
         except Exception as e:
             continue
