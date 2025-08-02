@@ -195,11 +195,6 @@ def get_ludu_articles_for(date_obj):
 
     return filtered_articles
 
-def get_yesterday_date_mmt():
-    now_mmt = datetime.now(MMT)
-    yesterday_mmt = now_mmt - timedelta(days=1)
-    return yesterday_mmt.date()
-
 # BCCはRSSあるのでそれ使う
 def get_bbc_burmese_articles_for(target_date_mmt):
     rss_url = "https://feeds.bbci.co.uk/burmese/rss.xml"
@@ -351,9 +346,9 @@ def translate_and_summarize(text: str) -> str:
         return "（翻訳・要約に失敗しました）"
 
     prompt = (
-        "以下はbbc burmeseの記事です。記事の内容について重要なポイントをまとめ、具体的に解説してください。\n\n"
+        "以下はbbc burmeseの記事です。記事の本文について重要なポイントをまとめ、具体的に解説してください。\n\n"
         "改行や箇条書きを適切に使って見やすく整理してください。マークダウン形式を使ってください。\n\n"
-        "文字数は最大700文字までとします。自然な日本語に訳してください。\n\n"
+        "文字数は最大500文字までとします。自然な日本語に訳してください。\n\n"
         "全体に対する解説は不要です、各記事に対する個別の解説のみとしてください。\n\n"
         "レスポンスでは解説のみを返してください、それ以外の文言は不要です。\n\n"
         "###\n\n"
@@ -426,26 +421,43 @@ def process_and_summarize_articles(articles, source_name):
 def markdown_to_html(markdown_text):
     html_lines = []
     lines = markdown_text.splitlines()
-    for line in lines:
-        stripped = line.strip()
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
 
-        if stripped.startswith("### "):
-            content = stripped[4:].strip()
+        # セクション見出し（###）
+        if line.startswith("### "):
+            content = line[4:].strip()
             html_lines.append(f"<h3>{content}</h3>")
+            i += 1
+            continue
 
-        elif re.match(r"^\*\s+\*\*(.+?)\*\*:\s*(.+)$", stripped):
-            # パターン: * **タイトル**: 説明文
-            m = re.match(r"^\*\s+\*\*(.+?)\*\*:\s*(.+)$", stripped)
-            if m:
-                title, desc = m.group(1), m.group(2)
-                html_lines.append(
-                    f"<div style='margin-bottom:10px;'>"
-                    f"<div style='font-weight:bold;'>● {title}</div>"
-                    f"<div style='padding-left:1.5em;'>{desc}</div>"
-                    f"</div>"
-                )
-        elif stripped:
-            html_lines.append(f"<p>{stripped}</p>")  # 通常段落
+        # リスト項目の見出し
+        if line.startswith("* **") and line.endswith("**"):
+            title = line[3:-2].strip()  # * **タイトル** → タイトル
+            body_lines = []
+            i += 1
+            # 次行以降が本文（空行 or 次のリスト項目まで）
+            while i < len(lines):
+                next_line = lines[i].strip()
+                if not next_line or next_line.startswith("* "):
+                    break
+                body_lines.append(next_line)
+                i += 1
+            body_html = "<br>".join(body_lines)
+            html_lines.append(
+                f"<div style='margin-bottom:10px;'>"
+                f"<div style='font-weight:bold;'>● {title}</div>"
+                f"<div style='padding-left:1.5em;'>{body_html}</div>"
+                f"</div>"
+            )
+            continue
+
+        # その他行は段落扱い
+        if line:
+            html_lines.append(f"<p>{line}</p>")
+        i += 1
+
     return "\n".join(html_lines)
 
 def send_email_digest(summaries):
