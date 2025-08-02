@@ -450,24 +450,22 @@ def send_email_digest(summaries):
     html_content = f"""
     <html>
     <body style="font-family: Arial, sans-serif; background-color: #ffffff; color: #333333;">
-        <h3>ミャンマー関連ニュース【{date_str}】</h3>
     """
 
     for media, articles in media_grouped.items():
         html_content += f"<h3 style='color: #2a2a2a; margin-top: 30px;'>{media} からのニュース</h3>"
 
         for item in articles:
-            title_jp = "タイトル: " + translate_text_only(item["title"]) # タイトル翻訳
-            summary = clean_text(item["summary"])
+            title_jp = "タイトル: " + item["title"]
             url = item["url"]
 
-            summary_html = markdown_to_html(summary)
+            summary_html = item["summary"]  # すでにHTML整形済みをそのまま使う
             html_content += (
                 f"<div style='margin-bottom: 20px;'>"
                 f"<h4 style='margin-bottom: 5px;'>{title_jp}</h4>"
                 f"<p><a href='{url}' style='color: #1a0dab;'>本文を読む</a></p>"
                 f"<div style='background-color: #f9f9f9; padding: 10px; border-radius: 8px;'>"
-                f"{item['summary']}"  # ← <p>タグや<ul>がすでに含まれている
+                f"{summary_html}"
                 f"</div></div><hr style='border-top: 1px solid #cccccc;'>"
             )
 
