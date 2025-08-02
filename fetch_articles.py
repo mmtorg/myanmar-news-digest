@@ -515,6 +515,8 @@ def send_email_digest(summaries):
 
 if __name__ == "__main__":
     yesterday_mmt = get_yesterday_date_mmt()
+    seen_urls = set()  # ← 追加: 共通のURL重複排除セット
+    
     # articles = get_frontier_articles_for(yesterday)
     # for art in articles:
     #     print(f"{art['date']} - {art['title']}\n{art['url']}\n")
@@ -545,7 +547,6 @@ if __name__ == "__main__":
         print(f"{art['date']} - {art['title']}\n{art['url']}\n")
 
     all_summaries = []
-    seen_urls = set()  # ← 追加: 共通のURL重複排除セット
     # all_summaries += process_and_summarize_articles(get_frontier_articles_for(yesterday), "Frontier Myanmar")
     all_summaries += process_and_summarize_articles(articles3, "Mizzima", seen_urls)
     # all_summaries += process_and_summarize_articles(get_vom_articles_for(yesterday), "Voice of Myanmar")
