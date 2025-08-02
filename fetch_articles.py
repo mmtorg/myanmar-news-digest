@@ -351,6 +351,8 @@ def get_yktnews_articles_for(date_obj, seen_urls):
 
 # 本文翻訳＆要約、GeminiAPIを使う場合
 def translate_and_summarize(text: str) -> str:
+    print(text)
+    
     if not text or not text.strip():
         print("⚠️ 入力テキストが空です")
         return "（翻訳・要約に失敗しました）"
@@ -375,6 +377,8 @@ def translate_and_summarize(text: str) -> str:
             model="gemini-2.5-flash",
             contents=prompt
         )
+
+        print(resp.text.strip())
         
         return resp.text.strip()
 
@@ -428,9 +432,6 @@ def process_and_summarize_articles(articles, source_name, seen_urls=None):
             soup = BeautifulSoup(res.content, "html.parser")
             paragraphs = soup.find_all("p")
             text = "\n".join(p.get_text(strip=True) for p in paragraphs)
-
-            print(text)
-            sys.exit(1)
 
             translated_title = translate_text_only(art["title"])  # タイトル翻訳
             summary = translate_and_summarize(text)  # 本文要約・翻訳
