@@ -406,32 +406,40 @@ def process_and_summarize_articles(articles, source_name):
     return results
 
 def markdown_to_html(text):
-    # **bold** を <strong>bold</strong> に変換
-    text = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', text)
-
     lines = text.splitlines()
     html_lines = []
-    in_list = False
+    current_heading = ""
+    current_content = []
+    
+    def flush_block():
+        if not current_heading and not current_content:
+            return
+        # 擬似リストブロックを作成
+        html_lines.append("<div style='margin-bottom: 10px;'>")
+        if current_heading:
+            html_lines.append(f"<div style='font-weight: bold; margin-bottom: 5px;'>● {current_heading}</div>")
+        if current_content:
+            body_html = "<br>".join(current_content)
+            html_lines.append(f"<div style='padding-left: 1.5em;'>{body_html}</div>")
+        html_lines.append("</div>")
+    
     for line in lines:
-        stripped_line = line.strip()
-        if not stripped_line:
-            # 空行なら段落区切り
-            if in_list:
-                html_lines.append("</ul>")
-                in_list = False
-            continue
-        if re.match(r"^\s*[-*・]", stripped_line):
-            if not in_list:
-                html_lines.append("<ul>")
-                in_list = True
-            html_lines.append(f"<li>{stripped_line.lstrip('-*・ ').strip()}</li>")
+        stripped = line.strip()
+        if re.match(r"^\s*[-*・]", stripped):
+            # リストヘッダー検出時に前ブロックをflush
+            flush_block()
+            current_heading = re.sub(r"^[-*・]\s*", "", stripped)
+            current_content = []
+        elif stripped:
+            current_content.append(stripped)
         else:
-            if in_list:
-                html_lines.append("</ul>")
-                in_list = False
-            html_lines.append(f"<p>{stripped_line}</p>")
-    if in_list:
-        html_lines.append("</ul>")
+            # 空行ならflush
+            flush_block()
+            current_heading = ""
+            current_content = []
+    
+    # 最後のブロックをflush
+    flush_block()
     return "\n".join(html_lines)
 
 def send_email_digest(summaries):
