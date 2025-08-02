@@ -317,9 +317,10 @@ def get_yktnews_articles_for(date_obj):
                 print(f"❌ 日付タグが見つからない or datetime属性が無い: {url}")
                 continue
 
-            date_str = time_tag["datetime"][:10]  # "2025-08-02"
-            if date_str != target_date_str:
-                print(f"⏩ 日付不一致: {date_str} != {target_date_str} → {url}")
+            date_str = time_tag["datetime"]
+            article_date = datetime.fromisoformat(date_str).astimezone(MMT).date()
+            if article_date != date_obj:
+                print(f"⏩ 日付不一致: {article_date} != {date_obj} → {url}")
                 continue  # 昨日の日付でなければスキップ
 
             print(f"✅ 日付一致: {date_str} == {target_date_str} → {url}")
