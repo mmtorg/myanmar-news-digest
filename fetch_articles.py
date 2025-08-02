@@ -335,7 +335,7 @@ def translate_and_summarize(text: str) -> str:
 
     prompt = (
         "以下はbbc burmeseの記事です。記事の内容について重要なポイントをまとめ、具体的に解説してください。\n\n"
-        "改行や箇条書きを適切に使って見やすく整理してください。マークダウン形式を使って良いです。\n\n"
+        "改行や箇条書きを適切に使って見やすく整理してください。マークダウン形式を使ってください。\n\n"
         "文字数は最大700文字までとします。自然な日本語に訳してください。\n\n"
         "全体に対する解説は不要です、各記事に対する個別の解説のみとしてください。\n\n"
         "レスポンスでは解説のみを返してください、それ以外の文言は不要です。\n\n"
@@ -413,17 +413,23 @@ def markdown_to_html(text):
     html_lines = []
     in_list = False
     for line in lines:
-        if re.match(r"^\s*[-*・]", line):
+        stripped_line = line.strip()
+        if not stripped_line:
+            # 空行なら段落区切り
+            if in_list:
+                html_lines.append("</ul>")
+                in_list = False
+            continue
+        if re.match(r"^\s*[-*・]", stripped_line):
             if not in_list:
                 html_lines.append("<ul>")
                 in_list = True
-            html_lines.append(f"<li>{line.lstrip('-*・ ').strip()}</li>")
+            html_lines.append(f"<li>{stripped_line.lstrip('-*・ ').strip()}</li>")
         else:
             if in_list:
                 html_lines.append("</ul>")
                 in_list = False
-            if line.strip():
-                html_lines.append(f"<p>{line.strip()}</p>")
+            html_lines.append(f"<p>{stripped_line}</p>")
     if in_list:
         html_lines.append("</ul>")
     return "\n".join(html_lines)
