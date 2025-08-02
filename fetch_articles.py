@@ -95,36 +95,44 @@ def get_mizzima_articles_for(date_obj):
     keywords = ["မြန်မာ", "ဗမာ", "အောင်ဆန်းစုကြည်", "မင်းအောင်လှိုင်", "Myanmar", "Burma"]
 
     filtered_articles = []
+    seen_urls = set()  # ← 追加 (forループの前に追加)
+    
     for url in article_urls:
-        if target_date_str not in url:
+        full_url = url if url.startswith("http") else base_url + url
+    
+        if full_url in seen_urls:
+            continue  # 重複URL除外
+        seen_urls.add(full_url)
+    
+        if target_date_str not in full_url:
             continue  # URLに昨日の日付が無ければスキップ
-
+    
         try:
-            res_article = requests.get(url, timeout=10)
+            res_article = requests.get(full_url, timeout=10)
             soup_article = BeautifulSoup(res_article.content, "html.parser")
-
+    
             # タイトル取得
             title_tag = soup_article.find("h1")
             if not title_tag:
                 continue
             title = title_tag.get_text(strip=True)
-
+    
             # 本文取得
             paragraphs = soup_article.select("div.entry-content p")
             body_text = "\n".join(p.get_text(strip=True) for p in paragraphs)
-
+    
             # タイトルor本文にキーワードがあれば対象とする
             if not any(keyword in title or keyword in body_text for keyword in keywords):
                 continue
-
+    
             filtered_articles.append({
-                "url": url,
+                "url": full_url,
                 "title": title,
                 "date": date_obj.isoformat()
             })
-
+    
         except Exception as e:
-            print(f"Error processing {url}: {e}")
+            print(f"Error processing {full_url}: {e}")
             continue
 
     return filtered_articles
@@ -292,27 +300,31 @@ def get_yktnews_articles_for(date_obj):
     links = soup.select("h3.entry-title a")
     article_urls = [a["href"] for a in links if a.get("href", "").startswith("http")]
 
-    # YYYY/MM フィルタ (例: /2025/08/)
-    target_month_str = date_obj.strftime("/%Y/%m/")  # 例: "/2025/08/"
-
+    target_month_str = date_obj.strftime("%Y/%m")  # 例: "2025/08"
     keywords = ["မြန်မာ", "ဗမာ", "အောင်ဆန်းစုကြည်", "မင်းအောင်လှိုင်", "Myanmar", "Burma"]
 
     filtered_articles = []
     seen_urls = set()
 
     for url in article_urls:
-        if target_month_str not in url:
-            continue  # URLにその月の文字列がなければスキップ
+        # URLから /YYYY/MM/ を抽出してフィルタ
+        match = re.search(r"https?://[^/]+/(\d{4}/\d{2})/", url)
+        if not match:
+            continue  # 該当しないURLはスキップ
+        url_month_str = match.group(1)  # 例: "2025/08"
+
+        if url_month_str != target_month_str:
+            continue  # 月が違えばスキップ
 
         if url in seen_urls:
-            continue  # 重複URLは無視
+            continue  # 重複URLスキップ
         seen_urls.add(url)
 
         try:
             res_article = requests.get(url, timeout=10)
             soup_article = BeautifulSoup(res_article.content, "html.parser")
 
-            # 記事の日付を取得
+            # 記事の日付を取得 (timeタグ)
             time_tag = soup_article.find("time", class_="entry-date updated td-module-date")
             if not time_tag:
                 continue
@@ -341,7 +353,7 @@ def get_yktnews_articles_for(date_obj):
 
             body_text = entry_content_div.get_text(separator="\n", strip=True)
 
-            # キーワードフィルタ
+            # タイトルor本文にキーワードが含まれていれば対象
             if not any(keyword in title or keyword in body_text for keyword in keywords):
                 continue
 
@@ -356,29 +368,6 @@ def get_yktnews_articles_for(date_obj):
             continue
 
     return filtered_articles
-
-# タイトル翻訳のみ、GeminiAPIを使う場合
-def translate_text_only(text: str) -> str:
-    if not text or not text.strip():
-        return "（翻訳に失敗しました）"
-
-    prompt = (
-        "以下は記事のタイトルです。日本語に訳してください。\n\n"
-        "レスポンスではタイトルの日本語訳のみを返してください、それ以外の文言は不要です。\n\n"
-        "###\n\n"
-        f"{text.strip()}\n\n"
-        "###"
-    )
-
-    try:
-        resp = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt
-        )
-        return resp.text.strip()
-    except Exception as e:
-        print(f"🛑 タイトル翻訳エラー: {e}")
-        return "（翻訳に失敗しました）"
 
 # 本文翻訳＆要約、GeminiAPIを使う場合
 def translate_and_summarize(text: str) -> str:
