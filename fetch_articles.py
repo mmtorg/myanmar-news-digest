@@ -349,6 +349,29 @@ def get_yktnews_articles_for(date_obj, seen_urls):
 
     return filtered_articles
 
+# タイトル翻訳のみ、GeminiAPIを使う場合
+def translate_text_only(text: str) -> str:
+    if not text or not text.strip():
+        return "（翻訳に失敗しました）"
+
+    prompt = (
+        "以下はbbc burmeseの記事のタイトルです。日本語に訳してください。\n\n"
+        "レスポンスではタイトルの日本語訳のみを返してください、それ以外の文言は不要です。\n\n"
+        "###\n\n"
+        f"{text.strip()}\n\n"
+        "###"
+    )
+
+    try:
+        resp = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt
+        )
+        return resp.text.strip()
+    except Exception as e:
+        print(f"🛑 タイトル翻訳エラー: {e}")
+        return "（翻訳に失敗しました）"
+
 # 本文翻訳＆要約、GeminiAPIを使う場合
 def translate_and_summarize(text: str) -> str:
     print(text)
