@@ -347,7 +347,7 @@ def translate_and_summarize(text: str) -> str:
 
     prompt = (
         "以下はbbc burmeseの記事です。記事の本文について重要なポイントをまとめ、具体的に解説してください。\n\n"
-        "改行や箇条書きを適切に使って見やすく整理してください。マークダウン形式を使ってください。\n\n"
+        "改行や箇条書きを適切に使って見やすく整理してください。番号付きリスト形式を使ってください。\n\n"
         "文字数は最大500文字までとします。自然な日本語に訳してください。\n\n"
         "全体に対する解説は不要です、各記事に対する個別の解説のみとしてください。\n\n"
         "レスポンスでは解説のみを返してください、それ以外の文言は不要です。\n\n"
@@ -397,22 +397,31 @@ def translate_and_summarize(text: str) -> str:
 #         print(f"予期せぬエラー: {e}")
 #         return "（翻訳・要約に失敗しました）"
 
-def process_and_summarize_articles(articles, source_name):
+def process_and_summarize_articles(articles, source_name, seen_urls=None):
+    if seen_urls is None:
+        seen_urls = set()
+
     results = []
     for art in articles:
+        if art['url'] in seen_urls:
+            continue  # 重複URLはスキップ
+        seen_urls.add(art['url'])
+
         try:
             res = requests.get(art['url'], timeout=10)
             soup = BeautifulSoup(res.content, "html.parser")
             paragraphs = soup.find_all("p")
             text = "\n".join(p.get_text(strip=True) for p in paragraphs)
-            translated_title = translate_text_only(art["title"])  # ← 要約なし翻訳
-            summary = translate_and_summarize(text)  # ← 要約＋翻訳
-            summary_html = markdown_to_html(summary)
+
+            translated_title = translate_text_only(art["title"])  # タイトル翻訳
+            summary = translate_and_summarize(text)  # 本文要約・翻訳
+            summary_html = markdown_to_html(summary)  # HTML整形
+
             results.append({
                 "source": source_name,
                 "url": art["url"],
                 "title": translated_title,
-                "summary": summary_html 
+                "summary": summary_html
             })
         except Exception as e:
             continue
@@ -432,33 +441,44 @@ def markdown_to_html(markdown_text):
             i += 1
             continue
 
-        # リスト項目の見出し
-        if line.startswith("* **") and line.endswith("**"):
-            title = line[3:-2].strip()  # * **タイトル** → タイトル
-            body_lines = []
+        # 箇条書きリスト項目 (例: - 項目)
+        if line.startswith("- "):
+            content = line[2:].strip()
+            html_lines.append(f"<li>{content}</li>")
             i += 1
-            # 次行以降が本文（空行 or 次のリスト項目まで）
-            while i < len(lines):
-                next_line = lines[i].strip()
-                if not next_line or next_line.startswith("* "):
-                    break
-                body_lines.append(next_line)
-                i += 1
-            body_html = "<br>".join(body_lines)
-            html_lines.append(
-                f"<div style='margin-bottom:10px;'>"
-                f"<div style='font-weight:bold;'>● {title}</div>"
-                f"<div style='padding-left:1.5em;'>{body_html}</div>"
-                f"</div>"
-            )
             continue
 
-        # その他行は段落扱い
+        # 番号付きリスト項目 (例: 1. 項目)
+        if re.match(r"^\d+\.\s+", line):
+            content = re.sub(r"^\d+\.\s+", "", line)
+            html_lines.append(f"<li>{content}</li>")
+            i += 1
+            continue
+
+        # リストでなければ段落扱い
         if line:
             html_lines.append(f"<p>{line}</p>")
         i += 1
 
-    return "\n".join(html_lines)
+    # リスト項目を <ul> で囲む
+    html_output = []
+    in_list = False
+    for line in html_lines:
+        if line.startswith("<li>"):
+            if not in_list:
+                html_output.append("<ul>")
+                in_list = True
+            html_output.append(line)
+        else:
+            if in_list:
+                html_output.append("</ul>")
+                in_list = False
+            html_output.append(line)
+    if in_list:
+        html_output.append("</ul>")
+
+    return "\n".join(html_output)
+
 
 def send_email_digest(summaries):
     sender_email = "yasu.23721740311@gmail.com"
