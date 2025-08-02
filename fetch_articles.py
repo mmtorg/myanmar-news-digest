@@ -349,6 +349,10 @@ def translate_and_summarize(text: str) -> str:
             model="gemini-2.5-flash",
             contents=prompt
         )
+
+        print(resp.text.strip())
+        sys.exit(1)
+        
         return resp.text.strip()
 
     except Exception as e:
