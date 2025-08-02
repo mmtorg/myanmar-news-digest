@@ -80,50 +80,51 @@ def get_frontier_articles_for(date_obj):
 
     return filtered_articles
 
-def get_mizzima_articles_for(date_obj, seen_urls):
+def get_mizzima_articles_for(date_obj):
     base_url = "https://eng.mizzima.com"
-    list_url = base_url
+    list_url = base_url  # トップページ
     res = requests.get(list_url, timeout=10)
     soup = BeautifulSoup(res.content, "html.parser")
     links = soup.find_all("a", href=True)
 
+    # URLに /YYYY/MM/DD/ が含まれるもののみ
     date_pattern = re.compile(r"/\d{4}/\d{2}/\d{2}/")
     article_urls = [a["href"] for a in links if date_pattern.search(a["href"])]
 
-    target_date_str = date_obj.strftime("%Y/%m/%d")
+    target_date_str = date_obj.strftime("%Y/%m/%d")  # 例: "2025/08/02"
     keywords = ["မြန်မာ", "ဗမာ", "အောင်ဆန်းစုကြည်", "မင်းအောင်လှိုင်", "Myanmar", "Burma"]
 
     filtered_articles = []
     for url in article_urls:
-        full_url = url if url.startswith("http") else base_url + url
-        if full_url in seen_urls:
-            continue  # 重複URL排除
-        seen_urls.add(full_url)
-
-        if target_date_str not in full_url:
-            continue
+        if target_date_str not in url:
+            continue  # URLに昨日の日付が無ければスキップ
 
         try:
-            res_article = requests.get(full_url, timeout=10)
+            res_article = requests.get(url, timeout=10)
             soup_article = BeautifulSoup(res_article.content, "html.parser")
+
+            # タイトル取得
             title_tag = soup_article.find("h1")
             if not title_tag:
                 continue
             title = title_tag.get_text(strip=True)
 
+            # 本文取得
             paragraphs = soup_article.select("div.entry-content p")
             body_text = "\n".join(p.get_text(strip=True) for p in paragraphs)
 
+            # タイトルor本文にキーワードがあれば対象とする
             if not any(keyword in title or keyword in body_text for keyword in keywords):
                 continue
 
             filtered_articles.append({
-                "url": full_url,
+                "url": url,
                 "title": title,
                 "date": date_obj.isoformat()
             })
 
-        except Exception:
+        except Exception as e:
+            print(f"Error processing {url}: {e}")
             continue
 
     return filtered_articles
@@ -283,7 +284,7 @@ def get_bbc_burmese_articles_for(target_date_mmt):
 
 #     return filtered_articles
 
-def get_yktnews_articles_for(date_obj, seen_urls):
+def get_yktnews_articles_for(date_obj):
     base_url = "https://yktnews.com"
     list_url = base_url + "/category/news/"
     res = requests.get(list_url, timeout=10)
@@ -291,60 +292,26 @@ def get_yktnews_articles_for(date_obj, seen_urls):
     links = soup.select("h3.entry-title a")
     article_urls = [a["href"] for a in links if a.get("href", "").startswith("http")]
 
-    target_month_str = date_obj.strftime("%Y/%m")
-    keywords = ["မြန်မာ", "ဗမာ", "အောင်ဆန်းစုကြည်", "မင်းအောင်လှိုင်", "Myanmar", "Burma"]
-
     filtered_articles = []
     for url in article_urls:
-        match = re.search(r"https?://[^/]+/(\d{4}/\d{2})/", url)
-        if not match:
-            continue
-        url_month_str = match.group(1)
-        if url_month_str != target_month_str:
-            continue
-
-        if url in seen_urls:
-            continue  # 重複URLスキップ
-        seen_urls.add(url)
-
         try:
             res_article = requests.get(url, timeout=10)
             soup_article = BeautifulSoup(res_article.content, "html.parser")
-            time_tag = soup_article.find("time", class_="entry-date updated td-module-date")
+            time_tag = soup_article.find("time")
             if not time_tag:
                 continue
             date_str = time_tag.get("datetime", "")
             if not date_str:
                 continue
             article_date = datetime.fromisoformat(date_str).date()
-            if article_date != date_obj:
-                continue
-
-            title_tag = soup_article.find("h1")
-            if not title_tag:
-                continue
-            title = title_tag.get_text(strip=True)
-
-            entry_content_div = soup_article.find("div", class_="entry-content")
-            if not entry_content_div:
-                continue
-
-            for unwanted in entry_content_div.select(".site-footer-top, .related-posts, .ads-section"):
-                unwanted.decompose()
-
-            body_text = entry_content_div.get_text(separator="\n", strip=True)
-
-            if not any(keyword in title or keyword in body_text for keyword in keywords):
-                continue
-
-            filtered_articles.append({
-                "url": url,
-                "title": title,
-                "date": date_obj.isoformat()
-            })
-
-        except Exception as e:
-            print(f"Error processing {url}: {e}")
+            if article_date == date_obj:
+                title = soup_article.find("h1").get_text(strip=True)
+                filtered_articles.append({
+                    "url": url,
+                    "title": title,
+                    "date": article_date.isoformat()
+                })
+        except Exception:
             continue
 
     return filtered_articles
@@ -355,7 +322,7 @@ def translate_text_only(text: str) -> str:
         return "（翻訳に失敗しました）"
 
     prompt = (
-        "以下はbbc burmeseの記事のタイトルです。日本語に訳してください。\n\n"
+        "以下は記事のタイトルです。日本語に訳してください。\n\n"
         "レスポンスではタイトルの日本語訳のみを返してください、それ以外の文言は不要です。\n\n"
         "###\n\n"
         f"{text.strip()}\n\n"
@@ -374,8 +341,6 @@ def translate_text_only(text: str) -> str:
 
 # 本文翻訳＆要約、GeminiAPIを使う場合
 def translate_and_summarize(text: str) -> str:
-    print(text)
-    
     if not text or not text.strip():
         print("⚠️ 入力テキストが空です")
         return "（翻訳・要約に失敗しました）"
@@ -400,8 +365,6 @@ def translate_and_summarize(text: str) -> str:
             model="gemini-2.5-flash",
             contents=prompt
         )
-
-        print(resp.text.strip())
         
         return resp.text.strip()
 
@@ -438,7 +401,7 @@ def translate_and_summarize(text: str) -> str:
 #         print(f"予期せぬエラー: {e}")
 #         return "（翻訳・要約に失敗しました）"
 
-def process_and_summarize_articles(articles, source_name, seen_urls=None):    
+def process_and_summarize_articles(articles, source_name, seen_urls=None):
     if seen_urls is None:
         seen_urls = set()
 
@@ -448,8 +411,6 @@ def process_and_summarize_articles(articles, source_name, seen_urls=None):
             continue  # 重複URLはスキップ
         seen_urls.add(art['url'])
 
-        print(art['url'])
-
         try:
             res = requests.get(art['url'], timeout=10)
             soup = BeautifulSoup(res.content, "html.parser")
@@ -458,7 +419,6 @@ def process_and_summarize_articles(articles, source_name, seen_urls=None):
 
             translated_title = translate_text_only(art["title"])  # タイトル翻訳
             summary = translate_and_summarize(text)  # 本文要約・翻訳
-            
             # 改行を <br> に置換
             summary_html = summary.replace("\n", "<br>")
             # summary_html = markdown_to_html(summary)  # HTML整形
@@ -470,10 +430,63 @@ def process_and_summarize_articles(articles, source_name, seen_urls=None):
                 "summary": summary_html,
             })
         except Exception as e:
-            print(f"❌ Error processing article: {art['url']}")
-            print(f"Exception: {e}")
             continue
     return results
+
+def markdown_to_html(markdown_text):
+    html_lines = []
+    lines = markdown_text.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+
+        # 太字変換 (**text** → <strong>text</strong>)
+        line = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', line)
+
+        # セクション見出し（###）
+        if line.startswith("### "):
+            content = line[4:].strip()
+            html_lines.append(f"<h3 style='margin:0; padding:0;'>{content}</h3>")
+            i += 1
+            continue
+
+        # 箇条書きリスト ( - または * )
+        if line.startswith("- ") or line.startswith("* "):
+            content = line[2:].strip()
+            html_lines.append(f"<li style='margin:0; padding:0;'>{content}</li>")
+            i += 1
+            continue
+
+        # 番号付きリスト
+        if re.match(r"^\d+\.\s+", line):
+            content = re.sub(r"^\d+\.\s+", "", line)
+            html_lines.append(f"<li style='margin:0; padding:0;'>{content}</li>")
+            i += 1
+            continue
+
+        # 段落
+        if line:
+            html_lines.append(f"<p style='margin:0; padding:0;'>{line}</p>")
+        i += 1
+
+    # <li>タグを<ul>で囲む（ulにも左寄せ指定）
+    html_output = []
+    in_list = False
+    for line in html_lines:
+        if line.startswith("<li"):
+            if not in_list:
+                html_output.append("<ul style='margin:0; padding-left:0;'>")
+                in_list = True
+            html_output.append(line)
+        else:
+            if in_list:
+                html_output.append("</ul>")
+                in_list = False
+            html_output.append(line)
+    if in_list:
+        html_output.append("</ul>")
+
+    return "\n".join(html_output)
 
 def send_email_digest(summaries):
     sender_email = "yasu.23721740311@gmail.com"
@@ -542,14 +555,12 @@ def send_email_digest(summaries):
 
 if __name__ == "__main__":
     yesterday_mmt = get_yesterday_date_mmt()
-    seen_urls = set()  # ← 追加: 共通のURL重複排除セット
-    
     # articles = get_frontier_articles_for(yesterday)
     # for art in articles:
     #     print(f"{art['date']} - {art['title']}\n{art['url']}\n")
 
     print("=== Mizzima ===")
-    articles3 = get_mizzima_articles_for(yesterday_mmt, seen_urls)
+    articles3 = get_mizzima_articles_for(yesterday_mmt)
     for art in articles3:
         print(f"{art['date']} - {art['title']}\n{art['url']}\n")
 
@@ -568,17 +579,17 @@ if __name__ == "__main__":
     for art in articles6:
         print(f"{art['date']} - {art['title']}\n{art['url']}\n")
 
-    print("=== YKT News ===")
-    articles7 = get_yktnews_articles_for(yesterday_mmt, seen_urls)
-    for art in articles7:
-        print(f"{art['date']} - {art['title']}\n{art['url']}\n")
+    # print("=== YKT News ===")
+    # articles7 = get_yktnews_articles_for(yesterday)
+    # for art in articles7:
+    #     print(f"{art['date']} - {art['title']}\n{art['url']}\n")
 
     all_summaries = []
     # all_summaries += process_and_summarize_articles(get_frontier_articles_for(yesterday), "Frontier Myanmar")
-    all_summaries += process_and_summarize_articles(articles3, "Mizzima", seen_urls)
+    all_summaries += process_and_summarize_articles(articles3, "Mizzima")
     # all_summaries += process_and_summarize_articles(get_vom_articles_for(yesterday), "Voice of Myanmar")
     # all_summaries += process_and_summarize_articles(get_ludu_articles_for(yesterday), "Ludu Wayoo")
-    all_summaries += process_and_summarize_articles(articles6, "BBC Burmese", seen_urls)
-    all_summaries += process_and_summarize_articles(articles7, "YKT News", seen_urls)
+    all_summaries += process_and_summarize_articles(articles6, "BBC Burmese")
+    # all_summaries += process_and_summarize_articles(get_yktnews_articles_for(yesterday), "YKT News")
 
     send_email_digest(all_summaries)
