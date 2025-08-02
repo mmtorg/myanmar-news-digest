@@ -449,6 +449,10 @@ def process_and_summarize_articles(articles, source_name, seen_urls=None):
 
             translated_title = translate_text_only(art["title"])  # タイトル翻訳
             summary = translate_and_summarize(text)  # 本文要約・翻訳
+
+            print(summary)
+            sys.exit(1)
+            
             # 改行を <br> に置換
             summary_html = summary.replace("\n", "<br>")
             # summary_html = markdown_to_html(summary)  # HTML整形
