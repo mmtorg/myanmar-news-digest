@@ -335,7 +335,7 @@ def translate_and_summarize(text: str) -> str:
 
     prompt = (
         "以下はbbc burmeseの記事です。記事の内容について重要なポイントをまとめ、具体的に解説してください。\n\n"
-        "改行や箇条書きを適切に使って見やすく整理してください。マークダウン形式を使ってもよいです。\n\n"
+        "マークダウン形式を使って見やすく整理してください。\n\n"
         "文字数は最大700文字までとします。自然な日本語に訳してください。\n\n"
         "全体に対する解説は不要です、各記事に対する個別の解説のみとしてください。\n\n"
         "レスポンスでは解説のみを返してください、それ以外の文言は不要です。\n\n"
@@ -406,7 +406,9 @@ def process_and_summarize_articles(articles, source_name):
     return results
 
 def markdown_to_html(text):
-    # 「-」や「*」で始まる箇条書きを <ul><li>…</li></ul> に変換
+    # **bold** を <strong>bold</strong> に変換
+    text = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', text)
+
     lines = text.splitlines()
     html_lines = []
     in_list = False
@@ -420,7 +422,8 @@ def markdown_to_html(text):
             if in_list:
                 html_lines.append("</ul>")
                 in_list = False
-            html_lines.append(f"<p>{line.strip()}</p>")
+            if line.strip():
+                html_lines.append(f"<p>{line.strip()}</p>")
     if in_list:
         html_lines.append("</ul>")
     return "\n".join(html_lines)
