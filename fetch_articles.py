@@ -520,7 +520,7 @@ if __name__ == "__main__":
     #     print(f"{art['date']} - {art['title']}\n{art['url']}\n")
 
     print("=== Mizzima ===")
-    articles3 = get_mizzima_articles_for(yesterday_mmt)
+    articles3 = get_mizzima_articles_for(yesterday_mmt, seen_urls)
     for art in articles3:
         print(f"{art['date']} - {art['title']}\n{art['url']}\n")
 
@@ -540,7 +540,7 @@ if __name__ == "__main__":
         print(f"{art['date']} - {art['title']}\n{art['url']}\n")
 
     print("=== YKT News ===")
-    articles7 = get_yktnews_articles_for(yesterday_mmt)
+    articles7 = get_yktnews_articles_for(yesterday_mmt, seen_urls)
     for art in articles7:
         print(f"{art['date']} - {art['title']}\n{art['url']}\n")
 
