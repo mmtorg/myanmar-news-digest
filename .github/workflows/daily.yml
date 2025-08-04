@@ -25,24 +25,12 @@ jobs:
           python-version: '3.10'
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      - name: Install dependencies
-        run: |
-          pip install requests beautifulsoup4 python-dateutil lxml
-
-      - name: Install dependencies
-        run: |
-          pip install --upgrade google-genai
-          pip install --upgrade google-api-core
-
-      - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install sentence-transformers==2.2.2 huggingface_hub==0.25.2
+          pip install -r requirements.txt
+          pip install fugashi[unidic-lite] ipadic
+          pip install --upgrade google-genai google-api-core
           rm -rf ~/.cache/huggingface
-      - name: Run fetch script
-        run: python fetch_articles.py
 
-      - name: Run script
+      - name: Run fetch script
         run: python fetch_articles.py
