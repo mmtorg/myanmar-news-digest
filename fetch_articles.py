@@ -19,6 +19,7 @@ import unicodedata
 from google import genai
 from google.api_core.exceptions import GoogleAPICallError
 from collections import defaultdict
+import time
 
 # Gemini
 client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
@@ -380,14 +381,17 @@ def get_yktnews_articles_for(date_obj):
 #         print(f"予期せぬエラー: {e}")
 #         return "（翻訳・要約に失敗しました）"
 
-def process_and_summarize_articles(articles, source_name, seen_urls=None):
+# 翻訳対象キュー
+translation_queue = []
+
+def process_and_enqueue_articles(articles, source_name, seen_urls=None):
     if seen_urls is None:
         seen_urls = set()
 
-    results = []
+    queued_items = []
     for art in articles:
         if art['url'] in seen_urls:
-            continue  # 重複URLはスキップ
+            continue
         seen_urls.add(art['url'])
 
         try:
@@ -396,11 +400,30 @@ def process_and_summarize_articles(articles, source_name, seen_urls=None):
             paragraphs = soup.find_all("p")
             body_text = "\n".join(p.get_text(strip=True) for p in paragraphs)
 
-            # タイトル＋本文をまとめてプロンプト作成
+            queued_items.append({
+                "source": source_name,
+                "url": art["url"],
+                "title": art["title"],  # 翻訳前タイトル
+                "body": body_text,      # 翻訳前本文
+            })
+        except Exception as e:
+            print(f"Error processing {art['url']}: {e}")
+            continue
+
+    translation_queue.extend(queued_items)
+
+def process_translation_batches(batch_size=10, wait_seconds=60):
+    summarized_results = []
+
+    for i in range(0, len(translation_queue), batch_size):
+        batch = translation_queue[i:i + batch_size]
+        print(f"⚙️ Processing batch {i // batch_size + 1}...")
+
+        for item in batch:
             prompt = (
                 "以下は記事のタイトルです。自然な日本語に翻訳し「タイトル: ◯◯」とレスポンスでは返してください。それ以外の文言は不要です。\n"
                 "###\n"
-                f"{art['title']}\n"
+                f"{item['title']}\n"
                 "###\n\n"
                 "以下の記事の本文について重要なポイントをまとめ具体的に要約してください。自然な日本語に訳してください。\n"
                 "個別記事の本文の要約のみとしてください。メディアの説明やページ全体の解説は不要です。\n"
@@ -413,41 +436,46 @@ def process_and_summarize_articles(articles, source_name, seen_urls=None):
                 "- 箇条書きは「・」を使ってください。\n"
                 "- 文字数は最大500文字としてください。\n"
                 "###\n"
-                f"{body_text[:2000]}\n"
+                f"{item['body'][:2000]}\n"
                 "###"
             )
 
-            resp = client.models.generate_content(
-                model="gemini-2.5-flash-lite",
-                contents=prompt
-            )
-            output_text = resp.text.strip()
+            try:
+                resp = client.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=prompt
+                )
+                output_text = resp.text.strip()
 
-            # レスポンスからタイトル行と要約行をパース
-            lines = output_text.splitlines()
-            title_line = next((line for line in lines if line.startswith("タイトル:")), None)
-            summary_lines = [line for line in lines if line and not line.startswith("タイトル:")]
+                # パース
+                lines = output_text.splitlines()
+                title_line = next((line for line in lines if line.startswith("タイトル:")), None)
+                summary_lines = [line for line in lines if line and not line.startswith("タイトル:")]
 
-            if title_line:
-                translated_title = title_line.replace("タイトル:", "").strip()
-            else:
-                translated_title = "（翻訳失敗）"
+                if title_line:
+                    translated_title = title_line.replace("タイトル:", "").strip()
+                else:
+                    translated_title = "（翻訳失敗）"
 
-            summary_text = "\n".join(summary_lines).strip()
-            summary_html = summary_text.replace("\n", "<br>")
+                summary_text = "\n".join(summary_lines).strip()
+                summary_html = summary_text.replace("\n", "<br>")
 
-            results.append({
-                "source": source_name,
-                "url": art["url"],
-                "title": translated_title,
-                "summary": summary_html,
-            })
+                summarized_results.append({
+                    "source": item["source"],
+                    "url": item["url"],
+                    "title": translated_title,
+                    "summary": summary_html,
+                })
 
-        except Exception as e:
-            print(f"🛑 Error processing {art['url']}: {e}")
-            continue
+            except Exception as e:
+                print(f"🛑 Error during translation: {e}")
+                continue
 
-    return results
+        if i + batch_size < len(translation_queue):
+            print(f"🕒 Waiting {wait_seconds} seconds before next batch...")
+            time.sleep(wait_seconds)
+
+    return summarized_results
 
 def send_email_digest(summaries):
     sender_email = "yasu.23721740311@gmail.com"
@@ -516,14 +544,16 @@ def send_email_digest(summaries):
 
 if __name__ == "__main__":
     yesterday_mmt = get_yesterday_date_mmt()
+    seen_urls = set()
+    
     # articles = get_frontier_articles_for(yesterday)
     # for art in articles:
     #     print(f"{art['date']} - {art['title']}\n{art['url']}\n")
 
+    # 記事取得＆キューに貯める
     print("=== Mizzima ===")
     articles3 = get_mizzima_articles_for(yesterday_mmt)
-    for art in articles3:
-        print(f"{art['date']} - {art['title']}\n{art['url']}\n")
+    process_and_enqueue_articles(articles3, "Mizzima", seen_urls)
 
     # print("=== Voice of Myanmar ===")
     # articles4 = get_vom_articles_for(yesterday)
@@ -537,20 +567,13 @@ if __name__ == "__main__":
 
     print("=== BBC Burmese ===")
     articles6 = get_bbc_burmese_articles_for(yesterday_mmt)
-    for art in articles6:
-        print(f"{art['date']} - {art['title']}\n{art['url']}\n")
+    process_and_enqueue_articles(articles6, "BBC Burmese", seen_urls)
 
     print("=== YKT News ===")
     articles7 = get_yktnews_articles_for(yesterday_mmt)
-    for art in articles7:
-        print(f"{art['date']} - {art['title']}\n{art['url']}\n")
+    process_and_enqueue_articles(articles7, "YKT News", seen_urls)
 
-    all_summaries = []
-    # all_summaries += process_and_summarize_articles(get_frontier_articles_for(yesterday), "Frontier Myanmar")
-    all_summaries += process_and_summarize_articles(articles3, "Mizzima")
-    # all_summaries += process_and_summarize_articles(get_vom_articles_for(yesterday), "Voice of Myanmar")
-    # all_summaries += process_and_summarize_articles(get_ludu_articles_for(yesterday), "Ludu Wayoo")
-    all_summaries += process_and_summarize_articles(articles6, "BBC Burmese")
-    all_summaries += process_and_summarize_articles(articles7, "YKT News")
+    # バッチ翻訳実行 (10件ごとに1分待機)
+    all_summaries = process_translation_batches(batch_size=10, wait_seconds=60)
 
     send_email_digest(all_summaries)
