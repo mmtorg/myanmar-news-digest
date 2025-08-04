@@ -508,11 +508,11 @@ def process_translation_batches(batch_size=10, wait_seconds=60):
 
                 # パース
                 lines = output_text.splitlines()
-                title_line = next((line for line in lines if line.startswith("タイトル:")), None)
-                summary_lines = [line for line in lines if line and not line.startswith("タイトル:")]
+                title_line = next((line for line in lines if line.startswith("【タイトル】")), None)
+                summary_lines = [line for line in lines if line and not line.startswith("【タイトル】")]
 
                 if title_line:
-                    translated_title = title_line.replace("タイトル:", "").strip()
+                    translated_title = title_line.replace("【タイトル】", "").strip()
                 else:
                     translated_title = "（翻訳失敗）"
 
