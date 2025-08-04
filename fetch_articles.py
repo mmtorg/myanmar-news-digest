@@ -30,10 +30,9 @@ client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 # ミャンマー標準時 (UTC+6:30)
 MMT = timezone(timedelta(hours=6, minutes=30))
 
-def get_yesterday_date_mmt():
+def get_today_date_mmt():
     now_mmt = datetime.now(MMT)
-    yesterday_mmt = now_mmt - timedelta(days=1)
-    return yesterday_mmt.date()
+    return now_mmt.date()
 
 def clean_html_content(html: str) -> str:
     html = html.replace("\xa0", " ").replace("&nbsp;", " ")
@@ -486,8 +485,8 @@ def send_email_digest(summaries):
     # sender_pass = os.getenv("GMAIL_APP_PASSWORD")
     # recipient_emails = os.getenv("EMAIL_RECIPIENTS", "").split(",")
 
-    # ✅ 昨日の日付を取得してフォーマット
-    digest_date = get_yesterday_date_mmt()
+    # ✅ 今日の日付を取得してフォーマット
+    digest_date = get_today_date_mmt()
     date_str = digest_date.strftime("%Y年%-m月%-d日") + "分"
 
     # メディアごとにまとめる
@@ -543,7 +542,7 @@ def send_email_digest(summaries):
         sys.exit(1)
 
 if __name__ == "__main__":
-    yesterday_mmt = get_yesterday_date_mmt()
+    today_mmt = get_today_date_mmt()
     seen_urls = set()
     
     # articles = get_frontier_articles_for(yesterday)
