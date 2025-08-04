@@ -45,7 +45,8 @@ def get_yesterday_date_mmt():
 #     return now_mmt.date()
 
 # 共通キーワードリスト（全メディア共通で使用する）
-NEWS_KEYWORDS = ["မြန်မာ", "ဗမာ", "အောင်ဆန်းစုကြည်", "မင်းအောင်လှိုင်", "Myanmar", "Burma"]
+NEWS_KEYWORDS = ["မြန်မာ", "မြန်မာ့", "ရန်ကုန်", "ဗမာ", "အောင်ဆန်းစုကြည်", "မင်းအောင်လှိုင်", "Myanmar", "Burma", "Yangon"]
+NEWS_KEYWORDS = [unicodedata.normalize('NFC', kw) for kw in NEWS_KEYWORDS]
 
 def clean_html_content(html: str) -> str:
     html = html.replace("\xa0", " ").replace("&nbsp;", " ")
@@ -93,8 +94,7 @@ def get_frontier_articles_for(date_obj):
 
     return filtered_articles
 
-def get_mizzima_articles_for(date_obj):
-    base_url = "https://eng.mizzima.com"
+def get_mizzima_articles_for(date_obj, base_url, source_name):
     list_url = base_url  # トップページ
     res = requests.get(list_url, timeout=10)
     soup = BeautifulSoup(res.content, "html.parser")
@@ -121,15 +121,27 @@ def get_mizzima_articles_for(date_obj):
                 continue
             title = title_tag.get_text(strip=True)
 
-            # 本文取得
+            # 本文取得 (フォールバック方式)
             paragraphs = soup_article.select("div.entry-content p")
+            if not paragraphs:
+                paragraphs = soup_article.select("div.node-content p")
+            if not paragraphs:
+                paragraphs = soup_article.select("article p")
+            if not paragraphs:
+                paragraphs = soup_article.find_all("p")  # 最終手段：全Pタグを取る
+                
             body_text = "\n".join(p.get_text(strip=True) for p in paragraphs)
+            body_text = unicodedata.normalize('NFC', body_text)
+
+            if not body_text.strip():
+                continue  # 本文が空ならスキップ
 
             # タイトルor本文にキーワードがあれば対象とする
             if not any(keyword in title or keyword in body_text for keyword in NEWS_KEYWORDS):
                 continue
 
             filtered_articles.append({
+                "source": source_name,
                 "url": url,
                 "title": title,
                 "date": date_obj.isoformat()
@@ -237,6 +249,8 @@ def get_bbc_burmese_articles_for(target_date_mmt):
             article_soup = BeautifulSoup(article_res.content, "html.parser")
             paragraphs = article_soup.find_all("p")
             body_text = "\n".join(p.get_text(strip=True) for p in paragraphs)
+            # ここでNFC正規化を追加
+            body_text = unicodedata.normalize('NFC', body_text)
 
             if not any(keyword in title or keyword in body_text for keyword in NEWS_KEYWORDS):
                 continue  # キーワードが含まれていなければ除外
@@ -323,16 +337,12 @@ def get_yktnews_articles_for(date_obj):
             # 日付チェック
             time_tag = soup_article.select_one("div.tdb-block-inner time.entry-date")
             if not time_tag or not time_tag.has_attr("datetime"):
-                print(f"❌ 日付タグが見つからない or datetime属性が無い: {url}")
                 continue
 
             date_str = time_tag["datetime"]
             article_date = datetime.fromisoformat(date_str).astimezone(MMT).date()
             if article_date != date_obj:
-                print(f"⏩ 日付不一致: {article_date} != {date_obj} → {url}")
                 continue  # 昨日の日付でなければスキップ
-
-            print(f"✅ 日付一致: {date_str} == {target_date_str} → {url}")
 
             # タイトル取得
             title_tag = soup_article.find("h1")
@@ -340,9 +350,17 @@ def get_yktnews_articles_for(date_obj):
                 continue
             title = title_tag.get_text(strip=True)
 
-            # 本文取得
+            # 本文取得 (フォールバック方式)
             paragraphs = soup_article.select("div.tdb-block-inner p")
+            if not paragraphs:
+                paragraphs = soup_article.select("div.tdb_single_content p")
+            if not paragraphs:
+                paragraphs = soup_article.select("article p")
+            if not paragraphs:
+                paragraphs = soup_article.find_all("p")  # 最終手段：全Pタグ
+            
             body_text = "\n".join(p.get_text(strip=True) for p in paragraphs)
+            body_text = unicodedata.normalize('NFC', body_text)
 
             if not body_text.strip():
                 continue  # 本文が空ならスキップ
@@ -393,10 +411,17 @@ def get_yktnews_articles_for(date_obj):
 #         return "（翻訳・要約に失敗しました）"
 
 # BERT埋め込みで類似記事判定
-media_priority = {"BBC Burmese": 1, "Mizzima": 2, "YKT News": 3}
 def deduplicate_articles(articles, similarity_threshold=0.92):
     if not articles:
         return []
+
+    # 重複した場合の記事優先度
+    media_priority = {
+    "BBC Burmese": 1,
+    "Mizzima (English)": 2,
+    "Mizzima (Burmese)": 3,
+    "YKT News": 4
+    }
 
     model = SentenceTransformer('cl-tohoku/bert-base-japanese-v2')
     texts = [art['title'] + " " + art['body'][:300] for art in articles]  # 本文は先頭300文字だけ
@@ -607,9 +632,13 @@ if __name__ == "__main__":
     #     print(f"{art['date']} - {art['title']}\n{art['url']}\n")
 
     # 記事取得＆キューに貯める
-    print("=== Mizzima ===")
-    articles3 = get_mizzima_articles_for(date_mmt)
-    process_and_enqueue_articles(articles3, "Mizzima", seen_urls)
+    print("=== Mizzima (English) ===")
+    articles_eng = get_mizzima_articles_for(date_mmt, "https://eng.mizzima.com", "Mizzima (English)")
+    process_and_enqueue_articles(articles_eng, "Mizzima (English)", seen_urls)
+    
+    print("=== Mizzima (Burmese) ===")
+    articles_bur = get_mizzima_articles_for(date_mmt, "https://bur.mizzima.com", "Mizzima (Burmese)")
+    process_and_enqueue_articles(articles_bur, "Mizzima (Burmese)", seen_urls)
 
     # print("=== Voice of Myanmar ===")
     # articles4 = get_vom_articles_for(date_mmt)
