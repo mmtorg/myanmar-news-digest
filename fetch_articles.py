@@ -44,6 +44,9 @@ def get_yesterday_date_mmt():
 #     now_mmt = datetime.now(MMT)
 #     return now_mmt.date()
 
+# 共通キーワードリスト（全メディア共通で使用する）
+NEWS_KEYWORDS = ["မြန်မာ", "ဗမာ", "အောင်ဆန်းစုကြည်", "မင်းအောင်လှိုင်", "Myanmar", "Burma"]
+
 def clean_html_content(html: str) -> str:
     html = html.replace("\xa0", " ").replace("&nbsp;", " ")
     # 制御文字（カテゴリC）を除外、可視Unicodeはそのまま
@@ -102,7 +105,6 @@ def get_mizzima_articles_for(date_obj):
     article_urls = [a["href"] for a in links if date_pattern.search(a["href"])]
 
     target_date_str = date_obj.strftime("%Y/%m/%d")  # 例: "2025/08/02"
-    keywords = ["မြန်မာ", "ဗမာ", "အောင်ဆန်းစုကြည်", "မင်းအောင်လှိုင်", "Myanmar", "Burma"]
 
     filtered_articles = []
     for url in article_urls:
@@ -124,7 +126,7 @@ def get_mizzima_articles_for(date_obj):
             body_text = "\n".join(p.get_text(strip=True) for p in paragraphs)
 
             # タイトルor本文にキーワードがあれば対象とする
-            if not any(keyword in title or keyword in body_text for keyword in keywords):
+            if not any(keyword in title or keyword in body_text for keyword in NEWS_KEYWORDS):
                 continue
 
             filtered_articles.append({
@@ -211,8 +213,6 @@ def get_bbc_burmese_articles_for(target_date_mmt):
     res = requests.get(rss_url, timeout=10)
     soup = BeautifulSoup(res.content, "xml")
 
-    keywords = ["မြန်မာ", "ဗမာ", "အောင်ဆန်းစုကြည်", "မင်းအောင်လှိုင်", "Myanmar", "Burma"]
-
     articles = []
     for item in soup.find_all("item"):
         pub_date_tag = item.find("pubDate")
@@ -238,7 +238,7 @@ def get_bbc_burmese_articles_for(target_date_mmt):
             paragraphs = article_soup.find_all("p")
             body_text = "\n".join(p.get_text(strip=True) for p in paragraphs)
 
-            if not any(keyword in title or keyword in body_text for keyword in keywords):
+            if not any(keyword in title or keyword in body_text for keyword in NEWS_KEYWORDS):
                 continue  # キーワードが含まれていなければ除外
 
             print(f"✅ 抽出記事: {title} ({link})")  # ログ出力で抽出記事確認
@@ -309,7 +309,6 @@ def get_yktnews_articles_for(date_obj):
 
     target_date_str = date_obj.strftime("%Y-%m-%d")  # 例: "2025-08-02"
     target_month_str = date_obj.strftime("%Y/%m")  # 例: "2025/08"
-    keywords = ["မြန်မာ", "ဗမာ", "အောင်ဆန်းစုကြည်", "မင်းအောင်လှိုင်", "Myanmar", "Burma"]
 
     filtered_articles = []
     for url in article_urls:
@@ -345,8 +344,11 @@ def get_yktnews_articles_for(date_obj):
             paragraphs = soup_article.select("div.tdb-block-inner p")
             body_text = "\n".join(p.get_text(strip=True) for p in paragraphs)
 
+            if not body_text.strip():
+                continue  # 本文が空ならスキップ
+
             # タイトルor本文にキーワードがあれば対象とする
-            if not any(keyword in title or keyword in body_text for keyword in keywords):
+            if not any(keyword in title or keyword in body_text for keyword in NEWS_KEYWORDS):
                 continue
 
             filtered_articles.append({
@@ -396,8 +398,14 @@ def deduplicate_articles(articles, similarity_threshold=0.92):
     if not articles:
         return []
 
+    # キーワードフィルター
+    filtered_articles = [
+    art for art in articles
+    if any(kw in art['title'] or kw in art['body'] for kw in NEWS_KEYWORDS)
+    ]
+
     model = SentenceTransformer('cl-tohoku/bert-base-japanese-v2')
-    texts = [art['title'] + " " + art['body'][:300] for art in articles]  # 本文は先頭300文字だけ
+    texts = [art['title'] + " " + art['body'][:300] for art in filtered_articles]  # 本文は先頭300文字だけ
     embeddings = model.encode(texts, convert_to_tensor=True)
 
     cosine_scores = util.pytorch_cos_sim(embeddings, embeddings).cpu().numpy()
@@ -471,7 +479,7 @@ def process_translation_batches(batch_size=10, wait_seconds=60):
 
         for item in batch:
             prompt = (
-                "以下は記事のタイトルです。自然な日本語に翻訳し「タイトル: ◯◯」とレスポンスでは返してください。それ以外の文言は不要です。\n"
+                "以下は記事のタイトルです。自然な日本語に翻訳し「【タイトル】 ◯◯」とレスポンスでは返してください。それ以外の文言は不要です。\n"
                 "###\n"
                 f"{item['title']}\n"
                 "###\n\n"
@@ -479,6 +487,7 @@ def process_translation_batches(batch_size=10, wait_seconds=60):
                 "個別記事の本文の要約のみとしてください。メディアの説明やページ全体の解説は不要です。\n"
                 "レスポンスでは要約のみを返してください、それ以外の文言は不要です。\n"
                 "以下、出力の条件です。\n"
+                "- 1行目は「【要約】」とだけしてください。"
                 "- 見出しや箇条書きを適切に使って見やすく整理してください。\n"
                 "- 見出しや箇条書きにはマークダウン記号（#, *, - など）は使わず、単純なテキストとして出力してください。\n"
                 "- テキストが入っていない改行は作らないでください。\n"
