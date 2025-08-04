@@ -399,7 +399,7 @@ def deduplicate_articles(articles, similarity_threshold=0.92):
         return []
 
     model = SentenceTransformer('cl-tohoku/bert-base-japanese-v2')
-    texts = [art['title'] + " " + art['body'][:300] for art in filtered_articles]  # 本文は先頭300文字だけ
+    texts = [art['title'] + " " + art['body'][:300] for art in articles]  # 本文は先頭300文字だけ
     embeddings = model.encode(texts, convert_to_tensor=True)
 
     cosine_scores = util.pytorch_cos_sim(embeddings, embeddings).cpu().numpy()
