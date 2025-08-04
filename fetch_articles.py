@@ -32,9 +32,17 @@ client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 # ミャンマー標準時 (UTC+6:30)
 MMT = timezone(timedelta(hours=6, minutes=30))
 
-def get_today_date_mmt():
+# 昨日の日付
+# ミャンマー時間で正午でもBBCの当日のニュースは配信されないので、昨日の日付のニュースを取得することとしてる
+def get_yesterday_date_mmt():
     now_mmt = datetime.now(MMT)
-    return now_mmt.date()
+    yesterday_mmt = now_mmt - timedelta(days=1)
+    return yesterday_mmt.date()
+
+# 今日の日付
+# def get_today_date_mmt():
+#     now_mmt = datetime.now(MMT)
+#     return now_mmt.date()
 
 def clean_html_content(html: str) -> str:
     html = html.replace("\xa0", " ").replace("&nbsp;", " ")
@@ -519,7 +527,8 @@ def send_email_digest(summaries):
     # recipient_emails = os.getenv("EMAIL_RECIPIENTS", "").split(",")
 
     # ✅ 今日の日付を取得してフォーマット
-    digest_date = get_today_date_mmt()
+    digest_date = get_yesterday_date_mmt()
+    # digest_date = get_today_date_mmt()
     date_str = digest_date.strftime("%Y年%-m月%-d日") + "分"
 
     # メディアごとにまとめる
@@ -575,34 +584,35 @@ def send_email_digest(summaries):
         sys.exit(1)
 
 if __name__ == "__main__":
-    today_mmt = get_today_date_mmt()
+    date_mmt = get_yesterday_date_mmt()
+    # date_mmt = get_today_date_mmt()
     seen_urls = set()
     
-    # articles = get_frontier_articles_for(yesterday)
+    # articles = get_frontier_articles_for(date_mmt)
     # for art in articles:
     #     print(f"{art['date']} - {art['title']}\n{art['url']}\n")
 
     # 記事取得＆キューに貯める
     print("=== Mizzima ===")
-    articles3 = get_mizzima_articles_for(today_mmt)
+    articles3 = get_mizzima_articles_for(date_mmt)
     process_and_enqueue_articles(articles3, "Mizzima", seen_urls)
 
     # print("=== Voice of Myanmar ===")
-    # articles4 = get_vom_articles_for(yesterday)
+    # articles4 = get_vom_articles_for(date_mmt)
     # for art in articles4:
     #     print(f"{art['date']} - {art['title']}\n{art['url']}\n")
 
     # print("=== Ludu Wayoo ===")
-    # articles5 = get_ludu_articles_for(yesterday)
+    # articles5 = get_ludu_articles_for(date_mmt)
     # for art in articles5:
     #     print(f"{art['date']} - {art['title']}\n{art['url']}\n")
 
     print("=== BBC Burmese ===")
-    articles6 = get_bbc_burmese_articles_for(today_mmt)
+    articles6 = get_bbc_burmese_articles_for(date_mmt)
     process_and_enqueue_articles(articles6, "BBC Burmese", seen_urls)
 
     print("=== YKT News ===")
-    articles7 = get_yktnews_articles_for(today_mmt)
+    articles7 = get_yktnews_articles_for(date_mmt)
     process_and_enqueue_articles(articles7, "YKT News", seen_urls)
 
     # ✅ 全記事取得後 → BERT類似度で重複排除
