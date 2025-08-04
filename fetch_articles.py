@@ -366,7 +366,7 @@ def translate_text_only(text: str) -> str:
 
     try:
         resp = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-2.5-flash-lite",
             contents=prompt
         )
         return resp.text.strip()
@@ -385,7 +385,7 @@ def translate_and_summarize(text: str) -> str:
         "個別記事の本文の要約のみとしてください。メディアの説明やページ全体の解説は不要です。\n\n"
         "レスポンスでは要約のみを返してください、それ以外の文言は不要です。\n\n"
         "以下、出力の条件です\n\n"
-        "- 改行や箇条書きを適切に使って見やすく整理してください。\n\n"
+        "- 見出しや箇条書きを適切に使って見やすく整理してください。\n\n"
         "- 見出しや箇条書きにはマークダウン記号（#, *, - など）は使わず、単純なテキストとして出力してください。\n\n"
         "- 全体をHTMLで送るわけではないので、特殊記号は使わないでください。\n\n"
         "- 箇条書きは「・」を使ってください。\n\n"
