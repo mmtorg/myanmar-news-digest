@@ -2,7 +2,7 @@ name: Daily Myanmar News Digest
 
 on:
   schedule:
-    - cron: '30 0 * * *'  # ミャンマー時間 7:00（UTC+6.5）
+    - cron: '30 23 * * *'  # ミャンマー時間 6:00AM
   workflow_dispatch:
 
 jobs:
