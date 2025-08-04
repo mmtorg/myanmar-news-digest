@@ -1,7 +1,12 @@
-requests
-beautifulsoup4
-openai
-python-dateutil
 sentence-transformers==2.2.2
 huggingface_hub==0.25.2
 torch>=1.10.0
+fugashi[unidic-lite]
+ipadic
+transformers>=4.30.0
+requests
+beautifulsoup4
+python-dateutil
+lxml
+google-genai
+google-api-core
