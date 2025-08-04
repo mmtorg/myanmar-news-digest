@@ -45,7 +45,7 @@ def get_yesterday_date_mmt():
 #     return now_mmt.date()
 
 # 共通キーワードリスト（全メディア共通で使用する）
-NEWS_KEYWORDS = ["မြန်မာ", "မြန်မာ့", "ရန်ကုန်", "ဗမာ", "အောင်ဆန်းစုကြည်", "မင်းအောင်လှိုင်", "Myanmar", "Burma", "Yangon"]
+NEWS_KEYWORDS = ["မြန်မာ", "မြန်မာ့", "ဗမာ", "အောင်ဆန်းစုကြည်", "မင်းအောင်လှိုင်", "Myanmar", "Burma"]
 NEWS_KEYWORDS = [unicodedata.normalize('NFC', kw) for kw in NEWS_KEYWORDS]
 
 def clean_html_content(html: str) -> str:
@@ -513,11 +513,11 @@ def process_translation_batches(batch_size=10, wait_seconds=60):
                 "- 1行目は「【要約】」とだけしてください。"
                 "- 見出しや箇条書きを適切に使って見やすく整理してください。\n"
                 "- 見出しや箇条書きにはマークダウン記号（#, *, - など）は使わず、単純なテキストとして出力してください。\n"
-                "- 見出しは `[]` で囲んでください。\n"
+                "- 見出しは `[  ]` で囲んでください。\n"
                 "- テキストが入っていない改行は作らないでください。\n"
                 "- 全体をHTMLで送るわけではないので、特殊記号は使わないでください。\n"
                 "- 箇条書きは「・」を使ってください。\n"
-                "- 文字数は最大500文字としてください。\n"
+                "- 要約の文字数は最大500文字を超えてはいけません。\n"
                 "###\n"
                 f"{item['body'][:2000]}\n"
                 "###"
