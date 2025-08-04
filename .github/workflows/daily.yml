@@ -10,11 +10,11 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
-      EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
-      EMAIL_RECIPIENTS: ${{ secrets.EMAIL_RECIPIENTS }}
-      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      OPENAI_API_KEY: ${{ vars.OPENAI_API_KEY }}
+      GMAIL_APP_PASSWORD: ${{ vars.GMAIL_APP_PASSWORD }}
+      EMAIL_SENDER: ${{ vars.EMAIL_SENDER }}
+      EMAIL_RECIPIENTS: ${{ vars.EMAIL_RECIPIENTS }}
+      GEMINI_API_KEY: ${{ vars.GEMINI_API_KEY }}
 
     steps:
       - uses: actions/checkout@v3
