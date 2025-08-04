@@ -398,12 +398,6 @@ def deduplicate_articles(articles, similarity_threshold=0.92):
     if not articles:
         return []
 
-    # キーワードフィルター
-    filtered_articles = [
-    art for art in articles
-    if any(kw in art['title'] or kw in art['body'] for kw in NEWS_KEYWORDS)
-    ]
-
     model = SentenceTransformer('cl-tohoku/bert-base-japanese-v2')
     texts = [art['title'] + " " + art['body'][:300] for art in filtered_articles]  # 本文は先頭300文字だけ
     embeddings = model.encode(texts, convert_to_tensor=True)
@@ -458,6 +452,10 @@ def process_and_enqueue_articles(articles, source_name, seen_urls=None):
             paragraphs = soup.find_all("p")
             body_text = "\n".join(p.get_text(strip=True) for p in paragraphs)
 
+            # ★ここでNEWS_KEYWORDSフィルターをかける
+            if not any(keyword in art['title'] or keyword in body_text for keyword in NEWS_KEYWORDS):
+                continue  # キーワード含まれてなければスキップ
+
             queued_items.append({
                 "source": source_name,
                 "url": art["url"],
@@ -490,6 +488,7 @@ def process_translation_batches(batch_size=10, wait_seconds=60):
                 "- 1行目は「【要約】」とだけしてください。"
                 "- 見出しや箇条書きを適切に使って見やすく整理してください。\n"
                 "- 見出しや箇条書きにはマークダウン記号（#, *, - など）は使わず、単純なテキストとして出力してください。\n"
+                "- 見出しは `[]` で囲んでください。\n"
                 "- テキストが入っていない改行は作らないでください。\n"
                 "- 全体をHTMLで送るわけではないので、特殊記号は使わないでください。\n"
                 "- 箇条書きは「・」を使ってください。\n"
