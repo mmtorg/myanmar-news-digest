@@ -20,6 +20,8 @@ from google import genai
 from google.api_core.exceptions import GoogleAPICallError
 from collections import defaultdict
 import time
+# 記事重複排除ロジック(BERT埋め込み版)のライブラリインポート
+from sentence_transformers import SentenceTransformer, util
 
 # Gemini
 client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
@@ -380,6 +382,37 @@ def get_yktnews_articles_for(date_obj):
 #         print(f"予期せぬエラー: {e}")
 #         return "（翻訳・要約に失敗しました）"
 
+# BERT埋め込みで類似記事判定
+media_priority = {"BBC Burmese": 1, "Mizzima": 2, "YKT News": 3}
+def deduplicate_articles(articles, similarity_threshold=0.85):
+    if not articles:
+        return []
+
+    model = SentenceTransformer('cl-tohoku/bert-base-japanese-v2')
+    texts = [art['title'] + " " + art['body'] for art in articles]
+    embeddings = model.encode(texts, convert_to_tensor=True)
+
+    cosine_scores = util.pytorch_cos_sim(embeddings, embeddings).cpu().numpy()
+
+    visited = set()
+    unique_articles = []
+
+    for i in range(len(articles)):
+        if i in visited:
+            continue
+
+        group = [i]
+        for j in range(i + 1, len(articles)):
+            if cosine_scores[i][j] > similarity_threshold:
+                group.append(j)
+                visited.add(j)
+
+        group_sorted = sorted(group, key=lambda idx: media_priority.get(articles[idx]['source'], 99))
+        unique_articles.append(articles[group_sorted[0]])
+        visited.add(i)
+
+    return unique_articles
+
 # 翻訳対象キュー
 translation_queue = []
 
@@ -551,7 +584,7 @@ if __name__ == "__main__":
 
     # 記事取得＆キューに貯める
     print("=== Mizzima ===")
-    articles3 = get_mizzima_articles_for(yesterday_mmt)
+    articles3 = get_mizzima_articles_for(today_mmt)
     process_and_enqueue_articles(articles3, "Mizzima", seen_urls)
 
     # print("=== Voice of Myanmar ===")
@@ -565,12 +598,20 @@ if __name__ == "__main__":
     #     print(f"{art['date']} - {art['title']}\n{art['url']}\n")
 
     print("=== BBC Burmese ===")
-    articles6 = get_bbc_burmese_articles_for(yesterday_mmt)
+    articles6 = get_bbc_burmese_articles_for(today_mmt)
     process_and_enqueue_articles(articles6, "BBC Burmese", seen_urls)
 
     print("=== YKT News ===")
-    articles7 = get_yktnews_articles_for(yesterday_mmt)
+    articles7 = get_yktnews_articles_for(today_mmt)
     process_and_enqueue_articles(articles7, "YKT News", seen_urls)
+
+    # ✅ 全記事取得後 → BERT類似度で重複排除
+    print(f"⚙️ Deduplicating {len(translation_queue)} articles...")
+    deduplicated_articles = deduplicate_articles(translation_queue)
+
+    # translation_queue を重複排除後のリストに置き換え
+    translation_queue.clear()
+    translation_queue.extend(deduplicated_articles)
 
     # バッチ翻訳実行 (10件ごとに1分待機)
     all_summaries = process_translation_batches(batch_size=10, wait_seconds=60)
