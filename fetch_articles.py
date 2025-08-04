@@ -351,62 +351,6 @@ def get_yktnews_articles_for(date_obj):
 
     return filtered_articles
 
-# タイトル翻訳のみ、GeminiAPIを使う場合
-def translate_text_only(text: str) -> str:
-    if not text or not text.strip():
-        return "（翻訳に失敗しました）"
-
-    prompt = (
-        "以下は記事のタイトルです。日本語に訳してください。\n\n"
-        "レスポンスではタイトルの日本語訳のみを返してください、それ以外の文言は不要です。\n\n"
-        "###\n\n"
-        f"{text.strip()}\n\n"
-        "###"
-    )
-
-    try:
-        resp = client.models.generate_content(
-            model="gemini-2.5-flash-lite",
-            contents=prompt
-        )
-        return resp.text.strip()
-    except Exception as e:
-        print(f"🛑 タイトル翻訳エラー: {e}")
-        return "（翻訳に失敗しました）"
-
-# 本文翻訳＆要約、GeminiAPIを使う場合
-def translate_and_summarize(text: str) -> str:
-    if not text or not text.strip():
-        print("⚠️ 入力テキストが空です")
-        return "（翻訳・要約に失敗しました）"
-
-    prompt = (
-        "以下の記事の本文について重要なポイントをまとめ具体的に要約してください。自然な日本語に訳してください。\n\n"
-        "個別記事の本文の要約のみとしてください。メディアの説明やページ全体の解説は不要です。\n\n"
-        "レスポンスでは要約のみを返してください、それ以外の文言は不要です。\n\n"
-        "以下、出力の条件です\n\n"
-        "- 見出しや箇条書きを適切に使って見やすく整理してください。\n\n"
-        "- 見出しや箇条書きにはマークダウン記号（#, *, - など）は使わず、単純なテキストとして出力してください。\n\n"
-        "- 全体をHTMLで送るわけではないので、特殊記号は使わないでください。\n\n"
-        "- 箇条書きは「・」を使ってください。\n\n"
-        "- 文字数は最大500文字としてください。\n\n"
-        "###\n\n"
-        f"{text[:2000]}\n\n"
-        "###"
-    )
-
-    try:
-        resp = client.models.generate_content(
-            model="gemini-2.5-flash-lite",
-            contents=prompt
-        )
-        
-        return resp.text.strip()
-
-    except Exception as e:
-        print(f"🛑 Gemini API エラー: {e}")
-        return "（翻訳・要約に失敗しました）"
-
 
 # Chat GPT使う場合
 # def translate_and_summarize(text: str) -> str:
@@ -450,13 +394,47 @@ def process_and_summarize_articles(articles, source_name, seen_urls=None):
             res = requests.get(art['url'], timeout=10)
             soup = BeautifulSoup(res.content, "html.parser")
             paragraphs = soup.find_all("p")
-            text = "\n".join(p.get_text(strip=True) for p in paragraphs)
+            body_text = "\n".join(p.get_text(strip=True) for p in paragraphs)
 
-            translated_title = translate_text_only(art["title"])  # タイトル翻訳
-            summary = translate_and_summarize(text)  # 本文要約・翻訳
-            # 改行を <br> に置換
-            summary_html = summary.replace("\n", "<br>")
-            # summary_html = markdown_to_html(summary)  # HTML整形
+            # タイトル＋本文をまとめてプロンプト作成
+            prompt = (
+                "以下は記事のタイトルです。自然な日本語に翻訳し「タイトル: ◯◯」とレスポンスでは返してください。それ以外の文言は不要です。\n"
+                "###\n"
+                f"{art['title']}\n"
+                "###\n\n"
+                "以下の記事の本文について重要なポイントをまとめ具体的に要約してください。自然な日本語に訳してください。\n"
+                "個別記事の本文の要約のみとしてください。メディアの説明やページ全体の解説は不要です。\n"
+                "レスポンスでは要約のみを返してください、それ以外の文言は不要です。\n"
+                "以下、出力の条件です。\n"
+                "- 見出しや箇条書きを適切に使って見やすく整理してください。\n"
+                "- 見出しや箇条書きにはマークダウン記号（#, *, - など）は使わず、単純なテキストとして出力してください。\n"
+                "- テキストが入っていない改行は作らないでください。\n"
+                "- 全体をHTMLで送るわけではないので、特殊記号は使わないでください。\n"
+                "- 箇条書きは「・」を使ってください。\n"
+                "- 文字数は最大500文字としてください。\n"
+                "###\n"
+                f"{body_text[:2000]}\n"
+                "###"
+            )
+
+            resp = client.models.generate_content(
+                model="gemini-2.5-flash-lite",
+                contents=prompt
+            )
+            output_text = resp.text.strip()
+
+            # レスポンスからタイトル行と要約行をパース
+            lines = output_text.splitlines()
+            title_line = next((line for line in lines if line.startswith("タイトル:")), None)
+            summary_lines = [line for line in lines if line and not line.startswith("タイトル:")]
+
+            if title_line:
+                translated_title = title_line.replace("タイトル:", "").strip()
+            else:
+                translated_title = "（翻訳失敗）"
+
+            summary_text = "\n".join(summary_lines).strip()
+            summary_html = summary_text.replace("\n", "<br>")
 
             results.append({
                 "source": source_name,
@@ -464,64 +442,12 @@ def process_and_summarize_articles(articles, source_name, seen_urls=None):
                 "title": translated_title,
                 "summary": summary_html,
             })
+
         except Exception as e:
+            print(f"🛑 Error processing {art['url']}: {e}")
             continue
+
     return results
-
-def markdown_to_html(markdown_text):
-    html_lines = []
-    lines = markdown_text.splitlines()
-    i = 0
-    while i < len(lines):
-        line = lines[i].strip()
-
-        # 太字変換 (**text** → <strong>text</strong>)
-        line = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', line)
-
-        # セクション見出し（###）
-        if line.startswith("### "):
-            content = line[4:].strip()
-            html_lines.append(f"<h3 style='margin:0; padding:0;'>{content}</h3>")
-            i += 1
-            continue
-
-        # 箇条書きリスト ( - または * )
-        if line.startswith("- ") or line.startswith("* "):
-            content = line[2:].strip()
-            html_lines.append(f"<li style='margin:0; padding:0;'>{content}</li>")
-            i += 1
-            continue
-
-        # 番号付きリスト
-        if re.match(r"^\d+\.\s+", line):
-            content = re.sub(r"^\d+\.\s+", "", line)
-            html_lines.append(f"<li style='margin:0; padding:0;'>{content}</li>")
-            i += 1
-            continue
-
-        # 段落
-        if line:
-            html_lines.append(f"<p style='margin:0; padding:0;'>{line}</p>")
-        i += 1
-
-    # <li>タグを<ul>で囲む（ulにも左寄せ指定）
-    html_output = []
-    in_list = False
-    for line in html_lines:
-        if line.startswith("<li"):
-            if not in_list:
-                html_output.append("<ul style='margin:0; padding-left:0;'>")
-                in_list = True
-            html_output.append(line)
-        else:
-            if in_list:
-                html_output.append("</ul>")
-                in_list = False
-            html_output.append(line)
-    if in_list:
-        html_output.append("</ul>")
-
-    return "\n".join(html_output)
 
 def send_email_digest(summaries):
     sender_email = "yasu.23721740311@gmail.com"
