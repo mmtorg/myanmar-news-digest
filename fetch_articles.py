@@ -397,7 +397,7 @@ def translate_and_summarize(text: str) -> str:
 
     try:
         resp = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-2.5-flash-lite",
             contents=prompt
         )
         
