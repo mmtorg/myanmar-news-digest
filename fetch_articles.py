@@ -392,12 +392,12 @@ def get_yktnews_articles_for(date_obj):
 
 # BERT埋め込みで類似記事判定
 media_priority = {"BBC Burmese": 1, "Mizzima": 2, "YKT News": 3}
-def deduplicate_articles(articles, similarity_threshold=0.85):
+def deduplicate_articles(articles, similarity_threshold=0.92):
     if not articles:
         return []
 
     model = SentenceTransformer('cl-tohoku/bert-base-japanese-v2')
-    texts = [art['title'] + " " + art['body'] for art in articles]
+    texts = [art['title'] + " " + art['body'][:300] for art in articles]  # 本文は先頭300文字だけ
     embeddings = model.encode(texts, convert_to_tensor=True)
 
     cosine_scores = util.pytorch_cos_sim(embeddings, embeddings).cpu().numpy()
@@ -405,6 +405,16 @@ def deduplicate_articles(articles, similarity_threshold=0.85):
     visited = set()
     unique_articles = []
 
+    # まずタイトル完全一致グルーピング
+    title_seen = {}
+    for idx, art in enumerate(articles):
+        if art['title'] in title_seen:
+            continue  # すでに同じタイトルの記事が登録されていればスキップ
+        title_seen[art['title']] = idx
+        unique_articles.append(art)
+        visited.add(idx)
+
+    # 次にBERTベースの類似判定
     for i in range(len(articles)):
         if i in visited:
             continue
