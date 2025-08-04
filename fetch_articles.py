@@ -536,13 +536,9 @@ def process_translation_batches(batch_size=10, wait_seconds=60):
     return summarized_results
 
 def send_email_digest(summaries):
-    sender_email = "yasu.23721740311@gmail.com"
-    sender_pass = "sfqy saao bhhj dlwu"
-    # sender_pass = "mwdr ewpr ncfk vuuw"
-    recipient_emails = ["yasu.23721740311@gmail.com"]
-    # sender_email = os.getenv("EMAIL_SENDER")
-    # sender_pass = os.getenv("GMAIL_APP_PASSWORD")
-    # recipient_emails = os.getenv("EMAIL_RECIPIENTS", "").split(",")
+    sender_email = os.getenv("EMAIL_SENDER")
+    sender_pass = os.getenv("GMAIL_APP_PASSWORD")
+    recipient_emails = os.getenv("EMAIL_RECIPIENTS", "").split(",")
 
     # ✅ 今日の日付を取得してフォーマット
     digest_date = get_yesterday_date_mmt()
