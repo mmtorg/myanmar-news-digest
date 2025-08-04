@@ -36,5 +36,13 @@ jobs:
           pip install --upgrade google-genai
           pip install --upgrade google-api-core
 
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install sentence-transformers==2.2.2 huggingface_hub==0.25.2
+          rm -rf ~/.cache/huggingface
+      - name: Run fetch script
+        run: python fetch_articles.py
+
       - name: Run script
         run: python fetch_articles.py
