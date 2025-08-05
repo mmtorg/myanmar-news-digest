@@ -129,13 +129,6 @@ def get_mizzima_articles_for(date_obj, base_url, source_name):
                 paragraphs = soup_article.select("article p")
             if not paragraphs:
                 paragraphs = soup_article.find_all("p")  # 最終手段：全Pタグを取る
-
-            # # 除外する親クラスリスト
-            # EXCLUDE_PARENT_CLASSES = ["related-posts", "site-footer-top"]
-            # for p in paragraphs:
-            #     # 親に除外対象クラスが含まれていればスキップ
-            #     if any(p.find_parent(class_=cls) is not None for cls in EXCLUDE_PARENT_CLASSES):
-            #         continue
                 
             body_text = "\n".join(p.get_text(strip=True) for p in paragraphs)
             body_text = unicodedata.normalize('NFC', body_text)
@@ -259,10 +252,8 @@ def get_bbc_burmese_articles_for(target_date_mmt):
             # ここでNFC正規化を追加
             body_text = unicodedata.normalize('NFC', body_text)
 
-            # タイトルor本文にキーワードがあれば対象とする
-            pattern_list = [re.compile(rf'{re.escape(keyword)}[’\' ]?') for keyword in NEWS_KEYWORDS]
-            if not any(p.search(title) or p.search(body_text) for p in pattern_list):
-                continue
+            if not any(keyword in title or keyword in body_text for keyword in NEWS_KEYWORDS):
+                continue  # キーワードが含まれていなければ除外
 
             print(f"✅ 抽出記事: {title} ({link})")  # ログ出力で抽出記事確認
             articles.append({
@@ -375,8 +366,7 @@ def get_yktnews_articles_for(date_obj):
                 continue  # 本文が空ならスキップ
 
             # タイトルor本文にキーワードがあれば対象とする
-            pattern_list = [re.compile(rf'{re.escape(keyword)}[’\' ]?') for keyword in NEWS_KEYWORDS]
-            if not any(p.search(title) or p.search(body_text) for p in pattern_list):
+            if not any(keyword in title or keyword in body_text for keyword in NEWS_KEYWORDS):
                 continue
 
             filtered_articles.append({
@@ -420,18 +410,6 @@ def get_yktnews_articles_for(date_obj):
 #         print(f"予期せぬエラー: {e}")
 #         return "（翻訳・要約に失敗しました）"
 
-# 同じURLの重複削除
-def deduplicate_by_url(articles):
-    seen_urls = set()
-    unique_articles = []
-    for art in articles:
-        if art['url'] in seen_urls:
-            print(f"🛑 URL Duplicate Removed: {art['source']} | {art['title']} | {art['url']}")
-            continue
-        seen_urls.add(art['url'])
-        unique_articles.append(art)
-    return unique_articles
-
 # BERT埋め込みで類似記事判定
 def deduplicate_articles(articles, similarity_threshold=0.92):
     if not articles:
@@ -439,10 +417,10 @@ def deduplicate_articles(articles, similarity_threshold=0.92):
 
     # 重複した場合の記事優先度
     media_priority = {
-        "BBC Burmese": 1,
-        "Mizzima (English)": 2,
-        "Mizzima (Burmese)": 3,
-        "YKT News": 4
+    "BBC Burmese": 1,
+    "Mizzima (English)": 2,
+    "Mizzima (Burmese)": 3,
+    "YKT News": 4
     }
 
     model = SentenceTransformer('cl-tohoku/bert-base-japanese-v2')
@@ -458,8 +436,6 @@ def deduplicate_articles(articles, similarity_threshold=0.92):
     title_seen = {}
     for idx, art in enumerate(articles):
         if art['title'] in title_seen:
-            # デバック
-            print(f"🛑 Duplicate Title Found: '{art['title']}'\n - Kept: {articles[title_seen[art['title']]]['source']} | {articles[title_seen[art['title']]]['url']}\n - Removed: {art['source']} | {art['url']}")
             continue  # すでに同じタイトルの記事が登録されていればスキップ
         title_seen[art['title']] = idx
         unique_articles.append(art)
@@ -473,8 +449,6 @@ def deduplicate_articles(articles, similarity_threshold=0.92):
         group = [i]
         for j in range(i + 1, len(articles)):
             if cosine_scores[i][j] > similarity_threshold:
-                # デバック
-                print(f"🛑 BERT Duplicate Found:\n - Kept Candidate: {articles[i]['source']} | {articles[i]['title']} | {articles[i]['url']}\n - Removed Candidate: {articles[j]['source']} | {articles[j]['title']} | {articles[j]['url']}\n (Similarity: {cosine_scores[i][j]:.4f})")
                 group.append(j)
                 visited.add(j)
 
@@ -503,10 +477,9 @@ def process_and_enqueue_articles(articles, source_name, seen_urls=None):
             paragraphs = soup.find_all("p")
             body_text = "\n".join(p.get_text(strip=True) for p in paragraphs)
 
-            # タイトルor本文にキーワードがあれば対象とする
-            pattern_list = [re.compile(rf'{re.escape(keyword)}[’\' ]?') for keyword in NEWS_KEYWORDS]
-            if not any(p.search(art['title']) or p.search(body_text) for p in pattern_list):
-                continue
+            # ★ここでNEWS_KEYWORDSフィルターをかける
+            if not any(keyword in art['title'] or keyword in body_text for keyword in NEWS_KEYWORDS):
+                continue  # キーワード含まれてなければスキップ
 
             queued_items.append({
                 "source": source_name,
@@ -685,12 +658,8 @@ if __name__ == "__main__":
     articles7 = get_yktnews_articles_for(date_mmt)
     process_and_enqueue_articles(articles7, "YKT News", seen_urls)
 
-    # URLベースの重複排除を先に行う
-    # print(f"⚙️ Removing URL duplicates from {len(translation_queue)} articles...")
-    # translation_queue = deduplicate_by_url(translation_queue)
-    
-    # BERT類似度ベースの重複排除
-    print(f"⚙️ Deduplicating {len(translation_queue)} articles (BERT based)...")
+    # ✅ 全記事取得後 → BERT類似度で重複排除
+    print(f"⚙️ Deduplicating {len(translation_queue)} articles...")
     deduplicated_articles = deduplicate_articles(translation_queue)
 
     # translation_queue を重複排除後のリストに置き換え
