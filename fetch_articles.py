@@ -121,14 +121,11 @@ def get_mizzima_articles_for(date_obj, base_url, source_name):
                 continue
             title = title_tag.get_text(strip=True)
 
-            # 本文取得 (フォールバック方式)
-            paragraphs = soup_article.select("div.entry-content p")
-            if not paragraphs:
-                paragraphs = soup_article.select("div.node-content p")
-            if not paragraphs:
-                paragraphs = soup_article.select("article p")
-            if not paragraphs:
-                paragraphs = soup_article.find_all("p")  # 最終手段：全Pタグを取る
+            # ★ 指定div内のpタグのみ取得
+            content_divs = soup_article.select("div.mag-post-single, div.entry-content")
+            paragraphs = []
+            for div in content_divs:
+                paragraphs += div.find_all("p")
                 
             body_text = "\n".join(p.get_text(strip=True) for p in paragraphs)
             body_text = unicodedata.normalize('NFC', body_text)
