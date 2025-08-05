@@ -114,40 +114,39 @@ def get_mizzima_articles_for(date_obj, base_url, source_name):
         try:
             res_article = requests.get(url, timeout=10)
             soup_article = BeautifulSoup(res_article.content, "html.parser")
-        
+
             # タイトル取得
-            title_tag = soup_article.select_one("h1.entry-title")
-            title = title_tag.get_text(strip=True) if title_tag else ""
-        
-            # 本文取得（entry-content優先、無ければmag-post-single）
-            content_div = soup_article.find("div", class_="entry-content")
-            if not content_div:
-                content_div = soup_article.find("div", class_="mag-post-single")
-        
-            paragraphs = []
-            if content_div:
-                for p in content_div.find_all("p"):
-                    if p.find_parent(class_="related-posts") is None:
-                        paragraphs.append(p)
-        
+            title_tag = soup_article.find("h1")
+            if not title_tag:
+                continue
+            title = title_tag.get_text(strip=True)
+
+            # 本文取得 (フォールバック方式)
+            paragraphs = soup_article.select("div.entry-content p")
+            if not paragraphs:
+                paragraphs = soup_article.select("div.node-content p")
+            if not paragraphs:
+                paragraphs = soup_article.select("article p")
+            if not paragraphs:
+                paragraphs = soup_article.find_all("p")  # 最終手段：全Pタグを取る
+                
             body_text = "\n".join(p.get_text(strip=True) for p in paragraphs)
             body_text = unicodedata.normalize('NFC', body_text)
-        
+
             if not body_text.strip():
                 continue  # 本文が空ならスキップ
-        
+
             # タイトルor本文にキーワードがあれば対象とする
-            pattern_list = [re.compile(rf'{re.escape(keyword)}[’\' ]?') for keyword in NEWS_KEYWORDS]
-            if not any(p.search(title) or p.search(body_text) for p in pattern_list):
+            if not any(keyword in title or keyword in body_text for keyword in NEWS_KEYWORDS):
                 continue
-        
+
             filtered_articles.append({
                 "source": source_name,
                 "url": url,
                 "title": title,
                 "date": date_obj.isoformat()
             })
-        
+
         except Exception as e:
             print(f"Error processing {url}: {e}")
             continue
