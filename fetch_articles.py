@@ -130,12 +130,12 @@ def get_mizzima_articles_for(date_obj, base_url, source_name):
             if not paragraphs:
                 paragraphs = soup_article.find_all("p")  # 最終手段：全Pタグを取る
 
-            # 除外する親クラスリスト
-            EXCLUDE_PARENT_CLASSES = ["related-posts", "site-footer-top"]
-            for p in paragraphs:
-                # 親に除外対象クラスが含まれていればスキップ
-                if any(p.find_parent(class_=cls) is not None for cls in EXCLUDE_PARENT_CLASSES):
-                    continue
+            # # 除外する親クラスリスト
+            # EXCLUDE_PARENT_CLASSES = ["related-posts", "site-footer-top"]
+            # for p in paragraphs:
+            #     # 親に除外対象クラスが含まれていればスキップ
+            #     if any(p.find_parent(class_=cls) is not None for cls in EXCLUDE_PARENT_CLASSES):
+            #         continue
                 
             body_text = "\n".join(p.get_text(strip=True) for p in paragraphs)
             body_text = unicodedata.normalize('NFC', body_text)
