@@ -99,7 +99,7 @@ def get_all_urls_from_sitemaps(base_url):
     return all_article_urls
 
 def get_mizzima_articles_for(date_obj, base_url, source_name):
-    all_article_urls = get_all_urls_from_sitemaps(base_url, method='sitemap')
+    all_article_urls = get_all_urls_from_sitemaps(base_url)
     target_month_str = date_obj.strftime("%Y/%m")  # 例: "2025/08"
 
     filtered_articles = []
