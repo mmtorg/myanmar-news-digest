@@ -20,6 +20,7 @@ from google import genai
 from google.api_core.exceptions import GoogleAPICallError
 from collections import defaultdict
 import time
+import json
 
 # 記事重複排除ロジック(BERT埋め込み版)のライブラリインポート
 from sentence_transformers import SentenceTransformer, util
@@ -296,20 +297,27 @@ def get_yktnews_articles_for(date_obj):
             soup_article = BeautifulSoup(res_article.content, "html.parser")
 
             # ★ ld+json内のkeywords取得、daily news tv programは抽出対象から除外
-            yoast_script = soup_article.find("script", {"type": "application/ld+json"}, class_="yoast-schema-graph")
-            if yoast_script:
-                try:
-                    import json
-                    ld_json = json.loads(yoast_script.string)
-                    graph = ld_json.get("@graph", [])
-                    for item in graph:
-                        if item.get("@type") == "Article":
-                            keywords = item.get("keywords", [])
-                            if "daily news tv program" in keywords:
-                                print(f"Skipped (keywords exclude): {url}")
-                                raise StopIteration  # 除外判定
-                except Exception as e:
-                    print(f"Error parsing ld+json for {url}: {e}")
+            script_tag = soup_article.find("script", type="application/ld+json", class_="yoast-schema-graph")
+            if not script_tag:
+                continue  # JSON-LDが無ければスキップ
+
+            try:
+                json_data = json.loads(script_tag.string)
+            except Exception as e:
+                print(f"JSON parse error in {url}: {e}")
+                continue
+
+            article_graphs = json_data.get("@graph", [])
+            for item in article_graphs:
+                if item.get("@type") == "Article":
+                    keywords = item.get("keywords", [])
+                    if isinstance(keywords, str):
+                        keywords = [kw.strip() for kw in keywords.split(",")]
+
+                    if "daily news tv program" in keywords:
+                        print(f"Skipped (keywords exclude): {url}")
+                        raise StopIteration  # ★ 除外判定
+                    break  # Articleが見つかったら抜ける
 
             # ★ 日付チェック：<meta property="article:published_time">
             meta_tag = soup_article.find("meta", property="article:published_time")
