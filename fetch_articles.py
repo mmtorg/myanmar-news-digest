@@ -295,6 +295,22 @@ def get_yktnews_articles_for(date_obj):
             res_article = fetch_with_retry(url)
             soup_article = BeautifulSoup(res_article.content, "html.parser")
 
+            # ★ ld+json内のkeywords取得、daily news tv programは抽出対象から除外
+            yoast_script = soup_article.find("script", {"type": "application/ld+json"}, class_="yoast-schema-graph")
+            if yoast_script:
+                try:
+                    import json
+                    ld_json = json.loads(yoast_script.string)
+                    graph = ld_json.get("@graph", [])
+                    for item in graph:
+                        if item.get("@type") == "Article":
+                            keywords = item.get("keywords", [])
+                            if "daily news tv program" in keywords:
+                                print(f"Skipped (keywords exclude): {url}")
+                                raise StopIteration  # 除外判定
+                except Exception as e:
+                    print(f"Error parsing ld+json for {url}: {e}")
+
             # ★ 日付チェック：<meta property="article:published_time">
             meta_tag = soup_article.find("meta", property="article:published_time")
             if not meta_tag or not meta_tag.has_attr("content"):
