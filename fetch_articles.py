@@ -63,9 +63,6 @@ NEWS_KEYWORDS = [
     # チャット（Kyat）
     "Kyat", "kyat", "ကျပ်",
     
-    # ドル（Dollar）
-    "Dollar", "dollar", "ဒေါ်လာ",
-    
     # 徴兵制（Conscription / Military Draft）
     "Conscription", "conscription", "Military Draft", "military draft", "စစ်တပ်ဝင်ခေါ်ရေး",
     
