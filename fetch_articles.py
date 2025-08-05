@@ -99,19 +99,11 @@ def get_all_urls_from_sitemaps(base_url):
     return all_article_urls
 
 def get_mizzima_articles_for(date_obj, base_url, source_name):
-    list_url = base_url  # トップページ
-    res = requests.get(list_url, timeout=10)
-    soup = BeautifulSoup(res.content, "html.parser")
-    links = soup.find_all("a", href=True)
-
-    # URLに /YYYY/MM/DD/ が含まれるもののみ
-    date_pattern = re.compile(r"/\d{4}/\d{2}/\d{2}/")
-    article_urls = [a["href"] for a in links if date_pattern.search(a["href"])]
-
+    all_article_urls = get_all_urls_from_sitemaps(base_url, method='sitemap')
     target_month_str = date_obj.strftime("%Y/%m")  # 例: "2025/08"
 
     filtered_articles = []
-    for url in article_urls:
+    for url in all_article_urls:
         if target_month_str not in url:
             continue  # URLに対象月が無ければスキップ
 
@@ -119,12 +111,11 @@ def get_mizzima_articles_for(date_obj, base_url, source_name):
             res_article = fetch_with_retry(url)
             soup_article = BeautifulSoup(res_article.content, "html.parser")
 
-            # ★ 日付チェック: <meta property="article:published_time">
             meta_tag = soup_article.find("meta", property="article:published_time")
             if not meta_tag or not meta_tag.has_attr("content"):
                 continue
 
-            date_str = meta_tag["content"]  # 例: "2025-08-04T03:09:09+00:00"
+            date_str = meta_tag["content"]
             article_datetime_utc = datetime.fromisoformat(date_str)
             article_datetime_mmt = article_datetime_utc.astimezone(MMT)
             article_date = article_datetime_mmt.date()
@@ -132,20 +123,17 @@ def get_mizzima_articles_for(date_obj, base_url, source_name):
             if article_date != date_obj:
                 continue  # 対象日でなければスキップ
 
-            # タイトル取得 (meta property="og:title")
             title_tag = soup_article.find("meta", attrs={"property": "og:title"})
             if not title_tag or not title_tag.has_attr("content"):
                 continue
             title = title_tag["content"].strip()
 
-            # 本文取得 (div.entry-content以下のpタグ、ただしRelated Posts以下は無視)
             content_div = soup_article.find("div", class_="entry-content")
             if not content_div:
                 continue
 
             paragraphs = []
             for p in content_div.find_all("p"):
-                # Related Postsより後ろをスキップ
                 if p.find_previous("h2", string=re.compile("Related Posts", re.I)):
                     break
                 paragraphs.append(p)
@@ -154,9 +142,8 @@ def get_mizzima_articles_for(date_obj, base_url, source_name):
             body_text = unicodedata.normalize('NFC', body_text)
 
             if not body_text.strip():
-                continue  # 本文が空ならスキップ
+                continue
 
-            # タイトルor本文にキーワードがあれば対象とする
             if not any(keyword in title or keyword in body_text for keyword in NEWS_KEYWORDS):
                 continue
 
@@ -164,7 +151,7 @@ def get_mizzima_articles_for(date_obj, base_url, source_name):
                 "source": source_name,
                 "url": url,
                 "title": title,
-                "date": article_date.isoformat()  # ← MMT基準の日付
+                "date": article_date.isoformat()
             })
 
         except Exception as e:
@@ -505,7 +492,7 @@ def send_email_digest(summaries):
     """
 
     for media, articles in media_grouped.items():
-        html_content += f"<h3 style='color: #2a2a2a; margin-top: 30px;'>{media} からのニュース</h3>"
+        html_content += f"<h2 style='color: #2a2a2a; margin-top: 30px;'>{media} からのニュース</h2>"
 
         for item in articles:
             title_jp = "タイトル: " + item["title"]
@@ -514,7 +501,7 @@ def send_email_digest(summaries):
             summary_html = item["summary"]  # すでにHTML整形済みをそのまま使う
             html_content += (
                 f"<div style='margin-bottom: 20px;'>"
-                f"<h4 style='margin-bottom: 5px;'>{title_jp}</h4>"
+                f"<h3 style='margin-bottom: 5px;'>{title_jp}</h3>"
                 f"<p><a href='{url}' style='color: #1a0dab;'>本文を読む</a></p>"
                 f"<div style='background-color: #f9f9f9; padding: 10px; border-radius: 8px;'>"
                 f"{summary_html}"
