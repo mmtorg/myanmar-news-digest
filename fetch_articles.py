@@ -20,6 +20,7 @@ from google import genai
 from google.api_core.exceptions import GoogleAPICallError
 from collections import defaultdict
 import time
+
 # 記事重複排除ロジック(BERT埋め込み版)のライブラリインポート
 from sentence_transformers import SentenceTransformer, util
 
@@ -83,27 +84,60 @@ def extract_paragraphs_with_wait(soup_article, retries=2, wait_seconds=2):
         time.sleep(wait_seconds)
     return []
 
-def get_all_urls_from_sitemaps(base_url):
-    sitemap_index_url = base_url + "/sitemap.xml"
-    res_index = fetch_with_retry(sitemap_index_url)
-    soup_index = BeautifulSoup(res_index.content, "xml")
-    sitemap_urls = [tag.get_text() for tag in soup_index.find_all("loc") if "/post-sitemap" in tag.get_text()]
+# Sitemap Index を取得し、lastmodが指定した日数以内のsitemap URLを抽出
+def get_recent_sitemap_urls(base_url, days=3):
+    sitemap_index_url = base_url + "/sitemap_index.xml"  # or /sitemap.xml depending on site
+    res = requests.get(sitemap_index_url, timeout=10)
+    soup = BeautifulSoup(res.content, "xml")
 
+    now_utc = datetime.now(timezone.utc)
+    recent_sitemaps = []
+
+    for sitemap in soup.find_all("sitemap"):
+        loc_tag = sitemap.find("loc")
+        lastmod_tag = sitemap.find("lastmod")
+
+        if not loc_tag or not lastmod_tag:
+            continue
+
+        loc = loc_tag.get_text(strip=True)
+        lastmod = datetime.fromisoformat(lastmod_tag.get_text(strip=True))
+
+        if (now_utc - lastmod).days <= days:
+            recent_sitemaps.append(loc)
+
+    print(f"Recent Sitemaps (last {days} days): {recent_sitemaps}")
+    return recent_sitemaps
+
+# 上記取得したSitemap URLから全記事URLを取得（URLフィルター付き）
+def get_article_urls_from_sitemaps(sitemap_urls, target_month_str):
     all_article_urls = []
+
     for sitemap_url in sitemap_urls:
-        res_sitemap = fetch_with_retry(sitemap_url)
-        soup_sitemap = BeautifulSoup(res_sitemap.content, "xml")
-        post_urls = [tag.get_text() for tag in soup_sitemap.find_all("loc")]
-        all_article_urls.extend(post_urls)
+        try:
+            res = requests.get(sitemap_url, timeout=10)
+            soup = BeautifulSoup(res.content, "xml")
+
+            urls = [loc_tag.get_text(strip=True) for loc_tag in soup.find_all("loc")]
+            filtered_urls = [url for url in urls if target_month_str in url]
+            all_article_urls.extend(filtered_urls)
+
+        except Exception as e:
+            print(f"Error processing sitemap {sitemap_url}: {e}")
+            continue
 
     return all_article_urls
 
 def get_mizzima_articles_for(date_obj, base_url, source_name):
-    all_article_urls = get_all_urls_from_sitemaps(base_url)
     target_month_str = date_obj.strftime("%Y/%m")  # 例: "2025/08"
 
+    # (1) Sitemap Indexから最近更新のsitemapを取る
+    recent_sitemaps = get_recent_sitemap_urls(base_url, days=2)
+    # (2) Sitemapから記事URLを取得（月フィルター付き）
+    article_urls = get_article_urls_from_sitemaps(recent_sitemaps, target_month_str)
+
     filtered_articles = []
-    for url in all_article_urls:
+    for url in article_urls:
         # ★ 画像URLならスキップ
         if re.search(r'\.(jpg|jpeg|png|gif|webp|svg)$', url, re.IGNORECASE):
             continue
@@ -216,11 +250,15 @@ def get_bbc_burmese_articles_for(target_date_mmt):
 
 def get_yktnews_articles_for(date_obj):
     base_url = "https://yktnews.com"
-    all_article_urls = get_all_urls_from_sitemaps(base_url)
     target_month_str = date_obj.strftime("%Y/%m")
 
+    # (1) Sitemap Indexから最近更新のsitemapを取る
+    recent_sitemaps = get_recent_sitemap_urls(base_url, days=2)
+    # (2) Sitemapから記事URLを取得（月フィルター付き）
+    article_urls = get_article_urls_from_sitemaps(recent_sitemaps, target_month_str)
+
     filtered_articles = []
-    for url in all_article_urls:
+    for url in article_urls:
         # ★ 画像URLならスキップ
         if re.search(r'\.(jpg|jpeg|png|gif|webp|svg)$', url, re.IGNORECASE):
             continue
@@ -282,35 +320,6 @@ def get_yktnews_articles_for(date_obj):
             continue
 
     return filtered_articles
-
-
-# Chat GPT使う場合
-# def translate_and_summarize(text: str) -> str:
-#     if not text or not text.strip():
-#         print("⚠️ 入力テキストが空です。")
-#         return "（翻訳・要約に失敗しました）"
-
-#     prompt = (
-#         "以下の記事の内容について重要なポイントをまとめ、具体的に要約してください。" 
-#         "文字数は800文字までとします。自然な日本語に訳してください。\n\n"
-#         f"{text[:2000]}"  # 入力長を適切に制限（APIの入力トークン制限を超えないように）
-#     )
-
-#     try:
-#         response = client.chat.completions.create(
-#             model="gpt-3.5-turbo",
-#             messages=[{"role": "user", "content": prompt}]
-#         )
-#         return response.choices[0].message.content.strip()
-
-#     except OpenAIError as api_err:
-#         # OpenAI全体の例外を網羅
-#         print(f"🛑 OpenAI API エラー: {api_err}")
-#         return "（翻訳・要約に失敗しました）"
-#     except Exception as e:
-#         # その他の予期しない例外
-#         print(f"予期せぬエラー: {e}")
-#         return "（翻訳・要約に失敗しました）"
 
 # 同じURLの重複削除
 def deduplicate_by_url(articles):
