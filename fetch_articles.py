@@ -410,6 +410,18 @@ def get_yktnews_articles_for(date_obj):
 #         print(f"予期せぬエラー: {e}")
 #         return "（翻訳・要約に失敗しました）"
 
+# 同じURLの重複削除
+def deduplicate_by_url(articles):
+    seen_urls = set()
+    unique_articles = []
+    for art in articles:
+        if art['url'] in seen_urls:
+            print(f"🛑 URL Duplicate Removed: {art['source']} | {art['title']} | {art['url']}")
+            continue
+        seen_urls.add(art['url'])
+        unique_articles.append(art)
+    return unique_articles
+
 # BERT埋め込みで類似記事判定
 def deduplicate_articles(articles, similarity_threshold=0.92):
     if not articles:
@@ -417,10 +429,10 @@ def deduplicate_articles(articles, similarity_threshold=0.92):
 
     # 重複した場合の記事優先度
     media_priority = {
-    "BBC Burmese": 1,
-    "Mizzima (English)": 2,
-    "Mizzima (Burmese)": 3,
-    "YKT News": 4
+        "BBC Burmese": 1,
+        "Mizzima (English)": 2,
+        "Mizzima (Burmese)": 3,
+        "YKT News": 4
     }
 
     model = SentenceTransformer('cl-tohoku/bert-base-japanese-v2')
@@ -657,6 +669,10 @@ if __name__ == "__main__":
     print("=== YKT News ===")
     articles7 = get_yktnews_articles_for(date_mmt)
     process_and_enqueue_articles(articles7, "YKT News", seen_urls)
+
+    # URLベースの重複排除を先に行う
+    print(f"⚙️ Removing URL duplicates from {len(translation_queue)} articles...")
+    translation_queue = deduplicate_by_url(translation_queue)
 
     # ✅ 全記事取得後 → BERT類似度で重複排除
     print(f"⚙️ Deduplicating {len(translation_queue)} articles...")
