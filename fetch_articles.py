@@ -104,6 +104,10 @@ def get_mizzima_articles_for(date_obj, base_url, source_name):
 
     filtered_articles = []
     for url in all_article_urls:
+        # ★ 画像URLならスキップ
+        if re.search(r'\.(jpg|jpeg|png|gif|webp|svg)$', url, re.IGNORECASE):
+            continue
+
         if target_month_str not in url:
             continue  # URLに対象月が無ければスキップ
 
@@ -217,6 +221,10 @@ def get_yktnews_articles_for(date_obj):
 
     filtered_articles = []
     for url in all_article_urls:
+        # ★ 画像URLならスキップ
+        if re.search(r'\.(jpg|jpeg|png|gif|webp|svg)$', url, re.IGNORECASE):
+            continue
+
         if target_month_str not in url:
             continue  # URLに対象月が無ければスキップ
 
