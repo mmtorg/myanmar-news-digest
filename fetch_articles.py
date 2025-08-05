@@ -414,10 +414,10 @@ def deduplicate_articles(articles, similarity_threshold=0.92):
 
     # 重複した場合の記事優先度
     media_priority = {
-    "BBC Burmese": 1,
-    "Mizzima (English)": 2,
-    "Mizzima (Burmese)": 3,
-    "YKT News": 4
+        "BBC Burmese": 1,
+        "Mizzima (English)": 2,
+        "Mizzima (Burmese)": 3,
+        "YKT News": 4
     }
 
     model = SentenceTransformer('cl-tohoku/bert-base-japanese-v2')
@@ -433,6 +433,8 @@ def deduplicate_articles(articles, similarity_threshold=0.92):
     title_seen = {}
     for idx, art in enumerate(articles):
         if art['title'] in title_seen:
+            # デバック
+            print(f"🛑 Duplicate Title Found: '{art['title']}'\n - Kept: {articles[title_seen[art['title']]]['source']} | {articles[title_seen[art['title']]]['url']}\n - Removed: {art['source']} | {art['url']}")
             continue  # すでに同じタイトルの記事が登録されていればスキップ
         title_seen[art['title']] = idx
         unique_articles.append(art)
@@ -446,6 +448,8 @@ def deduplicate_articles(articles, similarity_threshold=0.92):
         group = [i]
         for j in range(i + 1, len(articles)):
             if cosine_scores[i][j] > similarity_threshold:
+                # デバック
+                print(f"🛑 BERT Duplicate Found:\n - Kept Candidate: {articles[i]['source']} | {articles[i]['title']} | {articles[i]['url']}\n - Removed Candidate: {articles[j]['source']} | {articles[j]['title']} | {articles[j]['url']}\n (Similarity: {cosine_scores[i][j]:.4f})")
                 group.append(j)
                 visited.add(j)
 
