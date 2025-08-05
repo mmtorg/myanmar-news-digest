@@ -1,36 +1,36 @@
-name: Daily Myanmar News Digest
+# name: Daily Myanmar News Digest
 
-on:
-  schedule:
-    - cron: '30 23 * * *'  # ミャンマー時間 6:00AM
-  workflow_dispatch:
+# on:
+#   schedule:
+#     - cron: '30 23 * * *'  # ミャンマー時間 6:00AM
+#   workflow_dispatch:
 
-jobs:
-  run-script:
-    runs-on: ubuntu-latest
+# jobs:
+#   run-script:
+#     runs-on: ubuntu-latest
 
-    env:
-      OPENAI_API_KEY: ${{ vars.OPENAI_API_KEY }}
-      GMAIL_APP_PASSWORD: ${{ vars.GMAIL_APP_PASSWORD }}
-      EMAIL_SENDER: ${{ vars.EMAIL_SENDER }}
-      EMAIL_RECIPIENTS: ${{ vars.EMAIL_RECIPIENTS }}
-      GEMINI_API_KEY: ${{ vars.GEMINI_API_KEY }}
+#     env:
+#       OPENAI_API_KEY: ${{ vars.OPENAI_API_KEY }}
+#       GMAIL_APP_PASSWORD: ${{ vars.GMAIL_APP_PASSWORD }}
+#       EMAIL_SENDER: ${{ vars.EMAIL_SENDER }}
+#       EMAIL_RECIPIENTS: ${{ vars.EMAIL_RECIPIENTS }}
+#       GEMINI_API_KEY: ${{ vars.GEMINI_API_KEY }}
 
-    steps:
-      - uses: actions/checkout@v3
+#     steps:
+#       - uses: actions/checkout@v3
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.10'
+#       - name: Set up Python
+#         uses: actions/setup-python@v4
+#         with:
+#           python-version: '3.10'
 
-      - name: Install dependencies
-        run: |
-          pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install fugashi[unidic-lite] ipadic
-          pip install --upgrade google-genai google-api-core
-          rm -rf ~/.cache/huggingface
+#       - name: Install dependencies
+#         run: |
+#           pip install --upgrade pip
+#           pip install -r requirements.txt
+#           pip install fugashi[unidic-lite] ipadic
+#           pip install --upgrade google-genai google-api-core
+#           rm -rf ~/.cache/huggingface
 
-      - name: Run fetch script
-        run: python fetch_articles.py
+#       - name: Run fetch script
+#         run: python fetch_articles.py
