@@ -46,7 +46,32 @@ def get_yesterday_date_mmt():
 #     return now_mmt.date()
 
 # 共通キーワードリスト（全メディア共通で使用する）
-NEWS_KEYWORDS = ["မြန်မာ", "မြန်မာ့", "ဗမာ", "အောင်ဆန်းစုကြည်", "မင်းအောင်လှိုင်", "Myanmar", "Burma"]
+NEWS_KEYWORDS = [
+    # ミャンマー（国名・現行名称）
+    "မြန်မာ", "မြန်မာ့", "Myanmar", "myanmar",
+    
+    # ビルマ（旧国名・通称）
+    "ဗမာ", "Burma", "burma",
+    
+    # アウンサンスーチー（Aung San Suu Kyi）
+    "အောင်ဆန်းစုကြည်", "Aung San Suu Kyi", "aung san suu kyi",
+    
+    # ミンアウンフライン（Min Aung Hlaing）
+    "မင်းအောင်လှိုင်", "Min Aung Hlaing", "min aung hlaing",
+    
+    # チャット（Kyat）
+    "Kyat", "kyat", "ကျပ်",
+    
+    # ドル（Dollar）
+    "Dollar", "dollar", "ဒေါ်လာ",
+    
+    # 徴兵制（Conscription / Military Draft）
+    "Conscription", "conscription", "Military Draft", "military draft", "စစ်တပ်ဝင်ခေါ်ရေး",
+    
+    # 選挙（Election）
+    "Election", "election", "ရွေးကောက်ပွဲ"
+]
+# Unicode正規化（NFC）を適用
 NEWS_KEYWORDS = [unicodedata.normalize('NFC', kw) for kw in NEWS_KEYWORDS]
 
 def clean_html_content(html: str) -> str:
