@@ -83,37 +83,20 @@ def extract_paragraphs_with_wait(soup_article, retries=2, wait_seconds=2):
         time.sleep(wait_seconds)
     return []
 
-def get_frontier_articles_for(date_obj):
-    base_url = "https://www.frontiermyanmar.net"
-    list_url = base_url + "/en/news"
-    res = requests.get(list_url, timeout=10)
-    soup = BeautifulSoup(res.content, "html.parser")
-    links = soup.select("div.teaser a")
-    article_urls = [base_url + a["href"] for a in links if a.get("href", "").startswith("/")]
+def get_all_urls_from_sitemaps(base_url):
+    sitemap_index_url = base_url + "/sitemap_index.xml"
+    res_index = fetch_with_retry(sitemap_index_url)
+    soup_index = BeautifulSoup(res_index.content, "xml")
+    sitemap_urls = [tag.get_text() for tag in soup_index.find_all("loc") if "/post-sitemap" in tag.get_text()]
 
-    filtered_articles = []
-    for url in article_urls:
-        try:
-            res_article = fetch_with_retry(url)
-            soup_article = BeautifulSoup(res_article.content, "html.parser")
-            time_tag = soup_article.find("time")
-            if not time_tag:
-                continue
-            date_str = time_tag.get("datetime", "")
-            if not date_str:
-                continue
-            article_date = datetime.fromisoformat(date_str).date()
-            if article_date == date_obj:
-                title = soup_article.find("h1").get_text(strip=True)
-                filtered_articles.append({
-                    "url": url,
-                    "title": title,
-                    "date": article_date.isoformat()
-                })
-        except Exception:
-            continue
+    all_article_urls = []
+    for sitemap_url in sitemap_urls:
+        res_sitemap = fetch_with_retry(sitemap_url)
+        soup_sitemap = BeautifulSoup(res_sitemap.content, "xml")
+        post_urls = [tag.get_text() for tag in soup_sitemap.find_all("loc")]
+        all_article_urls.extend(post_urls)
 
-    return filtered_articles
+    return all_article_urls
 
 def get_mizzima_articles_for(date_obj, base_url, source_name):
     list_url = base_url  # トップページ
@@ -190,72 +173,6 @@ def get_mizzima_articles_for(date_obj, base_url, source_name):
 
     return filtered_articles
 
-def get_vom_articles_for(date_obj):
-    base_url = "https://voiceofmyanmarnews.com"
-    list_url = base_url + "/?cat=1"
-    res = requests.get(list_url, timeout=10)
-    soup = BeautifulSoup(res.content, "html.parser")
-    links = soup.select("h2.entry-title a")
-    article_urls = [a["href"] for a in links if a.get("href", "").startswith("https://")]
-
-    filtered_articles = []
-    for url in article_urls:
-        try:
-            res_article = fetch_with_retry(url)
-            soup_article = BeautifulSoup(res_article.content, "html.parser")
-            date_div = soup_article.select_one("time.entry-date")
-            if not date_div:
-                continue
-            date_text = date_div.get_text(strip=True)
-            # 例: "July 25, 2025" をパース
-            try:
-                article_date = datetime.strptime(date_text, "%B %d, %Y").date()
-            except ValueError:
-                continue
-            if article_date == date_obj:
-                title = soup_article.find("h1").get_text(strip=True)
-                filtered_articles.append({
-                    "url": url,
-                    "title": title,
-                    "date": article_date.isoformat()
-                })
-        except Exception:
-            continue
-
-    return filtered_articles
-
-def get_ludu_articles_for(date_obj):
-    base_url = "https://ludunwayoo.com"
-    list_url = base_url + "/en/news"
-    res = requests.get(list_url, timeout=10)
-    soup = BeautifulSoup(res.content, "html.parser")
-    links = soup.select("h2.entry-title a")
-    article_urls = [a["href"] for a in links if a.get("href", "").startswith("http")]
-
-    filtered_articles = []
-    for url in article_urls:
-        try:
-            res_article = fetch_with_retry(url)
-            soup_article = BeautifulSoup(res_article.content, "html.parser")
-            time_tag = soup_article.find("time")
-            if not time_tag:
-                continue
-            date_str = time_tag.get("datetime", "")
-            if not date_str:
-                continue
-            article_date = datetime.fromisoformat(date_str).date()
-            if article_date == date_obj:
-                title = soup_article.find("h1").get_text(strip=True)
-                filtered_articles.append({
-                    "url": url,
-                    "title": title,
-                    "date": article_date.isoformat()
-                })
-        except Exception:
-            continue
-
-    return filtered_articles
-
 # BCCはRSSあるのでそれ使う
 def get_bbc_burmese_articles_for(target_date_mmt):
     rss_url = "https://feeds.bbci.co.uk/burmese/rss.xml"
@@ -306,63 +223,13 @@ def get_bbc_burmese_articles_for(target_date_mmt):
 
     return articles
 
-# def get_bbc_burmese_articles_for(date_obj):
-#     base_url = "https://www.bbc.com"
-#     list_url = base_url + "/burmese"
-#     res = requests.get(list_url, timeout=10)
-#     soup = BeautifulSoup(res.content, "html.parser")
-#     links = soup.select("a[href^='/burmese/']")
-#     article_urls = [
-#         base_url + a["href"]
-#         for a in links
-#         if any(part in a["href"] for part in ["articles", "media"])
-#     ]
-
-#     seen = set()
-#     filtered_articles = []
-#     for url in article_urls:
-#         if url in seen:
-#             continue
-#         seen.add(url)
-#         try:
-#             res_article = fetch_with_retry(url)
-#             soup_article = BeautifulSoup(res_article.content, "html.parser")
-#             time_tag = soup_article.find("time")
-#             if not time_tag:
-#                 continue
-#             date_str = time_tag.get("datetime", "")
-#             if not date_str:
-#                 continue
-#             article_date = datetime.fromisoformat(date_str).date()
-#             if article_date == date_obj:
-#                 title = soup_article.find("h1").get_text(strip=True)
-#                 filtered_articles.append({
-#                     "url": url,
-#                     "title": title,
-#                     "date": article_date.isoformat()
-#                 })
-#         except Exception:
-#             continue
-
-#     return filtered_articles
-
 def get_yktnews_articles_for(date_obj):
     base_url = "https://yktnews.com"
-    list_url = base_url + "/category/news/"
-    res = requests.get(list_url, timeout=10)
-    soup = BeautifulSoup(res.content, "html.parser")
-    links = soup.find_all("a", href=True)
-
-    # URLに /YYYY/MM/ が含まれるもののみ
-    date_pattern = re.compile(r"/\d{4}/\d{2}/")
-    article_urls = [a["href"] for a in links if date_pattern.search(a["href"])]
-
-    print(article_urls)
-
-    target_month_str = date_obj.strftime("%Y/%m")  # 例: "2025/08"
+    all_article_urls = get_all_urls_from_sitemaps(base_url)
+    target_month_str = date_obj.strftime("%Y/%m")
 
     filtered_articles = []
-    for url in article_urls:
+    for url in all_article_urls:
         if target_month_str not in url:
             continue  # URLに対象月が無ければスキップ
 
