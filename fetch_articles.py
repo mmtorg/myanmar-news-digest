@@ -100,15 +100,16 @@ def get_mizzima_articles_for(date_obj, base_url, source_name):
     soup = BeautifulSoup(res.content, "html.parser")
     links = soup.find_all("a", href=True)
 
+    # URLに /YYYY/MM/DD/ が含まれるもののみ
     date_pattern = re.compile(r"/\d{4}/\d{2}/\d{2}/")
     article_urls = [a["href"] for a in links if date_pattern.search(a["href"])]
 
-    target_date_str = date_obj.strftime("%Y/%m/%d")
+    target_date_str = date_obj.strftime("%Y/%m/%d")  # 例: "2025/08/02"
 
     filtered_articles = []
     for url in article_urls:
         if target_date_str not in url:
-            continue
+            continue  # URLに昨日の日付が無ければスキップ
 
         try:
             res_article = requests.get(url, timeout=10)
@@ -120,46 +121,30 @@ def get_mizzima_articles_for(date_obj, base_url, source_name):
                 continue
             title = title_tag.get_text(strip=True)
 
-            # 本文取得
+            # 本文取得 (フォールバック方式)
             paragraphs = soup_article.select("div.entry-content p")
             if not paragraphs:
                 paragraphs = soup_article.select("div.node-content p")
             if not paragraphs:
                 paragraphs = soup_article.select("article p")
             if not paragraphs:
-                paragraphs = soup_article.find_all("p")
+                paragraphs = soup_article.find_all("p")  # 最終手段：全Pタグを取る
 
-            body_text_lines = []
+            # 除外する親クラスリスト
+            EXCLUDE_PARENT_CLASSES = ["related-posts", "site-footer-top"]
             for p in paragraphs:
-                if p.find_parent(class_="related-posts") is not None:
+                # 親に除外対象クラスが含まれていればスキップ
+                if any(p.find_parent(class_=cls) is not None for cls in EXCLUDE_PARENT_CLASSES):
                     continue
-                if len(p.contents) == 1 and getattr(p.contents[0], 'name', None) == 'a':
-                    continue
-                    
-                # pタグ以下すべてのaタグを除去（階層問わず）
-                for a_tag in p.find_all('a'):
-                    a_tag.decompose()
-
-                body_text_lines.append(p.get_text(strip=True))
-
-            body_text = "\n".join(body_text_lines)
+                
+            body_text = "\n".join(p.get_text(strip=True) for p in paragraphs)
             body_text = unicodedata.normalize('NFC', body_text)
 
             if not body_text.strip():
-                continue
+                continue  # 本文が空ならスキップ
 
-            # キーワードマッチ判定
-            matched_keywords = []
-            for keyword in NEWS_KEYWORDS:
-                if keyword in title or keyword in body_text:
-                    matched_keywords.append(keyword)
-
-            # MizzimaBurmeseNews のみヒットなら除外
-            if matched_keywords and matched_keywords == ["MizzimaBurmeseNews"]:
-                continue
-
-            # そもそも何もヒットしなければ除外
-            if not matched_keywords:
+            # タイトルor本文にキーワードがあれば対象とする
+            if not any(keyword in title or keyword in body_text for keyword in NEWS_KEYWORDS):
                 continue
 
             filtered_articles.append({
