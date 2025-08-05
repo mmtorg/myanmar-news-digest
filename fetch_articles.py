@@ -125,16 +125,29 @@ def get_mizzima_articles_for(date_obj, base_url, source_name):
     date_pattern = re.compile(r"/\d{4}/\d{2}/\d{2}/")
     article_urls = [a["href"] for a in links if date_pattern.search(a["href"])]
 
-    target_date_str = date_obj.strftime("%Y/%m/%d")  # 例: "2025/08/02"
+    target_month_str = date_obj.strftime("%Y/%m")  # 例: "2025/08"
 
     filtered_articles = []
     for url in article_urls:
-        if target_date_str not in url:
-            continue  # URLに昨日の日付が無ければスキップ
+        if target_month_str not in url:
+            continue  # URLに対象月が無ければスキップ
 
         try:
             res_article = fetch_with_retry(url)
             soup_article = BeautifulSoup(res_article.content, "html.parser")
+
+            # ★ 日付チェック: <meta property="article:published_time">
+            meta_tag = soup_article.find("meta", property="article:published_time")
+            if not meta_tag or not meta_tag.has_attr("content"):
+                continue
+
+            date_str = meta_tag["content"]  # 例: "2025-08-04T03:09:09+00:00"
+            article_datetime_utc = datetime.fromisoformat(date_str)
+            article_datetime_mmt = article_datetime_utc.astimezone(MMT)
+            article_date = article_datetime_mmt.date()
+
+            if article_date != date_obj:
+                continue  # 対象日でなければスキップ
 
             # タイトル取得
             title_tag = soup_article.find("h1")
@@ -149,8 +162,8 @@ def get_mizzima_articles_for(date_obj, base_url, source_name):
             if not paragraphs:
                 paragraphs = soup_article.select("article p")
             if not paragraphs:
-                paragraphs = soup_article.find_all("p")  # 最終手段：全Pタグを取る
-                
+                paragraphs = soup_article.find_all("p")  # 最終手段：全Pタグ
+
             paragraphs = extract_paragraphs_with_wait(soup_article)
             body_text = "\n".join(p.get_text(strip=True) for p in paragraphs)
             body_text = unicodedata.normalize('NFC', body_text)
@@ -166,7 +179,7 @@ def get_mizzima_articles_for(date_obj, base_url, source_name):
                 "source": source_name,
                 "url": url,
                 "title": title,
-                "date": date_obj.isoformat()
+                "date": article_date.isoformat()  # ← MMT基準の日付
             })
 
         except Exception as e:
@@ -344,7 +357,6 @@ def get_yktnews_articles_for(date_obj):
 
     print(article_urls)
 
-    target_date_str = date_obj.strftime("%Y-%m-%d")  # 例: "2025-08-02"
     target_month_str = date_obj.strftime("%Y/%m")  # 例: "2025/08"
 
     filtered_articles = []
@@ -354,18 +366,20 @@ def get_yktnews_articles_for(date_obj):
 
         try:
             res_article = fetch_with_retry(url)
-            
             soup_article = BeautifulSoup(res_article.content, "html.parser")
 
-            # 日付チェック
-            time_tag = soup_article.select_one("div.tdb-block-inner time.entry-date")
-            if not time_tag or not time_tag.has_attr("datetime"):
+            # ★ 日付チェック：<meta property="article:published_time">
+            meta_tag = soup_article.find("meta", property="article:published_time")
+            if not meta_tag or not meta_tag.has_attr("content"):
                 continue
 
-            date_str = time_tag["datetime"]
-            article_date = datetime.fromisoformat(date_str).astimezone(MMT).date()
+            date_str = meta_tag["content"]  # 例: "2025-08-04T10:12:24+00:00"
+            article_datetime_utc = datetime.fromisoformat(date_str)
+            article_datetime_mmt = article_datetime_utc.astimezone(MMT)
+            article_date = article_datetime_mmt.date()
+
             if article_date != date_obj:
-                continue  # 昨日の日付でなければスキップ
+                continue  # 対象日でなければスキップ
 
             # タイトル取得
             title_tag = soup_article.find("h1")
