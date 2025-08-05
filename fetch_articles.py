@@ -149,22 +149,24 @@ def get_mizzima_articles_for(date_obj, base_url, source_name):
             if article_date != date_obj:
                 continue  # 対象日でなければスキップ
 
-            # タイトル取得
-            title_tag = soup_article.find("h1")
-            if not title_tag:
+            # タイトル取得 (meta property="og:title")
+            title_tag = soup_article.find("meta", attrs={"property": "og:title"})
+            if not title_tag or not title_tag.has_attr("content"):
                 continue
-            title = title_tag.get_text(strip=True)
+            title = title_tag["content"].strip()
 
-            # 本文取得 (フォールバック方式)
-            paragraphs = soup_article.select("div.entry-content p")
-            if not paragraphs:
-                paragraphs = soup_article.select("div.node-content p")
-            if not paragraphs:
-                paragraphs = soup_article.select("article p")
-            if not paragraphs:
-                paragraphs = soup_article.find_all("p")  # 最終手段：全Pタグ
+            # 本文取得 (div.entry-content以下のpタグ、ただしRelated Posts以下は無視)
+            content_div = soup_article.find("div", class_="entry-content")
+            if not content_div:
+                continue
 
-            paragraphs = extract_paragraphs_with_wait(soup_article)
+            paragraphs = []
+            for p in content_div.find_all("p"):
+                # Related Postsより後ろをスキップ
+                if p.find_previous("h2", string=re.compile("Related Posts", re.I)):
+                    break
+                paragraphs.append(p)
+
             body_text = "\n".join(p.get_text(strip=True) for p in paragraphs)
             body_text = unicodedata.normalize('NFC', body_text)
 
