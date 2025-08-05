@@ -85,7 +85,7 @@ def extract_paragraphs_with_wait(soup_article, retries=2, wait_seconds=2):
     return []
 
 # Sitemap Index を取得し、lastmodが指定した日数以内のsitemap URLを抽出
-def get_recent_sitemap_urls(base_url, days=3):
+def get_recent_sitemap_urls(base_url, days=2):
     sitemap_index_url = base_url + "/sitemap_index.xml"  # or /sitemap.xml depending on site
     res = requests.get(sitemap_index_url, timeout=10)
     soup = BeautifulSoup(res.content, "xml")
