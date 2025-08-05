@@ -34,16 +34,16 @@ client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 MMT = timezone(timedelta(hours=6, minutes=30))
 
 # 昨日の日付
-# ミャンマー時間で正午でもBBCの当日のニュースは配信されないので、昨日の日付のニュースを取得することとしてる
-def get_yesterday_date_mmt():
-    now_mmt = datetime.now(MMT)
-    yesterday_mmt = now_mmt - timedelta(days=1)
-    return yesterday_mmt.date()
+# def get_yesterday_date_mmt():
+#     now_mmt = datetime.now(MMT)
+#     yesterday_mmt = now_mmt - timedelta(days=1)
+#     return yesterday_mmt.date()
 
 # 今日の日付
-# def get_today_date_mmt():
-#     now_mmt = datetime.now(MMT)
-#     return now_mmt.date()
+# ニュースの速報性重視で今日分のニュース配信の方針
+def get_today_date_mmt():
+    now_mmt = datetime.now(MMT)
+    return now_mmt.date()
 
 # 共通キーワードリスト（全メディア共通で使用する）
 NEWS_KEYWORDS = [
@@ -110,7 +110,7 @@ def extract_paragraphs_with_wait(soup_article, retries=2, wait_seconds=2):
     return []
 
 # Sitemap Index を取得し、lastmodが指定した日数以内のsitemap URLを抽出
-def get_recent_sitemap_urls(base_url, days=2):
+def get_recent_sitemap_urls(base_url, days=1):
     sitemap_index_url = base_url + "/sitemap_index.xml"  # or /sitemap.xml depending on site
     res = requests.get(sitemap_index_url, timeout=10)
     soup = BeautifulSoup(res.content, "xml")
@@ -157,7 +157,7 @@ def get_mizzima_articles_for(date_obj, base_url, source_name):
     target_month_str = date_obj.strftime("%Y/%m")  # 例: "2025/08"
 
     # (1) Sitemap Indexから最近更新のsitemapを取る
-    recent_sitemaps = get_recent_sitemap_urls(base_url, days=2)
+    recent_sitemaps = get_recent_sitemap_urls(base_url, days=1)
     # (2) Sitemapから記事URLを取得（月フィルター付き）
     article_urls = get_article_urls_from_sitemaps(recent_sitemaps, target_month_str)
 
@@ -243,7 +243,7 @@ def get_bbc_burmese_articles_for(target_date_mmt):
             continue
 
         if pub_date_mmt != target_date_mmt:
-            continue  # 昨日(MMT基準)の日付と一致しない記事はスキップ
+            continue  # 今日(MMT基準)の日付と一致しない記事はスキップ
 
         title = item.find("title").text.strip()
         link = item.find("link").text.strip()
@@ -278,7 +278,7 @@ def get_yktnews_articles_for(date_obj):
     target_month_str = date_obj.strftime("%Y/%m")
 
     # (1) Sitemap Indexから最近更新のsitemapを取る
-    recent_sitemaps = get_recent_sitemap_urls(base_url, days=2)
+    recent_sitemaps = get_recent_sitemap_urls(base_url, days=1)
     # (2) Sitemapから記事URLを取得（月フィルター付き）
     article_urls = get_article_urls_from_sitemaps(recent_sitemaps, target_month_str)
 
@@ -531,8 +531,8 @@ def send_email_digest(summaries):
     recipient_emails = os.getenv("EMAIL_RECIPIENTS", "").split(",")
 
     # ✅ 今日の日付を取得してフォーマット
-    digest_date = get_yesterday_date_mmt()
-    # digest_date = get_today_date_mmt()
+    # digest_date = get_yesterday_date_mmt()
+    digest_date = get_today_date_mmt()
     date_str = digest_date.strftime("%Y年%-m月%-d日") + "分"
 
     # メディアごとにまとめる
@@ -588,8 +588,8 @@ def send_email_digest(summaries):
         sys.exit(1)
 
 if __name__ == "__main__":
-    date_mmt = get_yesterday_date_mmt()
-    # date_mmt = get_today_date_mmt()
+    # date_mmt = get_yesterday_date_mmt()
+    date_mmt = get_today_date_mmt()
     seen_urls = set()
     
     # articles = get_frontier_articles_for(date_mmt)
