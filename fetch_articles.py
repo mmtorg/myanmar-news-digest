@@ -686,8 +686,8 @@ if __name__ == "__main__":
     process_and_enqueue_articles(articles7, "YKT News", seen_urls)
 
     # URLベースの重複排除を先に行う
-    print(f"⚙️ Removing URL duplicates from {len(translation_queue)} articles...")
-    translation_queue = deduplicate_by_url(translation_queue)
+    # print(f"⚙️ Removing URL duplicates from {len(translation_queue)} articles...")
+    # translation_queue = deduplicate_by_url(translation_queue)
     
     # BERT類似度ベースの重複排除
     print(f"⚙️ Deduplicating {len(translation_queue)} articles (BERT based)...")
