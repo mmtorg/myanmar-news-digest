@@ -116,23 +116,19 @@ def get_mizzima_articles_for(date_obj, base_url, source_name):
             soup_article = BeautifulSoup(res_article.content, "html.parser")
 
             # タイトル取得
-            title_tag = soup_article.find("h1")
-            if not title_tag:
-                continue
-            title = title_tag.get_text(strip=True)
-
-            # タイトル取得
             title_tag = soup_article.select_one("h1.entry-title")
             title = title_tag.get_text(strip=True) if title_tag else ""
             
-            # 本文取得（related-posts除外）
+            # 本文取得（entry-content優先、無ければmag-post-single）
             content_div = soup_article.find("div", class_="entry-content")
-            paragraphs = []
-            if content_div:
-                for p in content_div.find_all("p"):
-                    # そのpタグがrelated-posts内に含まれていないかチェック
-                    if p.find_parent(class_="related-posts") is None:
-                        paragraphs.append(p)
+            if not content_div:
+                content_div = soup_article.find("div", class_="mag-post-single")
+
+paragraphs = []
+if content_div:
+    for p in content_div.find_all("p"):
+        if p.find_parent(class_="related-posts") is None:
+            paragraphs.append(p)
             
             body_text = "\n".join(p.get_text(strip=True) for p in paragraphs)
             body_text = unicodedata.normalize('NFC', body_text)
@@ -141,7 +137,8 @@ def get_mizzima_articles_for(date_obj, base_url, source_name):
                 continue  # 本文が空ならスキップ
 
             # タイトルor本文にキーワードがあれば対象とする
-            if not any(keyword in title or keyword in body_text for keyword in NEWS_KEYWORDS):
+            pattern_list = [re.compile(rf'{re.escape(keyword)}[’\' ]?') for keyword in NEWS_KEYWORDS]
+            if not any(p.search(title) or p.search(body_text) for p in pattern_list):
                 continue
 
             filtered_articles.append({
@@ -256,8 +253,10 @@ def get_bbc_burmese_articles_for(target_date_mmt):
             # ここでNFC正規化を追加
             body_text = unicodedata.normalize('NFC', body_text)
 
-            if not any(keyword in title or keyword in body_text for keyword in NEWS_KEYWORDS):
-                continue  # キーワードが含まれていなければ除外
+            # タイトルor本文にキーワードがあれば対象とする
+            pattern_list = [re.compile(rf'{re.escape(keyword)}[’\' ]?') for keyword in NEWS_KEYWORDS]
+            if not any(p.search(title) or p.search(body_text) for p in pattern_list):
+                continue
 
             print(f"✅ 抽出記事: {title} ({link})")  # ログ出力で抽出記事確認
             articles.append({
@@ -370,7 +369,8 @@ def get_yktnews_articles_for(date_obj):
                 continue  # 本文が空ならスキップ
 
             # タイトルor本文にキーワードがあれば対象とする
-            if not any(keyword in title or keyword in body_text for keyword in NEWS_KEYWORDS):
+            pattern_list = [re.compile(rf'{re.escape(keyword)}[’\' ]?') for keyword in NEWS_KEYWORDS]
+            if not any(p.search(title) or p.search(body_text) for p in pattern_list):
                 continue
 
             filtered_articles.append({
@@ -497,9 +497,10 @@ def process_and_enqueue_articles(articles, source_name, seen_urls=None):
             paragraphs = soup.find_all("p")
             body_text = "\n".join(p.get_text(strip=True) for p in paragraphs)
 
-            # ★ここでNEWS_KEYWORDSフィルターをかける
-            if not any(keyword in art['title'] or keyword in body_text for keyword in NEWS_KEYWORDS):
-                continue  # キーワード含まれてなければスキップ
+            # タイトルor本文にキーワードがあれば対象とする
+            pattern_list = [re.compile(rf'{re.escape(keyword)}[’\' ]?') for keyword in NEWS_KEYWORDS]
+            if not any(p.search(art['title']) or p.search(body_text) for p in pattern_list):
+                continue
 
             queued_items.append({
                 "source": source_name,
