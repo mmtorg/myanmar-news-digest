@@ -53,14 +53,35 @@ def clean_html_content(html: str) -> str:
     # 制御文字（カテゴリC）を除外、可視Unicodeはそのまま
     return ''.join(c for c in html if unicodedata.category(c)[0] != 'C')
 
-def clean_text(text: str) -> str:
-    import unicodedata
-    if not text:
-        return ""
-    return ''.join(
-        c if (unicodedata.category(c)[0] != 'C' and c != '\xa0') else ' '
-        for c in text
-    )
+# 本文が取得できるまで「requestsでリトライする」
+def fetch_with_retry(url, retries=3, wait_seconds=2):
+    for attempt in range(retries):
+        try:
+            res = requests.get(url, timeout=10)
+            if res.status_code == 200 and res.text.strip():
+                return res
+        except Exception as e:
+            print(f"Attempt {attempt + 1} failed for {url}: {e}")
+        time.sleep(wait_seconds)
+    raise Exception(f"Failed to fetch {url} after {retries} attempts.")
+
+# 本文が空なら「一定秒数待って再取得」
+def extract_paragraphs_with_wait(soup_article, retries=2, wait_seconds=2):
+    for attempt in range(retries + 1):
+        paragraphs = soup_article.select("div.entry-content p")
+        if not paragraphs:
+            paragraphs = soup_article.select("div.node-content p")
+        if not paragraphs:
+            paragraphs = soup_article.select("article p")
+        if not paragraphs:
+            paragraphs = soup_article.find_all("p")
+
+        if paragraphs:
+            return paragraphs
+        
+        print(f"Paragraphs not found, waiting {wait_seconds}s and retrying...")
+        time.sleep(wait_seconds)
+    return []
 
 def get_frontier_articles_for(date_obj):
     base_url = "https://www.frontiermyanmar.net"
@@ -73,7 +94,7 @@ def get_frontier_articles_for(date_obj):
     filtered_articles = []
     for url in article_urls:
         try:
-            res_article = requests.get(url, timeout=10)
+            res_article = fetch_with_retry(url)
             soup_article = BeautifulSoup(res_article.content, "html.parser")
             time_tag = soup_article.find("time")
             if not time_tag:
@@ -112,7 +133,7 @@ def get_mizzima_articles_for(date_obj, base_url, source_name):
             continue  # URLに昨日の日付が無ければスキップ
 
         try:
-            res_article = requests.get(url, timeout=10)
+            res_article = fetch_with_retry(url)
             soup_article = BeautifulSoup(res_article.content, "html.parser")
 
             # タイトル取得
@@ -130,6 +151,7 @@ def get_mizzima_articles_for(date_obj, base_url, source_name):
             if not paragraphs:
                 paragraphs = soup_article.find_all("p")  # 最終手段：全Pタグを取る
                 
+            paragraphs = extract_paragraphs_with_wait(soup_article)
             body_text = "\n".join(p.get_text(strip=True) for p in paragraphs)
             body_text = unicodedata.normalize('NFC', body_text)
 
@@ -164,7 +186,7 @@ def get_vom_articles_for(date_obj):
     filtered_articles = []
     for url in article_urls:
         try:
-            res_article = requests.get(url, timeout=10)
+            res_article = fetch_with_retry(url)
             soup_article = BeautifulSoup(res_article.content, "html.parser")
             date_div = soup_article.select_one("time.entry-date")
             if not date_div:
@@ -198,7 +220,7 @@ def get_ludu_articles_for(date_obj):
     filtered_articles = []
     for url in article_urls:
         try:
-            res_article = requests.get(url, timeout=10)
+            res_article = fetch_with_retry(url)
             soup_article = BeautifulSoup(res_article.content, "html.parser")
             time_tag = soup_article.find("time")
             if not time_tag:
@@ -247,7 +269,8 @@ def get_bbc_burmese_articles_for(target_date_mmt):
         try:
             article_res = requests.get(link, timeout=10)
             article_soup = BeautifulSoup(article_res.content, "html.parser")
-            paragraphs = article_soup.find_all("p")
+            # 本文pタグをリトライ付きで取得
+            paragraphs = extract_paragraphs_with_wait(article_soup, retries=2, wait_seconds=2)
             body_text = "\n".join(p.get_text(strip=True) for p in paragraphs)
             # ここでNFC正規化を追加
             body_text = unicodedata.normalize('NFC', body_text)
@@ -287,7 +310,7 @@ def get_bbc_burmese_articles_for(target_date_mmt):
 #             continue
 #         seen.add(url)
 #         try:
-#             res_article = requests.get(url, timeout=10)
+#             res_article = fetch_with_retry(url)
 #             soup_article = BeautifulSoup(res_article.content, "html.parser")
 #             time_tag = soup_article.find("time")
 #             if not time_tag:
@@ -330,7 +353,7 @@ def get_yktnews_articles_for(date_obj):
             continue  # URLに対象月が無ければスキップ
 
         try:
-            res_article = requests.get(url, timeout=10)
+            res_article = fetch_with_retry(url)
             
             soup_article = BeautifulSoup(res_article.content, "html.parser")
 
@@ -359,6 +382,7 @@ def get_yktnews_articles_for(date_obj):
             if not paragraphs:
                 paragraphs = soup_article.find_all("p")  # 最終手段：全Pタグ
             
+            paragraphs = extract_paragraphs_with_wait(soup_article)
             body_text = "\n".join(p.get_text(strip=True) for p in paragraphs)
             body_text = unicodedata.normalize('NFC', body_text)
 
@@ -486,7 +510,8 @@ def process_and_enqueue_articles(articles, source_name, seen_urls=None):
         try:
             res = requests.get(art['url'], timeout=10)
             soup = BeautifulSoup(res.content, "html.parser")
-            paragraphs = soup.find_all("p")
+            # 本文pタグ取得 (リトライ付き)
+            paragraphs = extract_paragraphs_with_wait(soup, retries=2, wait_seconds=2)
             body_text = "\n".join(p.get_text(strip=True) for p in paragraphs)
 
             # ★ここでNEWS_KEYWORDSフィルターをかける
