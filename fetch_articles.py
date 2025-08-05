@@ -84,7 +84,7 @@ def extract_paragraphs_with_wait(soup_article, retries=2, wait_seconds=2):
     return []
 
 def get_all_urls_from_sitemaps(base_url):
-    sitemap_index_url = base_url + "/sitemap_index.xml"
+    sitemap_index_url = base_url + "/sitemap.xml"
     res_index = fetch_with_retry(sitemap_index_url)
     soup_index = BeautifulSoup(res_index.content, "xml")
     sitemap_urls = [tag.get_text() for tag in soup_index.find_all("loc") if "/post-sitemap" in tag.get_text()]
