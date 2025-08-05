@@ -469,8 +469,6 @@ def deduplicate_articles(articles, similarity_threshold=0.92):
         unique_articles.append(articles[group_sorted[0]])
         visited.add(i)
 
-    sys.exit(1)
-
     return unique_articles
 
 # 翻訳対象キュー
