@@ -543,7 +543,7 @@ def send_email_digest(summaries):
             summary_html = item["summary"]  # すでにHTML整形済みをそのまま使う
             html_content += (
                 f"<div style='margin-bottom: 20px;'>"
-                f"<h3 style='margin-bottom: 5px;'>{title_jp}</h3>"
+                f"<h4 style='margin-bottom: 5px;'>{title_jp}</h4>"
                 f"<p><a href='{url}' style='color: #1a0dab;'>本文を読む</a></p>"
                 f"<div style='background-color: #f9f9f9; padding: 10px; border-radius: 8px;'>"
                 f"{summary_html}"
