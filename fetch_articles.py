@@ -257,76 +257,6 @@ def get_mizzima_articles_from_category(date_obj, base_url, source_name, category
 
     return filtered_articles
 
-def get_mizzima_articles_for(date_obj, base_url, source_name):
-    target_month_str = date_obj.strftime("%Y/%m")  # 例: "2025/08"
-
-    # (1) Sitemap Indexから最近更新のsitemapを取る
-    recent_sitemaps = get_recent_sitemap_urls(base_url, days=1)
-    # (2) Sitemapから記事URLを取得（月フィルター付き）
-    article_urls = get_article_urls_from_sitemaps(recent_sitemaps, target_month_str)
-
-    filtered_articles = []
-    for url in article_urls:
-        # ★ 画像URLならスキップ
-        if re.search(r'\.(jpg|jpeg|png|gif|webp|svg)$', url, re.IGNORECASE):
-            continue
-
-        if target_month_str not in url:
-            continue  # URLに対象月が無ければスキップ
-
-        try:
-            res_article = fetch_with_retry(url)
-            soup_article = BeautifulSoup(res_article.content, "html.parser")
-
-            meta_tag = soup_article.find("meta", property="article:published_time")
-            if not meta_tag or not meta_tag.has_attr("content"):
-                continue
-
-            date_str = meta_tag["content"]
-            article_datetime_utc = datetime.fromisoformat(date_str)
-            article_datetime_mmt = article_datetime_utc.astimezone(MMT)
-            article_date = article_datetime_mmt.date()
-
-            if article_date != date_obj:
-                continue  # 対象日でなければスキップ
-
-            title_tag = soup_article.find("meta", attrs={"property": "og:title"})
-            if not title_tag or not title_tag.has_attr("content"):
-                continue
-            title = title_tag["content"].strip()
-
-            content_div = soup_article.find("div", class_="entry-content")
-            if not content_div:
-                continue
-
-            paragraphs = []
-            for p in content_div.find_all("p"):
-                if p.find_previous("h2", string=re.compile("Related Posts", re.I)):
-                    break
-                paragraphs.append(p)
-
-            body_text = "\n".join(p.get_text(strip=True) for p in paragraphs)
-            body_text = unicodedata.normalize('NFC', body_text)
-
-            if not body_text.strip():
-                continue
-
-            if not any(keyword in title or keyword in body_text for keyword in NEWS_KEYWORDS):
-                continue
-
-            filtered_articles.append({
-                "source": source_name,
-                "url": url,
-                "title": title,
-                "date": article_date.isoformat()
-            })
-
-        except Exception as e:
-            print(f"Error processing {url}: {e}")
-            continue
-
-    return filtered_articles
-
 # BCCはRSSあるのでそれ使う
 def get_bbc_burmese_articles_for(target_date_mmt):
     rss_url = "https://feeds.bbci.co.uk/burmese/rss.xml"
@@ -376,6 +306,77 @@ def get_bbc_burmese_articles_for(target_date_mmt):
             continue
 
     return articles
+
+# yktnewsカテゴリーページ巡回で取得
+def get_yktnews_articles_from_category(date_obj, max_pages=3):
+    base_url="https://yktnews.com/category/news/"
+    article_urls = []
+
+    for page in range(1, max_pages + 1):
+        url = f"{base_url}page/{page}/" if page > 1 else base_url
+        print(f"Fetching {url}")
+        res = fetch_with_retry(url)
+        soup = BeautifulSoup(res.content, "html.parser")
+
+        # 記事リンク抽出
+        entry_links = soup.select('p.entry-title.td-module-title a[href]')
+        page_article_urls = [a['href'] for a in entry_links if a.has_attr('href')]
+        article_urls.extend(page_article_urls)
+
+    filtered_articles = []
+    for url in article_urls:
+        try:
+            res_article = fetch_with_retry(url)
+            soup_article = BeautifulSoup(res_article.content, "html.parser")
+
+            # 日付取得
+            meta_tag = soup_article.find("meta", property="article:published_time")
+            if not meta_tag or not meta_tag.has_attr("content"):
+                continue
+            date_str = meta_tag["content"]
+            article_datetime_utc = datetime.fromisoformat(date_str)
+            article_datetime_mmt = article_datetime_utc.astimezone(MMT)
+            article_date = article_datetime_mmt.date()
+
+            if article_date != date_obj:
+                continue  # 対象日でなければスキップ
+
+            # タイトル取得
+            title_tag = soup_article.find("h1")
+            if not title_tag:
+                continue
+            title = title_tag.get_text(strip=True)
+
+            # 本文取得 (YKTNews用パターン)
+            paragraphs = soup_article.select("div.tdb-block-inner p")
+            if not paragraphs:
+                paragraphs = soup_article.select("div.tdb_single_content p")
+            if not paragraphs:
+                paragraphs = soup_article.select("article p")
+            if not paragraphs:
+                paragraphs = soup_article.find_all("p")
+            
+            paragraphs = extract_paragraphs_with_wait(soup_article)
+            body_text = "\n".join(p.get_text(strip=True) for p in paragraphs)
+            body_text = unicodedata.normalize('NFC', body_text)
+
+            if not body_text.strip():
+                continue  # 本文が空ならスキップ
+
+            if not any(keyword in title or keyword in body_text for keyword in NEWS_KEYWORDS):
+                continue  # キーワード無しは除外
+
+            filtered_articles.append({
+                "url": url,
+                "title": title,
+                "date": date_obj.isoformat()
+            })
+
+        except Exception as e:
+            print(f"Error processing {url}: {e}")
+            continue
+
+    return filtered_articles
 
 def get_yktnews_articles_for(date_obj):
     base_url = "https://yktnews.com"
@@ -764,7 +765,7 @@ if __name__ == "__main__":
     process_and_enqueue_articles(articles6, "BBC Burmese", seen_urls)
 
     print("=== YKT News ===")
-    articles7 = get_yktnews_articles_for(date_mmt)
+    articles7 = get_yktnews_articles_from_category(date_mmt, max_pages=3)
     process_and_enqueue_articles(articles7, "YKT News", seen_urls)
 
     # URLベースの重複排除を先に行う
