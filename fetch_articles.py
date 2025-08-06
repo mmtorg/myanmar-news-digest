@@ -179,6 +179,84 @@ def get_article_urls_from_sitemaps(sitemap_urls, target_month_str):
 
     return all_article_urls
 
+# Mizzimaカテゴリーページ巡回で取得
+def get_mizzima_articles_from_category(date_obj, base_url, source_name, category_path, max_pages=3):
+    article_urls = []
+
+    for page_num in range(1, max_pages + 1):
+        if page_num == 1:
+            url = f"{base_url}{category_path}"
+        else:
+            url = f"{base_url}{category_path}/page/{page_num}/"
+
+        try:
+            res = requests.get(url, timeout=10)
+            if res.status_code != 200:
+                continue
+
+            soup = BeautifulSoup(res.content, "html.parser")
+            links = [a['href'] for a in soup.select("h3.td-module-title a[href]")]
+            article_urls.extend(links)
+
+        except Exception as e:
+            print(f"Error crawling category page {url}: {e}")
+            continue
+
+    filtered_articles = []
+    for url in article_urls:
+        try:
+            res_article = fetch_with_retry(url)
+            soup_article = BeautifulSoup(res_article.content, "html.parser")
+
+            meta_tag = soup_article.find("meta", property="article:published_time")
+            if not meta_tag or not meta_tag.has_attr("content"):
+                continue
+
+            date_str = meta_tag["content"]
+            article_datetime_utc = datetime.fromisoformat(date_str)
+            article_datetime_mmt = article_datetime_utc.astimezone(MMT)
+            article_date = article_datetime_mmt.date()
+
+            if article_date != date_obj:
+                continue  # 今日以外はスキップ
+
+            title_tag = soup_article.find("meta", attrs={"property": "og:title"})
+            if not title_tag or not title_tag.has_attr("content"):
+                continue
+            title = title_tag["content"].strip()
+
+            content_div = soup_article.find("div", class_="entry-content")
+            if not content_div:
+                continue
+
+            paragraphs = []
+            for p in content_div.find_all("p"):
+                if p.find_previous("h2", string=re.compile("Related Posts", re.I)):
+                    break
+                paragraphs.append(p)
+
+            body_text = "\n".join(p.get_text(strip=True) for p in paragraphs)
+            body_text = unicodedata.normalize('NFC', body_text)
+
+            if not body_text.strip():
+                continue
+
+            if not any(keyword in title or keyword in body_text for keyword in NEWS_KEYWORDS):
+                continue  # キーワードマッチしなければスキップ
+
+            filtered_articles.append({
+                "source": source_name,
+                "url": url,
+                "title": title,
+                "date": article_date.isoformat()
+            })
+
+        except Exception as e:
+            print(f"Error processing {url}: {e}")
+            continue
+
+    return filtered_articles
+
 def get_mizzima_articles_for(date_obj, base_url, source_name):
     target_month_str = date_obj.strftime("%Y/%m")  # 例: "2025/08"
 
@@ -651,11 +729,24 @@ if __name__ == "__main__":
 
     # 記事取得＆キューに貯める
     print("=== Mizzima (English) ===")
-    articles_eng = get_mizzima_articles_for(date_mmt, "https://eng.mizzima.com", "Mizzima (English)")
+    articles_eng = get_mizzima_articles_from_category(
+        date_mmt,
+        "https://eng.mizzima.com",
+        "Mizzima (English)",
+        "/category/news/myanmar_news",
+        max_pages=3
+    )
     process_and_enqueue_articles(articles_eng, "Mizzima (English)", seen_urls)
     
+    # === Mizzima (Burmese) ===
     print("=== Mizzima (Burmese) ===")
-    articles_bur = get_mizzima_articles_for(date_mmt, "https://bur.mizzima.com", "Mizzima (Burmese)")
+    articles_bur = get_mizzima_articles_from_category(
+        date_mmt,
+        "https://bur.mizzima.com",
+        "Mizzima (Burmese)",
+        "/category/%e1%80%9e%e1%80%90%e1%80%84%e1%80%ba%e1%80%b8/%e1%80%99%e1%80%bc%e1%80%94%e1%80%ba%e1%80%99%e1%80%ac%e1%80%9e%e1%80%90%e1%80%84%e1%80%ba%e1%80%b8",
+        max_pages=3
+    )
     process_and_enqueue_articles(articles_bur, "Mizzima (Burmese)", seen_urls)
 
     # print("=== Voice of Myanmar ===")
