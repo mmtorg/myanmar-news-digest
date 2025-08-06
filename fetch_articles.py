@@ -1,26 +1,17 @@
 import requests
 from bs4 import BeautifulSoup
-from datetime import datetime, timedelta, date, timezone
+from datetime import datetime, timedelta, timezone
 from dateutil.parser import parse as parse_date
 import re
-# Chat GPT
-# from openai import OpenAI, OpenAIError
-import smtplib
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
 import os
-import sys
-from email import policy  # ← 追加
-from email.header import Header  # ← 追加必要
 from email.message import EmailMessage
 from email.policy import SMTPUTF8
 from email.utils import formataddr
 import unicodedata
-from google import genai
-from google.api_core.exceptions import GoogleAPICallError
-from collections import defaultdict
 import time
-import json
+from collections import defaultdict
+from sentence_transformers import SentenceTransformer, util
+from google import genai  # ← Gemini使っているなら残す（テスト用でも）
 
 # 記事重複排除ロジック(BERT埋め込み版)のライブラリインポート
 from sentence_transformers import SentenceTransformer, util
@@ -33,12 +24,6 @@ client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 # ミャンマー標準時 (UTC+6:30)
 MMT = timezone(timedelta(hours=6, minutes=30))
-
-# 昨日の日付
-# def get_yesterday_date_mmt():
-#     now_mmt = datetime.now(MMT)
-#     yesterday_mmt = now_mmt - timedelta(days=1)
-#     return yesterday_mmt.date()
 
 # 今日の日付
 # ニュースの速報性重視で今日分のニュース配信の方針
@@ -106,78 +91,6 @@ def extract_paragraphs_with_wait(soup_article, retries=2, wait_seconds=2):
         print(f"Paragraphs not found, waiting {wait_seconds}s and retrying...")
         time.sleep(wait_seconds)
     return []
-
-# Sitemap Index を取得し、lastmodが指定した日数以内のsitemap URLを抽出
-# 動的に取りに行くが、行けなければ指定した回数試行
-def get_recent_sitemap_urls(base_url, days=1, max_post_sitemap=50):
-    sitemap_index_url = base_url + "/sitemap_index.xml"
-    recent_sitemaps = []
-
-    try:
-        res = requests.get(sitemap_index_url, timeout=30)
-        if res.status_code != 200:
-            raise Exception(f"Status code {res.status_code}")
-
-        soup = BeautifulSoup(res.content, "xml")
-        now_utc = datetime.now(timezone.utc)
-
-        for sitemap in soup.find_all("sitemap"):
-            loc_tag = sitemap.find("loc")
-            lastmod_tag = sitemap.find("lastmod")
-
-            if not loc_tag or not lastmod_tag:
-                continue
-
-            loc = loc_tag.get_text(strip=True)
-            lastmod = datetime.fromisoformat(lastmod_tag.get_text(strip=True))
-
-            if (now_utc - lastmod).days <= days:
-                recent_sitemaps.append(loc)
-
-        if recent_sitemaps:
-            print(f"[INDEX] Recent Sitemaps (last {days} days): {recent_sitemaps}")
-            return recent_sitemaps
-
-    except Exception as e:
-        print(f"❌ Failed to get sitemap index: {e}")
-
-    # Fallback: post-sitemap1.xml ~ post-sitemapN.xml を順番にチェック
-    print(f"⚠️ Falling back to brute-force post-sitemap fetch...")
-    fallback_sitemaps = []
-    for i in range(1, max_post_sitemap + 1):
-        sitemap_url = f"{base_url}/post-sitemap{i}.xml"
-        try:
-            res = requests.get(sitemap_url, timeout=10)
-            if res.status_code == 200:
-                fallback_sitemaps.append(sitemap_url)
-                print(f"✅ Found: {sitemap_url}")
-            else:
-                print(f"🛑 Not Found: {sitemap_url} (Status {res.status_code})")
-
-        except Exception as e:
-            print(f"Error fetching {sitemap_url}: {e}")
-            continue
-
-    return fallback_sitemaps
-
-# 上記取得したSitemap URLから全記事URLを取得（URLフィルター付き）
-def get_article_urls_from_sitemaps(sitemap_urls, target_month_str):
-    all_article_urls = []
-
-    for sitemap_url in sitemap_urls:
-        try:
-            res = requests.get(sitemap_url, timeout=10)
-            soup = BeautifulSoup(res.content, "xml")
-
-            urls = [loc_tag.get_text(strip=True) for loc_tag in soup.find_all("loc")]
-            filtered_urls = [url for url in urls if target_month_str in url]
-            all_article_urls.extend(filtered_urls)
-
-        except Exception as e:
-            print(f"Error processing sitemap {sitemap_url}: {e}")
-            continue
-
-    return all_article_urls
 
 # Mizzimaカテゴリーページ巡回で取得
 def get_mizzima_articles_from_category(date_obj, base_url, source_name, category_path, max_pages=3):
@@ -365,102 +278,6 @@ def get_yktnews_articles_from_category(date_obj, max_pages=3):
 
             if not any(keyword in title or keyword in body_text for keyword in NEWS_KEYWORDS):
                 continue  # キーワード無しは除外
-
-            filtered_articles.append({
-                "url": url,
-                "title": title,
-                "date": date_obj.isoformat()
-            })
-
-        except Exception as e:
-            print(f"Error processing {url}: {e}")
-            continue
-
-    return filtered_articles
-
-def get_yktnews_articles_for(date_obj):
-    base_url = "https://yktnews.com"
-    target_month_str = date_obj.strftime("%Y/%m")
-
-    # (1) Sitemap Indexから最近更新のsitemapを取る
-    recent_sitemaps = get_recent_sitemap_urls(base_url, days=1)
-    # (2) Sitemapから記事URLを取得（月フィルター付き）
-    article_urls = get_article_urls_from_sitemaps(recent_sitemaps, target_month_str)
-
-    filtered_articles = []
-    for url in article_urls:
-        # ★ 画像URLならスキップ
-        if re.search(r'\.(jpg|jpeg|png|gif|webp|svg)$', url, re.IGNORECASE):
-            continue
-
-        if target_month_str not in url:
-            continue  # URLに対象月が無ければスキップ
-
-        try:
-            res_article = fetch_with_retry(url)
-            soup_article = BeautifulSoup(res_article.content, "html.parser")
-
-            # ★ ld+json内のkeywords取得、daily news tv programは抽出対象から除外
-            script_tag = soup_article.find("script", type="application/ld+json", class_="yoast-schema-graph")
-            if not script_tag:
-                continue  # JSON-LDが無ければスキップ
-
-            try:
-                json_data = json.loads(script_tag.string)
-            except Exception as e:
-                print(f"JSON parse error in {url}: {e}")
-                continue
-
-            article_graphs = json_data.get("@graph", [])
-            for item in article_graphs:
-                if item.get("@type") == "Article":
-                    keywords = item.get("keywords", [])
-                    if isinstance(keywords, str):
-                        keywords = [kw.strip() for kw in keywords.split(",")]
-
-                    if "daily news tv program" in keywords:
-                        print(f"Skipped (keywords exclude): {url}")
-                        raise StopIteration  # ★ 除外判定
-                    break  # Articleが見つかったら抜ける
-
-            # ★ 日付チェック：<meta property="article:published_time">
-            meta_tag = soup_article.find("meta", property="article:published_time")
-            if not meta_tag or not meta_tag.has_attr("content"):
-                continue
-
-            date_str = meta_tag["content"]  # 例: "2025-08-04T10:12:24+00:00"
-            article_datetime_utc = datetime.fromisoformat(date_str)
-            article_datetime_mmt = article_datetime_utc.astimezone(MMT)
-            article_date = article_datetime_mmt.date()
-
-            if article_date != date_obj:
-                continue  # 対象日でなければスキップ
-
-            # タイトル取得
-            title_tag = soup_article.find("h1")
-            if not title_tag:
-                continue
-            title = title_tag.get_text(strip=True)
-
-            # 本文取得 (フォールバック方式)
-            paragraphs = soup_article.select("div.tdb-block-inner p")
-            if not paragraphs:
-                paragraphs = soup_article.select("div.tdb_single_content p")
-            if not paragraphs:
-                paragraphs = soup_article.select("article p")
-            if not paragraphs:
-                paragraphs = soup_article.find_all("p")  # 最終手段：全Pタグ
-            
-            paragraphs = extract_paragraphs_with_wait(soup_article)
-            body_text = "\n".join(p.get_text(strip=True) for p in paragraphs)
-            body_text = unicodedata.normalize('NFC', body_text)
-
-            if not body_text.strip():
-                continue  # 本文が空ならスキップ
-
-            # タイトルor本文にキーワードがあれば対象とする
-            if not any(keyword in title or keyword in body_text for keyword in NEWS_KEYWORDS):
-                continue
 
             filtered_articles.append({
                 "url": url,
@@ -720,7 +537,6 @@ def send_email_digest(summaries):
         sys.exit(1)
 
 if __name__ == "__main__":
-    # date_mmt = get_yesterday_date_mmt()
     date_mmt = get_today_date_mmt()
     seen_urls = set()
     
