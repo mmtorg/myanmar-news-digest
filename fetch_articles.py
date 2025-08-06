@@ -195,7 +195,7 @@ def get_mizzima_articles_from_category(date_obj, base_url, source_name, category
                 continue
 
             soup = BeautifulSoup(res.content, "html.parser")
-            links = [a['href'] for a in soup.select("h3.td-module-title a[href]")]
+            links = [a['href'] for a in soup.select("main.site-main article a.post-thumbnail[href]")]
             article_urls.extend(links)
 
         except Exception as e:
@@ -218,7 +218,7 @@ def get_mizzima_articles_from_category(date_obj, base_url, source_name, category
             article_date = article_datetime_mmt.date()
 
             if article_date != date_obj:
-                continue  # 今日以外はスキップ
+                continue
 
             title_tag = soup_article.find("meta", attrs={"property": "og:title"})
             if not title_tag or not title_tag.has_attr("content"):
@@ -242,7 +242,7 @@ def get_mizzima_articles_from_category(date_obj, base_url, source_name, category
                 continue
 
             if not any(keyword in title or keyword in body_text for keyword in NEWS_KEYWORDS):
-                continue  # キーワードマッチしなければスキップ
+                continue
 
             filtered_articles.append({
                 "source": source_name,
