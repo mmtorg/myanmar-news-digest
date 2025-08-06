@@ -108,29 +108,57 @@ def extract_paragraphs_with_wait(soup_article, retries=2, wait_seconds=2):
     return []
 
 # Sitemap Index を取得し、lastmodが指定した日数以内のsitemap URLを抽出
-def get_recent_sitemap_urls(base_url, days=1):
-    sitemap_index_url = base_url + "/sitemap_index.xml"  # or /sitemap.xml depending on site
-    res = requests.get(sitemap_index_url, timeout=10)
-    soup = BeautifulSoup(res.content, "xml")
-
-    now_utc = datetime.now(timezone.utc)
+# 動的に取りに行くが、行けなければ指定した回数試行
+def get_recent_sitemap_urls(base_url, days=1, max_post_sitemap=50):
+    sitemap_index_url = base_url + "/sitemap_index.xml"
     recent_sitemaps = []
 
-    for sitemap in soup.find_all("sitemap"):
-        loc_tag = sitemap.find("loc")
-        lastmod_tag = sitemap.find("lastmod")
+    try:
+        res = requests.get(sitemap_index_url, timeout=30)
+        if res.status_code != 200:
+            raise Exception(f"Status code {res.status_code}")
 
-        if not loc_tag or not lastmod_tag:
+        soup = BeautifulSoup(res.content, "xml")
+        now_utc = datetime.now(timezone.utc)
+
+        for sitemap in soup.find_all("sitemap"):
+            loc_tag = sitemap.find("loc")
+            lastmod_tag = sitemap.find("lastmod")
+
+            if not loc_tag or not lastmod_tag:
+                continue
+
+            loc = loc_tag.get_text(strip=True)
+            lastmod = datetime.fromisoformat(lastmod_tag.get_text(strip=True))
+
+            if (now_utc - lastmod).days <= days:
+                recent_sitemaps.append(loc)
+
+        if recent_sitemaps:
+            print(f"[INDEX] Recent Sitemaps (last {days} days): {recent_sitemaps}")
+            return recent_sitemaps
+
+    except Exception as e:
+        print(f"❌ Failed to get sitemap index: {e}")
+
+    # Fallback: post-sitemap1.xml ~ post-sitemapN.xml を順番にチェック
+    print(f"⚠️ Falling back to brute-force post-sitemap fetch...")
+    fallback_sitemaps = []
+    for i in range(1, max_post_sitemap + 1):
+        sitemap_url = f"{base_url}/post-sitemap{i}.xml"
+        try:
+            res = requests.get(sitemap_url, timeout=10)
+            if res.status_code == 200:
+                fallback_sitemaps.append(sitemap_url)
+                print(f"✅ Found: {sitemap_url}")
+            else:
+                print(f"🛑 Not Found: {sitemap_url} (Status {res.status_code})")
+
+        except Exception as e:
+            print(f"Error fetching {sitemap_url}: {e}")
             continue
 
-        loc = loc_tag.get_text(strip=True)
-        lastmod = datetime.fromisoformat(lastmod_tag.get_text(strip=True))
-
-        if (now_utc - lastmod).days <= days:
-            recent_sitemaps.append(loc)
-
-    print(f"Recent Sitemaps (last {days} days): {recent_sitemaps}")
-    return recent_sitemaps
+    return fallback_sitemaps
 
 # 上記取得したSitemap URLから全記事URLを取得（URLフィルター付き）
 def get_article_urls_from_sitemaps(sitemap_urls, target_month_str):
