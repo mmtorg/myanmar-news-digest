@@ -34,12 +34,6 @@ client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 # ミャンマー標準時 (UTC+6:30)
 MMT = timezone(timedelta(hours=6, minutes=30))
 
-# 昨日の日付
-# def get_yesterday_date_mmt():
-#     now_mmt = datetime.now(MMT)
-#     yesterday_mmt = now_mmt - timedelta(days=1)
-#     return yesterday_mmt.date()
-
 # 今日の日付
 # ニュースの速報性重視で今日分のニュース配信の方針
 def get_today_date_mmt():
@@ -106,78 +100,6 @@ def extract_paragraphs_with_wait(soup_article, retries=2, wait_seconds=2):
         print(f"Paragraphs not found, waiting {wait_seconds}s and retrying...")
         time.sleep(wait_seconds)
     return []
-
-# Sitemap Index を取得し、lastmodが指定した日数以内のsitemap URLを抽出
-# 動的に取りに行くが、行けなければ指定した回数試行
-def get_recent_sitemap_urls(base_url, days=1, max_post_sitemap=50):
-    sitemap_index_url = base_url + "/sitemap_index.xml"
-    recent_sitemaps = []
-
-    try:
-        res = requests.get(sitemap_index_url, timeout=30)
-        if res.status_code != 200:
-            raise Exception(f"Status code {res.status_code}")
-
-        soup = BeautifulSoup(res.content, "xml")
-        now_utc = datetime.now(timezone.utc)
-
-        for sitemap in soup.find_all("sitemap"):
-            loc_tag = sitemap.find("loc")
-            lastmod_tag = sitemap.find("lastmod")
-
-            if not loc_tag or not lastmod_tag:
-                continue
-
-            loc = loc_tag.get_text(strip=True)
-            lastmod = datetime.fromisoformat(lastmod_tag.get_text(strip=True))
-
-            if (now_utc - lastmod).days <= days:
-                recent_sitemaps.append(loc)
-
-        if recent_sitemaps:
-            print(f"[INDEX] Recent Sitemaps (last {days} days): {recent_sitemaps}")
-            return recent_sitemaps
-
-    except Exception as e:
-        print(f"❌ Failed to get sitemap index: {e}")
-
-    # Fallback: post-sitemap1.xml ~ post-sitemapN.xml を順番にチェック
-    print(f"⚠️ Falling back to brute-force post-sitemap fetch...")
-    fallback_sitemaps = []
-    for i in range(1, max_post_sitemap + 1):
-        sitemap_url = f"{base_url}/post-sitemap{i}.xml"
-        try:
-            res = requests.get(sitemap_url, timeout=10)
-            if res.status_code == 200:
-                fallback_sitemaps.append(sitemap_url)
-                print(f"✅ Found: {sitemap_url}")
-            else:
-                print(f"🛑 Not Found: {sitemap_url} (Status {res.status_code})")
-
-        except Exception as e:
-            print(f"Error fetching {sitemap_url}: {e}")
-            continue
-
-    return fallback_sitemaps
-
-# 上記取得したSitemap URLから全記事URLを取得（URLフィルター付き）
-def get_article_urls_from_sitemaps(sitemap_urls, target_month_str):
-    all_article_urls = []
-
-    for sitemap_url in sitemap_urls:
-        try:
-            res = requests.get(sitemap_url, timeout=10)
-            soup = BeautifulSoup(res.content, "xml")
-
-            urls = [loc_tag.get_text(strip=True) for loc_tag in soup.find_all("loc")]
-            filtered_urls = [url for url in urls if target_month_str in url]
-            all_article_urls.extend(filtered_urls)
-
-        except Exception as e:
-            print(f"Error processing sitemap {sitemap_url}: {e}")
-            continue
-
-    return all_article_urls
 
 # Mizzimaカテゴリーページ巡回で取得
 def get_mizzima_articles_from_category(date_obj, base_url, source_name, category_path, max_pages=3):
@@ -378,102 +300,6 @@ def get_yktnews_articles_from_category(date_obj, max_pages=3):
 
     return filtered_articles
 
-def get_yktnews_articles_for(date_obj):
-    base_url = "https://yktnews.com"
-    target_month_str = date_obj.strftime("%Y/%m")
-
-    # (1) Sitemap Indexから最近更新のsitemapを取る
-    recent_sitemaps = get_recent_sitemap_urls(base_url, days=1)
-    # (2) Sitemapから記事URLを取得（月フィルター付き）
-    article_urls = get_article_urls_from_sitemaps(recent_sitemaps, target_month_str)
-
-    filtered_articles = []
-    for url in article_urls:
-        # ★ 画像URLならスキップ
-        if re.search(r'\.(jpg|jpeg|png|gif|webp|svg)$', url, re.IGNORECASE):
-            continue
-
-        if target_month_str not in url:
-            continue  # URLに対象月が無ければスキップ
-
-        try:
-            res_article = fetch_with_retry(url)
-            soup_article = BeautifulSoup(res_article.content, "html.parser")
-
-            # ★ ld+json内のkeywords取得、daily news tv programは抽出対象から除外
-            script_tag = soup_article.find("script", type="application/ld+json", class_="yoast-schema-graph")
-            if not script_tag:
-                continue  # JSON-LDが無ければスキップ
-
-            try:
-                json_data = json.loads(script_tag.string)
-            except Exception as e:
-                print(f"JSON parse error in {url}: {e}")
-                continue
-
-            article_graphs = json_data.get("@graph", [])
-            for item in article_graphs:
-                if item.get("@type") == "Article":
-                    keywords = item.get("keywords", [])
-                    if isinstance(keywords, str):
-                        keywords = [kw.strip() for kw in keywords.split(",")]
-
-                    if "daily news tv program" in keywords:
-                        print(f"Skipped (keywords exclude): {url}")
-                        raise StopIteration  # ★ 除外判定
-                    break  # Articleが見つかったら抜ける
-
-            # ★ 日付チェック：<meta property="article:published_time">
-            meta_tag = soup_article.find("meta", property="article:published_time")
-            if not meta_tag or not meta_tag.has_attr("content"):
-                continue
-
-            date_str = meta_tag["content"]  # 例: "2025-08-04T10:12:24+00:00"
-            article_datetime_utc = datetime.fromisoformat(date_str)
-            article_datetime_mmt = article_datetime_utc.astimezone(MMT)
-            article_date = article_datetime_mmt.date()
-
-            if article_date != date_obj:
-                continue  # 対象日でなければスキップ
-
-            # タイトル取得
-            title_tag = soup_article.find("h1")
-            if not title_tag:
-                continue
-            title = title_tag.get_text(strip=True)
-
-            # 本文取得 (フォールバック方式)
-            paragraphs = soup_article.select("div.tdb-block-inner p")
-            if not paragraphs:
-                paragraphs = soup_article.select("div.tdb_single_content p")
-            if not paragraphs:
-                paragraphs = soup_article.select("article p")
-            if not paragraphs:
-                paragraphs = soup_article.find_all("p")  # 最終手段：全Pタグ
-            
-            paragraphs = extract_paragraphs_with_wait(soup_article)
-            body_text = "\n".join(p.get_text(strip=True) for p in paragraphs)
-            body_text = unicodedata.normalize('NFC', body_text)
-
-            if not body_text.strip():
-                continue  # 本文が空ならスキップ
-
-            # タイトルor本文にキーワードがあれば対象とする
-            if not any(keyword in title or keyword in body_text for keyword in NEWS_KEYWORDS):
-                continue
-
-            filtered_articles.append({
-                "url": url,
-                "title": title,
-                "date": date_obj.isoformat()
-            })
-
-        except Exception as e:
-            print(f"Error processing {url}: {e}")
-            continue
-
-    return filtered_articles
-
 # 同じURLの重複削除
 def deduplicate_by_url(articles):
     seen_urls = set()
@@ -573,78 +399,77 @@ def process_and_enqueue_articles(articles, source_name, seen_urls=None):
 def process_translation_batches(batch_size=10, wait_seconds=60):
 
     # ⚠️ TEST: Geminiを呼ばず、URLリストだけ返す
-    summarized_results = []
-    for item in translation_queue:
-        summarized_results.append({
-            "source": item["source"],
-            "url": item["url"],
-            "title": "（タイトルはテスト省略）",
-            "summary": "（要約テスト省略）"
-        })
-
     # summarized_results = []
+    # for item in translation_queue:
+    #     summarized_results.append({
+    #         "source": item["source"],
+    #         "url": item["url"],
+    #         "title": "（タイトルはテスト省略）",
+    #         "summary": "（要約テスト省略）"
+    #     })
 
-    # for i in range(0, len(translation_queue), batch_size):
-    #     batch = translation_queue[i:i + batch_size]
-    #     print(f"⚙️ Processing batch {i // batch_size + 1}...")
+    summarized_results = []
+    for i in range(0, len(translation_queue), batch_size):
+        batch = translation_queue[i:i + batch_size]
+        print(f"⚙️ Processing batch {i // batch_size + 1}...")
 
-    #     for item in batch:
-    #         prompt = (
-    #             "以下は記事のタイトルです。自然な日本語に翻訳し「【タイトル】 ◯◯」とレスポンスでは返してください。それ以外の文言は不要です。\n"
-    #             "###\n"
-    #             f"{item['title']}\n"
-    #             "###\n\n"
-    #             "以下の記事の本文について重要なポイントをまとめ具体的に要約してください。自然な日本語に訳してください。\n"
-    #             "個別記事の本文の要約のみとしてください。メディアの説明やページ全体の解説は不要です。\n"
-    #             "レスポンスでは要約のみを返してください、それ以外の文言は不要です。\n"
-    #             "以下、出力の条件です。\n"
-    #             "- 1行目は「【要約】」とだけしてください。"
-    #             "- 見出しや箇条書きを適切に使って見やすく整理してください。\n"
-    #             "- 見出しや箇条書きにはマークダウン記号（#, *, - など）は使わず、単純なテキストとして出力してください。\n"
-    #             "- 見出しは `[  ]` で囲んでください。\n"
-    #             "- テキストが入っていない改行は作らないでください。\n"
-    #             "- 全体をHTMLで送るわけではないので、特殊記号は使わないでください。\n"
-    #             "- 箇条書きは「・」を使ってください。\n"
-    #             "- 要約の文字数は最大500文字を超えてはいけません。\n"
-    #             "###\n"
-    #             f"{item['body'][:2000]}\n"
-    #             "###"
-    #         )
+        for item in batch:
+            prompt = (
+                "以下は記事のタイトルです。自然な日本語に翻訳し「【タイトル】 ◯◯」とレスポンスでは返してください。それ以外の文言は不要です。\n"
+                "###\n"
+                f"{item['title']}\n"
+                "###\n\n"
+                "以下の記事の本文について重要なポイントをまとめ具体的に要約してください。自然な日本語に訳してください。\n"
+                "個別記事の本文の要約のみとしてください。メディアの説明やページ全体の解説は不要です。\n"
+                "レスポンスでは要約のみを返してください、それ以外の文言は不要です。\n"
+                "以下、出力の条件です。\n"
+                "- 1行目は「【要約】」とだけしてください。"
+                "- 見出しや箇条書きを適切に使って見やすく整理してください。\n"
+                "- 見出しや箇条書きにはマークダウン記号（#, *, - など）は使わず、単純なテキストとして出力してください。\n"
+                "- 見出しは `[  ]` で囲んでください。\n"
+                "- テキストが入っていない改行は作らないでください。\n"
+                "- 全体をHTMLで送るわけではないので、特殊記号は使わないでください。\n"
+                "- 箇条書きは「・」を使ってください。\n"
+                "- 要約の文字数は最大500文字を超えてはいけません。\n"
+                "###\n"
+                f"{item['body'][:2000]}\n"
+                "###"
+            )
 
-    #         try:
-    #             resp = client.models.generate_content(
-    #                 model="gemini-2.5-flash",
-    #                 contents=prompt
-    #             )
-    #             output_text = resp.text.strip()
+            try:
+                resp = client.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=prompt
+                )
+                output_text = resp.text.strip()
 
-    #             # パース
-    #             lines = output_text.splitlines()
-    #             title_line = next((line for line in lines if line.startswith("【タイトル】")), None)
-    #             summary_lines = [line for line in lines if line and not line.startswith("【タイトル】")]
+                # パース
+                lines = output_text.splitlines()
+                title_line = next((line for line in lines if line.startswith("【タイトル】")), None)
+                summary_lines = [line for line in lines if line and not line.startswith("【タイトル】")]
 
-    #             if title_line:
-    #                 translated_title = title_line.replace("【タイトル】", "").strip()
-    #             else:
-    #                 translated_title = "（翻訳失敗）"
+                if title_line:
+                    translated_title = title_line.replace("【タイトル】", "").strip()
+                else:
+                    translated_title = "（翻訳失敗）"
 
-    #             summary_text = "\n".join(summary_lines).strip()
-    #             summary_html = summary_text.replace("\n", "<br>")
+                summary_text = "\n".join(summary_lines).strip()
+                summary_html = summary_text.replace("\n", "<br>")
 
-    #             summarized_results.append({
-    #                 "source": item["source"],
-    #                 "url": item["url"],
-    #                 "title": translated_title,
-    #                 "summary": summary_html,
-    #             })
+                summarized_results.append({
+                    "source": item["source"],
+                    "url": item["url"],
+                    "title": translated_title,
+                    "summary": summary_html,
+                })
 
-    #         except Exception as e:
-    #             print(f"🛑 Error during translation: {e}")
-    #             continue
+            except Exception as e:
+                print(f"🛑 Error during translation: {e}")
+                continue
 
-    #     if i + batch_size < len(translation_queue):
-    #         print(f"🕒 Waiting {wait_seconds} seconds before next batch...")
-    #         time.sleep(wait_seconds)
+        if i + batch_size < len(translation_queue):
+            print(f"🕒 Waiting {wait_seconds} seconds before next batch...")
+            time.sleep(wait_seconds)
 
     return summarized_results
 
@@ -654,7 +479,6 @@ def send_email_digest(summaries):
     recipient_emails = os.getenv("EMAIL_RECIPIENTS", "").split(",")
 
     # ✅ 今日の日付を取得してフォーマット
-    # digest_date = get_yesterday_date_mmt()
     digest_date = get_today_date_mmt()
     date_str = digest_date.strftime("%Y年%-m月%-d日") + "分"
 
@@ -676,27 +500,27 @@ def send_email_digest(summaries):
         html_content += f"<h2 style='color: #2a2a2a; margin-top: 30px;'>{media} からのニュース</h2>"
 
         # ⚠️ TEST: Geminiを呼ばず、URLリストだけ返す
-        for item in articles:
-            url = item["url"]
-            html_content += (
-                f"<div style='margin-bottom: 10px;'>"
-                f"<p><a href='{url}' style='color: #1a0dab;'>本文を読む</a></p>"
-                f"</div>"
-            )
-
         # for item in articles:
-        #     title_jp = "タイトル: " + item["title"]
         #     url = item["url"]
-
-        #     summary_html = item["summary"]  # すでにHTML整形済みをそのまま使う
         #     html_content += (
-        #         f"<div style='margin-bottom: 20px;'>"
-        #         f"<h4 style='margin-bottom: 5px;'>{title_jp}</h4>"
+        #         f"<div style='margin-bottom: 10px;'>"
         #         f"<p><a href='{url}' style='color: #1a0dab;'>本文を読む</a></p>"
-        #         f"<div style='background-color: #f9f9f9; padding: 10px; border-radius: 8px;'>"
-        #         f"{summary_html}"
-        #         f"</div></div><hr style='border-top: 1px solid #cccccc;'>"
+        #         f"</div>"
         #     )
+
+        for item in articles:
+            title_jp = "タイトル: " + item["title"]
+            url = item["url"]
+
+            summary_html = item["summary"]  # すでにHTML整形済みをそのまま使う
+            html_content += (
+                f"<div style='margin-bottom: 20px;'>"
+                f"<h4 style='margin-bottom: 5px;'>{title_jp}</h4>"
+                f"<p><a href='{url}' style='color: #1a0dab;'>本文を読む</a></p>"
+                f"<div style='background-color: #f9f9f9; padding: 10px; border-radius: 8px;'>"
+                f"{summary_html}"
+                f"</div></div><hr style='border-top: 1px solid #cccccc;'>"
+            )
 
     html_content += "</body></html>"
     html_content = clean_html_content(html_content)
@@ -720,7 +544,6 @@ def send_email_digest(summaries):
         sys.exit(1)
 
 if __name__ == "__main__":
-    # date_mmt = get_yesterday_date_mmt()
     date_mmt = get_today_date_mmt()
     seen_urls = set()
     
