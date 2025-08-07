@@ -544,7 +544,8 @@ def send_email_digest(summaries):
         sys.exit(1)
 
 if __name__ == "__main__":
-    date_mmt = get_today_date_mmt()
+    # date_mmt = get_today_date_mmt()
+    date_mmt = date(2025, 8, 6)  # テスト用に日付を固定
     seen_urls = set()
     
     # articles = get_frontier_articles_for(date_mmt)
