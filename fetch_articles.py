@@ -333,6 +333,29 @@ def deduplicate_articles(articles, similarity_threshold=0.80): # 類似度閾値
 
     cosine_scores = util.pytorch_cos_sim(embeddings, embeddings).cpu().numpy()
 
+    # === ★ body_textとスコアを確認したいペア ===
+    target_pair = (
+        "https://eng.mizzima.com/2025/08/06/25134",
+        "https://bur.mizzima.com/2025/08/06/64434"
+    )
+
+    url_to_index = {art['url']: idx for idx, art in enumerate(articles)}
+    i, j = url_to_index.get(target_pair[0]), url_to_index.get(target_pair[1])
+
+    if i is not None and j is not None:
+        score = cosine_scores[i][j]
+        print("==== 類似度チェック対象記事 ====")
+        print(f"🔗 英語記事: {articles[i]['url']}")
+        print(f"📘 タイトル: {articles[i]['title']}")
+        print(f"📝 本文:\n{articles[i]['body']}")
+        print("\n---\n")
+        print(f"🔗 ビルマ語記事: {articles[j]['url']}")
+        print(f"📘 タイトル: {articles[j]['title']}")
+        print(f"📝 本文:\n{articles[j]['body']}")
+        print("\n---\n")
+        print(f"👉 類似度スコア: {score:.4f}")
+        print("=================================")
+
     visited = set()
     unique_articles = []
 
@@ -340,7 +363,7 @@ def deduplicate_articles(articles, similarity_threshold=0.80): # 類似度閾値
     for i in range(len(articles)):
         for j in range(i + 1, len(articles)):
             score = cosine_scores[i][j]
-            if score > 0.60:
+            if score > 0.80:
                 print(f"🔍 類似度: {score:.4f}")
                 print(f" - {articles[i]['title']} ({articles[i]['source']})")
                 print(f" - {articles[j]['title']} ({articles[j]['source']})")
