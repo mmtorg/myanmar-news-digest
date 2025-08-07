@@ -21,6 +21,7 @@ from google.api_core.exceptions import GoogleAPICallError
 from collections import defaultdict
 import time
 import json
+import numpy as np
 
 # 記事重複排除ロジック(BERT埋め込み版)のライブラリインポート
 from sentence_transformers import SentenceTransformer, util
@@ -315,11 +316,11 @@ def deduplicate_by_url(articles):
     return unique_articles
 
 # BERT埋め込みで類似記事判定
-def deduplicate_articles(articles, similarity_threshold=0.80): # 類似度閾値、高いほど厳しい、チューニング
+def deduplicate_articles(articles, similarity_threshold=0.88, title_threshold=0.95):
     if not articles:
         return []
 
-    # 重複した場合の記事優先度
+    # 1. メディアの優先順位（数値が小さいほど優先）
     media_priority = {
         "BBC Burmese": 1,
         "Mizzima (English)": 2,
@@ -327,75 +328,167 @@ def deduplicate_articles(articles, similarity_threshold=0.80): # 類似度閾値
         "YKT News": 4
     }
 
+    # 2. タイトルのJaccard類似度
+    def jaccard_title_similarity(title1, title2):
+        tokens1 = set(re.findall(r'\w+', title1))
+        tokens2 = set(re.findall(r'\w+', title2))
+        if not tokens1 or not tokens2:
+            return 0.0
+        return len(tokens1 & tokens2) / len(tokens1 | tokens2)
+
+    # 3. 革命日報のタイトル日付一致判定
+    def normalize_date(date_str):
+        date_str = date_str.replace('年', '/').replace('月', '/').replace('日', '')
+        date_str = date_str.replace('-', '/').replace('.', '/')
+        return date_str.strip().lstrip('0').replace('/0', '/')
+
+    def is_revolution_diary_duplicate(title1, title2):
+        pattern = r"春の革命日報[（(]?\s*(\d{4}(?:年|/|-|\.)\d{1,2}(?:月|/|-|\.)\d{1,2}日?)\s*[）)]?"
+        m1, m2 = re.search(pattern, title1), re.search(pattern, title2)
+        if m1 and m2:
+            return normalize_date(m1.group(1)) == normalize_date(m2.group(1))
+        return False
+
+    # 4. 類似判定ルール
+    def should_consider_duplicate(a1, a2, sim_score):
+        title_sim = jaccard_title_similarity(a1["title"], a2["title"])
+        if a1["title"] == a2["title"]:
+            return True
+        if is_revolution_diary_duplicate(a1["title"], a2["title"]):
+            return True
+        # ✅ タイトル類似度が高い → 強く重複とみなす（Jaccardメイン）
+        if title_sim > title_threshold:
+            return True
+        # ✅ タイトル類似がそこそこ＋本文の意味的類似もそこそこ
+        if title_sim > 0.90 and sim_score > similarity_threshold:
+            return True
+        # ✅ 意味的に非常に近いなら最後の手段として重複扱い
+        if sim_score > 0.98:
+            return True
+        return False
+
+    # 5. BERTエンコーダー準備
     model = SentenceTransformer("sonoisa/sentence-bert-base-ja-mean-tokens")
-    texts = [art.get('title', '') + " " + art.get('summary', art['body'])[:2000] for art in articles] # 本文は先頭2000文字を見に行く、チューニング
+    texts = [art.get('title', '') + " " + art.get('summary', art['body'])[:2000] for art in articles]
     embeddings = model.encode(texts, convert_to_tensor=True)
-
     cosine_scores = util.pytorch_cos_sim(embeddings, embeddings).cpu().numpy()
-
-    # === ★ body_textとスコアを確認したいペア ===
-    target_pair = (
-        "https://eng.mizzima.com/2025/08/06/25134",
-        "https://bur.mizzima.com/2025/08/06/64434"
-    )
-
-    url_to_index = {art['url']: idx for idx, art in enumerate(articles)}
-    i, j = url_to_index.get(target_pair[0]), url_to_index.get(target_pair[1])
-
-    if i is not None and j is not None:
-        score = cosine_scores[i][j]
-        print("==== 類似度チェック対象記事 ====")
-        print(f"🔗 英語記事: {articles[i]['url']}")
-        print(f"📘 タイトル: {articles[i]['title']}")
-        print(f"📝 本文:\n{articles[i]['body']}")
-        print("\n---\n")
-        print(f"🔗 ビルマ語記事: {articles[j]['url']}")
-        print(f"📘 タイトル: {articles[j]['title']}")
-        print(f"📝 本文:\n{articles[j]['body']}")
-        print("\n---\n")
-        print(f"👉 類似度スコア: {score:.4f}")
-        print("=================================")
 
     visited = set()
     unique_articles = []
 
-    # デバッグ出力: 類似スコア確認 ← ここから追加
-    for i in range(len(articles)):
-        for j in range(i + 1, len(articles)):
-            score = cosine_scores[i][j]
-            if score > 0.80:
-                print(f"🔍 類似度: {score:.4f}")
-                print(f" - {articles[i]['title']} ({articles[i]['source']})")
-                print(f" - {articles[j]['title']} ({articles[j]['source']})")
-                print(f" - URLs:\n   {articles[i]['url']}\n   {articles[j]['url']}")
-                print("----------")
-    # ← ここまで追加
-
-    # まずタイトル完全一致グルーピング
+    # 6. タイトル完全一致は処理スキップ、無駄な処理削除目的、なくてもいい
     title_seen = {}
     for idx, art in enumerate(articles):
         if art['title'] in title_seen:
-            continue  # すでに同じタイトルの記事が登録されていればスキップ
+            continue
         title_seen[art['title']] = idx
         unique_articles.append(art)
         visited.add(idx)
 
-    # 次にBERTベースの類似判定
+    # 7. BERT＋タイトル一致を用いた重複判定
     for i in range(len(articles)):
         if i in visited:
             continue
-
         group = [i]
         for j in range(i + 1, len(articles)):
-            if cosine_scores[i][j] > similarity_threshold:
+            if j in visited:
+                continue
+            score = cosine_scores[i][j]
+            if should_consider_duplicate(articles[i], articles[j], score, similarity_threshold, title_threshold):
                 group.append(j)
                 visited.add(j)
-
+                print(f"🔍 類似度: {score:.4f} / タイトル一致率: {jaccard_title_similarity(articles[i]['title'], articles[j]['title']):.2f}")
+                print(f" - {articles[i]['title']} ({articles[i]['source']})")
+                print(f" - {articles[j]['title']} ({articles[j]['source']})")
+                print(f" - URLs:\n   {articles[i]['url']}\n   {articles[j]['url']}")
+                print("----------")
         group_sorted = sorted(group, key=lambda idx: media_priority.get(articles[idx]['source'], 99))
         unique_articles.append(articles[group_sorted[0]])
-        visited.add(i)
+        visited.update(group)
 
     return unique_articles
+
+# def deduplicate_articles(articles, similarity_threshold=0.80): # 類似度閾値、高いほど厳しい、チューニング
+#     if not articles:
+#         return []
+
+#     # 重複した場合の記事優先度
+#     media_priority = {
+#         "BBC Burmese": 1,
+#         "Mizzima (English)": 2,
+#         "Mizzima (Burmese)": 3,
+#         "YKT News": 4
+#     }
+
+#     model = SentenceTransformer("sonoisa/sentence-bert-base-ja-mean-tokens")
+#     texts = [art.get('title', '') + " " + art.get('summary', art['body'])[:2000] for art in articles] # 本文は先頭2000文字を見に行く、チューニング
+#     embeddings = model.encode(texts, convert_to_tensor=True)
+
+#     cosine_scores = util.pytorch_cos_sim(embeddings, embeddings).cpu().numpy()
+
+#     # === ★ body_textとスコアを確認したいペア ===
+#     target_pair = (
+#         "https://eng.mizzima.com/2025/08/06/25134",
+#         "https://bur.mizzima.com/2025/08/06/64434"
+#     )
+
+#     url_to_index = {art['url']: idx for idx, art in enumerate(articles)}
+#     i, j = url_to_index.get(target_pair[0]), url_to_index.get(target_pair[1])
+
+#     if i is not None and j is not None:
+#         score = cosine_scores[i][j]
+#         print("==== 類似度チェック対象記事 ====")
+#         print(f"🔗 英語記事: {articles[i]['url']}")
+#         print(f"📘 タイトル: {articles[i]['title']}")
+#         print(f"📝 本文:\n{articles[i]['body']}")
+#         print("\n---\n")
+#         print(f"🔗 ビルマ語記事: {articles[j]['url']}")
+#         print(f"📘 タイトル: {articles[j]['title']}")
+#         print(f"📝 本文:\n{articles[j]['body']}")
+#         print("\n---\n")
+#         print(f"👉 類似度スコア: {score:.4f}")
+#         print("=================================")
+
+#     visited = set()
+#     unique_articles = []
+
+#     # デバッグ出力: 類似スコア確認 ← ここから追加
+#     for i in range(len(articles)):
+#         for j in range(i + 1, len(articles)):
+#             score = cosine_scores[i][j]
+#             if score > 0.80:
+#                 print(f"🔍 類似度: {score:.4f}")
+#                 print(f" - {articles[i]['title']} ({articles[i]['source']})")
+#                 print(f" - {articles[j]['title']} ({articles[j]['source']})")
+#                 print(f" - URLs:\n   {articles[i]['url']}\n   {articles[j]['url']}")
+#                 print("----------")
+#     # ← ここまで追加
+
+#     # まずタイトル完全一致グルーピング
+#     title_seen = {}
+#     for idx, art in enumerate(articles):
+#         if art['title'] in title_seen:
+#             continue  # すでに同じタイトルの記事が登録されていればスキップ
+#         title_seen[art['title']] = idx
+#         unique_articles.append(art)
+#         visited.add(idx)
+
+#     # 次にBERTベースの類似判定
+#     for i in range(len(articles)):
+#         if i in visited:
+#             continue
+
+#         group = [i]
+#         for j in range(i + 1, len(articles)):
+#             if cosine_scores[i][j] > similarity_threshold:
+#                 group.append(j)
+#                 visited.add(j)
+
+#         group_sorted = sorted(group, key=lambda idx: media_priority.get(articles[idx]['source'], 99))
+#         unique_articles.append(articles[group_sorted[0]])
+#         visited.add(i)
+
+#     return unique_articles
 
 # 翻訳対象キュー
 translation_queue = []
@@ -652,4 +745,4 @@ if __name__ == "__main__":
     translation_queue.clear()
     translation_queue.extend(deduplicated_articles)
 
-    send_email_digest(all_summaries)
+    send_email_digest(translation_queue)
