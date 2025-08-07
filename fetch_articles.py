@@ -327,8 +327,8 @@ def deduplicate_articles(articles, similarity_threshold=0.80): # 類似度閾値
         "YKT News": 4
     }
 
-    model = SentenceTransformer('distiluse-base-multilingual-cased-v2')
-    texts = [art['title'] + " " + art['body'][:2000] for art in articles]  # 本文は先頭2000文字を見に行く、チューニング
+    model = SentenceTransformer("sonoisa/sentence-bert-base-ja-mean-tokens")
+    texts = [art.get('title', '') + " " + art.get('summary', art['body'])[:2000] for art in articles] # 本文は先頭2000文字を見に行く、チューニング
     embeddings = model.encode(texts, convert_to_tensor=True)
 
     cosine_scores = util.pytorch_cos_sim(embeddings, embeddings).cpu().numpy()
@@ -436,77 +436,77 @@ def process_and_enqueue_articles(articles, source_name, seen_urls=None):
 def process_translation_batches(batch_size=10, wait_seconds=60):
 
     # ⚠️ TEST: Geminiを呼ばず、URLリストだけ返す
-    summarized_results = []
-    for item in translation_queue:
-        summarized_results.append({
-            "source": item["source"],
-            "url": item["url"],
-            "title": "（タイトルはテスト省略）",
-            "summary": "（要約テスト省略）"
-        })
-
     # summarized_results = []
-    # for i in range(0, len(translation_queue), batch_size):
-    #     batch = translation_queue[i:i + batch_size]
-    #     print(f"⚙️ Processing batch {i // batch_size + 1}...")
+    # for item in translation_queue:
+    #     summarized_results.append({
+    #         "source": item["source"],
+    #         "url": item["url"],
+    #         "title": "（タイトルはテスト省略）",
+    #         "summary": "（要約テスト省略）"
+    #     })
 
-    #     for item in batch:
-    #         prompt = (
-    #             "以下は記事のタイトルです。自然な日本語に翻訳し「【タイトル】 ◯◯」とレスポンスでは返してください。それ以外の文言は不要です。\n"
-    #             "###\n"
-    #             f"{item['title']}\n"
-    #             "###\n\n"
-    #             "以下の記事の本文について重要なポイントをまとめ具体的に要約してください。自然な日本語に訳してください。\n"
-    #             "個別記事の本文の要約のみとしてください。メディアの説明やページ全体の解説は不要です。\n"
-    #             "レスポンスでは要約のみを返してください、それ以外の文言は不要です。\n"
-    #             "以下、出力の条件です。\n"
-    #             "- 1行目は「【要約】」とだけしてください。"
-    #             "- 見出しや箇条書きを適切に使って見やすく整理してください。\n"
-    #             "- 見出しや箇条書きにはマークダウン記号（#, *, - など）は使わず、単純なテキストとして出力してください。\n"
-    #             "- 見出しは `[  ]` で囲んでください。\n"
-    #             "- テキストが入っていない改行は作らないでください。\n"
-    #             "- 全体をHTMLで送るわけではないので、特殊記号は使わないでください。\n"
-    #             "- 箇条書きは「・」を使ってください。\n"
-    #             "- 要約の文字数は最大500文字を超えてはいけません。\n"
-    #             "###\n"
-    #             f"{item['body'][:2000]}\n"
-    #             "###"
-    #         )
+    summarized_results = []
+    for i in range(0, len(translation_queue), batch_size):
+        batch = translation_queue[i:i + batch_size]
+        print(f"⚙️ Processing batch {i // batch_size + 1}...")
 
-    #         try:
-    #             resp = client.models.generate_content(
-    #                 model="gemini-2.5-flash",
-    #                 contents=prompt
-    #             )
-    #             output_text = resp.text.strip()
+        for item in batch:
+            prompt = (
+                "以下は記事のタイトルです。自然な日本語に翻訳し「【タイトル】 ◯◯」とレスポンスでは返してください。それ以外の文言は不要です。\n"
+                "###\n"
+                f"{item['title']}\n"
+                "###\n\n"
+                "以下の記事の本文について重要なポイントをまとめ具体的に要約してください。自然な日本語に訳してください。\n"
+                "個別記事の本文の要約のみとしてください。メディアの説明やページ全体の解説は不要です。\n"
+                "レスポンスでは要約のみを返してください、それ以外の文言は不要です。\n"
+                "以下、出力の条件です。\n"
+                "- 1行目は「【要約】」とだけしてください。"
+                "- 見出しや箇条書きを適切に使って見やすく整理してください。\n"
+                "- 見出しや箇条書きにはマークダウン記号（#, *, - など）は使わず、単純なテキストとして出力してください。\n"
+                "- 見出しは `[  ]` で囲んでください。\n"
+                "- テキストが入っていない改行は作らないでください。\n"
+                "- 全体をHTMLで送るわけではないので、特殊記号は使わないでください。\n"
+                "- 箇条書きは「・」を使ってください。\n"
+                "- 要約の文字数は最大500文字を超えてはいけません。\n"
+                "###\n"
+                f"{item['body'][:2000]}\n"
+                "###"
+            )
 
-    #             # パース
-    #             lines = output_text.splitlines()
-    #             title_line = next((line for line in lines if line.startswith("【タイトル】")), None)
-    #             summary_lines = [line for line in lines if line and not line.startswith("【タイトル】")]
+            try:
+                resp = client.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=prompt
+                )
+                output_text = resp.text.strip()
 
-    #             if title_line:
-    #                 translated_title = title_line.replace("【タイトル】", "").strip()
-    #             else:
-    #                 translated_title = "（翻訳失敗）"
+                # パース
+                lines = output_text.splitlines()
+                title_line = next((line for line in lines if line.startswith("【タイトル】")), None)
+                summary_lines = [line for line in lines if line and not line.startswith("【タイトル】")]
 
-    #             summary_text = "\n".join(summary_lines).strip()
-    #             summary_html = summary_text.replace("\n", "<br>")
+                if title_line:
+                    translated_title = title_line.replace("【タイトル】", "").strip()
+                else:
+                    translated_title = "（翻訳失敗）"
 
-    #             summarized_results.append({
-    #                 "source": item["source"],
-    #                 "url": item["url"],
-    #                 "title": translated_title,
-    #                 "summary": summary_html,
-    #             })
+                summary_text = "\n".join(summary_lines).strip()
+                summary_html = summary_text.replace("\n", "<br>")
 
-    #         except Exception as e:
-    #             print(f"🛑 Error during translation: {e}")
-    #             continue
+                summarized_results.append({
+                    "source": item["source"],
+                    "url": item["url"],
+                    "title": translated_title,
+                    "summary": summary_html,
+                })
 
-    #     if i + batch_size < len(translation_queue):
-    #         print(f"🕒 Waiting {wait_seconds} seconds before next batch...")
-    #         time.sleep(wait_seconds)
+            except Exception as e:
+                print(f"🛑 Error during translation: {e}")
+                continue
+
+        if i + batch_size < len(translation_queue):
+            print(f"🕒 Waiting {wait_seconds} seconds before next batch...")
+            time.sleep(wait_seconds)
 
     return summarized_results
 
@@ -537,27 +537,27 @@ def send_email_digest(summaries):
         html_content += f"<h2 style='color: #2a2a2a; margin-top: 30px;'>{media} からのニュース</h2>"
 
         # ⚠️ TEST: Geminiを呼ばず、URLリストだけ返す
-        for item in articles:
-            url = item["url"]
-            html_content += (
-                f"<div style='margin-bottom: 10px;'>"
-                f"<p><a href='{url}' style='color: #1a0dab;'>本文を読む</a></p>"
-                f"</div>"
-            )
-
         # for item in articles:
-        #     title_jp = "タイトル: " + item["title"]
         #     url = item["url"]
-
-        #     summary_html = item["summary"]  # すでにHTML整形済みをそのまま使う
         #     html_content += (
-        #         f"<div style='margin-bottom: 20px;'>"
-        #         f"<h4 style='margin-bottom: 5px;'>{title_jp}</h4>"
+        #         f"<div style='margin-bottom: 10px;'>"
         #         f"<p><a href='{url}' style='color: #1a0dab;'>本文を読む</a></p>"
-        #         f"<div style='background-color: #f9f9f9; padding: 10px; border-radius: 8px;'>"
-        #         f"{summary_html}"
-        #         f"</div></div><hr style='border-top: 1px solid #cccccc;'>"
+        #         f"</div>"
         #     )
+
+        for item in articles:
+            title_jp = "タイトル: " + item["title"]
+            url = item["url"]
+
+            summary_html = item["summary"]  # すでにHTML整形済みをそのまま使う
+            html_content += (
+                f"<div style='margin-bottom: 20px;'>"
+                f"<h4 style='margin-bottom: 5px;'>{title_jp}</h4>"
+                f"<p><a href='{url}' style='color: #1a0dab;'>本文を読む</a></p>"
+                f"<div style='background-color: #f9f9f9; padding: 10px; border-radius: 8px;'>"
+                f"{summary_html}"
+                f"</div></div><hr style='border-top: 1px solid #cccccc;'>"
+            )
 
     html_content += "</body></html>"
     html_content = clean_html_content(html_content)
@@ -633,15 +633,23 @@ if __name__ == "__main__":
     print(f"⚙️ Removing URL duplicates from {len(translation_queue)} articles...")
     translation_queue = deduplicate_by_url(translation_queue)
 
-    # ✅ 全記事取得後 → BERT類似度で重複排除
+    # 翻訳処理（Gemini）
+    all_summaries = process_translation_batches(batch_size=10, wait_seconds=60)
+
+    # summaryとtitleをマージ
+    summary_map = {item['url']: item for item in all_summaries}
+    for article in translation_queue:
+        url = article['url']
+        if url in summary_map:
+            article['summary'] = summary_map[url]['summary']
+            article['title'] = summary_map[url]['title']  # 翻訳後タイトルで上書き
+
+    # Deduplication with translated content
     print(f"⚙️ Deduplicating {len(translation_queue)} articles...")
     deduplicated_articles = deduplicate_articles(translation_queue)
 
-    # translation_queue を重複排除後のリストに置き換え
+    # translation_queue を差し替え
     translation_queue.clear()
     translation_queue.extend(deduplicated_articles)
-
-    # バッチ翻訳実行 (10件ごとに1分待機)
-    all_summaries = process_translation_batches(batch_size=10, wait_seconds=60)
 
     send_email_digest(all_summaries)
