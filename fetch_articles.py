@@ -328,7 +328,7 @@ def deduplicate_articles(articles, similarity_threshold=0.87): # 類似度閾値
     }
 
     model = SentenceTransformer('distiluse-base-multilingual-cased-v2')
-    texts = [art['title'] + " " + art['body'][:1000] for art in articles]  # 本文は先頭1000文字を見に行く、チューニング
+    texts = [art['title'] + " " + art['body'][:2000] for art in articles]  # 本文は先頭2000文字を見に行く、チューニング
     embeddings = model.encode(texts, convert_to_tensor=True)
 
     cosine_scores = util.pytorch_cos_sim(embeddings, embeddings).cpu().numpy()
