@@ -571,7 +571,13 @@ def process_translation_batches(batch_size=10, wait_seconds=60):
                     model="gemini-2.5-flash",
                     contents=prompt
                 )
-                output_text = resp.text.strip()
+
+                if resp and resp.text:
+                    output_text = resp.text.strip()
+                else:
+                    print("🛑 Geminiからのレスポンスが空またはNoneです。")
+                    continue  # このアイテムはスキップ
+                # output_text = resp.text.strip()
 
                 # パース
                 lines = output_text.splitlines()
