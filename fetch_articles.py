@@ -315,7 +315,7 @@ def deduplicate_by_url(articles):
     return unique_articles
 
 # BERT埋め込みで類似記事判定
-def deduplicate_articles(articles, similarity_threshold=0.89): # 類似度閾値、高いほど厳しい、チューニング
+def deduplicate_articles(articles, similarity_threshold=0.87): # 類似度閾値、高いほど厳しい、チューニング
     if not articles:
         return []
 
@@ -335,6 +335,18 @@ def deduplicate_articles(articles, similarity_threshold=0.89): # 類似度閾値
 
     visited = set()
     unique_articles = []
+
+    # デバッグ出力: 類似スコア確認 ← ここから追加
+    for i in range(len(articles)):
+        for j in range(i + 1, len(articles)):
+            score = cosine_scores[i][j]
+            if score > 0.85:
+                print(f"🔍 類似度: {score:.4f}")
+                print(f" - {articles[i]['title']} ({articles[i]['source']})")
+                print(f" - {articles[j]['title']} ({articles[j]['source']})")
+                print(f" - URLs:\n   {articles[i]['url']}\n   {articles[j]['url']}")
+                print("----------")
+    # ← ここまで追加
 
     # まずタイトル完全一致グルーピング
     title_seen = {}
