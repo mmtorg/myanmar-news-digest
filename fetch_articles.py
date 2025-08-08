@@ -290,7 +290,7 @@ def get_bbc_burmese_articles_for(target_date_mmt):
 
             # キーワード判定
             if not any_keyword_hit(title_nfc, body_text_nfc):
-                print("SKIP: no keyword hits (after regex-safe).")
+                print(f"SKIP: no keyword hits → {link} | TITLE: {title_nfc}")
                 continue
 
             # === デバッグ: 判定前にタイトル/本文の要約を出す ===
@@ -306,7 +306,7 @@ def get_bbc_burmese_articles_for(target_date_mmt):
             total_hits = title_hits + body_hits
 
             if not total_hits:
-                print(f"SKIP: no keyword hits → {link} | TITLE: {title_nfc}")
+                print("SKIP: no keyword hits.")
                 continue
 
             # === デバッグ: どのキーワードがどこで当たったか ===
