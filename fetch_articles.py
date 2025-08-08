@@ -263,6 +263,11 @@ def get_bbc_burmese_articles_for(target_date_mmt):
                 # キーワードが無ければ完全スキップ
                 continue
 
+            print("----- AFTER NOISE REMOVAL -----")
+            print("TITLE:", repr(title_nfc))
+            print("BODY:", repr(body_text_nfc[:2000]))
+            sys.exit(1)  # TEST: ここで一旦終了
+
             print(f"✅ 抽出記事: {title_nfc} ({link})")
             articles.append({
                 "title": title_nfc,
