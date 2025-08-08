@@ -55,7 +55,7 @@ NEWS_KEYWORDS = [
     "မင်းအောင်လှိုင်", "Min Aung Hlaing", "min aung hlaing",
     
     # チャット（Kyat）
-    "Kyat", "kyat", "ကျပ်",
+    "Kyat", "kyat",
     
     # 徴兵制（Conscription / Military Draft）
     "Conscription", "conscription", "Military Draft", "military draft", "စစ်တပ်ဝင်ခေါ်ရေး",
@@ -63,8 +63,23 @@ NEWS_KEYWORDS = [
     # 選挙（Election）
     "Election", "election", "ရွေးကောက်ပွဲ"
 ]
+
 # Unicode正規化（NFC）を適用
 NEWS_KEYWORDS = [unicodedata.normalize('NFC', kw) for kw in NEWS_KEYWORDS]
+
+# チャットは数字に続くもののみ（通貨判定）
+KYAT_PATTERN = re.compile(
+    r'(?<=[0-9၀-၉])[\s,\.]*(?:သောင်း|သိန်း|သန်း)?\s*ကျပ်'
+)
+
+def any_keyword_hit(title: str, body: str) -> bool:
+    # 通常のキーワード一致
+    if any(kw in title or kw in body for kw in NEWS_KEYWORDS):
+        return True
+    # 通貨「ကျပ်」だけは正規表現で判定
+    if KYAT_PATTERN.search(title) or KYAT_PATTERN.search(body):
+        return True
+    return False
 
 def clean_html_content(html: str) -> str:
     html = html.replace("\xa0", " ").replace("&nbsp;", " ")
@@ -274,8 +289,12 @@ def get_bbc_burmese_articles_for(target_date_mmt):
             body_text_nfc = remove_noise_phrases(body_text_nfc)
 
             # キーワード判定
-            if not any(kw in title_nfc or kw in body_text_nfc for kw in NEWS_KEYWORDS):
-                # キーワードが無ければ完全スキップ
+            # if not any(kw in title_nfc or kw in body_text_nfc for kw in NEWS_KEYWORDS):
+            #     # キーワードが無ければ完全スキップ
+            #     continue
+
+            if not any_keyword_hit(title_nfc, body_text_nfc):
+                print("SKIP: no keyword hits (after regex-safe).")
                 continue
 
             # === デバッグ: 判定前にタイトル/本文の要約を出す ===
