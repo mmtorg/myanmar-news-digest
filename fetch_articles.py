@@ -293,32 +293,32 @@ def get_bbc_burmese_articles_for(target_date_mmt):
                 print(f"SKIP: no keyword hits → {link} | TITLE: {title_nfc}")
                 continue
 
-            # === デバッグ: 判定前にタイトル/本文の要約を出す ===
-            print("----- DEBUG CANDIDATE -----")
-            print("URL:", link)
-            print("TITLE:", repr(title_nfc))
-            print("BODY_HEAD:", repr(body_text_nfc[:500]))
-            print("BODY_LEN:", len(body_text_nfc))
+            # # === デバッグ: 判定前にタイトル/本文の要約を出す ===
+            # print("----- DEBUG CANDIDATE -----")
+            # print("URL:", link)
+            # print("TITLE:", repr(title_nfc))
+            # print("BODY_HEAD:", repr(body_text_nfc[:500]))
+            # print("BODY_LEN:", len(body_text_nfc))
 
-            # キーワード判定（ヒット詳細も取る）
-            title_hits = find_hits(title_nfc, NEWS_KEYWORDS)
-            body_hits  = find_hits(body_text_nfc, NEWS_KEYWORDS)
-            total_hits = title_hits + body_hits
+            # # キーワード判定（ヒット詳細も取る）
+            # title_hits = find_hits(title_nfc, NEWS_KEYWORDS)
+            # body_hits  = find_hits(body_text_nfc, NEWS_KEYWORDS)
+            # total_hits = title_hits + body_hits
 
-            if not total_hits:
-                print("SKIP: no keyword hits.")
-                continue
+            # if not total_hits:
+            #     print("SKIP: no keyword hits.")
+            #     continue
 
-            # === デバッグ: どのキーワードがどこで当たったか ===
-            print("HITS:", len(total_hits))
-            if title_hits:
-                print(" - in TITLE:")
-                for h in title_hits[:10]:
-                    print(f"   kw={repr(h['kw'])} ctx=…{h['ctx']}…")
-            if body_hits:
-                print(" - in BODY:")
-                for h in body_hits[:10]:  # 長くなるので最大10件
-                    print(f"   kw={repr(h['kw'])} ctx=…{h['ctx']}…")
+            # # === デバッグ: どのキーワードがどこで当たったか ===
+            # print("HITS:", len(total_hits))
+            # if title_hits:
+            #     print(" - in TITLE:")
+            #     for h in title_hits[:10]:
+            #         print(f"   kw={repr(h['kw'])} ctx=…{h['ctx']}…")
+            # if body_hits:
+            #     print(" - in BODY:")
+            #     for h in body_hits[:10]:  # 長くなるので最大10件
+            #         print(f"   kw={repr(h['kw'])} ctx=…{h['ctx']}…")
 
             print(f"✅ 抽出記事: {title_nfc} ({link})")
             articles.append({
@@ -332,55 +332,6 @@ def get_bbc_burmese_articles_for(target_date_mmt):
             continue
 
     return articles
-
-# def get_bbc_burmese_articles_for(target_date_mmt):
-#     rss_url = "https://feeds.bbci.co.uk/burmese/rss.xml"
-#     res = requests.get(rss_url, timeout=10)
-#     soup = BeautifulSoup(res.content, "xml")
-
-#     articles = []
-#     for item in soup.find_all("item"):
-#         pub_date_tag = item.find("pubDate")
-#         if not pub_date_tag:
-#             continue
-
-#         try:
-#             pub_date = parse_date(pub_date_tag.text)  # RSSはUTC基準
-#             pub_date_mmt = pub_date.astimezone(MMT).date()  # ← MMTに変換して日付抽出
-#         except Exception as e:
-#             print(f"❌ pubDate parse error: {e}")
-#             continue
-
-#         if pub_date_mmt != target_date_mmt:
-#             continue  # 今日(MMT基準)の日付と一致しない記事はスキップ
-
-#         title = item.find("title").text.strip()
-#         link = item.find("link").text.strip()
-
-#         try:
-#             article_res = requests.get(link, timeout=10)
-#             article_soup = BeautifulSoup(article_res.content, "html.parser")
-#             # 本文pタグをリトライ付きで取得
-#             paragraphs = extract_paragraphs_with_wait(article_soup, retries=2, wait_seconds=2)
-#             body_text = "\n".join(p.get_text(strip=True) for p in paragraphs)
-#             # ここでNFC正規化を追加
-#             body_text = unicodedata.normalize('NFC', body_text)
-
-#             if not any_keyword_hit(title, body_text):
-#                 continue  # キーワードが含まれていなければ除外
-
-#             print(f"✅ 抽出記事: {title} ({link})")  # ログ出力で抽出記事確認
-#             articles.append({
-#                 "title": title,
-#                 "url": link,
-#                 "date": pub_date_mmt.isoformat()
-#             })
-
-#         except Exception as e:
-#             print(f"❌ 記事取得エラー: {e}")
-#             continue
-
-#     return articles
 
 # khit_thit_ediaカテゴリーページ巡回で取得
 def get_khit_thit_edia_articles_from_category(date_obj, max_pages=3):
@@ -552,77 +503,77 @@ def process_and_enqueue_articles(articles, source_name, seen_urls=None):
 def process_translation_batches(batch_size=10, wait_seconds=60):
 
     # ⚠️ TEST: Geminiを呼ばず、URLリストだけ返す
-    summarized_results = []
-    for item in translation_queue:
-        summarized_results.append({
-            "source": item["source"],
-            "url": item["url"],
-            "title": "（タイトルはテスト省略）",
-            "summary": "（要約テスト省略）"
-        })
-
     # summarized_results = []
-    # for i in range(0, len(translation_queue), batch_size):
-    #     batch = translation_queue[i:i + batch_size]
-    #     print(f"⚙️ Processing batch {i // batch_size + 1}...")
+    # for item in translation_queue:
+    #     summarized_results.append({
+    #         "source": item["source"],
+    #         "url": item["url"],
+    #         "title": "（タイトルはテスト省略）",
+    #         "summary": "（要約テスト省略）"
+    #     })
 
-    #     for item in batch:
-    #         prompt = (
-    #             "以下は記事のタイトルです。自然な日本語に翻訳し「【タイトル】 ◯◯」とレスポンスでは返してください。それ以外の文言は不要です。\n"
-    #             "###\n"
-    #             f"{item['title']}\n"
-    #             "###\n\n"
-    #             "以下の記事の本文について重要なポイントをまとめ具体的に要約してください。自然な日本語に訳してください。\n"
-    #             "個別記事の本文の要約のみとしてください。メディアの説明やページ全体の解説は不要です。\n"
-    #             "レスポンスでは要約のみを返してください、それ以外の文言は不要です。\n"
-    #             "以下、出力の条件です。\n"
-    #             "- 1行目は「【要約】」とだけしてください。"
-    #             "- 見出しや箇条書きを適切に使って見やすく整理してください。\n"
-    #             "- 見出しや箇条書きにはマークダウン記号（#, *, - など）は使わず、単純なテキストとして出力してください。\n"
-    #             "- 見出しは `[  ]` で囲んでください。\n"
-    #             "- テキストが入っていない改行は作らないでください。\n"
-    #             "- 全体をHTMLで送るわけではないので、特殊記号は使わないでください。\n"
-    #             "- 箇条書きは「・」を使ってください。\n"
-    #             "- 要約の文字数は最大500文字を超えてはいけません。\n"
-    #             "###\n"
-    #             f"{item['body'][:2000]}\n"
-    #             "###"
-    #         )
+    summarized_results = []
+    for i in range(0, len(translation_queue), batch_size):
+        batch = translation_queue[i:i + batch_size]
+        print(f"⚙️ Processing batch {i // batch_size + 1}...")
 
-    #         try:
-    #             resp = client.models.generate_content(
-    #                 model="gemini-2.5-flash",
-    #                 contents=prompt
-    #             )
-    #             output_text = resp.text.strip()
+        for item in batch:
+            prompt = (
+                "以下は記事のタイトルです。自然な日本語に翻訳し「【タイトル】 ◯◯」とレスポンスでは返してください。それ以外の文言は不要です。\n"
+                "###\n"
+                f"{item['title']}\n"
+                "###\n\n"
+                "以下の記事の本文について重要なポイントをまとめ具体的に要約してください。自然な日本語に訳してください。\n"
+                "個別記事の本文の要約のみとしてください。メディアの説明やページ全体の解説は不要です。\n"
+                "レスポンスでは要約のみを返してください、それ以外の文言は不要です。\n"
+                "以下、出力の条件です。\n"
+                "- 1行目は「【要約】」とだけしてください。"
+                "- 見出しや箇条書きを適切に使って見やすく整理してください。\n"
+                "- 見出しや箇条書きにはマークダウン記号（#, *, - など）は使わず、単純なテキストとして出力してください。\n"
+                "- 見出しは `[  ]` で囲んでください。\n"
+                "- テキストが入っていない改行は作らないでください。\n"
+                "- 全体をHTMLで送るわけではないので、特殊記号は使わないでください。\n"
+                "- 箇条書きは「・」を使ってください。\n"
+                "- 要約の文字数は最大500文字を超えてはいけません。\n"
+                "###\n"
+                f"{item['body'][:2000]}\n"
+                "###"
+            )
 
-    #             # パース
-    #             lines = output_text.splitlines()
-    #             title_line = next((line for line in lines if line.startswith("【タイトル】")), None)
-    #             summary_lines = [line for line in lines if line and not line.startswith("【タイトル】")]
+            try:
+                resp = client.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=prompt
+                )
+                output_text = resp.text.strip()
 
-    #             if title_line:
-    #                 translated_title = title_line.replace("【タイトル】", "").strip()
-    #             else:
-    #                 translated_title = "（翻訳失敗）"
+                # パース
+                lines = output_text.splitlines()
+                title_line = next((line for line in lines if line.startswith("【タイトル】")), None)
+                summary_lines = [line for line in lines if line and not line.startswith("【タイトル】")]
 
-    #             summary_text = "\n".join(summary_lines).strip()
-    #             summary_html = summary_text.replace("\n", "<br>")
+                if title_line:
+                    translated_title = title_line.replace("【タイトル】", "").strip()
+                else:
+                    translated_title = "（翻訳失敗）"
 
-    #             summarized_results.append({
-    #                 "source": item["source"],
-    #                 "url": item["url"],
-    #                 "title": translated_title,
-    #                 "summary": summary_html,
-    #             })
+                summary_text = "\n".join(summary_lines).strip()
+                summary_html = summary_text.replace("\n", "<br>")
 
-    #         except Exception as e:
-    #             print(f"🛑 Error during translation: {e}")
-    #             continue
+                summarized_results.append({
+                    "source": item["source"],
+                    "url": item["url"],
+                    "title": translated_title,
+                    "summary": summary_html,
+                })
 
-    #     if i + batch_size < len(translation_queue):
-    #         print(f"🕒 Waiting {wait_seconds} seconds before next batch...")
-    #         time.sleep(wait_seconds)
+            except Exception as e:
+                print(f"🛑 Error during translation: {e}")
+                continue
+
+        if i + batch_size < len(translation_queue):
+            print(f"🕒 Waiting {wait_seconds} seconds before next batch...")
+            time.sleep(wait_seconds)
 
     return summarized_results
 
@@ -652,6 +603,7 @@ def send_email_digest(summaries):
     # メディアでグループ化は使うが、見出しは各記事の中に入れる
     for media, articles in media_grouped.items():
         for item in articles:
+            
             title_jp = item["title"]          # 「タイトル: 」の接頭辞は外す
             url = item["url"]
             summary_html = item["summary"]    # 既に <br> 整形済み
@@ -679,40 +631,6 @@ def send_email_digest(summaries):
 
     html_content += "</body></html>"
     html_content = clean_html_content(html_content)
-
-    # html_content = f"""
-    # <html>
-    # <body style="font-family: Arial, sans-serif; background-color: #ffffff; color: #333333;">
-    # """
-
-    # for media, articles in media_grouped.items():
-    #     html_content += f"<h2 style='color: #2a2a2a; margin-top: 30px;'>{media} からのニュース</h2>"
-
-    #     # ⚠️ TEST: Geminiを呼ばず、URLリストだけ返す
-    #     # for item in articles:
-    #     #     url = item["url"]
-    #     #     html_content += (
-    #     #         f"<div style='margin-bottom: 10px;'>"
-    #     #         f"<p><a href='{url}' style='color: #1a0dab;'>本文を読む</a></p>"
-    #     #         f"</div>"
-    #     #     )
-
-    #     for item in articles:
-    #         title_jp = "タイトル: " + item["title"]
-    #         url = item["url"]
-
-    #         summary_html = item["summary"]  # すでにHTML整形済みをそのまま使う
-    #         html_content += (
-    #             f"<div style='margin-bottom: 20px;'>"
-    #             f"<h4 style='margin-bottom: 5px;'>{title_jp}</h4>"
-    #             f"<p><a href='{url}' style='color: #1a0dab;'>本文を読む</a></p>"
-    #             f"<div style='background-color: #f9f9f9; padding: 10px; border-radius: 8px;'>"
-    #             f"{summary_html}"
-    #             f"</div></div><hr style='border-top: 1px solid #cccccc;'>"
-    #         )
-
-    # html_content += "</body></html>"
-    # html_content = clean_html_content(html_content)
 
     from_display_name = "Myanmar News Digest"
 
