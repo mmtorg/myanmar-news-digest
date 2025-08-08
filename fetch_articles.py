@@ -180,6 +180,19 @@ def get_mizzima_articles_from_category(date_obj, base_url, source_name, category
     return filtered_articles
 
 # BCCはRSSあるのでそれ使う
+NOISE_PATTERNS = [
+    r"BBC\s*News\s*မြန်မာ",  # 固定署名（Burmese表記）
+    r"BBC\s*Burmese"        # 英語表記
+]
+
+def remove_noise_phrases(text: str) -> str:
+    """BBC署名などのノイズフレーズを除去"""
+    if not text:
+        return text
+    for pat in NOISE_PATTERNS:
+        text = re.sub(pat, "", text, flags=re.IGNORECASE)
+    return text.strip()
+
 def get_bbc_burmese_articles_for(target_date_mmt):
     rss_url = "https://feeds.bbci.co.uk/burmese/rss.xml"
     session = requests.Session()
@@ -241,7 +254,9 @@ def get_bbc_burmese_articles_for(target_date_mmt):
 
             # ミャンマー文字の合成差異を避けるため NFC 正規化
             title_nfc = unicodedata.normalize('NFC', title)
+            title_nfc = remove_noise_phrases(title_nfc)
             body_text_nfc = unicodedata.normalize('NFC', body_text)
+            body_text_nfc = remove_noise_phrases(body_text_nfc)
 
             # キーワード判定
             if not any(kw in title_nfc or kw in body_text_nfc for kw in NEWS_KEYWORDS):
