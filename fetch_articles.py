@@ -229,9 +229,9 @@ def get_bbc_burmese_articles_for(target_date_mmt):
 
     return articles
 
-# yktnewsカテゴリーページ巡回で取得
-def get_yktnews_articles_from_category(date_obj, max_pages=3):
-    base_url="https://yktnews.com/category/news/"
+# khit_thit_ediaカテゴリーページ巡回で取得
+def get_khit_thit_edia_articles_from_category(date_obj, max_pages=3):
+    base_url="https://khit_thit_edia.com/category/news/"
     article_urls = []
 
     for page in range(1, max_pages + 1):
@@ -269,7 +269,7 @@ def get_yktnews_articles_from_category(date_obj, max_pages=3):
                 continue
             title = title_tag.get_text(strip=True)
 
-            # 本文取得 (YKTNews用パターン)
+            # 本文取得 (khit_thit_edia用パターン)
             paragraphs = soup_article.select("div.tdb-block-inner p")
             if not paragraphs:
                 paragraphs = soup_article.select("div.tdb_single_content p")
@@ -320,9 +320,9 @@ def deduplicate_articles(articles, similarity_threshold=0.92):
     # 重複した場合の記事優先度
     media_priority = {
         "BBC Burmese": 1,
-        "Mizzima (English)": 2,
-        "Mizzima (Burmese)": 3,
-        "YKT News": 4
+        # "Mizzima (English)": 2,
+        "Mizzima (Burmese)": 2,
+        "Khit Thit Media": 3
     }
 
     model = SentenceTransformer('cl-tohoku/bert-base-japanese-v2')
@@ -491,39 +491,74 @@ def send_email_digest(summaries):
     subject = "ミャンマー関連ニュース【" + date_str + "】"
 
     # メール本文のHTML生成
-    html_content = f"""
+    html_content = """
     <html>
     <body style="font-family: Arial, sans-serif; background-color: #ffffff; color: #333333;">
     """
 
+    # メディアでグループ化は使うが、見出しは各記事の中に入れる
     for media, articles in media_grouped.items():
-        html_content += f"<h2 style='color: #2a2a2a; margin-top: 30px;'>{media} からのニュース</h2>"
-
-        # ⚠️ TEST: Geminiを呼ばず、URLリストだけ返す
-        # for item in articles:
-        #     url = item["url"]
-        #     html_content += (
-        #         f"<div style='margin-bottom: 10px;'>"
-        #         f"<p><a href='{url}' style='color: #1a0dab;'>本文を読む</a></p>"
-        #         f"</div>"
-        #     )
-
         for item in articles:
-            title_jp = "タイトル: " + item["title"]
+            title_jp = item["title"]          # 「タイトル: 」の接頭辞は外す
             url = item["url"]
+            summary_html = item["summary"]    # 既に <br> 整形済み
 
-            summary_html = item["summary"]  # すでにHTML整形済みをそのまま使う
+            # 参考HTML準拠：見出し(h2)の右側にメディア名。「…からのニュース」は h4 相当の大きさ
+            heading_html = (
+                "<h2 style='margin-bottom:5px'>"
+                f"{title_jp}　"
+                "<span style='font-size:1rem;font-weight:600'>"
+                f"{media} からのニュース"
+                "</span>"
+                "</h2>"
+            )
+
             html_content += (
-                f"<div style='margin-bottom: 20px;'>"
-                f"<h4 style='margin-bottom: 5px;'>{title_jp}</h4>"
-                f"<p><a href='{url}' style='color: #1a0dab;'>本文を読む</a></p>"
-                f"<div style='background-color: #f9f9f9; padding: 10px; border-radius: 8px;'>"
+                "<div style='margin-bottom:20px'>"
+                f"{heading_html}"
+                "<div style='background-color:#f9f9f9;padding:10px;border-radius:8px'>"
                 f"{summary_html}"
-                f"</div></div><hr style='border-top: 1px solid #cccccc;'>"
+                "</div>"
+                f"<p><a href='{url}' style='color:#1a0dab' target='_blank'>本文を読む</a></p>"
+                "</div>"
             )
 
     html_content += "</body></html>"
     html_content = clean_html_content(html_content)
+
+    # html_content = f"""
+    # <html>
+    # <body style="font-family: Arial, sans-serif; background-color: #ffffff; color: #333333;">
+    # """
+
+    # for media, articles in media_grouped.items():
+    #     html_content += f"<h2 style='color: #2a2a2a; margin-top: 30px;'>{media} からのニュース</h2>"
+
+    #     # ⚠️ TEST: Geminiを呼ばず、URLリストだけ返す
+    #     # for item in articles:
+    #     #     url = item["url"]
+    #     #     html_content += (
+    #     #         f"<div style='margin-bottom: 10px;'>"
+    #     #         f"<p><a href='{url}' style='color: #1a0dab;'>本文を読む</a></p>"
+    #     #         f"</div>"
+    #     #     )
+
+    #     for item in articles:
+    #         title_jp = "タイトル: " + item["title"]
+    #         url = item["url"]
+
+    #         summary_html = item["summary"]  # すでにHTML整形済みをそのまま使う
+    #         html_content += (
+    #             f"<div style='margin-bottom: 20px;'>"
+    #             f"<h4 style='margin-bottom: 5px;'>{title_jp}</h4>"
+    #             f"<p><a href='{url}' style='color: #1a0dab;'>本文を読む</a></p>"
+    #             f"<div style='background-color: #f9f9f9; padding: 10px; border-radius: 8px;'>"
+    #             f"{summary_html}"
+    #             f"</div></div><hr style='border-top: 1px solid #cccccc;'>"
+    #         )
+
+    # html_content += "</body></html>"
+    # html_content = clean_html_content(html_content)
 
     from_display_name = "Myanmar News Digest"
 
@@ -552,15 +587,16 @@ if __name__ == "__main__":
     #     print(f"{art['date']} - {art['title']}\n{art['url']}\n")
 
     # 記事取得＆キューに貯める
-    print("=== Mizzima (English) ===")
-    articles_eng = get_mizzima_articles_from_category(
-        date_mmt,
-        "https://eng.mizzima.com",
-        "Mizzima (English)",
-        "/category/news/myanmar_news",
-        max_pages=3
-    )
-    process_and_enqueue_articles(articles_eng, "Mizzima (English)", seen_urls)
+    # Mizzima (English)外す
+    # print("=== Mizzima (English) ===")
+    # articles_eng = get_mizzima_articles_from_category(
+    #     date_mmt,
+    #     "https://eng.mizzima.com",
+    #     "Mizzima (English)",
+    #     "/category/news/myanmar_news",
+    #     max_pages=3
+    # )
+    # process_and_enqueue_articles(articles_eng, "Mizzima (English)", seen_urls)
     
     # === Mizzima (Burmese) ===
     print("=== Mizzima (Burmese) ===")
@@ -587,9 +623,9 @@ if __name__ == "__main__":
     articles6 = get_bbc_burmese_articles_for(date_mmt)
     process_and_enqueue_articles(articles6, "BBC Burmese", seen_urls)
 
-    print("=== YKT News ===")
-    articles7 = get_yktnews_articles_from_category(date_mmt, max_pages=3)
-    process_and_enqueue_articles(articles7, "YKT News", seen_urls)
+    print("=== Khit Thit Media ===")
+    articles7 = get_khit_thit_edia_articles_from_category(date_mmt, max_pages=3)
+    process_and_enqueue_articles(articles7, "Khit Thit Media", seen_urls)
 
     # URLベースの重複排除を先に行う
     print(f"⚙️ Removing URL duplicates from {len(translation_queue)} articles...")
