@@ -231,7 +231,7 @@ def get_bbc_burmese_articles_for(target_date_mmt):
 
 # khit_thit_ediaカテゴリーページ巡回で取得
 def get_khit_thit_edia_articles_from_category(date_obj, max_pages=3):
-    base_url="https://khit_thit_edia.com/category/news/"
+    base_url="https://yktnews.com/category/news/"
     article_urls = []
 
     for page in range(1, max_pages + 1):
