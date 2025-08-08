@@ -503,12 +503,12 @@ def send_email_digest(summaries):
             url = item["url"]
             summary_html = item["summary"]    # 既に <br> 整形済み
 
-            # 参考HTML準拠：見出し(h2)の右側にメディア名。「…からのニュース」は h4 相当の大きさ
+            # 参考HTML準拠：見出し(h2)の右側にメディア名。
             heading_html = (
                 "<h2 style='margin-bottom:5px'>"
                 f"{title_jp}　"
-                "<span style='font-size:1rem;font-weight:600'>"
-                f"{media} からのニュース"
+                "<span style='font-size:0.83rem;font-weight:600'>"  # ← h5相当
+                f"出典: {media} "
                 "</span>"
                 "</h2>"
             )
@@ -520,6 +520,7 @@ def send_email_digest(summaries):
                 f"{summary_html}"
                 "</div>"
                 f"<p><a href='{url}' style='color:#1a0dab' target='_blank'>本文を読む</a></p>"
+                "</div><hr style='border-top: 1px solid #cccccc;'>"
                 "</div>"
             )
 
