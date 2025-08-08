@@ -193,6 +193,21 @@ def remove_noise_phrases(text: str) -> str:
         text = re.sub(pat, "", text, flags=re.IGNORECASE)
     return text.strip()
 
+# あるテキスト中でキーワードがどこにヒットしたかを返す（周辺文脈つき）
+def find_hits(text: str, keywords):
+    hits = []
+    for kw in keywords:
+        start = 0
+        while True:
+            i = text.find(kw, start)
+            if i == -1:
+                break
+            s = max(0, i-30); e = min(len(text), i+len(kw)+30)
+            ctx = text[s:e].replace("\n", " ")
+            hits.append({"kw": kw, "pos": i, "ctx": ctx})
+            start = i + len(kw)
+    return hits
+
 def get_bbc_burmese_articles_for(target_date_mmt):
     rss_url = "https://feeds.bbci.co.uk/burmese/rss.xml"
     session = requests.Session()
@@ -263,9 +278,32 @@ def get_bbc_burmese_articles_for(target_date_mmt):
                 # キーワードが無ければ完全スキップ
                 continue
 
-            print("----- AFTER NOISE REMOVAL -----")
+            # === デバッグ: 判定前にタイトル/本文の要約を出す ===
+            print("----- DEBUG CANDIDATE -----")
+            print("URL:", link)
             print("TITLE:", repr(title_nfc))
-            print("BODY:", repr(body_text_nfc[:2000]))
+            print("BODY_HEAD:", repr(body_text_nfc[:500]))
+            print("BODY_LEN:", len(body_text_nfc))
+
+            # キーワード判定（ヒット詳細も取る）
+            title_hits = find_hits(title_nfc, NEWS_KEYWORDS)
+            body_hits  = find_hits(body_text_nfc, NEWS_KEYWORDS)
+            total_hits = title_hits + body_hits
+
+            if not total_hits:
+                print("SKIP: no keyword hits.")
+                continue
+
+            # === デバッグ: どのキーワードがどこで当たったか ===
+            print("HITS:", len(total_hits))
+            if title_hits:
+                print(" - in TITLE:")
+                for h in title_hits[:10]:
+                    print(f"   kw={repr(h['kw'])} ctx=…{h['ctx']}…")
+            if body_hits:
+                print(" - in BODY:")
+                for h in body_hits[:10]:  # 長くなるので最大10件
+                    print(f"   kw={repr(h['kw'])} ctx=…{h['ctx']}…")
 
             print(f"✅ 抽出記事: {title_nfc} ({link})")
             articles.append({
