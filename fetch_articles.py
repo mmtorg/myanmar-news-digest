@@ -178,7 +178,7 @@ def get_mizzima_articles_from_category(date_obj, base_url, source_name, category
             if not body_text.strip():
                 continue
 
-            if not any(keyword in title or keyword in body_text for keyword in NEWS_KEYWORDS):
+            if not any_keyword_hit(title, body_text):
                 continue
 
             filtered_articles.append({
@@ -289,10 +289,6 @@ def get_bbc_burmese_articles_for(target_date_mmt):
             body_text_nfc = remove_noise_phrases(body_text_nfc)
 
             # キーワード判定
-            # if not any(kw in title_nfc or kw in body_text_nfc for kw in NEWS_KEYWORDS):
-            #     # キーワードが無ければ完全スキップ
-            #     continue
-
             if not any_keyword_hit(title_nfc, body_text_nfc):
                 print("SKIP: no keyword hits (after regex-safe).")
                 continue
@@ -310,7 +306,7 @@ def get_bbc_burmese_articles_for(target_date_mmt):
             total_hits = title_hits + body_hits
 
             if not total_hits:
-                print("SKIP: no keyword hits.")
+                print(f"SKIP: no keyword hits → {link} | TITLE: {title_nfc}")
                 continue
 
             # === デバッグ: どのキーワードがどこで当たったか ===
@@ -370,7 +366,7 @@ def get_bbc_burmese_articles_for(target_date_mmt):
 #             # ここでNFC正規化を追加
 #             body_text = unicodedata.normalize('NFC', body_text)
 
-#             if not any(keyword in title or keyword in body_text for keyword in NEWS_KEYWORDS):
+#             if not any_keyword_hit(title, body_text):
 #                 continue  # キーワードが含まれていなければ除外
 
 #             print(f"✅ 抽出記事: {title} ({link})")  # ログ出力で抽出記事確認
@@ -442,7 +438,7 @@ def get_khit_thit_edia_articles_from_category(date_obj, max_pages=3):
             if not body_text.strip():
                 continue  # 本文が空ならスキップ
 
-            if not any(keyword in title or keyword in body_text for keyword in NEWS_KEYWORDS):
+            if not any_keyword_hit(title, body_text):
                 continue  # キーワード無しは除外
 
             filtered_articles.append({
