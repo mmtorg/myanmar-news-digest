@@ -182,52 +182,133 @@ def get_mizzima_articles_from_category(date_obj, base_url, source_name, category
 # BCCはRSSあるのでそれ使う
 def get_bbc_burmese_articles_for(target_date_mmt):
     rss_url = "https://feeds.bbci.co.uk/burmese/rss.xml"
-    res = requests.get(rss_url, timeout=10)
-    soup = BeautifulSoup(res.content, "xml")
+    session = requests.Session()
 
+    try:
+        res = session.get(rss_url, timeout=10)
+        res.raise_for_status()
+    except Exception as e:
+        print(f"❌ RSS取得エラー: {e}")
+        return []
+
+    soup = BeautifulSoup(res.content, "xml")
     articles = []
+
     for item in soup.find_all("item"):
         pub_date_tag = item.find("pubDate")
         if not pub_date_tag:
             continue
 
+        # RSSはUTC → MMTへ変換し、対象日だけ通す
         try:
-            pub_date = parse_date(pub_date_tag.text)  # RSSはUTC基準
-            pub_date_mmt = pub_date.astimezone(MMT).date()  # ← MMTに変換して日付抽出
+            pub_date = parse_date(pub_date_tag.text)
+            pub_date_mmt = pub_date.astimezone(MMT).date()
         except Exception as e:
             print(f"❌ pubDate parse error: {e}")
             continue
 
         if pub_date_mmt != target_date_mmt:
-            continue  # 今日(MMT基準)の日付と一致しない記事はスキップ
+            continue
 
-        title = item.find("title").text.strip()
-        link = item.find("link").text.strip()
+        title = (item.find("title") or {}).get_text(strip=True) if item.find("title") else ""
+        link = (item.find("link") or {}).get_text(strip=True) if item.find("link") else ""
+        if not link:
+            continue
 
         try:
-            article_res = requests.get(link, timeout=10)
+            article_res = session.get(link, timeout=10)
+            article_res.raise_for_status()
             article_soup = BeautifulSoup(article_res.content, "html.parser")
-            # 本文pタグをリトライ付きで取得
-            paragraphs = extract_paragraphs_with_wait(article_soup, retries=2, wait_seconds=2)
-            body_text = "\n".join(p.get_text(strip=True) for p in paragraphs)
-            # ここでNFC正規化を追加
-            body_text = unicodedata.normalize('NFC', body_text)
 
-            if not any(keyword in title or keyword in body_text for keyword in NEWS_KEYWORDS):
-                continue  # キーワードが含まれていなければ除外
+            # ===== ここで除外セクションをまとめて削除 =====
+            # 記事署名やメタ情報
+            for node in article_soup.select('section[role="region"][aria-labelledby="article-byline"]'):
+                node.decompose()
+            # 「おすすめ／最も読まれた」ブロック
+            for node in article_soup.select('section[data-e2e="recommendations-heading"][role="region"]'):
+                node.decompose()
+            # ついでにヘッダー/ナビ/フッター等のノイズも落としておく（任意）
+            for node in article_soup.select('header[role="banner"], nav[role="navigation"], footer[role="contentinfo"], aside'):
+                node.decompose()
+            # ============================================
 
-            print(f"✅ 抽出記事: {title} ({link})")  # ログ出力で抽出記事確認
+            # 本文は main 内の <p> に限定
+            main = article_soup.select_one('main[role="main"]') or article_soup
+            paragraphs = [p.get_text(strip=True) for p in main.find_all('p')]
+            # 空行やノイズを削る
+            paragraphs = [t for t in paragraphs if t]
+            body_text = "\n".join(paragraphs)
+
+            # ミャンマー文字の合成差異を避けるため NFC 正規化
+            title_nfc = unicodedata.normalize('NFC', title)
+            body_text_nfc = unicodedata.normalize('NFC', body_text)
+
+            # キーワード判定
+            if not any(kw in title_nfc or kw in body_text_nfc for kw in NEWS_KEYWORDS):
+                # キーワードが無ければ完全スキップ
+                continue
+
+            print(f"✅ 抽出記事: {title_nfc} ({link})")
             articles.append({
-                "title": title,
+                "title": title_nfc,
                 "url": link,
-                "date": pub_date_mmt.isoformat()
+                "date": pub_date_mmt.isoformat(),
             })
 
         except Exception as e:
-            print(f"❌ 記事取得エラー: {e}")
+            print(f"❌ 記事取得/解析エラー: {e}")
             continue
 
     return articles
+
+# def get_bbc_burmese_articles_for(target_date_mmt):
+#     rss_url = "https://feeds.bbci.co.uk/burmese/rss.xml"
+#     res = requests.get(rss_url, timeout=10)
+#     soup = BeautifulSoup(res.content, "xml")
+
+#     articles = []
+#     for item in soup.find_all("item"):
+#         pub_date_tag = item.find("pubDate")
+#         if not pub_date_tag:
+#             continue
+
+#         try:
+#             pub_date = parse_date(pub_date_tag.text)  # RSSはUTC基準
+#             pub_date_mmt = pub_date.astimezone(MMT).date()  # ← MMTに変換して日付抽出
+#         except Exception as e:
+#             print(f"❌ pubDate parse error: {e}")
+#             continue
+
+#         if pub_date_mmt != target_date_mmt:
+#             continue  # 今日(MMT基準)の日付と一致しない記事はスキップ
+
+#         title = item.find("title").text.strip()
+#         link = item.find("link").text.strip()
+
+#         try:
+#             article_res = requests.get(link, timeout=10)
+#             article_soup = BeautifulSoup(article_res.content, "html.parser")
+#             # 本文pタグをリトライ付きで取得
+#             paragraphs = extract_paragraphs_with_wait(article_soup, retries=2, wait_seconds=2)
+#             body_text = "\n".join(p.get_text(strip=True) for p in paragraphs)
+#             # ここでNFC正規化を追加
+#             body_text = unicodedata.normalize('NFC', body_text)
+
+#             if not any(keyword in title or keyword in body_text for keyword in NEWS_KEYWORDS):
+#                 continue  # キーワードが含まれていなければ除外
+
+#             print(f"✅ 抽出記事: {title} ({link})")  # ログ出力で抽出記事確認
+#             articles.append({
+#                 "title": title,
+#                 "url": link,
+#                 "date": pub_date_mmt.isoformat()
+#             })
+
+#         except Exception as e:
+#             print(f"❌ 記事取得エラー: {e}")
+#             continue
+
+#     return articles
 
 # khit_thit_ediaカテゴリーページ巡回で取得
 def get_khit_thit_edia_articles_from_category(date_obj, max_pages=3):
