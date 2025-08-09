@@ -613,7 +613,7 @@ def send_email_digest(summaries):
                 "<h2 style='margin-bottom:5px'>"
                 f"{title_jp}　"
                 "<span style='font-size:0.83rem;font-weight:600'>"  # ← h5相当
-                f"出典: {media} "
+                f"{media} "
                 "</span>"
                 "</h2>"
             )
