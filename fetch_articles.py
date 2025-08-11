@@ -57,11 +57,8 @@ NEWS_KEYWORDS = [
     # チャット（Kyat）
     "Kyat", "kyat",
     
-    # 徴兵制（Conscription / Military Draft）
-    "Conscription", "conscription", "Military Draft", "military draft", "စစ်တပ်ဝင်ခေါ်ရေး",
-    
-    # 選挙（Election）
-    "Election", "election", "ရွေးကောက်ပွဲ"
+    # 徴兵制（Conscription / Military Draft）, 徴兵, 兵役
+    "Conscription", "conscription", "Military Draft", "military draft", "military service", "military service", "စစ်တပ်ဝင်ခေါ်ရေး", "စစ်မှုထမ်း", "အတင်းတပ်ဝင်ခေါ်ခြင်း", "တပ်ဝင်ခေါ် "
 ]
 
 # Unicode正規化（NFC）を適用
