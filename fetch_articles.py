@@ -113,10 +113,12 @@ def extract_paragraphs_with_wait(soup_article, retries=2, wait_seconds=2):
         time.sleep(wait_seconds)
     return []
 
-# ===== 除外対象キーワード（タイトル用） =====
+# ===== Mizzima除外対象キーワード（タイトル用） =====
 EXCLUDE_TITLE_KEYWORDS = [
+    # 春の革命日誌
     "နွေဦးတော်လှန်ရေး နေ့စဉ်မှတ်စု",
-    # ここに追加していく
+    # 写真ニュース
+    "ဓာတ်ပုံသတင်း"
 ]
 
 # Mizzimaカテゴリーページ巡回で取得
@@ -165,6 +167,12 @@ def get_mizzima_articles_from_category(date_obj, base_url, source_name, category
                 continue
             title = title_tag["content"].strip()
 
+            # === 除外キーワード判定（タイトルをNFC正規化してから） ===
+            title_nfc = unicodedata.normalize('NFC', title)
+            if any(kw in title_nfc for kw in EXCLUDE_TITLE_KEYWORDS):
+                print(f"SKIP: excluded keyword in title → {url} | TITLE: {title_nfc}")
+                continue
+
             content_div = soup_article.find("div", class_="entry-content")
             if not content_div:
                 continue
@@ -181,6 +189,7 @@ def get_mizzima_articles_from_category(date_obj, base_url, source_name, category
             if not body_text.strip():
                 continue
 
+            # キーワード判定は正規化済みタイトルで行う
             if not any_keyword_hit(title, body_text):
                 continue
 
