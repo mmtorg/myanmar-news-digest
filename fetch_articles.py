@@ -503,8 +503,11 @@ def process_and_enqueue_articles(articles, source_name, seen_urls=None):
             paragraphs = extract_paragraphs_with_wait(soup, retries=2, wait_seconds=2)
             body_text = "\n".join(p.get_text(strip=True) for p in paragraphs)
 
+            title_nfc = unicodedata.normalize('NFC', art['title'])
+            body_nfc  = unicodedata.normalize('NFC', body_text)
+
             # ★ここでNEWS_KEYWORDSフィルターをかける
-            if not any(keyword in art['title'] or keyword in body_text for keyword in NEWS_KEYWORDS):
+            if not any(keyword in title_nfc or keyword in body_nfc for keyword in NEWS_KEYWORDS):
                 continue  # キーワード含まれてなければスキップ
 
             queued_items.append({
@@ -896,8 +899,8 @@ if __name__ == "__main__":
     # deduplicated_articles = deduplicate_articles(translation_queue)
 
     # translation_queue を重複排除後のリストに置き換え
-    translation_queue.clear()
-    translation_queue.extend(translation_queue)
+    # translation_queue.clear()
+    # translation_queue.extend(deduplicated_articles)
 
     # バッチ翻訳実行 (10件ごとに1分待機)
     all_summaries = process_translation_batches(batch_size=10, wait_seconds=60)
