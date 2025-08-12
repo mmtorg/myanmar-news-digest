@@ -752,11 +752,11 @@ def process_translation_batches(batch_size=10, wait_seconds=60):
             print(f"🕒 Waiting {wait_seconds} seconds before next batch...")
             time.sleep(wait_seconds)
 
-        print("===== DEBUG: summarized_results =====")
-        pprint.pprint(summarized_results, width=120, compact=False)
-        print("===== END DEBUG =====")
+    print("===== DEBUG: summarized_results =====")
+    pprint.pprint(summarized_results, width=120, compact=False)
+    print("===== END DEBUG =====")
 
-        return summarized_results
+    return summarized_results
 
         # # 重複判定→片方残し（最終アウトプットの形式は変えない）
         # deduped = dedupe_articles_with_llm(client, summarized_results)
