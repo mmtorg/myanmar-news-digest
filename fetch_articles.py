@@ -593,8 +593,6 @@ def dedupe_articles_with_llm(client, summarized_results):
     pprint.pprint(articles, width=120, compact=False)
     print("===== END DEBUG 2 =====\n")
 
-    sys.exit(0)  # デバッグ用に強制終了
-
     prompt = (
         "あなたはニュースの重複判定フィルタです。\n"
         "目的：タイトルと本文を比較し、「同一の出来事」を報じる記事を重複として束ね、各クラスターから1本だけ残します。\n"
