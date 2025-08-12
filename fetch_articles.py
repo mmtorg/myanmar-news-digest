@@ -21,6 +21,7 @@ from google.api_core.exceptions import GoogleAPICallError
 from collections import defaultdict
 import time
 import json
+import pprint
 
 # 記事重複排除ロジック(BERT埋め込み版)のライブラリインポート
 from sentence_transformers import SentenceTransformer, util
@@ -577,6 +578,11 @@ def dedupe_articles_with_llm(client, summarized_results):
     if not summarized_results:
         return summarized_results
 
+    # ===== ① summarized_results のまま表示 =====
+    print("===== DEBUG 1: summarized_results BEFORE DEDUPE =====")
+    pprint.pprint(summarized_results, width=120, compact=False)
+    print("===== END DEBUG 1 =====\n")
+
     # LLM入力用に articles を構築（id はURL優先、なければ連番）
     articles = []
     id_map = {}
@@ -594,6 +600,13 @@ def dedupe_articles_with_llm(client, summarized_results):
             # あれば使う（無いなら None）。最終返却には含めない。
             "published_at": it.get("published_at") if isinstance(it, dict) else None
         })
+
+    # ===== LLMに渡すarticlesも確認 =====
+    print("===== DEBUG 2: articles SENT TO LLM =====")
+    pprint.pprint(articles, width=120, compact=False)
+    print("===== END DEBUG 2 =====\n")
+
+    sys.exit(0)  # デバッグ用に強制終了
 
     prompt = (
         "あなたはニュースの重複判定フィルタです。\n"
