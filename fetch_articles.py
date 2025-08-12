@@ -40,7 +40,10 @@ MMT = timezone(timedelta(hours=6, minutes=30))
 # 今日の日付
 # ニュースの速報性重視で今日分のニュース配信の方針
 def get_today_date_mmt():
-    now_mmt = datetime.now(MMT)
+    # 本番用、今日の日付
+    # now_mmt = datetime.now(MMT)
+    # テスト用、昨日の日付にする
+    now_mmt = datetime.now(MMT) - timedelta(days=1)
     return now_mmt.date()
 
 # 共通キーワードリスト（全メディア共通で使用する）
