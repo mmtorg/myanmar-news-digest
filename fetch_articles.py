@@ -550,6 +550,96 @@ def process_and_enqueue_articles(articles, source_name, seen_urls=None):
 
 #     return summarized_results
 
+# 重複記事削除処理セット
+def _strip_tags(text: str) -> str:
+    # 要約に含めた <br> などを素テキスト化（最低限）
+    text = text.replace("<br>", "\n")
+    return re.sub(r"<[^>]+>", "", text)
+
+def _safe_json_loads_maybe_extract(text: str):
+    """
+    生成AIが前後に余計な文を付けた場合でもJSON部分だけ抽出して読む保険。
+    """
+    try:
+        return json.loads(text)
+    except Exception:
+        # 最後の { ... } を素朴に抽出
+        m = re.search(r'\{.*\}', text, flags=re.DOTALL)
+        if m:
+            return json.loads(m.group(0))
+        raise
+
+def dedupe_articles_with_llm(client, summarized_results):
+    """
+    summarized_results (list[dict]) を受け取り、重複クラスターごとに1本だけ残した配列を返す。
+    返却形式は元と同じ（source, url, title, summary のみ）。
+    """
+    if not summarized_results:
+        return summarized_results
+
+    # LLM入力用に articles を構築（id はURL優先、なければ連番）
+    articles = []
+    id_map = {}
+    for idx, it in enumerate(summarized_results):
+        _id = it.get("url") or f"idx-{idx}"
+        # 内部用の原本（返却時にそのまま使う）
+        id_map[_id] = it
+
+        # 本文相当として summary を渡す（タイトルと本文の両方を比較させる）
+        articles.append({
+            "id": _id,
+            "source": it.get("source"),
+            "title": it.get("title"),
+            "body": _strip_tags(it.get("summary", "")),
+            # あれば使う（無いなら None）。最終返却には含めない。
+            "published_at": it.get("published_at") if isinstance(it, dict) else None
+        })
+
+    prompt = (
+        "あなたはニュースの重複判定フィルタです。\n"
+        "目的：タイトルと本文を比較し、「同一の出来事」を報じる記事を重複として束ね、各クラスターから1本だけ残します。\n"
+        "出力は必ずJSONのみ。\n\n"
+        "判定方針:\n"
+        "1) 同一出来事＝「誰」「何を」「どこ/対象」「いつ」の少なくとも3要素が一致し、コア事実が同じ（言い換え・言語差は同一扱い。日付は±14日まで同一扱い）。\n"
+        "2) クラスター化：最も一致度が高いクラスターにのみ所属。\n"
+        "3) 残す基準：a)固有情報量が多い b)具体性/明瞭さ c)本文が長い d)同点ならsourceの文字列昇順。\n"
+        "4) 統合記事は作らない。入力外の事実は加えない。\n\n"
+        "入力:\n"
+        "{\n  \"articles\": " + json.dumps(articles, ensure_ascii=False) + "\n}\n\n"
+        "出力フォーマット（JSONのみ）:\n"
+        "{\n"
+        "  \"kept\": [\n"
+        "    {\"id\": \"<残す記事ID>\", \"cluster_id\": \"<ID>\", \"why\": \"<1-2文>\"}\n"
+        "  ],\n"
+        "  \"removed\": [\n"
+        "    {\"id\": \"<除外記事ID>\", \"duplicate_of\": \"<残した記事ID>\", \"why\": \"<1-2文>\"}\n"
+        "  ],\n"
+        "  \"clusters\": [\n"
+        "    {\"cluster_id\": \"<ID>\", \"member_ids\": [\"<id1>\", \"<id2>\", \"...\"], \"event_key\": \"<出来事の短文>\"}\n"
+        "  ]\n"
+        "}\n"
+    )
+
+    try:
+        resp = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt
+        )
+        data = _safe_json_loads_maybe_extract(resp.text)
+        kept_ids = [x.get("id") for x in data.get("kept", []) if x.get("id") in id_map]
+
+        # 元の順序を保ったままフィルタ
+        kept_set = set(kept_ids)
+        if kept_set:
+            filtered = [obj for obj in summarized_results if (obj.get("url") or f"idx-{summarized_results.index(obj)}") in kept_set]
+            return filtered
+
+        # うまく判定できなかったら原本を返す
+        return summarized_results
+    except Exception as e:
+        print(f"🛑 Dedupe failed, returning original list: {e}")
+        return summarized_results
+
 # 本処理関数
 def process_translation_batches(batch_size=10, wait_seconds=60):
 
@@ -660,7 +750,19 @@ def process_translation_batches(batch_size=10, wait_seconds=60):
             print(f"🕒 Waiting {wait_seconds} seconds before next batch...")
             time.sleep(wait_seconds)
 
-    return summarized_results
+        # 重複判定→片方残し（最終アウトプットの形式は変えない）
+        deduped = dedupe_articles_with_llm(client, summarized_results)
+
+        # 念のため：返却フォーマットを固定（余計なキーが混ざっていたら落とす）
+        normalized = [
+            {
+                "source": x.get("source"),
+                "url": x.get("url"),
+                "title": x.get("title"),
+                "summary": x.get("summary"),
+            } for x in deduped
+        ]
+        return normalized
 
 def send_email_digest(summaries):
     sender_email = os.getenv("EMAIL_SENDER")
