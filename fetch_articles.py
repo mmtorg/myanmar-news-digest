@@ -25,8 +25,11 @@ import json
 # 記事重複排除ロジック(BERT埋め込み版)のライブラリインポート
 from sentence_transformers import SentenceTransformer, util
 
-# Gemini
-client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+# Gemini本番用
+# client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+
+# GeminiTEST用
+client_test = genai.Client(api_key=os.getenv("GEMINI_TEST_API_KEY"))
 
 # Chat GPT
 # client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -625,7 +628,10 @@ def process_translation_batches(batch_size=10, wait_seconds=60):
 def send_email_digest(summaries):
     sender_email = os.getenv("EMAIL_SENDER")
     sender_pass = os.getenv("GMAIL_APP_PASSWORD")
-    recipient_emails = os.getenv("EMAIL_RECIPIENTS", "").split(",")
+    # メール送信先本番用
+    # recipient_emails = os.getenv("EMAIL_RECIPIENTS", "").split(",")
+    # メール送信先テスト用
+    recipient_emails = ["yasu.23721740311@gmail.com"]
 
     # ✅ 今日の日付を取得してフォーマット
     digest_date = get_today_date_mmt()
