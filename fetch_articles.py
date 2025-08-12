@@ -27,10 +27,10 @@ import pprint
 from sentence_transformers import SentenceTransformer, util
 
 # Gemini本番用
-# client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 # GeminiTEST用
-client = genai.Client(api_key=os.getenv("GEMINI_TEST_API_KEY"))
+# client = genai.Client(api_key=os.getenv("GEMINI_TEST_API_KEY"))
 
 # Chat GPT
 # client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
