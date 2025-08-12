@@ -586,8 +586,6 @@ def dedupe_articles_with_llm(client, summarized_results):
             "source": it.get("source"),
             "title": it.get("title"),
             "body": _strip_tags(it.get("summary", "")),
-            # あれば使う（無いなら None）。最終返却には含めない。
-            "published_at": it.get("published_at") if isinstance(it, dict) else None
         })
 
     # ===== LLMに渡すarticlesも確認 =====
@@ -752,25 +750,19 @@ def process_translation_batches(batch_size=10, wait_seconds=60):
             print(f"🕒 Waiting {wait_seconds} seconds before next batch...")
             time.sleep(wait_seconds)
 
-    print("===== DEBUG: summarized_results =====")
-    pprint.pprint(summarized_results, width=120, compact=False)
-    print("===== END DEBUG =====")
+    # 重複判定→片方残し（最終アウトプットの形式は変えない）
+    deduped = dedupe_articles_with_llm(client, summarized_results)
 
-    return summarized_results
-
-        # # 重複判定→片方残し（最終アウトプットの形式は変えない）
-        # deduped = dedupe_articles_with_llm(client, summarized_results)
-
-        # # 念のため：返却フォーマットを固定（余計なキーが混ざっていたら落とす）
-        # normalized = [
-        #     {
-        #         "source": x.get("source"),
-        #         "url": x.get("url"),
-        #         "title": x.get("title"),
-        #         "summary": x.get("summary"),
-        #     } for x in deduped
-        # ]
-        # return normalized
+    # 念のため：返却フォーマットを固定（余計なキーが混ざっていたら落とす）
+    normalized = [
+        {
+            "source": x.get("source"),
+            "url": x.get("url"),
+            "title": x.get("title"),
+            "summary": x.get("summary"),
+        } for x in deduped
+    ]
+    return normalized
 
 def send_email_digest(summaries):
     sender_email = os.getenv("EMAIL_SENDER")
