@@ -435,54 +435,6 @@ def deduplicate_by_url(articles):
         unique_articles.append(art)
     return unique_articles
 
-# BERT埋め込みで類似記事判定
-# def deduplicate_articles(articles, similarity_threshold=0.92):
-#     if not articles:
-#         return []
-
-#     # 重複した場合の記事優先度
-#     media_priority = {
-#         "BBC Burmese": 1,
-#         # "Mizzima (English)": 2,
-#         "Mizzima (Burmese)": 2,
-#         "Khit Thit Media": 3
-#     }
-
-#     model = SentenceTransformer('cl-tohoku/bert-base-japanese-v2')
-#     texts = [art['title'] + " " + art['body'][:300] for art in articles]  # 本文は先頭300文字だけ
-#     embeddings = model.encode(texts, convert_to_tensor=True)
-
-#     cosine_scores = util.pytorch_cos_sim(embeddings, embeddings).cpu().numpy()
-
-#     visited = set()
-#     unique_articles = []
-
-#     # まずタイトル完全一致グルーピング
-#     title_seen = {}
-#     for idx, art in enumerate(articles):
-#         if art['title'] in title_seen:
-#             continue  # すでに同じタイトルの記事が登録されていればスキップ
-#         title_seen[art['title']] = idx
-#         unique_articles.append(art)
-#         visited.add(idx)
-
-#     # 次にBERTベースの類似判定
-#     for i in range(len(articles)):
-#         if i in visited:
-#             continue
-
-#         group = [i]
-#         for j in range(i + 1, len(articles)):
-#             if cosine_scores[i][j] > similarity_threshold:
-#                 group.append(j)
-#                 visited.add(j)
-
-#         group_sorted = sorted(group, key=lambda idx: media_priority.get(articles[idx]['source'], 99))
-#         unique_articles.append(articles[group_sorted[0]])
-#         visited.add(i)
-
-#     return unique_articles
-
 # 翻訳対象キュー
 translation_queue = []
 
@@ -893,14 +845,6 @@ if __name__ == "__main__":
     # URLベースの重複排除を先に行う
     print(f"⚙️ Removing URL duplicates from {len(translation_queue)} articles...")
     translation_queue = deduplicate_by_url(translation_queue)
-
-    # ✅ 全記事取得後 → BERT類似度で重複排除
-    print(f"⚙️ Deduplicating {len(translation_queue)} articles...")
-    # deduplicated_articles = deduplicate_articles(translation_queue)
-
-    # translation_queue を重複排除後のリストに置き換え
-    # translation_queue.clear()
-    # translation_queue.extend(deduplicated_articles)
 
     # バッチ翻訳実行 (10件ごとに1分待機)
     all_summaries = process_translation_batches(batch_size=10, wait_seconds=60)
