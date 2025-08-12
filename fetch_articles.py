@@ -611,11 +611,20 @@ def process_translation_batches(batch_size=10, wait_seconds=60):
             )
 
             try:
+                # デバッグ: 入力データを確認
+                print("----- DEBUG: Prompt Input -----")
+                print(f"TITLE: {item['title']}")
+                print(f"BODY[:2000]: {item['body'][:2000]}")
+
                 resp = client.models.generate_content(
                     model="gemini-2.5-flash",
                     contents=prompt
                 )
                 output_text = resp.text.strip()
+
+                # デバッグ: モデル出力を確認
+                print("----- DEBUG: Model Output -----")
+                print(output_text)
 
                 # exitが返ってきたらスキップ
                 if output_text.strip().lower() == "exit":
