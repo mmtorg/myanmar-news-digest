@@ -32,6 +32,15 @@ from sentence_transformers import SentenceTransformer, util
 # GeminiTEST用
 client = genai.Client(api_key=os.getenv("GEMINI_TEST_API_KEY"))
 
+# --- 追加：専用終端トークンと生成設定（Gemini SDK用） ---
+END_TOKEN = "<END>"
+GENERATION_CONFIG = {
+    "stop_sequences": [END_TOKEN],
+    # 必要ならここに他の生成パラメータを追加（例：temperature, max_output_tokens など）
+    # "temperature": 0.7,
+    # "max_output_tokens": 800,
+}
+
 # Chat GPT
 # client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
@@ -616,13 +625,29 @@ def dedupe_articles_with_llm(client, summarized_results):
         "    {\"cluster_id\": \"<ID>\", \"member_ids\": [\"<id1>\", \"<id2>\", \"...\"], \"event_key\": \"<出来事の短文>\"}\n"
         "  ]\n"
         "}\n"
+        f"必ずJSONの最後に {END_TOKEN} を1回だけ出力して終了してください。余計な文や空行は禁止。"
     )
 
     try:
         resp = client.models.generate_content(
             model="gemini-2.5-flash",
-            contents=prompt
+            contents=prompt,
+            generation_config=GENERATION_CONFIG,   # ← <END> を停止条件に
         )
+
+        raw_text = (resp.text or "").strip()
+        print("===== DEBUG 3: RAW LLM OUTPUT =====")
+        print(raw_text)
+        print("===== END DEBUG 3 =====\n")
+
+        # --- 追加: <END> 以降を安全に切り捨て（余分な文・空行も排除） ---
+        output_text = raw_text.split(END_TOKEN)[0].rstrip()
+
+        # resp = client.models.generate_content(
+        #     model="gemini-2.5-flash",
+        #     contents=prompt
+        # )
+
         data = _safe_json_loads_maybe_extract(resp.text)
         kept_ids = [x.get("id") for x in data.get("kept", []) if x.get("id") in id_map]
 
@@ -687,6 +712,7 @@ def process_translation_batches(batch_size=10, wait_seconds=60):
                 "- 特殊記号は使わないでください（全体をHTMLとして送信するわけではないため）。\n"
                 "- 箇条書きは`・`を使ってください。\n"
                 "- 要約の文字数は最大500文字としてください。\n\n"
+                f"- 出力の最後に必ず {END_TOKEN} と書いて終了してください。余計な末尾テキストや空行は禁止。\n\n"
                 "入力データ：\n"
                 "###\n"
                 "[記事タイトル]\n"
@@ -704,11 +730,25 @@ def process_translation_batches(batch_size=10, wait_seconds=60):
                 print(f"TITLE: {item['title']}")
                 print(f"BODY[:2000]: {item['body'][:2000]}")
 
+                # --- 変更：Gemini SDKの引数名は generation_config で統一 ---
                 resp = client.models.generate_content(
                     model="gemini-2.5-flash",
-                    contents=prompt
+                    contents=prompt,
+                    generation_config=GENERATION_CONFIG,
                 )
-                output_text = resp.text.strip()
+
+                raw_text = (resp.text or "").strip()
+                print("----- DEBUG: Model Output -----")
+                print(raw_text)
+
+                # --- 追加：<END> 以降を安全に切り捨て ---
+                output_text = raw_text.split(END_TOKEN)[0].rstrip()
+
+                # resp = client.models.generate_content(
+                #     model="gemini-2.5-flash",
+                #     contents=prompt
+                # )
+                # output_text = resp.text.strip()
 
                 # デバッグ: モデル出力を確認
                 print("----- DEBUG: Model Output -----")
