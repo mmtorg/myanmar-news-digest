@@ -29,7 +29,7 @@ from sentence_transformers import SentenceTransformer, util
 # client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 # GeminiTEST用
-client_test = genai.Client(api_key=os.getenv("GEMINI_TEST_API_KEY"))
+client = genai.Client(api_key=os.getenv("GEMINI_TEST_API_KEY"))
 
 # Chat GPT
 # client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -567,25 +567,44 @@ def process_translation_batches(batch_size=10, wait_seconds=60):
 
         for item in batch:
             prompt = (
-                "以下は記事のタイトルです。自然な日本語に翻訳し「【タイトル】 ◯◯」とレスポンスでは返してください。それ以外の文言は不要です。\n"
+                "次の手順で記事を判定・処理してください。\n\n"
+                "Step 1: 例外チェック（最優先）\n"
+                "Q1. 記事タイトルまたは本文が `Myawaddy`, `မြဝတီ`, `Muse`, `မူဆယ်`に関する内容ですか？\n"
+                "→ Yes の場合、この後の判定は行わず Step 3 に進んでください。\n"
+                "→ No の場合は Step 2 へ進んでください。\n\n"
+                "Step 2: 除外条件チェック\n"
+                "Q2. 特定の地域（郡区、タウンシップ、市、村）で発生した局地的な戦闘、攻撃、衝突、爆撃、強盗に関する内容ですか？\n"
+                "→ Yes の場合は処理を終了してください、Step 3 には進まないでください、`exit`だけレスポンスを返してください。\n"
+                "→ No の場合は Step 3 へ進んでください。\n\n"
+                "Step 3: 翻訳と要約処理\n"
+                "以下のルールに従って、記事タイトルを自然な日本語に翻訳し、本文を要約してください。\n\n"
+                "タイトル：\n"
+                "- 記事タイトルを自然な日本語に翻訳してください。\n"
+                "- レスポンスでは必ず「【タイトル】 ◯◯」の形式で返してください。\n"
+                "- それ以外の文言は不要です。\n\n"
+                "本文要約：\n"
+                "- 以下の記事本文について重要なポイントをまとめ、具体的に要約してください。\n"
+                "- 自然な日本語に翻訳してください。\n"
+                "- 個別記事の本文のみを対象とし、メディア説明やページ全体の解説は不要です。\n"
+                "- レスポンスでは要約のみを返してください、それ以外の文言は不要です。\n\n"
+                "出力条件：\n"
+                "- 1行目は`【要約】`とだけしてください。\n"
+                "- 見出しや箇条書きを適切に使って整理してください。\n"
+                "- 見出しや箇条書きにはマークダウン記号（#, *, - など）を使わず、単純なテキストとして出力してください。\n"
+                "- 見出しは `[ ]` で囲んでください。\n"
+                "- 空行は作らないでください。\n"
+                "- 特殊記号は使わないでください（全体をHTMLとして送信するわけではないため）。\n"
+                "- 箇条書きは`・`を使ってください。\n"
+                "- 要約の文字数は最大500文字としてください。\n\n"
+                "入力データ：\n"
                 "###\n"
-                f"{item['title']}\n"
-                "###\n\n"
-                "以下の記事の本文について重要なポイントをまとめ具体的に要約してください。自然な日本語に訳してください。\n"
-                "個別記事の本文の要約のみとしてください。メディアの説明やページ全体の解説は不要です。\n"
-                "レスポンスでは要約のみを返してください、それ以外の文言は不要です。\n"
-                "以下、出力の条件です。\n"
-                "- 1行目は「【要約】」とだけしてください。"
-                "- 見出しや箇条書きを適切に使って見やすく整理してください。\n"
-                "- 見出しや箇条書きにはマークダウン記号（#, *, - など）は使わず、単純なテキストとして出力してください。\n"
-                "- 見出しは `[  ]` で囲んでください。\n"
-                "- テキストが入っていない改行は作らないでください。\n"
-                "- 全体をHTMLで送るわけではないので、特殊記号は使わないでください。\n"
-                "- 箇条書きは「・」を使ってください。\n"
-                "- 要約の文字数は最大500文字を超えてはいけません。\n"
+                "[記事タイトル]\n"
+                "###\n"
+                f"{item['title']}\n\n"
+                "[記事本文]\n"
                 "###\n"
                 f"{item['body'][:2000]}\n"
-                "###"
+                "###\n"
             )
 
             try:
@@ -595,7 +614,11 @@ def process_translation_batches(batch_size=10, wait_seconds=60):
                 )
                 output_text = resp.text.strip()
 
-                # パース
+                # exitが返ってきたらスキップ
+                if output_text.strip().lower() == "exit":
+                    continue
+
+                # タイトル行と要約の抽出
                 lines = output_text.splitlines()
                 title_line = next((line for line in lines if line.startswith("【タイトル】")), None)
                 summary_lines = [line for line in lines if line and not line.startswith("【タイトル】")]
@@ -606,6 +629,8 @@ def process_translation_batches(batch_size=10, wait_seconds=60):
                     translated_title = "（翻訳失敗）"
 
                 summary_text = "\n".join(summary_lines).strip()
+
+                # 出力条件に沿ってHTMLに変換（改行→<br>）
                 summary_html = summary_text.replace("\n", "<br>")
 
                 summarized_results.append({
