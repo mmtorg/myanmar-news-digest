@@ -22,7 +22,6 @@ from collections import defaultdict
 import time
 import json
 import pprint
-import cloudscraper
 
 # 記事重複排除ロジック(BERT埋め込み版)のライブラリインポート
 from sentence_transformers import SentenceTransformer, util
@@ -440,6 +439,9 @@ def get_irrawaddy_articles_for(date_obj):
     返り値: [{url, title, date}]
     依存: MMT, get_today_date_mmt, fetch_with_retry, any_keyword_hit
     """
+
+    session = requests.Session()
+
     # ==== 巡回対象（相対パス、重複ありでもOK：内部でユニーク化） ====
     CATEGORY_PATHS_RAW = [
         "/category/news/",
@@ -542,63 +544,62 @@ def get_irrawaddy_articles_for(date_obj):
                     paragraphs.append(_norm_text(txt))
         return "\n".join(paragraphs).strip()
     
-    session = requests.Session()
+    def _fetch_with_retry_irrawaddy(url, retries=3, wait_seconds=2, session=None):
+        import random
+        sess = session or requests.Session()
 
-def _fetch_with_retry_irrawaddy(url, retries=3, wait_seconds=2, session=None):
-    import random
-    sess = session or requests.Session()
+        UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/126.0.0.0 Safari/537.36")
+        HEADERS = {
+            "User-Agent": UA,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://www.irrawaddy.com/",
+            "Connection": "keep-alive",
+        }
 
-    UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-          "AppleWebKit/537.36 (KHTML, like Gecko) "
-          "Chrome/126.0.0.0 Safari/537.36")
-    HEADERS = {
-        "User-Agent": UA,
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Referer": "https://www.irrawaddy.com/",
-        "Connection": "keep-alive",
-    }
-
-    # 1) まずは通常の requests で挑戦（クッキー保持のため Session 使用）
-    for attempt in range(retries):
-        try:
-            res = sess.get(url, headers=HEADERS, timeout=20, allow_redirects=True)
-            print(f"[fetch] {attempt+1}/{retries}: HTTP {res.status_code} len={len(res.text)} → {url}")
-            if res.status_code == 200 and res.text.strip():
-                return res
-            if res.status_code in (403, 429, 503):
-                time.sleep(wait_seconds * (2 ** attempt) + random.uniform(0, 0.8))
-                continue
-            break
-        except Exception as e:
-            print(f"[fetch] {attempt+1}/{retries} EXC: {e} → {url}")
-            time.sleep(wait_seconds * (2 ** attempt) + random.uniform(0, 0.8))
-
-    # 2) フォールバック: cloudscraper（JS チャレンジ/Turnstile 対策）
-    try:
-        print(f"[fetch] Falling back to cloudscraper → {url}")
-        scraper = cloudscraper.create_scraper(
-            browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False}
-        )
-        # requests の Cookie を引き継ぐ（継続アクセスで安定）
-        scraper.cookies.update(sess.cookies.get_dict())
-
-        r = scraper.get(url, headers=HEADERS, timeout=30, allow_redirects=True)
-        print(f"[fetch] cloudscraper: HTTP {r.status_code} len={len(getattr(r, 'text',''))} → {url}")
-        if r.status_code == 200 and r.text.strip():
-            # 取得したクッキーを requests 側にも戻しておく
+        # 1) まずは通常の requests で挑戦（クッキー保持のため Session 使用）
+        for attempt in range(retries):
             try:
-                for c in scraper.cookies:
-                    sess.cookies.set(c.name, c.value, domain=c.domain, path=c.path)
-            except Exception:
-                pass
-            return r
-    except ImportError:
-        print("[fetch] cloudscraper not installed. Run: pip install cloudscraper")
-    except Exception as e:
-        print(f"[fetch] cloudscraper failed: {e} → {url}")
+                res = sess.get(url, headers=HEADERS, timeout=20, allow_redirects=True)
+                print(f"[fetch] {attempt+1}/{retries}: HTTP {res.status_code} len={len(res.text)} → {url}")
+                if res.status_code == 200 and res.text.strip():
+                    return res
+                if res.status_code in (403, 429, 503):
+                    time.sleep(wait_seconds * (2 ** attempt) + random.uniform(0, 0.8))
+                    continue
+                break
+            except Exception as e:
+                print(f"[fetch] {attempt+1}/{retries} EXC: {e} → {url}")
+                time.sleep(wait_seconds * (2 ** attempt) + random.uniform(0, 0.8))
 
-    raise Exception(f"Failed to fetch {url} after {retries} attempts.")
+        # 2) フォールバック: cloudscraper（JS チャレンジ/Turnstile 対策）
+        try:
+            import cloudscraper
+            print(f"[fetch] Falling back to cloudscraper → {url}")
+            scraper = cloudscraper.create_scraper(
+                browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False}
+            )
+            # requests の Cookie を引き継ぐ（継続アクセスで安定）
+            scraper.cookies.update(sess.cookies.get_dict())
+
+            r = scraper.get(url, headers=HEADERS, timeout=30, allow_redirects=True)
+            print(f"[fetch] cloudscraper: HTTP {r.status_code} len={len(getattr(r, 'text',''))} → {url}")
+            if r.status_code == 200 and r.text.strip():
+                # 取得したクッキーを requests 側にも戻しておく
+                try:
+                    for c in scraper.cookies:
+                        sess.cookies.set(c.name, c.value, domain=c.domain, path=c.path)
+                except Exception:
+                    pass
+                return r
+        except ImportError:
+            print("[fetch] cloudscraper not installed. Run: pip install cloudscraper")
+        except Exception as e:
+            print(f"[fetch] cloudscraper failed: {e} → {url}")
+
+        raise Exception(f"Failed to fetch {url} after {retries} attempts.")
 
     results = []
     seen_urls = set()
@@ -609,7 +610,7 @@ def _fetch_with_retry_irrawaddy(url, retries=3, wait_seconds=2, session=None):
         url = f"{BASE}{rel_path}"
         print(f"Fetching {url}")
         try:
-            res = _fetch_with_retry_irrawaddy(url)
+            res = _fetch_with_retry_irrawaddy(url, session=session)
         except Exception as e:
             print(f"Error fetching {url}: {e}")
             continue
@@ -641,7 +642,7 @@ def _fetch_with_retry_irrawaddy(url, retries=3, wait_seconds=2, session=None):
     # ==== 2) 候補記事で厳密確認（meta日付/本文/キーワード） ====
     for url in candidate_urls:
         try:
-            res_article = _fetch_with_retry_irrawaddy(url)
+            res_article = _fetch_with_retry_irrawaddy(url, session=session)
             soup_article = BeautifulSoup(res_article.content, "html.parser")
 
             if _article_date_from_meta_mmt(soup_article) != date_obj:
