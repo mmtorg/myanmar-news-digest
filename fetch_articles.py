@@ -1220,14 +1220,12 @@ if __name__ == "__main__":
     articles7 = get_khit_thit_edia_articles_from_category(date_mmt, max_pages=3)
     process_and_enqueue_articles(articles7, "Khit Thit Media", seen_urls)
 
-    print("=== Irrawaddy ===")
-    articles8 = get_irrawaddy_articles_for(date_mmt)
-
-    # デバックでログ確認
-    print("RESULTS:", json.dumps(articles8, ensure_ascii=False, indent=2))
-    sys.exit(1)
-
-    process_and_enqueue_articles(articles8, "Irrawaddy", seen_urls)
+    # print("=== Irrawaddy ===")
+    # articles8 = get_irrawaddy_articles_for(date_mmt)
+    # # デバックでログ確認
+    # print("RESULTS:", json.dumps(articles8, ensure_ascii=False, indent=2))
+    # sys.exit(1)
+    # process_and_enqueue_articles(articles8, "Irrawaddy", seen_urls)
 
     # URLベースの重複排除を先に行う
     print(f"⚙️ Removing URL duplicates from {len(translation_queue)} articles...")
