@@ -520,7 +520,8 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
             "widget", "widget_jnews_popular",
             "jeg_postblock_5",
             "jnews_related_post_container",
-            "jeg_footer_primary",
+            "widget widget_jnews_popular",
+            "jeg_footer_primary clearfix",
         }
         for anc in node.parents:
             classes = anc.get("class", [])
@@ -622,7 +623,7 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
             continue
 
         soup = BeautifulSoup(res.content, "html.parser")
-        wrapper = soup.select_one("div.jnews_category_content_wrapper")
+        wrapper = soup.select_one("div.jeg_content")
         scope = wrapper if wrapper else soup
 
         links = scope.select("div.jeg_postblock_content .jeg_meta_date a[href]")
@@ -719,7 +720,7 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
     #         continue
 
     #     soup = BeautifulSoup(res.content, "html.parser")
-    #     wrapper = soup.select_one("div.jnews_category_content_wrapper")
+    #     wrapper = soup.select_one("div.jeg_content")
     #     scope = wrapper if wrapper else soup
 
     #     links = scope.select("div.jeg_postblock_content .jeg_meta_date a[href]")
