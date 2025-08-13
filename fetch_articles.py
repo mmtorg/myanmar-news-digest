@@ -607,6 +607,10 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
     seen_urls = set()
     candidate_urls = []
 
+    # ✅ これを追加（または入れ直す）
+    _shown_parsefail = 0
+    _shown_mismatch  = 0
+
     # ==== 1) カテゴリ巡回 ====
     for rel_path in paths:
         url = f"{BASE}{rel_path}"
