@@ -65,7 +65,10 @@ NEWS_KEYWORDS = [
     "Kyat", "kyat",
     
     # 徴兵制（Conscription / Military Draft）, 徴兵, 兵役
-    "Conscription", "conscription", "Military Draft", "military draft", "military service", "military service", "စစ်တပ်ဝင်ခေါ်ရေး", "စစ်မှုထမ်း", "အတင်းတပ်ဝင်ခေါ်ခြင်း", "တပ်ဝင်ခေါ် "
+    "Conscription", "conscription", "Military Draft", "military draft", "military service", "military service", "စစ်တပ်ဝင်ခေါ်ရေး", "စစ်မှုထမ်း", "အတင်းတပ်ဝင်ခေါ်ခြင်း", "တပ်ဝင်ခေါ် ",
+
+    #ロヒンギャ
+    "ရိုဟင်ဂျာ", "Rohingya", "rohingya"
 ]
 
 # Unicode正規化（NFC）を適用
