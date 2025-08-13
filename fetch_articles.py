@@ -623,45 +623,48 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
             continue
 
         soup = BeautifulSoup(res.content, "html.parser")
-        wrapper = soup.select_one("div.jeg_content")
-        scope = wrapper if wrapper else soup
+        wrapper = soup.select_one("div.jeg_content")  # テーマによっては無いこともある
 
-        links = scope.select("div.jeg_postblock_content .jeg_meta_date a[href]")
-        if not links:
-            links = scope.select(".jeg_post_meta .jeg_meta_date a[href]")
-        if not links:
-            links = [a for a in scope.select("div.jeg_postblock_content a[href]")
-                    if a.find("i", class_="fa fa-clock-o")]
+        # ✅ union 方式：wrapper 内→見つからなければページ全体の順で探索
+        scopes = ([wrapper] if wrapper else []) + [soup]
 
-        # デバッグ：何件拾えたか＆先頭2件の中身
-        dbg(f"[cat] date-links={len(links)} @ {url}")
-        for a in links[:2]:
-            _txt = re.sub(r"\s+", " ", a.get_text(" ", strip=True))
-            dbg("   →", _txt, "|", a.get("href"))
+        for scope in scopes:
+            # ヒーロー枠＋通常リスト＋汎用メタを一発で拾う
+            links = scope.select(
+                ".jnews_category_hero_container .jeg_meta_date a[href], "
+                "div.jeg_postblock_content .jeg_meta_date a[href], "
+                ".jeg_post_meta .jeg_meta_date a[href]"
+            )
+            # 時計アイコン付きだけに限定（ノイズ回避）
+            links = [a for a in links if a.find("i", class_="fa fa-clock-o")]
 
-        if not links:
-            dbg(f"[cat] no date links @ {url}")
-            continue
+            # （任意）デバッグ表示
+            dbg(f"[cat] union-links={len(links)} @ {url}")
+            for a in links[:2]:
+                _txt = re.sub(r"\s+", " ", a.get_text(" ", strip=True))
+                dbg("   →", _txt, "|", a.get("href"))
 
-        for a in links:
-            href = a.get("href")
-            raw = a.get_text(" ", strip=True)
-            try:
-                shown_date = _parse_category_date_text(raw)
-            except Exception:
-                if _shown_parsefail < 3:
+            found = 0
+            for a in links:
+                href = a.get("href") or ""
+                raw  = a.get_text(" ", strip=True)
+                try:
+                    shown_date = _parse_category_date_text(raw)
+                except Exception:
+                    # 必要最小限のデバッグだけ
                     dbg("[cat] date-parse-fail:", re.sub(r"\s+", " ", raw)[:120])
-                    _shown_parsefail += 1
-                continue
+                    continue
 
-            if shown_date == date_obj:
-                if href and href not in seen_urls:
+                if shown_date == date_obj and href and href not in seen_urls:
                     candidate_urls.append(href)
                     seen_urls.add(href)
-            else:
-                if _shown_mismatch < 3:
-                    dbg("[cat] date-mismatch:", shown_date, "target:", date_obj, "→", href)
-                    _shown_mismatch += 1
+                    found += 1
+
+            # wrapper 内で“当日”が見つかったら soup まで広げず終了。
+            # wrapper が無い場合（scopes が [soup] だけの時）も1周で抜ける。
+            if found > 0:
+                dbg(f"[cat] STOP (added {found} candidates) @ {url}")
+                break
 
     dbg(f"[cat] candidates={len(candidate_urls)}")
 
@@ -720,28 +723,48 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
     #         continue
 
     #     soup = BeautifulSoup(res.content, "html.parser")
-    #     wrapper = soup.select_one("div.jeg_content")
-    #     scope = wrapper if wrapper else soup
+    #     wrapper = soup.select_one("div.jeg_content")  # テーマによっては無いこともある
 
-    #     links = scope.select("div.jeg_postblock_content .jeg_meta_date a[href]")
-    #     if not links:
-    #         # フォールバック：時計アイコンを含む a
-    #         links = [a for a in scope.select("div.jeg_postblock_content a[href]")
-    #                 if a.find("i", class_="fa fa-clock-o")]
+    #     # ✅ union 方式：wrapper 内→見つからなければページ全体の順で探索
+    #     scopes = ([wrapper] if wrapper else []) + [soup]
 
-    #     for a in links:
-    #         if not a.find("i", class_="fa fa-clock-o"):
-    #             continue
-    #         href = a.get("href")
-    #         if not href or href in seen_urls:
-    #             continue
-    #         try:
-    #             shown_date = _parse_category_date_text(a.get_text(" ", strip=True))
-    #         except Exception:
-    #             continue
-    #         if shown_date == date_obj:
-    #             candidate_urls.append(href)
-    #             seen_urls.add(href)
+    #     for scope in scopes:
+    #         # ヒーロー枠＋通常リスト＋汎用メタを一発で拾う
+    #         links = scope.select(
+    #             ".jnews_category_hero_container .jeg_meta_date a[href], "
+    #             "div.jeg_postblock_content .jeg_meta_date a[href], "
+    #             ".jeg_post_meta .jeg_meta_date a[href]"
+    #         )
+    #         # 時計アイコン付きだけに限定（ノイズ回避）
+    #         links = [a for a in links if a.find("i", class_="fa fa-clock-o")]
+
+    #         # （任意）デバッグ表示
+    #         dbg(f"[cat] union-links={len(links)} @ {url}")
+    #         for a in links[:2]:
+    #             _txt = re.sub(r"\s+", " ", a.get_text(" ", strip=True))
+    #             dbg("   →", _txt, "|", a.get("href"))
+
+    #         found = 0
+    #         for a in links:
+    #             href = a.get("href") or ""
+    #             raw  = a.get_text(" ", strip=True)
+    #             try:
+    #                 shown_date = _parse_category_date_text(raw)
+    #             except Exception:
+    #                 # 必要最小限のデバッグだけ
+    #                 dbg("[cat] date-parse-fail:", re.sub(r"\s+", " ", raw)[:120])
+    #                 continue
+
+    #             if shown_date == date_obj and href and href not in seen_urls:
+    #                 candidate_urls.append(href)
+    #                 seen_urls.add(href)
+    #                 found += 1
+
+    #         # wrapper 内で“当日”が見つかったら soup まで広げず終了。
+    #         # wrapper が無い場合（scopes が [soup] だけの時）も1周で抜ける。
+    #         if found > 0:
+    #             dbg(f"[cat] STOP (added {found} candidates) @ {url}")
+    #             break
 
     # # ==== 2) 候補記事で厳密確認（meta日付/本文/キーワード） ====
     # for url in candidate_urls:
