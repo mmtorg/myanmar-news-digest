@@ -115,16 +115,17 @@ def extract_paragraphs_with_wait(soup_article, retries=2, wait_seconds=2):
         time.sleep(wait_seconds)
     return []
 
-# ===== Mizzima除外対象キーワード（タイトル用） =====
-EXCLUDE_TITLE_KEYWORDS = [
-    # 春の革命日誌
-    "နွေဦးတော်လှန်ရေး နေ့စဉ်မှတ်စု",
-    # 写真ニュース
-    "ဓာတ်ပုံသတင်း"
-]
 
 # Mizzimaカテゴリーページ巡回で取得
 def get_mizzima_articles_from_category(date_obj, base_url, source_name, category_path, max_pages=3):
+    # ==== ローカル定数 Mizzima除外対象キーワード（タイトル用）====
+    EXCLUDE_TITLE_KEYWORDS = [
+        # 春の革命日誌
+        "နွေဦးတော်လှန်ရေး နေ့စဉ်မှတ်စု",
+        # 写真ニュース
+        "ဓာတ်ပုံသတင်း"
+    ]
+
     article_urls = []
 
     for page_num in range(1, max_pages + 1):
@@ -209,35 +210,37 @@ def get_mizzima_articles_from_category(date_obj, base_url, source_name, category
     return filtered_articles
 
 # BCCはRSSあるのでそれ使う
-NOISE_PATTERNS = [
-    r"BBC\s*News\s*မြန်မာ",  # 固定署名（Burmese表記）
-    r"BBC\s*Burmese"        # 英語表記
-]
-
-def remove_noise_phrases(text: str) -> str:
-    """BBC署名などのノイズフレーズを除去"""
-    if not text:
-        return text
-    for pat in NOISE_PATTERNS:
-        text = re.sub(pat, "", text, flags=re.IGNORECASE)
-    return text.strip()
-
-# あるテキスト中でキーワードがどこにヒットしたかを返す（周辺文脈つき）
-def find_hits(text: str, keywords):
-    hits = []
-    for kw in keywords:
-        start = 0
-        while True:
-            i = text.find(kw, start)
-            if i == -1:
-                break
-            s = max(0, i-30); e = min(len(text), i+len(kw)+30)
-            ctx = text[s:e].replace("\n", " ")
-            hits.append({"kw": kw, "pos": i, "ctx": ctx})
-            start = i + len(kw)
-    return hits
-
 def get_bbc_burmese_articles_for(target_date_mmt):
+    # ==== ローカル定数 ====
+    NOISE_PATTERNS = [
+        r"BBC\s*News\s*မြန်မာ",  # 固定署名（Burmese表記）
+        r"BBC\s*Burmese"        # 英語表記
+    ]
+
+    # ==== ローカル関数 ====
+    def _remove_noise_phrases(text: str) -> str:
+        """BBC署名などのノイズフレーズを除去"""
+        if not text:
+            return text
+        for pat in NOISE_PATTERNS:
+            text = re.sub(pat, "", text, flags=re.IGNORECASE)
+        return text.strip()
+
+    # あるテキスト中でキーワードがどこにヒットしたかを返す（周辺文脈つき）
+    def _find_hits(text: str, keywords):
+        hits = []
+        for kw in keywords:
+            start = 0
+            while True:
+                i = text.find(kw, start)
+                if i == -1:
+                    break
+                s = max(0, i-30); e = min(len(text), i+len(kw)+30)
+                ctx = text[s:e].replace("\n", " ")
+                hits.append({"kw": kw, "pos": i, "ctx": ctx})
+                start = i + len(kw)
+        return hits
+
     rss_url = "https://feeds.bbci.co.uk/burmese/rss.xml"
     session = requests.Session()
 
@@ -298,9 +301,9 @@ def get_bbc_burmese_articles_for(target_date_mmt):
 
             # ミャンマー文字の合成差異を避けるため NFC 正規化
             title_nfc = unicodedata.normalize('NFC', title)
-            title_nfc = remove_noise_phrases(title_nfc)
+            title_nfc = _remove_noise_phrases(title_nfc)
             body_text_nfc = unicodedata.normalize('NFC', body_text)
-            body_text_nfc = remove_noise_phrases(body_text_nfc)
+            body_text_nfc = _remove_noise_phrases(body_text_nfc)
 
             # キーワード判定
             if not any_keyword_hit(title_nfc, body_text_nfc):
@@ -315,8 +318,8 @@ def get_bbc_burmese_articles_for(target_date_mmt):
             # print("BODY_LEN:", len(body_text_nfc))
 
             # # キーワード判定（ヒット詳細も取る）
-            # title_hits = find_hits(title_nfc, NEWS_KEYWORDS)
-            # body_hits  = find_hits(body_text_nfc, NEWS_KEYWORDS)
+            # title_hits = _find_hits(title_nfc, NEWS_KEYWORDS)
+            # body_hits  = _find_hits(body_text_nfc, NEWS_KEYWORDS)
             # total_hits = title_hits + body_hits
 
             # if not total_hits:
@@ -417,6 +420,201 @@ def get_khit_thit_edia_articles_from_category(date_obj, max_pages=3):
             continue
 
     return filtered_articles
+
+# irrawaddy
+def get_irrawaddy_articles_for(date_obj=None):
+    """
+    指定の Irrawaddy カテゴリURL群（相対パス）を1回ずつ巡回し、
+    MMTの指定日(既定: 今日)かつ any_keyword_hit にヒットする記事のみ返す。
+
+    - /category/news/asia, /category/news/world は除外（先頭一致・大小無視）
+    - 一覧では「時計アイコン付きの日付リンク」から当日候補を抽出
+    - 記事側では <meta property="article:published_time"> を MMT に変換して再確認
+    - 本文は <div class="content-inner "> 配下の <p> から抽出（特定ブロック配下は除外）
+    返り値: [{url, title, date}]
+    依存: MMT, get_today_date_mmt, fetch_with_retry, any_keyword_hit
+    """
+    # ==== 巡回対象（相対パス、重複ありでもOK：内部でユニーク化） ====
+    CATEGORY_PATHS_RAW = [
+        "/category/news/",
+        "/category/politics",
+        "/category/news/war-against-the-junta",
+        "/category/news/conflicts-in-numbers",
+        "/category/news/junta-crony",
+        "/category/news/ethnic-issues",
+        "/category/business",
+        "/category/business/economy",
+        "/category/election-2020",
+        "/category/elections-in-history",
+        "/category/Features",
+        "/category/Opinion",
+        "/category/Opinion/editorial",
+        "/category/Opinion/commentary",
+        "/category/Opinion/guest-column",
+        "/category/Opinion/analysis",
+        "/category/Opinion/letters",
+        "/category/in-person",
+        "/category/in-person/interview",
+        "/category/in-person/profile",
+        "/category/Dateline",
+        "/category/Specials",
+        "/category/Specials/myanmar-diary",
+        "/category/specials/women",
+        "/category/specials/places-in-history",
+        "/category/specials/on-this-day",
+        "/category/from-the-archive",
+        "/category/Specials/myanmar-covid-19",
+        "/category/Specials/intelligence",
+        "/category/Specials/myanmar-china-watch",
+        "/category/Lifestyle",
+        "/category/Travel",
+        "/category/Lifestyle/Food",
+        "/category/Lifestyle/fashion-design",
+        "/category/photo",
+        "/category/photo-essay",
+    ]
+    BASE = "https://www.irrawaddy.com"
+    EXCLUDE_PREFIXES = ["/category/news/asia", "/category/news/world"]  # 先頭一致・大小無視
+
+    # ==== 正規化・ユニーク化・除外 ====
+    import re, unicodedata
+    from bs4 import BeautifulSoup
+    from datetime import datetime
+
+    norm = lambda p: re.sub(r"/{2,}", "/", p.strip())
+    paths, seen = [], set()
+    for p in CATEGORY_PATHS_RAW:
+        q = norm(p)
+        if any(q.lower().startswith(x) for x in EXCLUDE_PREFIXES):
+            continue
+        if q not in seen:
+            seen.add(q)
+            paths.append(q)
+
+    # ==== ローカル関数 ====
+    def _norm_text(text: str) -> str:
+        return unicodedata.normalize('NFC', text)
+
+    def _parse_category_date_text(text: str):
+        # 例: 'August 9, 2025'
+        text = re.sub(r"\s+", " ", text.strip())
+        return datetime.strptime(text, "%B %d, %Y").date()
+
+    def _article_date_from_meta_mmt(soup):
+        meta = soup.find("meta", attrs={"property": "article:published_time"})
+        if not meta or not meta.get("content"):
+            return None
+        iso = meta["content"].replace("Z", "+00:00")  # 末尾Z対策
+        dt = datetime.fromisoformat(iso)
+        return dt.astimezone(MMT).date()
+
+    def _extract_title(soup):
+        t = soup.find("title")
+        return _norm_text(t.get_text(strip=True)) if t else None
+
+    def _is_excluded_by_ancestor(node) -> bool:
+        excluded = {
+            "jnews_inline_related_post",
+            "jeg_postblock_21",
+            "widget", "widget_jnews_popular",
+            "jeg_postblock_5",
+            "jnews_related_post_container",
+            "jeg_footer_primary",
+        }
+        for anc in node.parents:
+            classes = anc.get("class", [])
+            if any(c in excluded for c in classes):
+                return True
+        return False
+
+    def _extract_body_irrawaddy(soup):
+        # <div class="content-inner "> 配下の <p>のみ（除外ブロック配下は除外）
+        paragraphs = []
+        content_inners = soup.select("div.content-inner")
+        if not content_inners:
+            content_inners = [div for div in soup.find_all("div")
+                            if "content-inner" in (div.get("class") or [])]
+        for root in content_inners:
+            for p in root.find_all("p"):
+                if _is_excluded_by_ancestor(p):
+                    continue
+                txt = p.get_text(strip=True)
+                if txt:
+                    paragraphs.append(_norm_text(txt))
+        return "\n".join(paragraphs).strip()
+
+    # ==== 日付 ====
+    if date_obj is None:
+        date_obj = get_today_date_mmt()
+
+    results = []
+    seen_urls = set()
+    candidate_urls = []
+
+    # ==== 1) 各カテゴリURLを1回ずつ巡回 → 当日候補抽出 ====
+    for rel_path in paths:
+        url = f"{BASE}{rel_path}"
+        print(f"Fetching {url}")
+        try:
+            res = fetch_with_retry(url)
+        except Exception as e:
+            print(f"Error fetching {url}: {e}")
+            continue
+
+        soup = BeautifulSoup(res.content, "html.parser")
+        wrapper = soup.select_one("div.jnews_category_content_wrapper")
+        scope = wrapper if wrapper else soup
+
+        links = scope.select("div.jeg_postblock_content .jeg_meta_date a[href]")
+        if not links:
+            # フォールバック：時計アイコンを含む a
+            links = [a for a in scope.select("div.jeg_postblock_content a[href]")
+                    if a.find("i", class_="fa fa-clock-o")]
+
+        for a in links:
+            if not a.find("i", class_="fa fa-clock-o"):
+                continue
+            href = a.get("href")
+            if not href or href in seen_urls:
+                continue
+            try:
+                shown_date = _parse_category_date_text(a.get_text(" ", strip=True))
+            except Exception:
+                continue
+            if shown_date == date_obj:
+                candidate_urls.append(href)
+                seen_urls.add(href)
+
+    # ==== 2) 候補記事で厳密確認（meta日付/本文/キーワード） ====
+    for url in candidate_urls:
+        try:
+            res_article = fetch_with_retry(url)
+            soup_article = BeautifulSoup(res_article.content, "html.parser")
+
+            if _article_date_from_meta_mmt(soup_article) != date_obj:
+                continue
+
+            title = _extract_title(soup_article)
+            if not title:
+                continue
+
+            body = _extract_body_irrawaddy(soup_article)
+            if not body:
+                continue
+
+            if not any_keyword_hit(title, body):
+                continue
+
+            results.append({
+                "url": url,
+                "title": title,
+                "date": date_obj.isoformat(),
+            })
+        except Exception as e:
+            print(f"Error processing {url}: {e}")
+            continue
+
+    return results
 
 # 同じURLの重複削除
 def deduplicate_by_url(articles):
@@ -834,6 +1032,15 @@ if __name__ == "__main__":
     print("=== Khit Thit Media ===")
     articles7 = get_khit_thit_edia_articles_from_category(date_mmt, max_pages=3)
     process_and_enqueue_articles(articles7, "Khit Thit Media", seen_urls)
+
+    print("=== Irrawaddy ===")
+    articles8 = get_irrawaddy_articles_for(date_mmt)
+
+    # デバックでログ確認
+    print(json.dumps(articles8, ensure_ascii=False, indent=2))
+    sys.exit(1)
+
+    process_and_enqueue_articles(articles8, "Irrawaddy", seen_urls)
 
     # URLベースの重複排除を先に行う
     print(f"⚙️ Removing URL duplicates from {len(translation_queue)} articles...")
