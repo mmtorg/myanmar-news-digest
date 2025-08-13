@@ -482,10 +482,6 @@ def get_irrawaddy_articles_for(date_obj):
     EXCLUDE_PREFIXES = ["/category/news/asia", "/category/news/world"]  # 先頭一致・大小無視
 
     # ==== 正規化・ユニーク化・除外 ====
-    import re, unicodedata
-    from bs4 import BeautifulSoup
-    from datetime import datetime
-
     norm = lambda p: re.sub(r"/{2,}", "/", p.strip())
     paths, seen = [], set()
     for p in CATEGORY_PATHS_RAW:
@@ -548,6 +544,8 @@ def get_irrawaddy_articles_for(date_obj):
                     paragraphs.append(_norm_text(txt))
         return "\n".join(paragraphs).strip()
     
+    session = requests.Session()
+
     def _fetch_with_retry_irrawaddy(url, retries=3, wait_seconds=2):
         UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -561,7 +559,7 @@ def get_irrawaddy_articles_for(date_obj):
         }
         for attempt in range(retries):
             try:
-                res = requests.get(url, headers=HEADERS, timeout=15, allow_redirects=True)
+                res = session.get(url, headers=HEADERS, timeout=15, allow_redirects=True)
                 print(f"[fetch] {attempt+1}/{retries}: HTTP {res.status_code} len={len(res.text)} → {url}")
                 if res.status_code == 200 and res.text.strip():
                     return res
@@ -584,7 +582,7 @@ def get_irrawaddy_articles_for(date_obj):
         url = f"{BASE}{rel_path}"
         print(f"Fetching {url}")
         try:
-            res = fetch_with_retry(url)
+            res = _fetch_with_retry_irrawaddy(url)
         except Exception as e:
             print(f"Error fetching {url}: {e}")
             continue
