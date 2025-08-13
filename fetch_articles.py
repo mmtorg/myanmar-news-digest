@@ -427,7 +427,7 @@ def get_khit_thit_edia_articles_from_category(date_obj, max_pages=3):
     return filtered_articles
 
 # irrawaddy
-def get_irrawaddy_articles_for(date_obj=None):
+def get_irrawaddy_articles_for(date_obj):
     """
     指定の Irrawaddy カテゴリURL群（相対パス）を1回ずつ巡回し、
     MMTの指定日(既定: 今日)かつ any_keyword_hit にヒットする記事のみ返す。
@@ -547,10 +547,33 @@ def get_irrawaddy_articles_for(date_obj=None):
                 if txt:
                     paragraphs.append(_norm_text(txt))
         return "\n".join(paragraphs).strip()
-
-    # ==== 日付 ====
-    if date_obj is None:
-        date_obj = get_today_date_mmt()
+    
+    def _fetch_with_retry_irrawaddy(url, retries=3, wait_seconds=2):
+        UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/126.0.0.0 Safari/537.36")
+        HEADERS = {
+            "User-Agent": UA,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://www.irrawaddy.com/",
+            "Connection": "keep-alive",
+        }
+        for attempt in range(retries):
+            try:
+                res = requests.get(url, headers=HEADERS, timeout=15, allow_redirects=True)
+                print(f"[fetch] {attempt+1}/{retries}: HTTP {res.status_code} len={len(res.text)} → {url}")
+                if res.status_code == 200 and res.text.strip():
+                    return res
+                # 403/429/503 は待って再試行
+                if res.status_code in (403, 429, 503):
+                    time.sleep(wait_seconds * (2 ** attempt))
+                    continue
+                break
+            except Exception as e:
+                print(f"[fetch] {attempt+1}/{retries} EXC: {e} → {url}")
+                time.sleep(wait_seconds * (2 ** attempt))
+        raise Exception(f"Failed to fetch {url} after {retries} attempts.")
 
     results = []
     seen_urls = set()
@@ -593,7 +616,7 @@ def get_irrawaddy_articles_for(date_obj=None):
     # ==== 2) 候補記事で厳密確認（meta日付/本文/キーワード） ====
     for url in candidate_urls:
         try:
-            res_article = fetch_with_retry(url)
+            res_article = _fetch_with_retry_irrawaddy(url)
             soup_article = BeautifulSoup(res_article.content, "html.parser")
 
             if _article_date_from_meta_mmt(soup_article) != date_obj:
