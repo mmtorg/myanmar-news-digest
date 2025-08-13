@@ -427,7 +427,7 @@ def get_khit_thit_edia_articles_from_category(date_obj, max_pages=3):
     return filtered_articles
 
 # irrawaddy
-def get_irrawaddy_articles_for(date_obj):
+def get_irrawaddy_articles_for(date_obj, debug=True):
     """
     指定の Irrawaddy カテゴリURL群（相対パス）を1回ずつ巡回し、
     MMTの指定日(既定: 今日)かつ any_keyword_hit にヒットする記事のみ返す。
@@ -545,7 +545,16 @@ def get_irrawaddy_articles_for(date_obj):
         return "\n".join(paragraphs).strip()
     
     def _fetch_with_retry_irrawaddy(url, retries=3, wait_seconds=2, session=None):
+        """
+        Irrawaddy専用フェッチャ：最初から cloudscraper で取得し、403/429/503 は指数バックオフで再試行。
+        最後の手段として requests にフォールバック（ほぼ到達しない想定）。
+        """
         import random
+        try:
+            import cloudscraper
+        except ImportError:
+            raise RuntimeError("cloudscraper が必要です。pip install cloudscraper を実行してください。")
+
         sess = session or requests.Session()
 
         UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -555,57 +564,50 @@ def get_irrawaddy_articles_for(date_obj):
             "User-Agent": UA,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Encoding": "gzip, deflate, br",
             "Referer": "https://www.irrawaddy.com/",
             "Connection": "keep-alive",
         }
 
-        # 1) まずは通常の requests で挑戦（クッキー保持のため Session 使用）
+        # cloudscraper を最初に使う（既存 Session をラップしてクッキー共有）
+        scraper = cloudscraper.create_scraper(
+            sess=sess,
+            browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False}
+        )
+
         for attempt in range(retries):
             try:
-                res = sess.get(url, headers=HEADERS, timeout=20, allow_redirects=True)
-                print(f"[fetch] {attempt+1}/{retries}: HTTP {res.status_code} len={len(res.text)} → {url}")
-                if res.status_code == 200 and res.text.strip():
-                    return res
-                if res.status_code in (403, 429, 503):
+                r = scraper.get(url, headers=HEADERS, timeout=30, allow_redirects=True)
+                print(f"[fetch-cs] {attempt+1}/{retries}: HTTP {r.status_code} len={len(getattr(r,'text',''))} → {url}")
+                if r.status_code == 200 and getattr(r, "text", "").strip():
+                    return r
+                if r.status_code in (403, 429, 503):
                     time.sleep(wait_seconds * (2 ** attempt) + random.uniform(0, 0.8))
                     continue
                 break
             except Exception as e:
-                print(f"[fetch] {attempt+1}/{retries} EXC: {e} → {url}")
+                print(f"[fetch-cs] {attempt+1}/{retries} EXC: {e} → {url}")
                 time.sleep(wait_seconds * (2 ** attempt) + random.uniform(0, 0.8))
 
-        # 2) フォールバック: cloudscraper（JS チャレンジ/Turnstile 対策）
+        # 非常用フォールバック（ほぼ不要）。成功すれば返す。
         try:
-            import cloudscraper
-            print(f"[fetch] Falling back to cloudscraper → {url}")
-            scraper = cloudscraper.create_scraper(
-                browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False}
-            )
-            # requests の Cookie を引き継ぐ（継続アクセスで安定）
-            scraper.cookies.update(sess.cookies.get_dict())
-
-            r = scraper.get(url, headers=HEADERS, timeout=30, allow_redirects=True)
-            print(f"[fetch] cloudscraper: HTTP {r.status_code} len={len(getattr(r, 'text',''))} → {url}")
-            if r.status_code == 200 and r.text.strip():
-                # 取得したクッキーを requests 側にも戻しておく
-                try:
-                    for c in scraper.cookies:
-                        sess.cookies.set(c.name, c.value, domain=c.domain, path=c.path)
-                except Exception:
-                    pass
-                return r
-        except ImportError:
-            print("[fetch] cloudscraper not installed. Run: pip install cloudscraper")
+            r2 = sess.get(url, headers=HEADERS, timeout=20, allow_redirects=True)
+            print(f"[fetch-rq] final: HTTP {r2.status_code} len={len(r2.text)} → {url}")
+            if r2.status_code == 200 and r2.text.strip():
+                return r2
         except Exception as e:
-            print(f"[fetch] cloudscraper failed: {e} → {url}")
+            print(f"[fetch-rq] EXC final: {e} → {url}")
 
         raise Exception(f"Failed to fetch {url} after {retries} attempts.")
+
+    # 2) 簡易ロガー（消す時はこの1行と dbg(...) を消すだけ）
+    dbg = (lambda *a, **k: print(*a, **k)) if debug else (lambda *a, **k: None)
 
     results = []
     seen_urls = set()
     candidate_urls = []
 
-    # ==== 1) 各カテゴリURLを1回ずつ巡回 → 当日候補抽出 ====
+    # ==== 1) カテゴリ巡回 ====
     for rel_path in paths:
         url = f"{BASE}{rel_path}"
         print(f"Fetching {url}")
@@ -621,52 +623,149 @@ def get_irrawaddy_articles_for(date_obj):
 
         links = scope.select("div.jeg_postblock_content .jeg_meta_date a[href]")
         if not links:
-            # フォールバック：時計アイコンを含む a
+            links = scope.select(".jeg_post_meta .jeg_meta_date a[href]")
+        if not links:
             links = [a for a in scope.select("div.jeg_postblock_content a[href]")
                     if a.find("i", class_="fa fa-clock-o")]
 
-        for a in links:
-            if not a.find("i", class_="fa fa-clock-o"):
-                continue
-            href = a.get("href")
-            if not href or href in seen_urls:
-                continue
-            try:
-                shown_date = _parse_category_date_text(a.get_text(" ", strip=True))
-            except Exception:
-                continue
-            if shown_date == date_obj:
-                candidate_urls.append(href)
-                seen_urls.add(href)
+        # デバッグ：何件拾えたか＆先頭2件の中身
+        dbg(f"[cat] date-links={len(links)} @ {url}")
+        for a in links[:2]:
+            _txt = re.sub(r"\s+", " ", a.get_text(" ", strip=True))
+            dbg("   →", _txt, "|", a.get("href"))
 
-    # ==== 2) 候補記事で厳密確認（meta日付/本文/キーワード） ====
+        if not links:
+            dbg(f"[cat] no date links @ {url}")
+            continue
+
+        for a in links:
+            href = a.get("href")
+            raw = a.get_text(" ", strip=True)
+            try:
+                shown_date = _parse_category_date_text(raw)
+            except Exception:
+                if _shown_parsefail < 3:
+                    dbg("[cat] date-parse-fail:", re.sub(r"\s+", " ", raw)[:120])
+                    _shown_parsefail += 1
+                continue
+
+            if shown_date == date_obj:
+                if href and href not in seen_urls:
+                    candidate_urls.append(href)
+                    seen_urls.add(href)
+            else:
+                if _shown_mismatch < 3:
+                    dbg("[cat] date-mismatch:", shown_date, "target:", date_obj, "→", href)
+                    _shown_mismatch += 1
+
+    dbg(f"[cat] candidates={len(candidate_urls)}")
+
+    # ==== 2) 記事確認 ====
     for url in candidate_urls:
         try:
             res_article = _fetch_with_retry_irrawaddy(url, session=session)
-            soup_article = BeautifulSoup(res_article.content, "html.parser")
-
-            if _article_date_from_meta_mmt(soup_article) != date_obj:
-                continue
-
-            title = _extract_title(soup_article)
-            if not title:
-                continue
-
-            body = _extract_body_irrawaddy(soup_article)
-            if not body:
-                continue
-
-            if not any_keyword_hit(title, body):
-                continue
-
-            results.append({
-                "url": url,
-                "title": title,
-                "date": date_obj.isoformat(),
-            })
         except Exception as e:
             print(f"Error processing {url}: {e}")
             continue
+
+        soup_article = BeautifulSoup(res_article.content, "html.parser")
+
+        meta_date = _article_date_from_meta_mmt(soup_article)
+        if meta_date is None:
+            dbg("[art] meta-missing:", url)
+            continue
+        if meta_date != date_obj:
+            dbg("[art] meta-mismatch:", meta_date, "target:", date_obj, "→", url)
+            continue
+
+        title = _extract_title(soup_article)
+        if not title:
+            dbg("[art] title-missing:", url)
+            continue
+
+        body = _extract_body_irrawaddy(soup_article)
+        if not body:
+            dbg("[art] body-empty:", url)
+            continue
+
+        if not any_keyword_hit(title, body):
+            dbg("[art] keyword-not-hit:", url)
+            continue
+
+        results.append({
+            "url": url,
+            "title": title,
+            "date": date_obj.isoformat(),
+        })
+
+    dbg(f"[final] kept={len(results)}")
+
+    # results = []
+    # seen_urls = set()
+    # candidate_urls = []
+
+    # # ==== 1) 各カテゴリURLを1回ずつ巡回 → 当日候補抽出 ====
+    # for rel_path in paths:
+    #     url = f"{BASE}{rel_path}"
+    #     print(f"Fetching {url}")
+    #     try:
+    #         res = _fetch_with_retry_irrawaddy(url, session=session)
+    #     except Exception as e:
+    #         print(f"Error fetching {url}: {e}")
+    #         continue
+
+    #     soup = BeautifulSoup(res.content, "html.parser")
+    #     wrapper = soup.select_one("div.jnews_category_content_wrapper")
+    #     scope = wrapper if wrapper else soup
+
+    #     links = scope.select("div.jeg_postblock_content .jeg_meta_date a[href]")
+    #     if not links:
+    #         # フォールバック：時計アイコンを含む a
+    #         links = [a for a in scope.select("div.jeg_postblock_content a[href]")
+    #                 if a.find("i", class_="fa fa-clock-o")]
+
+    #     for a in links:
+    #         if not a.find("i", class_="fa fa-clock-o"):
+    #             continue
+    #         href = a.get("href")
+    #         if not href or href in seen_urls:
+    #             continue
+    #         try:
+    #             shown_date = _parse_category_date_text(a.get_text(" ", strip=True))
+    #         except Exception:
+    #             continue
+    #         if shown_date == date_obj:
+    #             candidate_urls.append(href)
+    #             seen_urls.add(href)
+
+    # # ==== 2) 候補記事で厳密確認（meta日付/本文/キーワード） ====
+    # for url in candidate_urls:
+    #     try:
+    #         res_article = _fetch_with_retry_irrawaddy(url, session=session)
+    #         soup_article = BeautifulSoup(res_article.content, "html.parser")
+
+    #         if _article_date_from_meta_mmt(soup_article) != date_obj:
+    #             continue
+
+    #         title = _extract_title(soup_article)
+    #         if not title:
+    #             continue
+
+    #         body = _extract_body_irrawaddy(soup_article)
+    #         if not body:
+    #             continue
+
+    #         if not any_keyword_hit(title, body):
+    #             continue
+
+    #         results.append({
+    #             "url": url,
+    #             "title": title,
+    #             "date": date_obj.isoformat(),
+    #         })
+    #     except Exception as e:
+    #         print(f"Error processing {url}: {e}")
+    #         continue
 
     return results
 
@@ -1094,7 +1193,7 @@ if __name__ == "__main__":
     articles8 = get_irrawaddy_articles_for(date_mmt)
 
     # デバックでログ確認
-    print(json.dumps(articles8, ensure_ascii=False, indent=2))
+    print("RESULTS:", json.dumps(articles8, ensure_ascii=False, indent=2))
     sys.exit(1)
 
     process_and_enqueue_articles(articles8, "Irrawaddy", seen_urls)
