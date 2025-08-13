@@ -10,3 +10,5 @@ python-dateutil
 lxml
 google-genai
 google-api-core
+cloudscraper
+brotli

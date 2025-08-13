@@ -22,6 +22,7 @@ from collections import defaultdict
 import time
 import json
 import pprint
+import cloudscraper
 
 # 記事重複排除ロジック(BERT埋め込み版)のライブラリインポート
 from sentence_transformers import SentenceTransformer, util
@@ -449,34 +450,31 @@ def get_irrawaddy_articles_for(date_obj):
         "/category/news/ethnic-issues",
         "/category/business",
         "/category/business/economy",
-        "/category/election-2020",
-        "/category/elections-in-history",
+        # "/category/election-2020", # 2021年で更新止まってる
         "/category/Features",
         "/category/Opinion",
         "/category/Opinion/editorial",
         "/category/Opinion/commentary",
         "/category/Opinion/guest-column",
         "/category/Opinion/analysis",
-        "/category/Opinion/letters",
+        # "/category/Opinion/letters", # 2014年で更新止まってる
         "/category/in-person",
         "/category/in-person/interview",
         "/category/in-person/profile",
-        "/category/Dateline",
+        # "/category/Dateline", # 2020年で更新止まってる
         "/category/Specials",
-        "/category/Specials/myanmar-diary",
         "/category/specials/women",
-        "/category/specials/places-in-history",
-        "/category/specials/on-this-day",
+        # "/category/specials/places-in-history", # 2020年で更新止まってる
+        # "/category/specials/on-this-day", # 2023年で更新止まってる
         "/category/from-the-archive",
-        "/category/Specials/myanmar-covid-19",
-        "/category/Specials/intelligence",
+        # "/category/Specials/myanmar-covid-19", # 2022年で更新止まってる
         "/category/Specials/myanmar-china-watch",
-        "/category/Lifestyle",
-        "/category/Travel",
-        "/category/Lifestyle/Food",
-        "/category/Lifestyle/fashion-design",
-        "/category/photo",
-        "/category/photo-essay",
+        # "/category/Lifestyle", # 2020年で更新止まってる
+        # "/category/Travel", # 2020年で更新止まってる
+        # "/category/Lifestyle/Food", # 2020年で更新止まってる
+        # "/category/Lifestyle/fashion-design", # 2019年で更新止まってる
+        # "/category/photo", # 2016年で更新止まってる
+        # "/category/photo-essay", # 2021年で更新止まってる
     ]
     BASE = "https://www.irrawaddy.com"
     EXCLUDE_PREFIXES = ["/category/news/asia", "/category/news/world"]  # 先頭一致・大小無視
@@ -546,32 +544,61 @@ def get_irrawaddy_articles_for(date_obj):
     
     session = requests.Session()
 
-    def _fetch_with_retry_irrawaddy(url, retries=3, wait_seconds=2):
-        UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/126.0.0.0 Safari/537.36")
-        HEADERS = {
-            "User-Agent": UA,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Referer": "https://www.irrawaddy.com/",
-            "Connection": "keep-alive",
-        }
-        for attempt in range(retries):
+def _fetch_with_retry_irrawaddy(url, retries=3, wait_seconds=2, session=None):
+    import random
+    sess = session or requests.Session()
+
+    UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+          "AppleWebKit/537.36 (KHTML, like Gecko) "
+          "Chrome/126.0.0.0 Safari/537.36")
+    HEADERS = {
+        "User-Agent": UA,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.irrawaddy.com/",
+        "Connection": "keep-alive",
+    }
+
+    # 1) まずは通常の requests で挑戦（クッキー保持のため Session 使用）
+    for attempt in range(retries):
+        try:
+            res = sess.get(url, headers=HEADERS, timeout=20, allow_redirects=True)
+            print(f"[fetch] {attempt+1}/{retries}: HTTP {res.status_code} len={len(res.text)} → {url}")
+            if res.status_code == 200 and res.text.strip():
+                return res
+            if res.status_code in (403, 429, 503):
+                time.sleep(wait_seconds * (2 ** attempt) + random.uniform(0, 0.8))
+                continue
+            break
+        except Exception as e:
+            print(f"[fetch] {attempt+1}/{retries} EXC: {e} → {url}")
+            time.sleep(wait_seconds * (2 ** attempt) + random.uniform(0, 0.8))
+
+    # 2) フォールバック: cloudscraper（JS チャレンジ/Turnstile 対策）
+    try:
+        print(f"[fetch] Falling back to cloudscraper → {url}")
+        scraper = cloudscraper.create_scraper(
+            browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False}
+        )
+        # requests の Cookie を引き継ぐ（継続アクセスで安定）
+        scraper.cookies.update(sess.cookies.get_dict())
+
+        r = scraper.get(url, headers=HEADERS, timeout=30, allow_redirects=True)
+        print(f"[fetch] cloudscraper: HTTP {r.status_code} len={len(getattr(r, 'text',''))} → {url}")
+        if r.status_code == 200 and r.text.strip():
+            # 取得したクッキーを requests 側にも戻しておく
             try:
-                res = session.get(url, headers=HEADERS, timeout=15, allow_redirects=True)
-                print(f"[fetch] {attempt+1}/{retries}: HTTP {res.status_code} len={len(res.text)} → {url}")
-                if res.status_code == 200 and res.text.strip():
-                    return res
-                # 403/429/503 は待って再試行
-                if res.status_code in (403, 429, 503):
-                    time.sleep(wait_seconds * (2 ** attempt))
-                    continue
-                break
-            except Exception as e:
-                print(f"[fetch] {attempt+1}/{retries} EXC: {e} → {url}")
-                time.sleep(wait_seconds * (2 ** attempt))
-        raise Exception(f"Failed to fetch {url} after {retries} attempts.")
+                for c in scraper.cookies:
+                    sess.cookies.set(c.name, c.value, domain=c.domain, path=c.path)
+            except Exception:
+                pass
+            return r
+    except ImportError:
+        print("[fetch] cloudscraper not installed. Run: pip install cloudscraper")
+    except Exception as e:
+        print(f"[fetch] cloudscraper failed: {e} → {url}")
+
+    raise Exception(f"Failed to fetch {url} after {retries} attempts.")
 
     results = []
     seen_urls = set()
