@@ -694,9 +694,10 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
             dbg("[art] body-empty:", url)
             continue
 
-        if not any_keyword_hit(title, body):
-            dbg("[art] keyword-not-hit:", url)
-            continue
+        #  irrawaddyはどの記事もほしいとのことなのでキーワード検索は外す、大半ミャンマー記事でキーワード含んでなくても取得対象のこともあった 
+        # if not any_keyword_hit(title, body):
+        #     dbg("[art] keyword-not-hit:", url)
+        #     continue
 
         results.append({
             "url": url,
@@ -781,6 +782,7 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
     #         if not body:
     #             continue
 
+    #         irrawaddyはどの記事もほしいとのことなのでキーワード検索は外す、大半ミャンマー記事でキーワード含んでなくても取得対象のこともあった
     #         if not any_keyword_hit(title, body):
     #             continue
 
