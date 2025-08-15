@@ -244,6 +244,191 @@ def extract_paragraphs_with_wait(soup_article, retries=2, wait_seconds=2):
     return []
 
 
+# === 汎用の <p> 抽出器（サイト共通） ===
+def extract_body_generic_from_soup(soup):
+    for sel in ["div.entry-content p", "div.node-content p", "article p"]:
+        ps = soup.select(sel)
+        if ps:
+            break
+    else:
+        ps = soup.find_all("p")
+    txts = [p.get_text(strip=True) for p in ps if p.get_text(strip=True)]
+    return "\n".join(txts).strip()
+
+
+# === requests を使うシンプルな fetch_once（1回） ===
+def fetch_once_requests(url, timeout=15):
+    r = requests.get(url, timeout=timeout)
+    r.raise_for_status()
+    return r.text
+
+
+# === 再フェッチ付き・本文取得ユーティリティ ===
+def get_body_with_refetch(
+    url, fetcher, extractor, retries=3, wait_seconds=2, quiet=False
+):
+    """
+    fetcher(url) -> html(str)
+    extractor(soup) -> body(str)
+    """
+    last_err = None
+    for attempt in range(retries + 1):
+        try:
+            html = fetcher(url)
+            soup = BeautifulSoup(html, "html.parser")
+            body = extractor(soup)
+            if body:
+                return unicodedata.normalize("NFC", body)
+            if not quiet:
+                print(f"[refetch] body empty, retrying {attempt+1}/{retries} → {url}")
+        except Exception as e:
+            last_err = e
+            if not quiet:
+                print(f"[refetch] EXC {attempt+1}/{retries}: {e} → {url}")
+        time.sleep(wait_seconds)
+    if not quiet and last_err:
+        print(f"[refetch] give up after {retries+1} tries → {url}")
+    return ""
+
+
+# === Irrawaddy専用 ===
+# 本文が取得できるまで「requestsでリトライする」
+def fetch_with_retry_irrawaddy(url, retries=3, wait_seconds=2, session=None):
+    """
+    Irrawaddy専用フェッチャ：最初から cloudscraper で取得し、403/429/503 は指数バックオフで再試行。
+    最後の手段として requests にフォールバック（ほぼ到達しない想定）。
+    """
+    import random
+
+    try:
+        import cloudscraper
+    except ImportError:
+        raise RuntimeError(
+            "cloudscraper が必要です。pip install cloudscraper を実行してください。"
+        )
+
+    sess = session or requests.Session()
+
+    UA = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/126.0.0.0 Safari/537.36"
+    )
+    HEADERS = {
+        "User-Agent": UA,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Referer": "https://www.irrawaddy.com/",
+        "Connection": "keep-alive",
+    }
+
+    # cloudscraper を最初に使う（既存 Session をラップしてクッキー共有）
+    scraper = cloudscraper.create_scraper(
+        sess=sess,
+        browser={"browser": "chrome", "platform": "windows", "mobile": False},
+    )
+
+    for attempt in range(retries):
+        try:
+            r = scraper.get(url, headers=HEADERS, timeout=30, allow_redirects=True)
+            print(
+                f"[fetch-cs] {attempt + 1}/{retries}: HTTP {r.status_code} len={len(getattr(r, 'text', ''))} → {url}"
+            )
+            if r.status_code == 200 and getattr(r, "text", "").strip():
+                return r
+            if r.status_code in (403, 429, 503):
+                time.sleep(wait_seconds * (2**attempt) + random.uniform(0, 0.8))
+                continue
+            break
+        except Exception as e:
+            print(f"[fetch-cs] {attempt + 1}/{retries} EXC: {e} → {url}")
+            time.sleep(wait_seconds * (2**attempt) + random.uniform(0, 0.8))
+
+    # 非常用フォールバック（ほぼ不要）。成功すれば返す。
+    try:
+        r2 = sess.get(url, headers=HEADERS, timeout=20, allow_redirects=True)
+        print(f"[fetch-rq] final: HTTP {r2.status_code} len={len(r2.text)} → {url}")
+        if r2.status_code == 200 and r2.text.strip():
+            return r2
+    except Exception as e:
+        print(f"[fetch-rq] EXC final: {e} → {url}")
+
+    raise Exception(f"Failed to fetch {url} after {retries} attempts.")
+
+
+def _norm_text(text: str) -> str:
+    return unicodedata.normalize("NFC", text)
+
+
+def _parse_category_date_text(text: str):
+    # 例: 'August 9, 2025'
+    text = re.sub(r"\s+", " ", text.strip())
+    return datetime.strptime(text, "%B %d, %Y").date()
+
+
+def _article_date_from_meta_mmt(soup):
+    meta = soup.find("meta", attrs={"property": "article:published_time"})
+    if not meta or not meta.get("content"):
+        return None
+    iso = meta["content"].replace("Z", "+00:00")  # 末尾Z対策
+    dt = datetime.fromisoformat(iso)
+    return dt.astimezone(MMT).date()
+
+
+def _extract_title(soup):
+    t = soup.find("title")
+    return _norm_text(t.get_text(strip=True)) if t else None
+
+
+def _is_excluded_by_ancestor(node) -> bool:
+    excluded = {
+        "jnews_inline_related_post",
+        "jeg_postblock_21",
+        "widget",
+        "widget_jnews_popular",
+        "jeg_postblock_5",
+        "jnews_related_post_container",
+        "widget widget_jnews_popular",
+        "jeg_footer_primary clearfix",
+    }
+    for anc in node.parents:
+        classes = anc.get("class", [])
+        if any(c in excluded for c in classes):
+            return True
+    return False
+
+
+# 本文抽出
+def extract_body_irrawaddy(soup):
+    # <div class="content-inner "> 配下の <p>のみ（除外ブロック配下は除外）
+    paragraphs = []
+    content_inners = soup.select("div.content-inner")
+    if not content_inners:
+        content_inners = [
+            div
+            for div in soup.find_all("div")
+            if "content-inner" in (div.get("class") or [])
+        ]
+    for root in content_inners:
+        for p in root.find_all("p"):
+            if _is_excluded_by_ancestor(p):
+                continue
+            txt = p.get_text(strip=True)
+            if txt:
+                paragraphs.append(_norm_text(txt))
+    return "\n".join(paragraphs).strip()
+
+
+#  Irrawaddy 用 fetch_once（既存の fetch_with_retry_irrawaddy を1回ラップ）
+def fetch_once_irrawaddy(url, session=None):
+    r = fetch_with_retry_irrawaddy(url, retries=1, wait_seconds=0, session=session)
+    return r.text
+
+
+# === ここまで ===
+
+
 # ===== キーワード未ヒット時の共通ロガー（簡素版） =====
 LOG_NO_KEYWORD_MISSES = True
 
@@ -669,126 +854,6 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
             seen.add(q)
             paths.append(q)
 
-    # ==== ローカル関数 ====
-    def _norm_text(text: str) -> str:
-        return unicodedata.normalize("NFC", text)
-
-    def _parse_category_date_text(text: str):
-        # 例: 'August 9, 2025'
-        text = re.sub(r"\s+", " ", text.strip())
-        return datetime.strptime(text, "%B %d, %Y").date()
-
-    def _article_date_from_meta_mmt(soup):
-        meta = soup.find("meta", attrs={"property": "article:published_time"})
-        if not meta or not meta.get("content"):
-            return None
-        iso = meta["content"].replace("Z", "+00:00")  # 末尾Z対策
-        dt = datetime.fromisoformat(iso)
-        return dt.astimezone(MMT).date()
-
-    def _extract_title(soup):
-        t = soup.find("title")
-        return _norm_text(t.get_text(strip=True)) if t else None
-
-    def _is_excluded_by_ancestor(node) -> bool:
-        excluded = {
-            "jnews_inline_related_post",
-            "jeg_postblock_21",
-            "widget",
-            "widget_jnews_popular",
-            "jeg_postblock_5",
-            "jnews_related_post_container",
-            "widget widget_jnews_popular",
-            "jeg_footer_primary clearfix",
-        }
-        for anc in node.parents:
-            classes = anc.get("class", [])
-            if any(c in excluded for c in classes):
-                return True
-        return False
-
-    def _extract_body_irrawaddy(soup):
-        # <div class="content-inner "> 配下の <p>のみ（除外ブロック配下は除外）
-        paragraphs = []
-        content_inners = soup.select("div.content-inner")
-        if not content_inners:
-            content_inners = [
-                div
-                for div in soup.find_all("div")
-                if "content-inner" in (div.get("class") or [])
-            ]
-        for root in content_inners:
-            for p in root.find_all("p"):
-                if _is_excluded_by_ancestor(p):
-                    continue
-                txt = p.get_text(strip=True)
-                if txt:
-                    paragraphs.append(_norm_text(txt))
-        return "\n".join(paragraphs).strip()
-
-    def _fetch_with_retry_irrawaddy(url, retries=3, wait_seconds=2, session=None):
-        """
-        Irrawaddy専用フェッチャ：最初から cloudscraper で取得し、403/429/503 は指数バックオフで再試行。
-        最後の手段として requests にフォールバック（ほぼ到達しない想定）。
-        """
-        import random
-
-        try:
-            import cloudscraper
-        except ImportError:
-            raise RuntimeError(
-                "cloudscraper が必要です。pip install cloudscraper を実行してください。"
-            )
-
-        sess = session or requests.Session()
-
-        UA = (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/126.0.0.0 Safari/537.36"
-        )
-        HEADERS = {
-            "User-Agent": UA,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Referer": "https://www.irrawaddy.com/",
-            "Connection": "keep-alive",
-        }
-
-        # cloudscraper を最初に使う（既存 Session をラップしてクッキー共有）
-        scraper = cloudscraper.create_scraper(
-            sess=sess,
-            browser={"browser": "chrome", "platform": "windows", "mobile": False},
-        )
-
-        for attempt in range(retries):
-            try:
-                r = scraper.get(url, headers=HEADERS, timeout=30, allow_redirects=True)
-                print(
-                    f"[fetch-cs] {attempt + 1}/{retries}: HTTP {r.status_code} len={len(getattr(r, 'text', ''))} → {url}"
-                )
-                if r.status_code == 200 and getattr(r, "text", "").strip():
-                    return r
-                if r.status_code in (403, 429, 503):
-                    time.sleep(wait_seconds * (2**attempt) + random.uniform(0, 0.8))
-                    continue
-                break
-            except Exception as e:
-                print(f"[fetch-cs] {attempt + 1}/{retries} EXC: {e} → {url}")
-                time.sleep(wait_seconds * (2**attempt) + random.uniform(0, 0.8))
-
-        # 非常用フォールバック（ほぼ不要）。成功すれば返す。
-        try:
-            r2 = sess.get(url, headers=HEADERS, timeout=20, allow_redirects=True)
-            print(f"[fetch-rq] final: HTTP {r2.status_code} len={len(r2.text)} → {url}")
-            if r2.status_code == 200 and r2.text.strip():
-                return r2
-        except Exception as e:
-            print(f"[fetch-rq] EXC final: {e} → {url}")
-
-        raise Exception(f"Failed to fetch {url} after {retries} attempts.")
-
     # 2) 簡易ロガー（消す時はこの1行と dbg(...) を消すだけ）
     dbg = (lambda *a, **k: print(*a, **k)) if debug else (lambda *a, **k: None)
 
@@ -802,7 +867,7 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
     #     url = f"{BASE}{rel_path}"
     #     print(f"Fetching {url}")
     #     try:
-    #         res = _fetch_with_retry_irrawaddy(url, session=session)
+    #         res = fetch_with_retry_irrawaddy(url, session=session)
     #     except Exception as e:
     #         print(f"Error fetching {url}: {e}")
     #         continue
@@ -856,7 +921,7 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
     # # ==== 2) 記事確認 ====
     # for url in candidate_urls:
     #     try:
-    #         res_article = _fetch_with_retry_irrawaddy(url, session=session)
+    #         res_article = fetch_with_retry_irrawaddy(url, session=session)
     #     except Exception as e:
     #         print(f"Error processing {url}: {e}")
     #         continue
@@ -876,7 +941,7 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
     #         dbg("[art] title-missing:", url)
     #         continue
 
-    #     body = _extract_body_irrawaddy(soup_article)
+    #     body = extract_body_irrawaddy(soup_article)
     #     if not body:
     #         dbg("[art] body-empty:", url)
     #         continue
@@ -905,7 +970,7 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
         url = f"{BASE}{rel_path}"
         print(f"Fetching {url}")
         try:
-            res = _fetch_with_retry_irrawaddy(url, session=session)
+            res = fetch_with_retry_irrawaddy(url, session=session)
         except Exception as e:
             print(f"Error fetching {url}: {e}")
             continue
@@ -957,7 +1022,7 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
     # ==== 2) 候補記事で厳密確認（meta日付/本文/キーワード） ====
     for url in candidate_urls:
         try:
-            res_article = _fetch_with_retry_irrawaddy(url, session=session)
+            res_article = fetch_with_retry_irrawaddy(url, session=session)
             soup_article = BeautifulSoup(res_article.content, "html.parser")
 
             if _article_date_from_meta_mmt(soup_article) != date_obj:
@@ -967,7 +1032,7 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
             if not title:
                 continue
 
-            body = _extract_body_irrawaddy(soup_article)
+            body = extract_body_irrawaddy(soup_article)
             if not body:
                 continue
 
@@ -981,6 +1046,7 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
                     "url": url,
                     "title": title,
                     "date": date_obj.isoformat(),
+                    "body": body,
                 }
             )
         except Exception as e:
@@ -1009,7 +1075,13 @@ def deduplicate_by_url(articles):
 translation_queue = []
 
 
-def process_and_enqueue_articles(articles, source_name, seen_urls=None):
+def process_and_enqueue_articles(
+    articles,
+    source_name,
+    seen_urls=None,
+    bypass_keyword=False,
+    trust_existing_body=False,
+):
     if seen_urls is None:
         seen_urls = set()
 
@@ -1020,22 +1092,49 @@ def process_and_enqueue_articles(articles, source_name, seen_urls=None):
         seen_urls.add(art["url"])
 
         try:
-            res = requests.get(art["url"], timeout=10)
-            soup = BeautifulSoup(res.content, "html.parser")
-            # 本文pタグ取得 (リトライ付き)
-            paragraphs = extract_paragraphs_with_wait(soup, retries=2, wait_seconds=2)
-            body_text = "\n".join(p.get_text(strip=True) for p in paragraphs)
+            # ① まずは記事オブジェクトに本文が来ていたらそれを使う
+            body_text = (art.get("body") or "").strip() if trust_existing_body else ""
 
+            # ② 無ければフェッチ（内部で再フェッチ付きユーティリティを使用）
+            if not body_text:
+                if source_name == "Irrawaddy" or "irrawaddy.com" in art["url"]:
+                    body_text = get_body_with_refetch(
+                        art["url"],
+                        fetcher=lambda u: fetch_once_irrawaddy(
+                            u, session=requests.Session()
+                        ),
+                        extractor=extract_body_irrawaddy,  # 既存の抽出器を使用
+                        retries=3,
+                        wait_seconds=2,
+                        quiet=False,
+                    )
+                else:
+                    body_text = get_body_with_refetch(
+                        art["url"],
+                        fetcher=fetch_once_requests,
+                        extractor=extract_body_generic_from_soup,
+                        retries=2,
+                        wait_seconds=1,
+                        quiet=True,
+                    )
+
+            # ③ 正規化
             title_nfc = unicodedata.normalize("NFC", art["title"])
             body_nfc = unicodedata.normalize("NFC", body_text)
 
-            # ★ここで any_keyword_hit を使って正規表現(通貨)も含めて統一判定
-            if not any_keyword_hit(title_nfc, body_nfc):
-                log_no_keyword_hit(
-                    source_name, art["url"], title_nfc, body_nfc, "enqueue:after-fetch"
-                )
-                continue
+            # ④ キーワード判定（Irrawaddyなど必要に応じてバイパス）
+            if not bypass_keyword:
+                if not any_keyword_hit(title_nfc, body_nfc):
+                    log_no_keyword_hit(
+                        source_name,
+                        art["url"],
+                        title_nfc,
+                        body_nfc,
+                        "enqueue:after-fetch",
+                    )
+                    continue
 
+            # ⑤ キュー投入
             queued_items.append(
                 {
                     "source": source_name,
@@ -1044,6 +1143,7 @@ def process_and_enqueue_articles(articles, source_name, seen_urls=None):
                     "body": body_text,  # 翻訳前本文
                 }
             )
+
         except Exception as e:
             print(f"Error processing {art['url']}: {e}")
             continue
@@ -1425,7 +1525,13 @@ if __name__ == "__main__":
     articles8 = get_irrawaddy_articles_for(date_mmt)
     # MEMO: ログ用、デバックでログ確認
     # print("RESULTS:", json.dumps(articles8, ensure_ascii=False, indent=2))
-    process_and_enqueue_articles(articles8, "Irrawaddy", seen_urls)
+    process_and_enqueue_articles(
+        articles8,
+        "Irrawaddy",
+        seen_urls,
+        bypass_keyword=True,  # ← Irrawaddyはキーワードで落とさない
+        trust_existing_body=True,  # ← さっき入れた body をそのまま使う（再フェッチしない）
+    )
 
     # URLベースの重複排除を先に行う
     print(f"⚙️ Removing URL duplicates from {len(translation_queue)} articles...")
