@@ -1542,7 +1542,7 @@ if __name__ == "__main__":
     print(f"⚙️ Removing URL duplicates from {len(translation_queue)} articles...")
     translation_queue = deduplicate_by_url(translation_queue)
 
-    # バッチ翻訳実行 (10件ごとに1分待機)
-    all_summaries = process_translation_batches(batch_size=10, wait_seconds=60)
+    # バッチ翻訳実行 (5件ごとに1分待機)
+    all_summaries = process_translation_batches(batch_size=5, wait_seconds=60)
 
     send_email_digest(all_summaries)
