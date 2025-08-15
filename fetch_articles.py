@@ -19,6 +19,17 @@ import time
 import json
 import pprint
 
+import random
+
+try:
+    from google.api_core.exceptions import (
+        ServiceUnavailable,
+        ResourceExhausted,
+        DeadlineExceeded,
+    )
+except Exception:
+    ServiceUnavailable = ResourceExhausted = DeadlineExceeded = Exception
+
 # 記事重複排除ロジック(BERT埋め込み版)のライブラリインポート
 
 # Gemini本番用
@@ -29,6 +40,30 @@ client = genai.Client(api_key=os.getenv("GEMINI_TEST_API_KEY"))
 
 # Chat GPT
 # client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+
+def call_gemini_with_retries(
+    client,
+    prompt,
+    model="gemini-2.5-flash",
+    max_retries=5,
+    base_delay=2.0,
+    max_delay=30.0,
+):
+    delay = base_delay
+    for attempt in range(1, max_retries + 1):
+        try:
+            return client.models.generate_content(model=model, contents=prompt)
+        except (ServiceUnavailable, ResourceExhausted, DeadlineExceeded) as e:
+            if attempt == max_retries:
+                raise
+            print(f"⚠️ Gemini retry {attempt}/{max_retries} after error: {e}")
+            time.sleep(min(max_delay, delay) + random.random() * 0.5)
+            delay *= 2
+        except Exception:
+            # 400系など非再試行系はそのまま
+            raise
+
 
 # ミャンマー標準時 (UTC+6:30)
 MMT = timezone(timedelta(hours=6, minutes=30))
@@ -529,25 +564,28 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
         "/category/news/ethnic-issues",
         "/category/business",
         "/category/business/economy",
-        # "/category/election-2020", # 2021年で更新止まってる
         "/category/Features",
         "/category/Opinion",
         "/category/Opinion/editorial",
         "/category/Opinion/commentary",
         "/category/Opinion/guest-column",
         "/category/Opinion/analysis",
-        # "/category/Opinion/letters", # 2014年で更新止まってる
         "/category/in-person",
         "/category/in-person/interview",
         "/category/in-person/profile",
-        # "/category/Dateline", # 2020年で更新止まってる
         "/category/Specials",
         "/category/specials/women",
+        "/category/from-the-archive",
+        "/category/Specials/myanmar-china-watch",
+        # "/category/Video" # 除外依頼有
+        # "/category/culture/books" #除外依頼有
+        # "/category/Cartoons" # 除外依頼有
+        # "/category/election-2020", # 2021年で更新止まってる
+        # "/category/Opinion/letters", # 2014年で更新止まってる
+        # "/category/Dateline", # 2020年で更新止まってる
         # "/category/specials/places-in-history", # 2020年で更新止まってる
         # "/category/specials/on-this-day", # 2023年で更新止まってる
-        "/category/from-the-archive",
         # "/category/Specials/myanmar-covid-19", # 2022年で更新止まってる
-        "/category/Specials/myanmar-china-watch",
         # "/category/Lifestyle", # 2020年で更新止まってる
         # "/category/Travel", # 2020年で更新止まってる
         # "/category/Lifestyle/Food", # 2020年で更新止まってる
@@ -557,8 +595,8 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
     ]
     BASE = "https://www.irrawaddy.com"
     EXCLUDE_PREFIXES = [
-        "/category/news/asia",
-        "/category/news/world",
+        "/category/news/asia",  # 除外依頼有
+        "/category/news/world",  # 除外依頼有
     ]  # 先頭一致・大小無視
 
     # ==== 正規化・ユニーク化・除外 ====
@@ -1061,7 +1099,7 @@ def dedupe_articles_with_llm(client, summarized_results):
     )
 
     try:
-        resp = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+        resp = call_gemini_with_retries(client, prompt, model="gemini-2.5-flash")
         data = _safe_json_loads_maybe_extract(resp.text)
         kept_ids = [x.get("id") for x in data.get("kept", []) if x.get("id") in id_map]
 
@@ -1084,7 +1122,7 @@ def dedupe_articles_with_llm(client, summarized_results):
 
 
 # 本処理関数
-def process_translation_batches(batch_size=10, wait_seconds=60):
+def process_translation_batches(batch_size=5, wait_seconds=60):
     # MEMO: TEST用、Geminiを呼ばず、URLリストだけ返す
     # summarized_results = []
     # for item in translation_queue:
@@ -1151,8 +1189,8 @@ def process_translation_batches(batch_size=10, wait_seconds=60):
                 print(f"TITLE: {item['title']}")
                 print(f"BODY[:2000]: {item['body'][:2000]}")
 
-                resp = client.models.generate_content(
-                    model="gemini-2.5-flash", contents=prompt
+                resp = call_gemini_with_retries(
+                    client, prompt, model="gemini-2.5-flash"
                 )
                 output_text = resp.text.strip()
 
@@ -1195,7 +1233,9 @@ def process_translation_batches(batch_size=10, wait_seconds=60):
                 )
 
             except Exception as e:
-                print(f"🛑 Error during translation: {e}")
+                print(
+                    "🛑 Error during translation:", e.__class__.__name__, "|", repr(e)
+                )
                 continue
 
         if i + batch_size < len(translation_queue):
