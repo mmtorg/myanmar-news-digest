@@ -60,10 +60,20 @@ NEWS_KEYWORDS = [
     "Kyat", "kyat",
     
     # 徴兵制（Conscription / Military Draft）, 徴兵, 兵役
-    "Conscription", "conscription", "Military Draft", "military draft", "military service", "military service", "စစ်တပ်ဝင်ခေါ်ရေး", "စစ်မှုထမ်း", "အတင်းတပ်ဝင်ခေါ်ခြင်း", "တပ်ဝင်ခေါ် ",
+    "စစ်တပ်ဝင်ခေါ်ရေး", "စစ်မှုထမ်း", "အတင်းတပ်ဝင်ခေါ်ခြင်း", "တပ်ဝင်ခေါ် ",
+    "Conscription", "conscription", "Military Draft", "Military draft", "military draft", "Military Service", "Military service","military service", 
 
     #ロヒンギャ
-    "ရိုဟင်ဂျာ", "Rohingya", "rohingya"
+    "ရိုဟင်ဂျာ", "Rohingya", "rohingya",
+
+    # 国境貿易・交易
+    "နယ်စပ်ကုန်သွယ်ရေး",
+
+    # ヤンゴン管区
+    "ရန်ကုန်တိုင်း", "Yangon Region", , "Yangon region", "yangon region"
+
+    # エーヤワディ管区
+    "ဧရာဝတီတိုင်း", "Ayeyarwady Region", "Ayeyarwady region", "ayeyarwady region"
 ]
 
 # Unicode正規化（NFC）を適用
