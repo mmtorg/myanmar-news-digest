@@ -295,6 +295,7 @@ def get_bbc_burmese_articles_for(target_date_mmt):
             text = re.sub(pat, "", text, flags=re.IGNORECASE)
         return text.strip()
 
+    # MEMO: ログ用
     # あるテキスト中でキーワードがどこにヒットしたかを返す（周辺文脈つき）
     # def _find_hits(text: str, keywords):
     #     hits = []
@@ -394,7 +395,7 @@ def get_bbc_burmese_articles_for(target_date_mmt):
                 )
                 continue
 
-            # # === デバッグ: 判定前にタイトル/本文の要約を出す ===
+            # MEMO: ログ用、=== デバッグ: 判定前にタイトル/本文の要約を出す ===
             # print("----- DEBUG CANDIDATE -----")
             # print("URL:", link)
             # print("TITLE:", repr(title_nfc))
@@ -696,15 +697,115 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
     # 2) 簡易ロガー（消す時はこの1行と dbg(...) を消すだけ）
     dbg = (lambda *a, **k: print(*a, **k)) if debug else (lambda *a, **k: None)
 
+    # MEMO: ログ用
+    # results = []
+    # seen_urls = set()
+    # candidate_urls = []
+
+    # # ==== 1) カテゴリ巡回 ====
+    # for rel_path in paths:
+    #     url = f"{BASE}{rel_path}"
+    #     print(f"Fetching {url}")
+    #     try:
+    #         res = _fetch_with_retry_irrawaddy(url, session=session)
+    #     except Exception as e:
+    #         print(f"Error fetching {url}: {e}")
+    #         continue
+
+    #     soup = BeautifulSoup(res.content, "html.parser")
+    #     wrapper = soup.select_one("div.jeg_content")  # テーマによっては無いこともある
+
+    #     # ✅ union 方式：wrapper 内→見つからなければページ全体の順で探索
+    #     scopes = ([wrapper] if wrapper else []) + [soup]
+
+    #     for scope in scopes:
+    #         # ヒーロー枠＋通常リスト＋汎用メタを一発で拾う
+    #         links = scope.select(
+    #             ".jnews_category_hero_container .jeg_meta_date a[href], "
+    #             "div.jeg_postblock_content .jeg_meta_date a[href], "
+    #             ".jeg_post_meta .jeg_meta_date a[href]"
+    #         )
+    #         # 時計アイコン付きだけに限定（ノイズ回避）
+    #         links = [a for a in links if a.find("i", class_="fa fa-clock-o")]
+
+    #         # （任意）デバッグ表示
+    #         dbg(f"[cat] union-links={len(links)} @ {url}")
+    #         for a in links[:2]:
+    #             _txt = re.sub(r"\s+", " ", a.get_text(" ", strip=True))
+    #             dbg("   →", _txt, "|", a.get("href"))
+
+    #         found = 0
+    #         for a in links:
+    #             href = a.get("href") or ""
+    #             raw = a.get_text(" ", strip=True)
+    #             try:
+    #                 shown_date = _parse_category_date_text(raw)
+    #             except Exception:
+    #                 # 必要最小限のデバッグだけ
+    #                 dbg("[cat] date-parse-fail:", re.sub(r"\s+", " ", raw)[:120])
+    #                 continue
+
+    #             if shown_date == date_obj and href and href not in seen_urls:
+    #                 candidate_urls.append(href)
+    #                 seen_urls.add(href)
+    #                 found += 1
+
+    #         # wrapper 内で“当日”が見つかったら soup まで広げず終了。
+    #         # wrapper が無い場合（scopes が [soup] だけの時）も1周で抜ける。
+    #         if found > 0:
+    #             dbg(f"[cat] STOP (added {found} candidates) @ {url}")
+    #             break
+
+    # dbg(f"[cat] candidates={len(candidate_urls)}")
+
+    # # ==== 2) 記事確認 ====
+    # for url in candidate_urls:
+    #     try:
+    #         res_article = _fetch_with_retry_irrawaddy(url, session=session)
+    #     except Exception as e:
+    #         print(f"Error processing {url}: {e}")
+    #         continue
+
+    #     soup_article = BeautifulSoup(res_article.content, "html.parser")
+
+    #     meta_date = _article_date_from_meta_mmt(soup_article)
+    #     if meta_date is None:
+    #         dbg("[art] meta-missing:", url)
+    #         continue
+    #     if meta_date != date_obj:
+    #         dbg("[art] meta-mismatch:", meta_date, "target:", date_obj, "→", url)
+    #         continue
+
+    #     title = _extract_title(soup_article)
+    #     if not title:
+    #         dbg("[art] title-missing:", url)
+    #         continue
+
+    #     body = _extract_body_irrawaddy(soup_article)
+    #     if not body:
+    #         dbg("[art] body-empty:", url)
+    #         continue
+
+    #     #  irrawaddyはどの記事もほしいとのことなのでキーワード検索は外す、大半ミャンマー記事でキーワード含んでなくても取得対象のこともあった
+    #     # if not any_keyword_hit(title, body):
+    #     #     dbg("[art] keyword-not-hit:", url)
+    #     #     continue
+
+    #     results.append(
+    #         {
+    #             "url": url,
+    #             "title": title,
+    #             "date": date_obj.isoformat(),
+    #         }
+    #     )
+
+    # dbg(f"[final] kept={len(results)}")
+
     results = []
     seen_urls = set()
     candidate_urls = []
 
-    # ✅ これを追加（または入れ直す）
-    _shown_parsefail = 0
-    _shown_mismatch = 0
-
-    # ==== 1) カテゴリ巡回 ====
+    # ==== 1) 各カテゴリURLを1回ずつ巡回 → 当日候補抽出 ====
     for rel_path in paths:
         url = f"{BASE}{rel_path}"
         print(f"Fetching {url}")
@@ -758,138 +859,38 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
                 dbg(f"[cat] STOP (added {found} candidates) @ {url}")
                 break
 
-    dbg(f"[cat] candidates={len(candidate_urls)}")
-
-    # ==== 2) 記事確認 ====
+    # ==== 2) 候補記事で厳密確認（meta日付/本文/キーワード） ====
     for url in candidate_urls:
         try:
             res_article = _fetch_with_retry_irrawaddy(url, session=session)
+            soup_article = BeautifulSoup(res_article.content, "html.parser")
+
+            if _article_date_from_meta_mmt(soup_article) != date_obj:
+                continue
+
+            title = _extract_title(soup_article)
+            if not title:
+                continue
+
+            body = _extract_body_irrawaddy(soup_article)
+            if not body:
+                continue
+
+            # irrawaddyはどの記事もほしいとのことなのでキーワード検索は外す
+            # 大半ミャンマー記事でキーワード含んでなくても取得対象のこともあった、無駄記事の取得が目立つようであれば追加検討
+            # if not any_keyword_hit(title, body):
+            #     continue
+
+            results.append(
+                {
+                    "url": url,
+                    "title": title,
+                    "date": date_obj.isoformat(),
+                }
+            )
         except Exception as e:
             print(f"Error processing {url}: {e}")
             continue
-
-        soup_article = BeautifulSoup(res_article.content, "html.parser")
-
-        meta_date = _article_date_from_meta_mmt(soup_article)
-        if meta_date is None:
-            dbg("[art] meta-missing:", url)
-            continue
-        if meta_date != date_obj:
-            dbg("[art] meta-mismatch:", meta_date, "target:", date_obj, "→", url)
-            continue
-
-        title = _extract_title(soup_article)
-        if not title:
-            dbg("[art] title-missing:", url)
-            continue
-
-        body = _extract_body_irrawaddy(soup_article)
-        if not body:
-            dbg("[art] body-empty:", url)
-            continue
-
-        #  irrawaddyはどの記事もほしいとのことなのでキーワード検索は外す、大半ミャンマー記事でキーワード含んでなくても取得対象のこともあった
-        # if not any_keyword_hit(title, body):
-        #     dbg("[art] keyword-not-hit:", url)
-        #     continue
-
-        results.append(
-            {
-                "url": url,
-                "title": title,
-                "date": date_obj.isoformat(),
-            }
-        )
-
-    dbg(f"[final] kept={len(results)}")
-
-    # results = []
-    # seen_urls = set()
-    # candidate_urls = []
-
-    # # ==== 1) 各カテゴリURLを1回ずつ巡回 → 当日候補抽出 ====
-    # for rel_path in paths:
-    #     url = f"{BASE}{rel_path}"
-    #     print(f"Fetching {url}")
-    #     try:
-    #         res = _fetch_with_retry_irrawaddy(url, session=session)
-    #     except Exception as e:
-    #         print(f"Error fetching {url}: {e}")
-    #         continue
-
-    #     soup = BeautifulSoup(res.content, "html.parser")
-    #     wrapper = soup.select_one("div.jeg_content")  # テーマによっては無いこともある
-
-    #     # ✅ union 方式：wrapper 内→見つからなければページ全体の順で探索
-    #     scopes = ([wrapper] if wrapper else []) + [soup]
-
-    #     for scope in scopes:
-    #         # ヒーロー枠＋通常リスト＋汎用メタを一発で拾う
-    #         links = scope.select(
-    #             ".jnews_category_hero_container .jeg_meta_date a[href], "
-    #             "div.jeg_postblock_content .jeg_meta_date a[href], "
-    #             ".jeg_post_meta .jeg_meta_date a[href]"
-    #         )
-    #         # 時計アイコン付きだけに限定（ノイズ回避）
-    #         links = [a for a in links if a.find("i", class_="fa fa-clock-o")]
-
-    #         # （任意）デバッグ表示
-    #         dbg(f"[cat] union-links={len(links)} @ {url}")
-    #         for a in links[:2]:
-    #             _txt = re.sub(r"\s+", " ", a.get_text(" ", strip=True))
-    #             dbg("   →", _txt, "|", a.get("href"))
-
-    #         found = 0
-    #         for a in links:
-    #             href = a.get("href") or ""
-    #             raw  = a.get_text(" ", strip=True)
-    #             try:
-    #                 shown_date = _parse_category_date_text(raw)
-    #             except Exception:
-    #                 # 必要最小限のデバッグだけ
-    #                 dbg("[cat] date-parse-fail:", re.sub(r"\s+", " ", raw)[:120])
-    #                 continue
-
-    #             if shown_date == date_obj and href and href not in seen_urls:
-    #                 candidate_urls.append(href)
-    #                 seen_urls.add(href)
-    #                 found += 1
-
-    #         # wrapper 内で“当日”が見つかったら soup まで広げず終了。
-    #         # wrapper が無い場合（scopes が [soup] だけの時）も1周で抜ける。
-    #         if found > 0:
-    #             dbg(f"[cat] STOP (added {found} candidates) @ {url}")
-    #             break
-
-    # # ==== 2) 候補記事で厳密確認（meta日付/本文/キーワード） ====
-    # for url in candidate_urls:
-    #     try:
-    #         res_article = _fetch_with_retry_irrawaddy(url, session=session)
-    #         soup_article = BeautifulSoup(res_article.content, "html.parser")
-
-    #         if _article_date_from_meta_mmt(soup_article) != date_obj:
-    #             continue
-
-    #         title = _extract_title(soup_article)
-    #         if not title:
-    #             continue
-
-    #         body = _extract_body_irrawaddy(soup_article)
-    #         if not body:
-    #             continue
-
-    #         irrawaddyはどの記事もほしいとのことなのでキーワード検索は外す、大半ミャンマー記事でキーワード含んでなくても取得対象のこともあった
-    #         if not any_keyword_hit(title, body):
-    #             continue
-
-    #         results.append({
-    #             "url": url,
-    #             "title": title,
-    #             "date": date_obj.isoformat(),
-    #         })
-    #     except Exception as e:
-    #         print(f"Error processing {url}: {e}")
-    #         continue
 
     return results
 
@@ -955,7 +956,7 @@ def process_and_enqueue_articles(articles, source_name, seen_urls=None):
     translation_queue.extend(queued_items)
 
 
-# デバック用関数
+# MEMO: ログ用、デバック用関数
 # def process_translation_batches(batch_size=10, wait_seconds=60):
 #     summarized_results = []
 
@@ -1084,7 +1085,7 @@ def dedupe_articles_with_llm(client, summarized_results):
 
 # 本処理関数
 def process_translation_batches(batch_size=10, wait_seconds=60):
-    # ⚠️ TEST: Geminiを呼ばず、URLリストだけ返す
+    # MEMO: TEST用、Geminiを呼ばず、URLリストだけ返す
     # summarized_results = []
     # for item in translation_queue:
     #     summarized_results.append({
@@ -1301,18 +1302,6 @@ if __name__ == "__main__":
     # for art in articles:
     #     print(f"{art['date']} - {art['title']}\n{art['url']}\n")
 
-    # 記事取得＆キューに貯める
-    # Mizzima (English)外す
-    # print("=== Mizzima (English) ===")
-    # articles_eng = get_mizzima_articles_from_category(
-    #     date_mmt,
-    #     "https://eng.mizzima.com",
-    #     "Mizzima (English)",
-    #     "/category/news/myanmar_news",
-    #     max_pages=3
-    # )
-    # process_and_enqueue_articles(articles_eng, "Mizzima (English)", seen_urls)
-
     # === Mizzima (Burmese) ===
     print("=== Mizzima (Burmese) ===")
     articles_bur = get_mizzima_articles_from_category(
@@ -1334,10 +1323,9 @@ if __name__ == "__main__":
 
     print("=== Irrawaddy ===")
     articles8 = get_irrawaddy_articles_for(date_mmt)
-    # デバックでログ確認
-    print("RESULTS:", json.dumps(articles8, ensure_ascii=False, indent=2))
-    sys.exit(1)
-    # process_and_enqueue_articles(articles8, "Irrawaddy", seen_urls)
+    # MEMO: ログ用、デバックでログ確認
+    # print("RESULTS:", json.dumps(articles8, ensure_ascii=False, indent=2))
+    process_and_enqueue_articles(articles8, "Irrawaddy", seen_urls)
 
     # URLベースの重複排除を先に行う
     print(f"⚙️ Removing URL duplicates from {len(translation_queue)} articles...")
