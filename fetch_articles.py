@@ -22,6 +22,15 @@ import pprint
 import random
 
 try:
+    import httpx
+except Exception:
+    httpx = None
+try:
+    import urllib3
+except Exception:
+    urllib3 = None
+
+try:
     from google.api_core.exceptions import (
         ServiceUnavailable,
         ResourceExhausted,
@@ -30,7 +39,6 @@ try:
 except Exception:
     ServiceUnavailable = ResourceExhausted = DeadlineExceeded = Exception
 
-# 記事重複排除ロジック(BERT埋め込み版)のライブラリインポート
 
 # Gemini本番用
 # client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
@@ -40,6 +48,52 @@ client = genai.Client(api_key=os.getenv("GEMINI_TEST_API_KEY"))
 
 # Chat GPT
 # client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+
+def _is_retriable_exc(e: Exception) -> bool:
+    msg = (str(e) or "").lower()
+    name = e.__class__.__name__.lower()
+
+    # Google系の明示的リトライ対象
+    if isinstance(e, (ServiceUnavailable, ResourceExhausted, DeadlineExceeded)):
+        return True
+
+    # httpx/urllib3系（環境に無ければ無視）
+    if httpx and isinstance(
+        e,
+        (
+            getattr(httpx, "RemoteProtocolError", Exception),
+            getattr(httpx, "ReadTimeout", Exception),
+            getattr(httpx, "ConnectError", Exception),
+        ),
+    ):
+        return True
+    if urllib3 and isinstance(
+        e,
+        (
+            urllib3.exceptions.ProtocolError,
+            urllib3.exceptions.ReadTimeoutError,
+            urllib3.exceptions.MaxRetryError,
+        ),
+    ):
+        return True
+
+    # 文字列での判定（実装差分吸収）
+    hints = [
+        "remoteprotocolerror",
+        "server disconnected",
+        "unavailable",
+        "503",
+        "502",
+        "504",
+        "gateway",
+        "timeout",
+        "temporar",
+        "overload",
+    ]
+    if any(h in msg or h in name for h in hints):
+        return True
+    return False
 
 
 def call_gemini_with_retries(
@@ -54,16 +108,19 @@ def call_gemini_with_retries(
     for attempt in range(1, max_retries + 1):
         try:
             return client.models.generate_content(model=model, contents=prompt)
-        except (ServiceUnavailable, ResourceExhausted, DeadlineExceeded) as e:
-            if attempt == max_retries:
+        except Exception as e:
+            if not _is_retriable_exc(e) or attempt == max_retries:
                 raise
-            print(f"⚠️ Gemini retry {attempt}/{max_retries} after error: {e}")
+            print(
+                f"⚠️ Gemini retry {attempt}/{max_retries} after: {e.__class__.__name__} | {e}"
+            )
+            # ジッター付き指数バックオフ
             time.sleep(min(max_delay, delay) + random.random() * 0.5)
             delay *= 2
-        except Exception:
-            # 400系など非再試行系はそのまま
-            raise
 
+
+# 要約用に送る本文の最大文字数（固定）
+BODY_MAX_CHARS = 1600
 
 # ミャンマー標準時 (UTC+6:30)
 MMT = timezone(timedelta(hours=6, minutes=30))
@@ -1130,7 +1187,7 @@ def process_translation_batches(batch_size=5, wait_seconds=60):
     #         "source": item["source"],
     #         "url": item["url"],
     #         "title": item['title'],
-    #         "summary": item['body'][:2000]
+    #         "summary": item['body'][:BODY_MAX_CHARS]
     #     })
 
     summarized_results = []
@@ -1179,7 +1236,7 @@ def process_translation_batches(batch_size=5, wait_seconds=60):
                 f"{item['title']}\n\n"
                 "[記事本文]\n"
                 "###\n"
-                f"{item['body'][:2000]}\n"
+                f"{item['body'][:BODY_MAX_CHARS]}\n"
                 "###\n"
             )
 
@@ -1187,7 +1244,7 @@ def process_translation_batches(batch_size=5, wait_seconds=60):
                 # デバッグ: 入力データを確認
                 print("----- DEBUG: Prompt Input -----")
                 print(f"TITLE: {item['title']}")
-                print(f"BODY[:2000]: {item['body'][:2000]}")
+                print(f"BODY[:{BODY_MAX_CHARS}]: {item['body'][:BODY_MAX_CHARS]}")
 
                 resp = call_gemini_with_retries(
                     client, prompt, model="gemini-2.5-flash"
@@ -1237,6 +1294,9 @@ def process_translation_batches(batch_size=5, wait_seconds=60):
                     "🛑 Error during translation:", e.__class__.__name__, "|", repr(e)
                 )
                 continue
+
+            # バッチ内で微スリープしてバーストを抑える
+            time.sleep(0.6)
 
         if i + batch_size < len(translation_queue):
             print(f"🕒 Waiting {wait_seconds} seconds before next batch...")
