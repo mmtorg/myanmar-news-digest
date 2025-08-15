@@ -120,7 +120,7 @@ def call_gemini_with_retries(
 
 
 # 要約用に送る本文の最大文字数（固定）
-BODY_MAX_CHARS = 1600
+BODY_MAX_CHARS = 1800
 
 # ミャンマー標準時 (UTC+6:30)
 MMT = timezone(timedelta(hours=6, minutes=30))
@@ -260,7 +260,8 @@ def extract_body_generic_from_soup(soup):
 def fetch_once_requests(url, timeout=15):
     r = requests.get(url, timeout=timeout)
     r.raise_for_status()
-    return r.text
+    # 文字化け回避のため bytes を返す（デコードは BeautifulSoup に任せる）
+    return r.content
 
 
 # === 再フェッチ付き・本文取得ユーティリティ ===
@@ -268,17 +269,25 @@ def get_body_with_refetch(
     url, fetcher, extractor, retries=3, wait_seconds=2, quiet=False
 ):
     """
-    fetcher(url) -> html(str)
+    fetcher(url) -> html(bytes or str)
     extractor(soup) -> body(str)
     """
     last_err = None
     for attempt in range(retries + 1):
         try:
             html = fetcher(url)
+            # bytes/str どちらでも BeautifulSoup に渡せる
             soup = BeautifulSoup(html, "html.parser")
+
+            # 誤って latin-1 系で解釈された場合は UTF-8 で再解釈して保険をかける
+            enc = (getattr(soup, "original_encoding", None) or "").lower()
+            if enc in ("iso-8859-1", "latin-1", "windows-1252"):
+                soup = BeautifulSoup(html, "html.parser", from_encoding="utf-8")
+
             body = extractor(soup)
             if body:
                 return unicodedata.normalize("NFC", body)
+
             if not quiet:
                 print(f"[refetch] body empty, retrying {attempt+1}/{retries} → {url}")
         except Exception as e:
@@ -286,6 +295,7 @@ def get_body_with_refetch(
             if not quiet:
                 print(f"[refetch] EXC {attempt+1}/{retries}: {e} → {url}")
         time.sleep(wait_seconds)
+
     if not quiet and last_err:
         print(f"[refetch] give up after {retries+1} tries → {url}")
     return ""
@@ -423,7 +433,8 @@ def extract_body_irrawaddy(soup):
 #  Irrawaddy 用 fetch_once（既存の fetch_with_retry_irrawaddy を1回ラップ）
 def fetch_once_irrawaddy(url, session=None):
     r = fetch_with_retry_irrawaddy(url, retries=1, wait_seconds=0, session=session)
-    return r.text
+    # cloudscraper のレスポンスも bytes を返す（デコードは BeautifulSoup に任せる）
+    return r.content
 
 
 # === ここまで ===
