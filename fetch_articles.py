@@ -152,6 +152,36 @@ def extract_paragraphs_with_wait(soup_article, retries=2, wait_seconds=2):
     return []
 
 
+# ===== キーワード未ヒット時の共通ロガー =====
+LOG_NO_KEYWORD_MISSES = True
+LOG_BODY_CHARS = int(
+    os.getenv("LOG_BODY_CHARS", "800")
+)  # 本文はログで最大800文字だけ出す
+
+
+def log_no_keyword_hit(source: str, url: str, title: str, body: str, stage: str):
+    """
+    キーワード未ヒットの記事を標準出力に出す。
+    stage: どの段階で弾かれたかを識別するタグ（例: 'mizzima:category', 'bbc:article', 'enqueue:after-fetch'）
+    """
+    if not LOG_NO_KEYWORD_MISSES:
+        return
+    try:
+        title = unicodedata.normalize("NFC", title or "")
+        body = unicodedata.normalize("NFC", body or "")
+    except Exception:
+        pass
+
+    excerpt = body[:LOG_BODY_CHARS]
+    print("\n----- NO KEYWORD HIT -----")
+    print(f"[stage]  {stage}")
+    print(f"[source] {source}")
+    print(f"[url]    {url}")
+    print(f"[title]  {title}")
+    print(f"[body({len(body)} chars, showing {len(excerpt)} chars)] {excerpt}")
+    print("----- END NO KEYWORD HIT -----\n")
+
+
 # Mizzimaカテゴリーページ巡回で取得
 def get_mizzima_articles_from_category(
     date_obj, base_url, source_name, category_path, max_pages=3
@@ -235,6 +265,9 @@ def get_mizzima_articles_from_category(
 
             # キーワード判定は正規化済みタイトルで行う
             if not any_keyword_hit(title, body_text):
+                log_no_keyword_hit(
+                    source_name, url, title, body_text, "mizzima:category"
+                )
                 continue
 
             filtered_articles.append(
@@ -271,20 +304,20 @@ def get_bbc_burmese_articles_for(target_date_mmt):
         return text.strip()
 
     # あるテキスト中でキーワードがどこにヒットしたかを返す（周辺文脈つき）
-    def _find_hits(text: str, keywords):
-        hits = []
-        for kw in keywords:
-            start = 0
-            while True:
-                i = text.find(kw, start)
-                if i == -1:
-                    break
-                s = max(0, i - 30)
-                e = min(len(text), i + len(kw) + 30)
-                ctx = text[s:e].replace("\n", " ")
-                hits.append({"kw": kw, "pos": i, "ctx": ctx})
-                start = i + len(kw)
-        return hits
+    # def _find_hits(text: str, keywords):
+    #     hits = []
+    #     for kw in keywords:
+    #         start = 0
+    #         while True:
+    #             i = text.find(kw, start)
+    #             if i == -1:
+    #                 break
+    #             s = max(0, i - 30)
+    #             e = min(len(text), i + len(kw) + 30)
+    #             ctx = text[s:e].replace("\n", " ")
+    #             hits.append({"kw": kw, "pos": i, "ctx": ctx})
+    #             start = i + len(kw)
+    #     return hits
 
     rss_url = "https://feeds.bbci.co.uk/burmese/rss.xml"
     session = requests.Session()
@@ -364,7 +397,9 @@ def get_bbc_burmese_articles_for(target_date_mmt):
 
             # キーワード判定
             if not any_keyword_hit(title_nfc, body_text_nfc):
-                print(f"SKIP: no keyword hits → {link} | TITLE: {title_nfc}")
+                log_no_keyword_hit(
+                    "BBC Burmese", link, title_nfc, body_text_nfc, "bbc:article"
+                )
                 continue
 
             # # === デバッグ: 判定前にタイトル/本文の要約を出す ===
@@ -451,14 +486,6 @@ def get_khit_thit_edia_articles_from_category(date_obj, max_pages=3):
             title = title_tag.get_text(strip=True)
 
             # 本文取得 (khit_thit_edia用パターン)
-            paragraphs = soup_article.select("div.tdb-block-inner p")
-            if not paragraphs:
-                paragraphs = soup_article.select("div.tdb_single_content p")
-            if not paragraphs:
-                paragraphs = soup_article.select("article p")
-            if not paragraphs:
-                paragraphs = soup_article.find_all("p")
-
             paragraphs = extract_paragraphs_with_wait(soup_article)
             body_text = "\n".join(p.get_text(strip=True) for p in paragraphs)
             body_text = unicodedata.normalize("NFC", body_text)
@@ -467,6 +494,9 @@ def get_khit_thit_edia_articles_from_category(date_obj, max_pages=3):
                 continue  # 本文が空ならスキップ
 
             if not any_keyword_hit(title, body_text):
+                log_no_keyword_hit(
+                    "Khit Thit Media", url, title, body_text, "khitthit:category"
+                )
                 continue  # キーワード無しは除外
 
             filtered_articles.append(
@@ -911,11 +941,12 @@ def process_and_enqueue_articles(articles, source_name, seen_urls=None):
             title_nfc = unicodedata.normalize("NFC", art["title"])
             body_nfc = unicodedata.normalize("NFC", body_text)
 
-            # ★ここでNEWS_KEYWORDSフィルターをかける
-            if not any(
-                keyword in title_nfc or keyword in body_nfc for keyword in NEWS_KEYWORDS
-            ):
-                continue  # キーワード含まれてなければスキップ
+            # ★ここで any_keyword_hit を使って正規表現(通貨)も含めて統一判定
+            if not any_keyword_hit(title_nfc, body_nfc):
+                log_no_keyword_hit(
+                    source_name, art["url"], title_nfc, body_nfc, "enqueue:after-fetch"
+                )
+                continue
 
             queued_items.append(
                 {
