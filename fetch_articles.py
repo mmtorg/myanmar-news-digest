@@ -1,30 +1,25 @@
 import requests
 from bs4 import BeautifulSoup
-from datetime import datetime, timedelta, date, timezone
+from datetime import datetime, timedelta, timezone
 from dateutil.parser import parse as parse_date
 import re
+
 # Chat GPT
 # from openai import OpenAI, OpenAIError
 import smtplib
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
 import os
 import sys
-from email import policy  # ← 追加
-from email.header import Header  # ← 追加必要
 from email.message import EmailMessage
 from email.policy import SMTPUTF8
 from email.utils import formataddr
 import unicodedata
 from google import genai
-from google.api_core.exceptions import GoogleAPICallError
 from collections import defaultdict
 import time
 import json
 import pprint
 
 # 記事重複排除ロジック(BERT埋め込み版)のライブラリインポート
-from sentence_transformers import SentenceTransformer, util
 
 # Gemini本番用
 client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
@@ -35,6 +30,7 @@ client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 # ミャンマー標準時 (UTC+6:30)
 MMT = timezone(timedelta(hours=6, minutes=30))
 
+
 # 今日の日付
 # ニュースの速報性重視で今日分のニュース配信の方針
 def get_today_date_mmt():
@@ -42,47 +38,66 @@ def get_today_date_mmt():
     now_mmt = datetime.now(MMT)
     return now_mmt.date()
 
+
 # 共通キーワードリスト（全メディア共通で使用する）
 NEWS_KEYWORDS = [
     # ミャンマー（国名・現行名称）
-    "မြန်မာ", "မြန်မာ့", "Myanmar", "myanmar",
-    
+    "မြန်မာ",
+    "မြန်မာ့",
+    "Myanmar",
+    "myanmar",
     # ビルマ（旧国名・通称）
-    "ဗမာ", "Burma", "burma",
-    
+    "ဗမာ",
+    "Burma",
+    "burma",
     # アウンサンスーチー（Aung San Suu Kyi）
-    "အောင်ဆန်းစုကြည်", "Aung San Suu Kyi", "aung san suu kyi",
-    
+    "အောင်ဆန်းစုကြည်",
+    "Aung San Suu Kyi",
+    "aung san suu kyi",
     # ミンアウンフライン（Min Aung Hlaing）
-    "မင်းအောင်လှိုင်", "Min Aung Hlaing", "min aung hlaing",
-    
+    "မင်းအောင်လှိုင်",
+    "Min Aung Hlaing",
+    "min aung hlaing",
     # チャット（Kyat）
-    "Kyat", "kyat",
-    
+    "Kyat",
+    "kyat",
     # 徴兵制（Conscription / Military Draft）, 徴兵, 兵役
-    "စစ်တပ်ဝင်ခေါ်ရေး", "စစ်မှုထမ်း", "အတင်းတပ်ဝင်ခေါ်ခြင်း", "တပ်ဝင်ခေါ် ", 
-    "Conscription", "conscription", "Military Draft", "Military draft", "military draft", "Military Service", "Military service","military service", 
-
-    #ロヒンギャ
-    "ရိုဟင်ဂျာ", "Rohingya", "rohingya",
-
+    "စစ်တပ်ဝင်ခေါ်ရေး",
+    "စစ်မှုထမ်း",
+    "အတင်းတပ်ဝင်ခေါ်ခြင်း",
+    "တပ်ဝင်ခေါ် ",
+    "Conscription",
+    "conscription",
+    "Military Draft",
+    "Military draft",
+    "military draft",
+    "Military Service",
+    "Military service",
+    "military service",
+    # ロヒンギャ
+    "ရိုဟင်ဂျာ",
+    "Rohingya",
+    "rohingya",
     # 国境貿易・交易
     "နယ်စပ်ကုန်သွယ်ရေး",
-
     # ヤンゴン管区
-    "ရန်ကုန်တိုင်း", "Yangon Region", "Yangon region", "yangon region",
-
+    "ရန်ကုန်တိုင်း",
+    "Yangon Region",
+    "Yangon region",
+    "yangon region",
     # エーヤワディ管区
-    "ဧရာဝတီတိုင်း", "Ayeyarwady Region", "Ayeyarwady region", "ayeyarwady region"
+    "ဧရာဝတီတိုင်း",
+    "Ayeyarwady Region",
+    "Ayeyarwady region",
+    "ayeyarwady region",
 ]
 
 # Unicode正規化（NFC）を適用
-NEWS_KEYWORDS = [unicodedata.normalize('NFC', kw) for kw in NEWS_KEYWORDS]
+NEWS_KEYWORDS = [unicodedata.normalize("NFC", kw) for kw in NEWS_KEYWORDS]
 
 # チャットは数字に続くもののみ（通貨判定）
-KYAT_PATTERN = re.compile(
-    r'(?<=[0-9၀-၉])[\s,\.]*(?:သောင်း|သိန်း|သန်း)?\s*ကျပ်'
-)
+KYAT_PATTERN = re.compile(r"(?<=[0-9၀-၉])[\s,\.]*(?:သောင်း|သိန်း|သန်း)?\s*ကျပ်")
+
 
 def any_keyword_hit(title: str, body: str) -> bool:
     # 通常のキーワード一致
@@ -93,10 +108,12 @@ def any_keyword_hit(title: str, body: str) -> bool:
         return True
     return False
 
+
 def clean_html_content(html: str) -> str:
     html = html.replace("\xa0", " ").replace("&nbsp;", " ")
     # 制御文字（カテゴリC）を除外、可視Unicodeはそのまま
-    return ''.join(c for c in html if unicodedata.category(c)[0] != 'C')
+    return "".join(c for c in html if unicodedata.category(c)[0] != "C")
+
 
 # 本文が取得できるまで「requestsでリトライする」
 def fetch_with_retry(url, retries=3, wait_seconds=2):
@@ -109,6 +126,7 @@ def fetch_with_retry(url, retries=3, wait_seconds=2):
             print(f"Attempt {attempt + 1} failed for {url}: {e}")
         time.sleep(wait_seconds)
     raise Exception(f"Failed to fetch {url} after {retries} attempts.")
+
 
 # 本文が空なら「一定秒数待って再取得」
 def extract_paragraphs_with_wait(soup_article, retries=2, wait_seconds=2):
@@ -123,20 +141,22 @@ def extract_paragraphs_with_wait(soup_article, retries=2, wait_seconds=2):
 
         if paragraphs:
             return paragraphs
-        
+
         print(f"Paragraphs not found, waiting {wait_seconds}s and retrying...")
         time.sleep(wait_seconds)
     return []
 
 
 # Mizzimaカテゴリーページ巡回で取得
-def get_mizzima_articles_from_category(date_obj, base_url, source_name, category_path, max_pages=3):
+def get_mizzima_articles_from_category(
+    date_obj, base_url, source_name, category_path, max_pages=3
+):
     # ==== ローカル定数 Mizzima除外対象キーワード（タイトル用）====
     EXCLUDE_TITLE_KEYWORDS = [
         # 春の革命日誌
         "နွေဦးတော်လှန်ရေး နေ့စဉ်မှတ်စု",
         # 写真ニュース
-        "ဓာတ်ပုံသတင်း"
+        "ဓာတ်ပုံသတင်း",
     ]
 
     article_urls = []
@@ -153,7 +173,10 @@ def get_mizzima_articles_from_category(date_obj, base_url, source_name, category
                 continue
 
             soup = BeautifulSoup(res.content, "html.parser")
-            links = [a['href'] for a in soup.select("main.site-main article a.post-thumbnail[href]")]
+            links = [
+                a["href"]
+                for a in soup.select("main.site-main article a.post-thumbnail[href]")
+            ]
             article_urls.extend(links)
 
         except Exception as e:
@@ -184,7 +207,7 @@ def get_mizzima_articles_from_category(date_obj, base_url, source_name, category
             title = title_tag["content"].strip()
 
             # === 除外キーワード判定（タイトルをNFC正規化してから） ===
-            title_nfc = unicodedata.normalize('NFC', title)
+            title_nfc = unicodedata.normalize("NFC", title)
             if any(kw in title_nfc for kw in EXCLUDE_TITLE_KEYWORDS):
                 print(f"SKIP: excluded keyword in title → {url} | TITLE: {title_nfc}")
                 continue
@@ -200,7 +223,7 @@ def get_mizzima_articles_from_category(date_obj, base_url, source_name, category
                 paragraphs.append(p)
 
             body_text = "\n".join(p.get_text(strip=True) for p in paragraphs)
-            body_text = unicodedata.normalize('NFC', body_text)
+            body_text = unicodedata.normalize("NFC", body_text)
 
             if not body_text.strip():
                 continue
@@ -209,12 +232,14 @@ def get_mizzima_articles_from_category(date_obj, base_url, source_name, category
             if not any_keyword_hit(title, body_text):
                 continue
 
-            filtered_articles.append({
-                "source": source_name,
-                "url": url,
-                "title": title,
-                "date": article_date.isoformat()
-            })
+            filtered_articles.append(
+                {
+                    "source": source_name,
+                    "url": url,
+                    "title": title,
+                    "date": article_date.isoformat(),
+                }
+            )
 
         except Exception as e:
             print(f"Error processing {url}: {e}")
@@ -222,12 +247,13 @@ def get_mizzima_articles_from_category(date_obj, base_url, source_name, category
 
     return filtered_articles
 
+
 # BCCはRSSあるのでそれ使う
 def get_bbc_burmese_articles_for(target_date_mmt):
     # ==== ローカル定数 ====
     NOISE_PATTERNS = [
         r"BBC\s*News\s*မြန်မာ",  # 固定署名（Burmese表記）
-        r"BBC\s*Burmese"        # 英語表記
+        r"BBC\s*Burmese",  # 英語表記
     ]
 
     # ==== ローカル関数 ====
@@ -248,7 +274,8 @@ def get_bbc_burmese_articles_for(target_date_mmt):
                 i = text.find(kw, start)
                 if i == -1:
                     break
-                s = max(0, i-30); e = min(len(text), i+len(kw)+30)
+                s = max(0, i - 30)
+                e = min(len(text), i + len(kw) + 30)
                 ctx = text[s:e].replace("\n", " ")
                 hits.append({"kw": kw, "pos": i, "ctx": ctx})
                 start = i + len(kw)
@@ -283,8 +310,14 @@ def get_bbc_burmese_articles_for(target_date_mmt):
         if pub_date_mmt != target_date_mmt:
             continue
 
-        title = (item.find("title") or {}).get_text(strip=True) if item.find("title") else ""
-        link = (item.find("link") or {}).get_text(strip=True) if item.find("link") else ""
+        title = (
+            (item.find("title") or {}).get_text(strip=True)
+            if item.find("title")
+            else ""
+        )
+        link = (
+            (item.find("link") or {}).get_text(strip=True) if item.find("link") else ""
+        )
         if not link:
             continue
 
@@ -295,27 +328,33 @@ def get_bbc_burmese_articles_for(target_date_mmt):
 
             # ===== ここで除外セクションをまとめて削除 =====
             # 記事署名やメタ情報
-            for node in article_soup.select('section[role="region"][aria-labelledby="article-byline"]'):
+            for node in article_soup.select(
+                'section[role="region"][aria-labelledby="article-byline"]'
+            ):
                 node.decompose()
             # 「おすすめ／最も読まれた」ブロック
-            for node in article_soup.select('section[data-e2e="recommendations-heading"][role="region"]'):
+            for node in article_soup.select(
+                'section[data-e2e="recommendations-heading"][role="region"]'
+            ):
                 node.decompose()
             # ついでにヘッダー/ナビ/フッター等のノイズも落としておく（任意）
-            for node in article_soup.select('header[role="banner"], nav[role="navigation"], footer[role="contentinfo"], aside'):
+            for node in article_soup.select(
+                'header[role="banner"], nav[role="navigation"], footer[role="contentinfo"], aside'
+            ):
                 node.decompose()
             # ============================================
 
             # 本文は main 内の <p> に限定
             main = article_soup.select_one('main[role="main"]') or article_soup
-            paragraphs = [p.get_text(strip=True) for p in main.find_all('p')]
+            paragraphs = [p.get_text(strip=True) for p in main.find_all("p")]
             # 空行やノイズを削る
             paragraphs = [t for t in paragraphs if t]
             body_text = "\n".join(paragraphs)
 
             # ミャンマー文字の合成差異を避けるため NFC 正規化
-            title_nfc = unicodedata.normalize('NFC', title)
+            title_nfc = unicodedata.normalize("NFC", title)
             title_nfc = _remove_noise_phrases(title_nfc)
-            body_text_nfc = unicodedata.normalize('NFC', body_text)
+            body_text_nfc = unicodedata.normalize("NFC", body_text)
             body_text_nfc = _remove_noise_phrases(body_text_nfc)
 
             # キーワード判定
@@ -351,11 +390,13 @@ def get_bbc_burmese_articles_for(target_date_mmt):
             #         print(f"   kw={repr(h['kw'])} ctx=…{h['ctx']}…")
 
             print(f"✅ 抽出記事: {title_nfc} ({link})")
-            articles.append({
-                "title": title_nfc,
-                "url": link,
-                "date": pub_date_mmt.isoformat(),
-            })
+            articles.append(
+                {
+                    "title": title_nfc,
+                    "url": link,
+                    "date": pub_date_mmt.isoformat(),
+                }
+            )
 
         except Exception as e:
             print(f"❌ 記事取得/解析エラー: {e}")
@@ -363,9 +404,10 @@ def get_bbc_burmese_articles_for(target_date_mmt):
 
     return articles
 
+
 # khit_thit_ediaカテゴリーページ巡回で取得
 def get_khit_thit_edia_articles_from_category(date_obj, max_pages=3):
-    base_url="https://yktnews.com/category/news/"
+    base_url = "https://yktnews.com/category/news/"
     article_urls = []
 
     for page in range(1, max_pages + 1):
@@ -375,8 +417,8 @@ def get_khit_thit_edia_articles_from_category(date_obj, max_pages=3):
         soup = BeautifulSoup(res.content, "html.parser")
 
         # 記事リンク抽出
-        entry_links = soup.select('p.entry-title.td-module-title a[href]')
-        page_article_urls = [a['href'] for a in entry_links if a.has_attr('href')]
+        entry_links = soup.select("p.entry-title.td-module-title a[href]")
+        page_article_urls = [a["href"] for a in entry_links if a.has_attr("href")]
         article_urls.extend(page_article_urls)
 
     filtered_articles = []
@@ -411,10 +453,10 @@ def get_khit_thit_edia_articles_from_category(date_obj, max_pages=3):
                 paragraphs = soup_article.select("article p")
             if not paragraphs:
                 paragraphs = soup_article.find_all("p")
-            
+
             paragraphs = extract_paragraphs_with_wait(soup_article)
             body_text = "\n".join(p.get_text(strip=True) for p in paragraphs)
-            body_text = unicodedata.normalize('NFC', body_text)
+            body_text = unicodedata.normalize("NFC", body_text)
 
             if not body_text.strip():
                 continue  # 本文が空ならスキップ
@@ -422,17 +464,16 @@ def get_khit_thit_edia_articles_from_category(date_obj, max_pages=3):
             if not any_keyword_hit(title, body_text):
                 continue  # キーワード無しは除外
 
-            filtered_articles.append({
-                "url": url,
-                "title": title,
-                "date": date_obj.isoformat()
-            })
+            filtered_articles.append(
+                {"url": url, "title": title, "date": date_obj.isoformat()}
+            )
 
         except Exception as e:
             print(f"Error processing {url}: {e}")
             continue
 
     return filtered_articles
+
 
 # irrawaddy
 def get_irrawaddy_articles_for(date_obj, debug=True):
@@ -487,10 +528,15 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
         # "/category/photo-essay", # 2021年で更新止まってる
     ]
     BASE = "https://www.irrawaddy.com"
-    EXCLUDE_PREFIXES = ["/category/news/asia", "/category/news/world"]  # 先頭一致・大小無視
+    EXCLUDE_PREFIXES = [
+        "/category/news/asia",
+        "/category/news/world",
+    ]  # 先頭一致・大小無視
 
     # ==== 正規化・ユニーク化・除外 ====
-    norm = lambda p: re.sub(r"/{2,}", "/", p.strip())
+    def norm(p: str) -> str:
+        return re.sub(r"/{2,}", "/", p.strip())
+
     paths, seen = [], set()
     for p in CATEGORY_PATHS_RAW:
         q = norm(p)
@@ -502,7 +548,7 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
 
     # ==== ローカル関数 ====
     def _norm_text(text: str) -> str:
-        return unicodedata.normalize('NFC', text)
+        return unicodedata.normalize("NFC", text)
 
     def _parse_category_date_text(text: str):
         # 例: 'August 9, 2025'
@@ -525,7 +571,8 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
         excluded = {
             "jnews_inline_related_post",
             "jeg_postblock_21",
-            "widget", "widget_jnews_popular",
+            "widget",
+            "widget_jnews_popular",
             "jeg_postblock_5",
             "jnews_related_post_container",
             "widget widget_jnews_popular",
@@ -542,8 +589,11 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
         paragraphs = []
         content_inners = soup.select("div.content-inner")
         if not content_inners:
-            content_inners = [div for div in soup.find_all("div")
-                            if "content-inner" in (div.get("class") or [])]
+            content_inners = [
+                div
+                for div in soup.find_all("div")
+                if "content-inner" in (div.get("class") or [])
+            ]
         for root in content_inners:
             for p in root.find_all("p"):
                 if _is_excluded_by_ancestor(p):
@@ -552,23 +602,28 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
                 if txt:
                     paragraphs.append(_norm_text(txt))
         return "\n".join(paragraphs).strip()
-    
+
     def _fetch_with_retry_irrawaddy(url, retries=3, wait_seconds=2, session=None):
         """
         Irrawaddy専用フェッチャ：最初から cloudscraper で取得し、403/429/503 は指数バックオフで再試行。
         最後の手段として requests にフォールバック（ほぼ到達しない想定）。
         """
         import random
+
         try:
             import cloudscraper
         except ImportError:
-            raise RuntimeError("cloudscraper が必要です。pip install cloudscraper を実行してください。")
+            raise RuntimeError(
+                "cloudscraper が必要です。pip install cloudscraper を実行してください。"
+            )
 
         sess = session or requests.Session()
 
-        UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        UA = (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/126.0.0.0 Safari/537.36")
+            "Chrome/126.0.0.0 Safari/537.36"
+        )
         HEADERS = {
             "User-Agent": UA,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -581,22 +636,24 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
         # cloudscraper を最初に使う（既存 Session をラップしてクッキー共有）
         scraper = cloudscraper.create_scraper(
             sess=sess,
-            browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False}
+            browser={"browser": "chrome", "platform": "windows", "mobile": False},
         )
 
         for attempt in range(retries):
             try:
                 r = scraper.get(url, headers=HEADERS, timeout=30, allow_redirects=True)
-                print(f"[fetch-cs] {attempt+1}/{retries}: HTTP {r.status_code} len={len(getattr(r,'text',''))} → {url}")
+                print(
+                    f"[fetch-cs] {attempt + 1}/{retries}: HTTP {r.status_code} len={len(getattr(r, 'text', ''))} → {url}"
+                )
                 if r.status_code == 200 and getattr(r, "text", "").strip():
                     return r
                 if r.status_code in (403, 429, 503):
-                    time.sleep(wait_seconds * (2 ** attempt) + random.uniform(0, 0.8))
+                    time.sleep(wait_seconds * (2**attempt) + random.uniform(0, 0.8))
                     continue
                 break
             except Exception as e:
-                print(f"[fetch-cs] {attempt+1}/{retries} EXC: {e} → {url}")
-                time.sleep(wait_seconds * (2 ** attempt) + random.uniform(0, 0.8))
+                print(f"[fetch-cs] {attempt + 1}/{retries} EXC: {e} → {url}")
+                time.sleep(wait_seconds * (2**attempt) + random.uniform(0, 0.8))
 
         # 非常用フォールバック（ほぼ不要）。成功すれば返す。
         try:
@@ -618,7 +675,7 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
 
     # ✅ これを追加（または入れ直す）
     _shown_parsefail = 0
-    _shown_mismatch  = 0
+    _shown_mismatch = 0
 
     # ==== 1) カテゴリ巡回 ====
     for rel_path in paths:
@@ -655,7 +712,7 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
             found = 0
             for a in links:
                 href = a.get("href") or ""
-                raw  = a.get_text(" ", strip=True)
+                raw = a.get_text(" ", strip=True)
                 try:
                     shown_date = _parse_category_date_text(raw)
                 except Exception:
@@ -704,16 +761,18 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
             dbg("[art] body-empty:", url)
             continue
 
-        #  irrawaddyはどの記事もほしいとのことなのでキーワード検索は外す、大半ミャンマー記事でキーワード含んでなくても取得対象のこともあった 
+        #  irrawaddyはどの記事もほしいとのことなのでキーワード検索は外す、大半ミャンマー記事でキーワード含んでなくても取得対象のこともあった
         # if not any_keyword_hit(title, body):
         #     dbg("[art] keyword-not-hit:", url)
         #     continue
 
-        results.append({
-            "url": url,
-            "title": title,
-            "date": date_obj.isoformat(),
-        })
+        results.append(
+            {
+                "url": url,
+                "title": title,
+                "date": date_obj.isoformat(),
+            }
+        )
 
     dbg(f"[final] kept={len(results)}")
 
@@ -807,20 +866,25 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
 
     return results
 
+
 # 同じURLの重複削除
 def deduplicate_by_url(articles):
     seen_urls = set()
     unique_articles = []
     for art in articles:
-        if art['url'] in seen_urls:
-            print(f"🛑 URL Duplicate Removed: {art['source']} | {art['title']} | {art['url']}")
+        if art["url"] in seen_urls:
+            print(
+                f"🛑 URL Duplicate Removed: {art['source']} | {art['title']} | {art['url']}"
+            )
             continue
-        seen_urls.add(art['url'])
+        seen_urls.add(art["url"])
         unique_articles.append(art)
     return unique_articles
 
+
 # 翻訳対象キュー
 translation_queue = []
+
 
 def process_and_enqueue_articles(articles, source_name, seen_urls=None):
     if seen_urls is None:
@@ -828,35 +892,40 @@ def process_and_enqueue_articles(articles, source_name, seen_urls=None):
 
     queued_items = []
     for art in articles:
-        if art['url'] in seen_urls:
+        if art["url"] in seen_urls:
             continue
-        seen_urls.add(art['url'])
+        seen_urls.add(art["url"])
 
         try:
-            res = requests.get(art['url'], timeout=10)
+            res = requests.get(art["url"], timeout=10)
             soup = BeautifulSoup(res.content, "html.parser")
             # 本文pタグ取得 (リトライ付き)
             paragraphs = extract_paragraphs_with_wait(soup, retries=2, wait_seconds=2)
             body_text = "\n".join(p.get_text(strip=True) for p in paragraphs)
 
-            title_nfc = unicodedata.normalize('NFC', art['title'])
-            body_nfc  = unicodedata.normalize('NFC', body_text)
+            title_nfc = unicodedata.normalize("NFC", art["title"])
+            body_nfc = unicodedata.normalize("NFC", body_text)
 
             # ★ここでNEWS_KEYWORDSフィルターをかける
-            if not any(keyword in title_nfc or keyword in body_nfc for keyword in NEWS_KEYWORDS):
+            if not any(
+                keyword in title_nfc or keyword in body_nfc for keyword in NEWS_KEYWORDS
+            ):
                 continue  # キーワード含まれてなければスキップ
 
-            queued_items.append({
-                "source": source_name,
-                "url": art["url"],
-                "title": art["title"],  # 翻訳前タイトル
-                "body": body_text,      # 翻訳前本文
-            })
+            queued_items.append(
+                {
+                    "source": source_name,
+                    "url": art["url"],
+                    "title": art["title"],  # 翻訳前タイトル
+                    "body": body_text,  # 翻訳前本文
+                }
+            )
         except Exception as e:
             print(f"Error processing {art['url']}: {e}")
             continue
 
     translation_queue.extend(queued_items)
+
 
 # デバック用関数
 # def process_translation_batches(batch_size=10, wait_seconds=60):
@@ -879,11 +948,13 @@ def process_and_enqueue_articles(articles, source_name, seen_urls=None):
 #     # ここで処理終了
 #     return summarized_results
 
+
 # 重複記事削除処理セット
 def _strip_tags(text: str) -> str:
     # 要約に含めた <br> などを素テキスト化（最低限）
     text = text.replace("<br>", "\n")
     return re.sub(r"<[^>]+>", "", text)
+
 
 def _safe_json_loads_maybe_extract(text: str):
     """
@@ -893,10 +964,11 @@ def _safe_json_loads_maybe_extract(text: str):
         return json.loads(text)
     except Exception:
         # 最後の { ... } を素朴に抽出
-        m = re.search(r'\{.*\}', text, flags=re.DOTALL)
+        m = re.search(r"\{.*\}", text, flags=re.DOTALL)
         if m:
             return json.loads(m.group(0))
         raise
+
 
 def dedupe_articles_with_llm(client, summarized_results):
     """
@@ -920,12 +992,14 @@ def dedupe_articles_with_llm(client, summarized_results):
         id_map[_id] = it
 
         # 本文相当として summary を渡す（タイトルと本文の両方を比較させる）
-        articles.append({
-            "id": _id,
-            "source": it.get("source"),
-            "title": it.get("title"),
-            "body": _strip_tags(it.get("summary", "")),
-        })
+        articles.append(
+            {
+                "id": _id,
+                "source": it.get("source"),
+                "title": it.get("title"),
+                "body": _strip_tags(it.get("summary", "")),
+            }
+        )
 
     # ===== LLMに渡すarticlesも確認 =====
     print("===== DEBUG 2: articles SENT TO LLM =====")
@@ -942,33 +1016,35 @@ def dedupe_articles_with_llm(client, summarized_results):
         "3) 残す基準：a)固有情報量が多い b)具体性/明瞭さ c)本文が長い d)同点ならsourceの文字列昇順。\n"
         "4) 統合記事は作らない。入力外の事実は加えない。\n\n"
         "入力:\n"
-        "{\n  \"articles\": " + json.dumps(articles, ensure_ascii=False) + "\n}\n\n"
+        '{\n  "articles": ' + json.dumps(articles, ensure_ascii=False) + "\n}\n\n"
         "出力フォーマット（JSONのみ）:\n"
         "{\n"
-        "  \"kept\": [\n"
-        "    {\"id\": \"<残す記事ID>\", \"cluster_id\": \"<ID>\", \"why\": \"<1-2文>\"}\n"
+        '  "kept": [\n'
+        '    {"id": "<残す記事ID>", "cluster_id": "<ID>", "why": "<1-2文>"}\n'
         "  ],\n"
-        "  \"removed\": [\n"
-        "    {\"id\": \"<除外記事ID>\", \"duplicate_of\": \"<残した記事ID>\", \"why\": \"<1-2文>\"}\n"
+        '  "removed": [\n'
+        '    {"id": "<除外記事ID>", "duplicate_of": "<残した記事ID>", "why": "<1-2文>"}\n'
         "  ],\n"
-        "  \"clusters\": [\n"
-        "    {\"cluster_id\": \"<ID>\", \"member_ids\": [\"<id1>\", \"<id2>\", \"...\"], \"event_key\": \"<出来事の短文>\"}\n"
+        '  "clusters": [\n'
+        '    {"cluster_id": "<ID>", "member_ids": ["<id1>", "<id2>", "..."], "event_key": "<出来事の短文>"}\n'
         "  ]\n"
         "}\n"
     )
 
     try:
-        resp = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt
-        )
+        resp = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
         data = _safe_json_loads_maybe_extract(resp.text)
         kept_ids = [x.get("id") for x in data.get("kept", []) if x.get("id") in id_map]
 
         # 元の順序を保ったままフィルタ
         kept_set = set(kept_ids)
         if kept_set:
-            filtered = [obj for obj in summarized_results if (obj.get("url") or f"idx-{summarized_results.index(obj)}") in kept_set]
+            filtered = [
+                obj
+                for obj in summarized_results
+                if (obj.get("url") or f"idx-{summarized_results.index(obj)}")
+                in kept_set
+            ]
             return filtered
 
         # うまく判定できなかったら原本を返す
@@ -977,9 +1053,9 @@ def dedupe_articles_with_llm(client, summarized_results):
         print(f"🛑 Dedupe failed, returning original list: {e}")
         return summarized_results
 
+
 # 本処理関数
 def process_translation_batches(batch_size=10, wait_seconds=60):
-
     # ⚠️ TEST: Geminiを呼ばず、URLリストだけ返す
     # summarized_results = []
     # for item in translation_queue:
@@ -992,7 +1068,7 @@ def process_translation_batches(batch_size=10, wait_seconds=60):
 
     summarized_results = []
     for i in range(0, len(translation_queue), batch_size):
-        batch = translation_queue[i:i + batch_size]
+        batch = translation_queue[i : i + batch_size]
         print(f"⚙️ Processing batch {i // batch_size + 1}...")
 
         for item in batch:
@@ -1047,8 +1123,7 @@ def process_translation_batches(batch_size=10, wait_seconds=60):
                 print(f"BODY[:2000]: {item['body'][:2000]}")
 
                 resp = client.models.generate_content(
-                    model="gemini-2.5-flash",
-                    contents=prompt
+                    model="gemini-2.5-flash", contents=prompt
                 )
                 output_text = resp.text.strip()
 
@@ -1062,8 +1137,14 @@ def process_translation_batches(batch_size=10, wait_seconds=60):
 
                 # タイトル行と要約の抽出
                 lines = output_text.splitlines()
-                title_line = next((line for line in lines if line.startswith("【タイトル】")), None)
-                summary_lines = [line for line in lines if line and not line.startswith("【タイトル】")]
+                title_line = next(
+                    (line for line in lines if line.startswith("【タイトル】")), None
+                )
+                summary_lines = [
+                    line
+                    for line in lines
+                    if line and not line.startswith("【タイトル】")
+                ]
 
                 if title_line:
                     translated_title = title_line.replace("【タイトル】", "").strip()
@@ -1075,12 +1156,14 @@ def process_translation_batches(batch_size=10, wait_seconds=60):
                 # 出力条件に沿ってHTMLに変換（改行→<br>）
                 summary_html = summary_text.replace("\n", "<br>")
 
-                summarized_results.append({
-                    "source": item["source"],
-                    "url": item["url"],
-                    "title": translated_title,
-                    "summary": summary_html,
-                })
+                summarized_results.append(
+                    {
+                        "source": item["source"],
+                        "url": item["url"],
+                        "title": translated_title,
+                        "summary": summary_html,
+                    }
+                )
 
             except Exception as e:
                 print(f"🛑 Error during translation: {e}")
@@ -1100,9 +1183,11 @@ def process_translation_batches(batch_size=10, wait_seconds=60):
             "url": x.get("url"),
             "title": x.get("title"),
             "summary": x.get("summary"),
-        } for x in deduped
+        }
+        for x in deduped
     ]
     return normalized
+
 
 def send_email_digest(summaries):
     sender_email = os.getenv("EMAIL_SENDER")
@@ -1131,10 +1216,9 @@ def send_email_digest(summaries):
     # メディアでグループ化は使うが、見出しは各記事の中に入れる
     for media, articles in media_grouped.items():
         for item in articles:
-            
-            title_jp = item["title"]          # 「タイトル: 」の接頭辞は外す
+            title_jp = item["title"]  # 「タイトル: 」の接頭辞は外す
             url = item["url"]
-            summary_html = item["summary"]    # 既に <br> 整形済み
+            summary_html = item["summary"]  # 既に <br> 整形済み
 
             # 参考HTML準拠：見出し(h2)の右側にメディア名。
             heading_html = (
@@ -1178,10 +1262,11 @@ def send_email_digest(summaries):
         print(f"❌ メール送信エラー: {e}")
         sys.exit(1)
 
+
 if __name__ == "__main__":
     date_mmt = get_today_date_mmt()
     seen_urls = set()
-    
+
     # articles = get_frontier_articles_for(date_mmt)
     # for art in articles:
     #     print(f"{art['date']} - {art['title']}\n{art['url']}\n")
@@ -1197,7 +1282,7 @@ if __name__ == "__main__":
     #     max_pages=3
     # )
     # process_and_enqueue_articles(articles_eng, "Mizzima (English)", seen_urls)
-    
+
     # === Mizzima (Burmese) ===
     print("=== Mizzima (Burmese) ===")
     articles_bur = get_mizzima_articles_from_category(
@@ -1205,7 +1290,7 @@ if __name__ == "__main__":
         "https://bur.mizzima.com",
         "Mizzima (Burmese)",
         "/category/%e1%80%9e%e1%80%90%e1%80%84%e1%80%ba%e1%80%b8/%e1%80%99%e1%80%bc%e1%80%94%e1%80%ba%e1%80%99%e1%80%ac%e1%80%9e%e1%80%90%e1%80%84%e1%80%ba%e1%80%b8",
-        max_pages=3
+        max_pages=3,
     )
     process_and_enqueue_articles(articles_bur, "Mizzima (Burmese)", seen_urls)
 

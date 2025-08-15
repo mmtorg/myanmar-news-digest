@@ -1,0 +1,8 @@
+# .pre-commit-config.yaml
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.5.7 # 手元の最新に適宜更新してください
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
