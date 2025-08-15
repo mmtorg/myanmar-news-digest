@@ -70,7 +70,7 @@ NEWS_KEYWORDS = [
     "နယ်စပ်ကုန်သွယ်ရေး",
 
     # ヤンゴン管区
-    "ရန်ကုန်တိုင်း", "Yangon Region", , "Yangon region", "yangon region"
+    "ရန်ကုန်တိုင်း", "Yangon Region", "Yangon region", "yangon region",
 
     # エーヤワディ管区
     "ဧရာဝတီတိုင်း", "Ayeyarwady Region", "Ayeyarwady region", "ayeyarwady region"
