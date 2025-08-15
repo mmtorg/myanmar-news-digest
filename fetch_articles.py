@@ -152,33 +152,25 @@ def extract_paragraphs_with_wait(soup_article, retries=2, wait_seconds=2):
     return []
 
 
-# ===== キーワード未ヒット時の共通ロガー =====
+# ===== キーワード未ヒット時の共通ロガー（簡素版） =====
 LOG_NO_KEYWORD_MISSES = True
-LOG_BODY_CHARS = int(
-    os.getenv("LOG_BODY_CHARS", "800")
-)  # 本文はログで最大800文字だけ出す
 
 
 def log_no_keyword_hit(source: str, url: str, title: str, body: str, stage: str):
     """
-    キーワード未ヒットの記事を標準出力に出す。
-    stage: どの段階で弾かれたかを識別するタグ（例: 'mizzima:category', 'bbc:article', 'enqueue:after-fetch'）
+    キーワード未ヒットの記事を標準出力に出す（stage・本文抜粋は出力しない）。
     """
     if not LOG_NO_KEYWORD_MISSES:
         return
     try:
         title = unicodedata.normalize("NFC", title or "")
-        body = unicodedata.normalize("NFC", body or "")
     except Exception:
         pass
 
-    excerpt = body[:LOG_BODY_CHARS]
     print("\n----- NO KEYWORD HIT -----")
-    print(f"[stage]  {stage}")
     print(f"[source] {source}")
     print(f"[url]    {url}")
     print(f"[title]  {title}")
-    print(f"[body({len(body)} chars, showing {len(excerpt)} chars)] {excerpt}")
     print("----- END NO KEYWORD HIT -----\n")
 
 
@@ -1332,16 +1324,6 @@ if __name__ == "__main__":
     )
     process_and_enqueue_articles(articles_bur, "Mizzima (Burmese)", seen_urls)
 
-    # print("=== Voice of Myanmar ===")
-    # articles4 = get_vom_articles_for(date_mmt)
-    # for art in articles4:
-    #     print(f"{art['date']} - {art['title']}\n{art['url']}\n")
-
-    # print("=== Ludu Wayoo ===")
-    # articles5 = get_ludu_articles_for(date_mmt)
-    # for art in articles5:
-    #     print(f"{art['date']} - {art['title']}\n{art['url']}\n")
-
     print("=== BBC Burmese ===")
     articles6 = get_bbc_burmese_articles_for(date_mmt)
     process_and_enqueue_articles(articles6, "BBC Burmese", seen_urls)
@@ -1350,11 +1332,11 @@ if __name__ == "__main__":
     articles7 = get_khit_thit_edia_articles_from_category(date_mmt, max_pages=3)
     process_and_enqueue_articles(articles7, "Khit Thit Media", seen_urls)
 
-    # print("=== Irrawaddy ===")
-    # articles8 = get_irrawaddy_articles_for(date_mmt)
-    # # デバックでログ確認
-    # print("RESULTS:", json.dumps(articles8, ensure_ascii=False, indent=2))
-    # sys.exit(1)
+    print("=== Irrawaddy ===")
+    articles8 = get_irrawaddy_articles_for(date_mmt)
+    # デバックでログ確認
+    print("RESULTS:", json.dumps(articles8, ensure_ascii=False, indent=2))
+    sys.exit(1)
     # process_and_enqueue_articles(articles8, "Irrawaddy", seen_urls)
 
     # URLベースの重複排除を先に行う
