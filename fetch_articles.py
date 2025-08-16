@@ -865,7 +865,7 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
             paths.append(q)
 
     # 2) 簡易ロガー（消す時はこの1行と dbg(...) を消すだけ）
-    dbg = (lambda *a, **k: print(*a, **k)) if debug else (lambda *a, **k: None)
+    # dbg = (lambda *a, **k: print(*a, **k)) if debug else (lambda *a, **k: None)
 
     # MEMO: ログ用
     # results = []
@@ -1005,7 +1005,7 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
             # dbg(f"[cat] union-links={len(links)} @ {url}")
             for a in links[:2]:
                 _txt = re.sub(r"\s+", " ", a.get_text(" ", strip=True))
-                dbg("   →", _txt, "|", a.get("href"))
+                # dbg("   →", _txt, "|", a.get("href"))
 
             found = 0
             for a in links:
@@ -1026,7 +1026,7 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
             # wrapper 内で“当日”が見つかったら soup まで広げず終了。
             # wrapper が無い場合（scopes が [soup] だけの時）も1周で抜ける。
             if found > 0:
-                dbg(f"[cat] STOP (added {found} candidates) @ {url}")
+                # dbg(f"[cat] STOP (added {found} candidates) @ {url}")
                 break
 
     # ==== 2) 候補記事で厳密確認（meta日付/本文/キーワード） ====
@@ -1320,7 +1320,15 @@ def log_dedupe_report(
     printer("===== END DEDUPE REPORT =====\n")
 
 
-def dedupe_articles_with_llm(client, summarized_results, debug=True, *, logger=None):
+def dedupe_articles_with_llm(
+    client,
+    summarized_results,
+    debug=True,
+    *,
+    logger=None,
+    ultra_max_chars=300,
+    summary_fallback_chars=600,
+):
     """
     summarized_results (list[dict]) を受け取り、重複クラスターごとに1本だけ残した配列を返す。
     返却形式は元と同じ（source, url, title, summary のみ）。
@@ -1357,20 +1365,23 @@ def dedupe_articles_with_llm(client, summarized_results, debug=True, *, logger=N
     articles = []
     id_map = {}  # id -> 元オブジェクト
     id_to_meta = {}  # id -> {title, source}
-    article_ids_in_order = []  # 元順序を保つために必要
-
+    article_ids_in_order = []
     for idx, it in enumerate(summarized_results):
         _id = it.get("url") or f"idx-{idx}"
-        # 内部用の原本（返却時にそのまま使う）
+        article_ids_in_order.append(_id)
         id_map[_id] = it
+        id_to_meta[_id] = {"title": it.get("title"), "source": it.get("source")}
 
-        # 本文相当として summary を渡す（タイトルと本文の両方を比較させる）
+        body_ultra = (it.get("ultra") or "").strip()
+        body_fallback = _strip_tags(it.get("summary", ""))[:summary_fallback_chars]
+        body = body_ultra[:ultra_max_chars] if body_ultra else body_fallback
+
         articles.append(
             {
                 "id": _id,
                 "source": it.get("source"),
                 "title": it.get("title"),
-                "body": _strip_tags(it.get("summary", "")),
+                "body": body,  # ★ 超要約優先
             }
         )
 
@@ -1382,36 +1393,47 @@ def dedupe_articles_with_llm(client, summarized_results, debug=True, *, logger=N
 
     prompt = (
         "あなたはニュースの重複判定フィルタです。\n"
-        "目的：タイトルと本文を比較し、「同一の出来事」を報じる記事を重複として束ね、各クラスターから1本だけ残します。\n"
-        "出力は必ずJSONのみ。\n\n"
-        "判定方針:\n"
-        "1) 同一出来事＝「誰」「何を」「どこ/対象」「いつ」の少なくとも3要素が一致し、コア事実が同じ（言い換え・言語差は同一扱い。日付は±14日まで同一扱い）。\n"
-        "2) クラスター化：最も一致度が高いクラスターにのみ所属。\n"
-        "3) 残す基準：a)固有情報量が多い b)具体性/明瞭さ c)本文が長い d)同点ならsourceの文字列昇順。\n"
-        "4) 統合記事は作らない。入力外の事実は加えない。\n\n"
+        "以後の判定は各記事の「title」と「body（これは超要約または短縮要約）」のみを使用し、元本文には戻って再参照しません。\n"
+        "目的：同一主旨（トピック＋角度）を報じる記事を束ね、各クラスターから1本だけ残します。出力は必ずJSONのみ。\n\n"
+        "【定義】\n"
+        "・トピック一致：who / what / where / when のうち少なくとも3要素が一致（言い換え・言語差は同一扱い。日付は±14日を同一扱い可）。\n"
+        "・角度（focus）：以下の語彙のいずれか1つ。\n"
+        "  政策発表要点, 価格/経済影響, 背景解説, 人物声明, 組織声明, 公示\n"
+        "  近い同義語は内部で正規化：『談話/発言/声明→人物声明』『プレスリリース/発表→組織声明』\n"
+        "  『告示/公告→公示』『物価/価格→価格/経済影響』等。\n"
+        "  判別不能な場合は focus=不明 とし、角度一致には数えない。\n\n"
+        "【判定方針】\n"
+        "1) 同一主旨＝『トピック一致』かつ『角度一致（focusが一致、かつ不明以外）』の両方を満たす場合に限る。\n"
+        "   ※ まとめ/ダイジェスト/複数案件列挙の要約と、単一案件の速報・解説は重複にしない（別クラスター）。\n"
+        "2) クラスター化：記事は最も一致度が高いクラスターにのみ所属。不確実なら別クラスターにする。\n"
+        "3) 残す基準：a)固有情報量（地名/人数/金額/組織名/新規事実） b)具体性/明瞭さ c)タイトル情報量。\n"
+        "   同点なら 本文長（bodyの文字数）→ source昇順 → id昇順 の順で決定。\n"
+        "4) 入力外の事実は加えない。統合記事は作らない。\n\n"
+        "【出力の制約】\n"
+        "・JSONのみを返す。余計なテキストやキーは禁止。\n"
+        "・kept/removed/clusters の id は必ず入力 articles の id に含まれていること。\n"
+        "・clusters[].member_ids は入力 id を重複なくすべて含むこと。クラスター数と kept件数は同数。\n"
+        "・removed[].duplicate_of は同一クラスター内の kept id を指すこと。\n"
+        "・why は16〜24字程度、event_key は25字以内に収めること。\n\n"
         "入力:\n"
-        '{\n  "articles": ' + json.dumps(articles, ensure_ascii=False) + "\n}\n\n"
+        f'{{\n  "articles": {json.dumps(articles, ensure_ascii=False)}\n}}\n\n'
         "出力フォーマット（JSONのみ）:\n"
         "{\n"
-        '  "kept": [\n'
-        '    {"id": "<残す記事ID>", "cluster_id": "<ID>", "why": "<1-2文>"}\n'
-        "  ],\n"
-        '  "removed": [\n'
-        '    {"id": "<除外記事ID>", "duplicate_of": "<残した記事ID>", "why": "<1-2文>"}\n'
-        "  ],\n"
-        '  "clusters": [\n'
-        '    {"cluster_id": "<ID>", "member_ids": ["<id1>", "<id2>", "..."], "event_key": "<出来事の短文>"}\n'
-        "  ]\n"
+        '  "kept": [ {"id":"<残す記事ID>", "cluster_id":"<ID>", "why":"16-24字"} ],\n'
+        '  "removed": [ {"id":"<除外記事ID>", "duplicate_of":"<残した記事ID>", "why":"16-24字"} ],\n'
+        '  "clusters": [ {"cluster_id":"<ID>", "member_ids":["<id1>","<id2>","..."], "event_key":"25字以内"} ]\n'
         "}\n"
     )
 
     try:
+        # JSON厳格化したい場合（call_gemini_with_retries が **kwargs を透過するなら）:
+        # resp = call_gemini_with_retries(client, prompt, model="gemini-2.5-flash",
+        #     generation_config={"temperature": 0, "top_p": 0, "top_k": 1, "response_mime_type": "application/json"}
+        # )
         resp = call_gemini_with_retries(client, prompt, model="gemini-2.5-flash")
         data = _safe_json_loads_maybe_extract(resp.text)
-        kept_ids = [x.get("id") for x in data.get("kept", []) if x.get("id") in id_map]
 
-        # 元の順序を保ったままフィルタ
-        kept_set = set(kept_ids)
+        kept_ids = [x.get("id") for x in data.get("kept", []) if x.get("id") in id_map]
 
         # ===== レポート出力を外部関数で実施 =====
         if debug:
@@ -1425,12 +1447,12 @@ def dedupe_articles_with_llm(client, summarized_results, debug=True, *, logger=N
             )
 
         # ===== フィルタ適用（元順序を保持） =====
-        if kept_set:
+        if kept_ids:
+            # ★ 順序安全に kept を適用（index(obj) は使わない）
             filtered = [
                 obj
-                for obj in summarized_results
-                if (obj.get("url") or f"idx-{summarized_results.index(obj)}")
-                in kept_set
+                for obj, _id in zip(summarized_results, article_ids_in_order)
+                if _id in kept_ids
             ]
             return filtered
 
@@ -1481,15 +1503,14 @@ def process_translation_batches(batch_size=5, wait_seconds=60):
                 "本文要約：\n"
                 "- 以下の記事本文について重要なポイントをまとめ、具体的に要約してください。\n"
                 "- 自然な日本語に翻訳してください。\n"
-                "- 個別記事の本文のみを対象とし、メディア説明やページ全体の解説は不要です。\n"
-                "- レスポンスでは要約のみを返してください、それ以外の文言は不要です。\n\n"
+                "- 個別記事の本文のみを対象とし、メディア説明やページ全体の解説は不要です。\n\n"
+                "追加出力（重複判定用の超要約）：\n"
+                "- 【超要約】として、誰/何/どこ/いつ と代表的な数値（あれば）を含む1行の要約を200字以内で出してください。\n"
+                "- 例：『誰が』『何を』『どこで』『いつ』『規模（人数/金額等）』が入るように。\n\n"
                 "出力条件：\n"
                 "- 1行目は`【要約】`とだけしてください。\n"
-                "- 見出しや箇条書きを適切に使って整理してください。\n"
-                "- 見出しや箇条書きにはマークダウン記号（#, *, - など）を使わず、単純なテキストとして出力してください。\n"
-                "- 見出しは `[ ]` で囲んでください。\n"
-                "- 空行は作らないでください。\n"
-                "- 特殊記号は使わないでください（全体をHTMLとして送信するわけではないため）。\n"
+                "- 次の行に`【超要約】 ……` を1行で出してください（空行を挟まない）。\n"
+                "- 見出しや箇条書きはテキストのみ、空行なし、特殊記号なし。\n"
                 "- 箇条書きは`・`を使ってください。\n"
                 "- 要約の文字数は最大500文字としてください。\n\n"
                 "入力データ：\n"
@@ -1522,25 +1543,32 @@ def process_translation_batches(batch_size=5, wait_seconds=60):
                 if output_text.strip().lower() == "exit":
                     continue
 
-                # タイトル行と要約の抽出
-                lines = output_text.splitlines()
+                # タイトル、超要約を抽出
+                lines = [ln.strip() for ln in output_text.splitlines() if ln.strip()]
                 title_line = next(
-                    (line for line in lines if line.startswith("【タイトル】")), None
+                    (ln for ln in lines if ln.startswith("【タイトル】")), None
                 )
-                summary_lines = [
-                    line
-                    for line in lines
-                    if line and not line.startswith("【タイトル】")
-                ]
+                ultra_line = next(
+                    (ln for ln in lines if ln.startswith("【超要約】")), None
+                )
 
                 if title_line:
                     translated_title = title_line.replace("【タイトル】", "").strip()
                 else:
                     translated_title = "（翻訳失敗）"
 
-                summary_text = "\n".join(summary_lines).strip()
+                ultra_text = (
+                    ultra_line.replace("【超要約】", "").strip() if ultra_line else ""
+                )
 
-                # 出力条件に沿ってHTMLに変換（改行→<br>）
+                # 要約本文は「タイトル行」と「超要約行」を除いた残り
+                summary_lines = [
+                    ln
+                    for ln in lines
+                    if not ln.startswith("【タイトル】")
+                    and not ln.startswith("【超要約】")
+                ]
+                summary_text = "\n".join(summary_lines).strip()
                 summary_html = summary_text.replace("\n", "<br>")
 
                 summarized_results.append(
@@ -1549,6 +1577,7 @@ def process_translation_batches(batch_size=5, wait_seconds=60):
                         "url": item["url"],
                         "title": translated_title,
                         "summary": summary_html,
+                        "ultra": ultra_text,  # ★ 追加
                     }
                 )
 
