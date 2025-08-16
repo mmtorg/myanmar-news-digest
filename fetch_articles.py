@@ -17,7 +17,7 @@ from google import genai
 from collections import defaultdict
 import time
 import json
-import pprint
+import pprint as _pprint
 
 import random
 
@@ -339,9 +339,9 @@ def fetch_with_retry_irrawaddy(url, retries=3, wait_seconds=2, session=None):
     for attempt in range(retries):
         try:
             r = scraper.get(url, headers=HEADERS, timeout=30, allow_redirects=True)
-            print(
-                f"[fetch-cs] {attempt + 1}/{retries}: HTTP {r.status_code} len={len(getattr(r, 'text', ''))} → {url}"
-            )
+            # print(
+            #     f"[fetch-cs] {attempt + 1}/{retries}: HTTP {r.status_code} len={len(getattr(r, 'text', ''))} → {url}"
+            # )
             if r.status_code == 200 and getattr(r, "text", "").strip():
                 return r
             if r.status_code in (403, 429, 503):
@@ -976,7 +976,7 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
     # ==== 1) 各カテゴリURLを1回ずつ巡回 → 当日候補抽出 ====
     for rel_path in paths:
         url = f"{BASE}{rel_path}"
-        print(f"Fetching {url}")
+        # print(f"Fetching {url}")
         try:
             res = fetch_with_retry_irrawaddy(url, session=session)
         except Exception as e:
@@ -1000,7 +1000,7 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
             links = [a for a in links if a.find("i", class_="fa fa-clock-o")]
 
             # （任意）デバッグ表示
-            dbg(f"[cat] union-links={len(links)} @ {url}")
+            # dbg(f"[cat] union-links={len(links)} @ {url}")
             for a in links[:2]:
                 _txt = re.sub(r"\s+", " ", a.get_text(" ", strip=True))
                 dbg("   →", _txt, "|", a.get("href"))
@@ -1013,7 +1013,7 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
                     shown_date = _parse_category_date_text(raw)
                 except Exception:
                     # 必要最小限のデバッグだけ
-                    dbg("[cat] date-parse-fail:", re.sub(r"\s+", " ", raw)[:120])
+                    # dbg("[cat] date-parse-fail:", re.sub(r"\s+", " ", raw)[:120])
                     continue
 
                 if shown_date == date_obj and href and href not in seen_urls:
@@ -1202,22 +1202,156 @@ def _safe_json_loads_maybe_extract(text: str):
         raise
 
 
-def dedupe_articles_with_llm(client, summarized_results):
+# 重複判定のログ出力
+def log_dedupe_report(
+    data: dict,
+    id_map: dict,
+    id_to_meta: dict,
+    article_ids_in_order: list[str],
+    *,
+    printer=print,
+    header="🧩 DEDUPE REPORT",
+):
+    """
+    LLM応答データ(data)と、ID→記事メタ情報のマップを受け取り、
+    重複判定レポートを整形して出力する。
+
+    - data: {"kept":[...], "removed":[...], "clusters":[...]}
+    - id_map: {id -> 元オブジェクト}
+    - id_to_meta: {id -> {"title": str, "source": str}}
+    - article_ids_in_order: 入力順序のIDリスト（元配列の順を保つために使用）
+    - printer: 出力関数（print や logger.info など）
+    """
+    kept_list = data.get("kept") or []
+    removed_list = data.get("removed") or []
+    clusters = data.get("clusters") or []
+
+    kept_ids = [x.get("id") for x in kept_list if x.get("id") in id_map]
+    kept_set = set(kept_ids)
+
+    printer(f"\n===== {header} =====")
+
+    # 1) Kept 概要
+    printer(f"Kept: {len(kept_ids)} item(s)")
+    for k in kept_list:
+        kid = k.get("id")
+        meta = id_to_meta.get(kid, {})
+        why = (k.get("why") or "").strip()
+        if kid in id_map:
+            printer(
+                f"  ✓ [{kid}] {meta.get('title','(no title)')}  | src={meta.get('source','')}"
+                f"{'  | why: ' + why if why else ''}"
+            )
+        else:
+            printer(f"  ✓ [{kid}] (unknown id)")
+
+    # 2) Removed 詳細（どれの重複として落ちたか）
+    printer(f"\nRemoved (LLM-reported): {len(removed_list)} item(s)")
+    for r in removed_list:
+        rid = r.get("id")
+        dup = r.get("duplicate_of")
+        why = (r.get("why") or "").strip()
+        rmeta = id_to_meta.get(rid, {"title": "(unknown)", "source": ""})
+        kmeta = id_to_meta.get(dup, {"title": "(unknown)", "source": ""})
+        unknown_flags = []
+        if rid not in id_map:
+            unknown_flags.append("RID_NOT_IN_INPUT")
+        if dup and dup not in id_map:
+            unknown_flags.append("KEPT_NOT_IN_INPUT")
+        uf = f"  [{', '.join(unknown_flags)}]" if unknown_flags else ""
+        printer(
+            f"  - [{rid}] {rmeta['title']}  | src={rmeta['source']}\n"
+            f"      → duplicate of [{dup}] {kmeta['title']}  | src={kmeta['source']}{uf}"
+            f"{'\n      reason: ' + why if why else ''}"
+        )
+
+    # 3) 実差分（入力 - kept）
+    derived_removed_ids = [aid for aid in article_ids_in_order if aid not in kept_set]
+    printer(f"\nRemoved (derived by kept-set): {len(derived_removed_ids)} item(s)")
+    for rid in derived_removed_ids:
+        rmeta = id_to_meta.get(rid, {"title": "(unknown)", "source": ""})
+        rrec = next((x for x in removed_list if x.get("id") == rid), None)
+        if rrec:
+            dup = rrec.get("duplicate_of")
+            why = (rrec.get("why") or "").strip()
+            kmeta = id_to_meta.get(dup, {"title": "(unknown)", "source": ""})
+            printer(
+                f"  - [{rid}] {rmeta['title']}  | src={rmeta['source']}\n"
+                f"      → duplicate of [{dup}] {kmeta['title']}  | src={kmeta['source']}"
+                f"{'\n      reason: ' + why if why else ''}"
+            )
+        else:
+            printer(
+                f"  - [{rid}] {rmeta['title']}  | src={rmeta['source']} (※ LLMのremovedに未記載)"
+            )
+
+    # 4) 参照整合性チェック
+    unknown_kept = [
+        kid for kid in [x.get("id") for x in kept_list] if kid not in id_map
+    ]
+    unknown_removed = [r.get("id") for r in removed_list if r.get("id") not in id_map]
+    if unknown_kept:
+        printer(f"\n⚠️ Keptに未知のIDが含まれています: {unknown_kept}")
+    if unknown_removed:
+        printer(f"⚠️ Removedに未知のIDが含まれています: {unknown_removed}")
+
+    # 5) クラスタ概要（任意）
+    if clusters:
+        printer("\nCluster summary:")
+        cluster_kept_map = {
+            k.get("cluster_id"): k.get("id") for k in kept_list if k.get("cluster_id")
+        }
+        for c in clusters:
+            cid = c.get("cluster_id")
+            members = c.get("member_ids") or []
+            event_key = c.get("event_key") or ""
+            kept_id_for_cluster = cluster_kept_map.get(cid)
+            printer(
+                f"  • cluster={cid}  members={len(members)}  kept={kept_id_for_cluster}  event='{event_key}'"
+            )
+
+    printer("===== END DEDUPE REPORT =====\n")
+
+
+def dedupe_articles_with_llm(client, summarized_results, debug=True, *, logger=None):
     """
     summarized_results (list[dict]) を受け取り、重複クラスターごとに1本だけ残した配列を返す。
     返却形式は元と同じ（source, url, title, summary のみ）。
+    - debug=True のとき、詳細ログ（BEFORE/SENT/DEDUE REPORT）を出力。
+    - logger を渡すと logger.info を使って出力（未指定なら print）。
+    依存: call_gemini_with_retries, _safe_json_loads_maybe_extract, _strip_tags, log_dedupe_report
     """
     if not summarized_results:
         return summarized_results
 
+    # 出力関数の決定
+    if debug:
+        printer = logger.info if logger else print
+    else:
+
+        def _noop(*args, **kwargs):
+            # no-op (lint-safe)
+            return None
+
+        printer = _noop
+
+    if not summarized_results:
+        if debug:
+            printer("⚠️ dedupe_articles_with_llm: 入力が空です")
+        return summarized_results
+
     # ===== ① summarized_results のまま表示 =====
-    print("===== DEBUG 1: summarized_results BEFORE DEDUPE =====")
-    pprint.pprint(summarized_results, width=120, compact=False)
-    print("===== END DEBUG 1 =====\n")
+    # if debug:
+    #     printer("===== DEBUG 1: summarized_results BEFORE DEDUPE =====")
+    #     printer(_pprint.pformat(summarized_results, width=120, compact=False))
+    #     printer("===== END DEBUG 1 =====\n")
 
     # LLM入力用に articles を構築（id はURL優先、なければ連番）
     articles = []
-    id_map = {}
+    id_map = {}  # id -> 元オブジェクト
+    id_to_meta = {}  # id -> {title, source}
+    article_ids_in_order = []  # 元順序を保つために必要
+
     for idx, it in enumerate(summarized_results):
         _id = it.get("url") or f"idx-{idx}"
         # 内部用の原本（返却時にそのまま使う）
@@ -1234,9 +1368,10 @@ def dedupe_articles_with_llm(client, summarized_results):
         )
 
     # ===== LLMに渡すarticlesも確認 =====
-    print("===== DEBUG 2: articles SENT TO LLM =====")
-    pprint.pprint(articles, width=120, compact=False)
-    print("===== END DEBUG 2 =====\n")
+    if debug:
+        printer("===== DEBUG 2: articles SENT TO LLM =====")
+        printer(_pprint.pformat(articles, width=120, compact=False))
+        printer("===== END DEBUG 2 =====\n")
 
     prompt = (
         "あなたはニュースの重複判定フィルタです。\n"
@@ -1270,6 +1405,19 @@ def dedupe_articles_with_llm(client, summarized_results):
 
         # 元の順序を保ったままフィルタ
         kept_set = set(kept_ids)
+
+        # ===== レポート出力を外部関数で実施 =====
+        if debug:
+            log_dedupe_report(
+                data=data,
+                id_map=id_map,
+                id_to_meta=id_to_meta,
+                article_ids_in_order=article_ids_in_order,
+                printer=printer,
+                header="🧩 DEDUPE REPORT",
+            )
+
+        # ===== フィルタ適用（元順序を保持） =====
         if kept_set:
             filtered = [
                 obj
@@ -1411,7 +1559,7 @@ def process_translation_batches(batch_size=5, wait_seconds=60):
             time.sleep(wait_seconds)
 
     # 重複判定→片方残し（最終アウトプットの形式は変えない）
-    deduped = dedupe_articles_with_llm(client_dedupe, summarized_results)
+    deduped = dedupe_articles_with_llm(client_dedupe, summarized_results, debug=True)
 
     # 念のため：返却フォーマットを固定（余計なキーが混ざっていたら落とす）
     normalized = [
