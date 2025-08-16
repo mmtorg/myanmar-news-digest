@@ -722,8 +722,8 @@ def get_bbc_burmese_articles_for(target_date_mmt):
     return articles
 
 
-# khit_thit_ediaカテゴリーページ巡回で取得
-def get_khit_thit_edia_articles_from_category(date_obj, max_pages=3):
+# khit_thit_mediaカテゴリーページ巡回で取得
+def get_khit_thit_media_articles_from_category(date_obj, max_pages=3):
     base_url = "https://yktnews.com/category/news/"
     article_urls = []
 
@@ -1509,34 +1509,34 @@ if __name__ == "__main__":
 
     # === Mizzima (Burmese) ===
     print("=== Mizzima (Burmese) ===")
-    articles_bur = get_mizzima_articles_from_category(
+    articles_mizzima = get_mizzima_articles_from_category(
         date_mmt,
         "https://bur.mizzima.com",
         "Mizzima (Burmese)",
         "/category/%e1%80%9e%e1%80%90%e1%80%84%e1%80%ba%e1%80%b8/%e1%80%99%e1%80%bc%e1%80%94%e1%80%ba%e1%80%99%e1%80%ac%e1%80%9e%e1%80%90%e1%80%84%e1%80%ba%e1%80%b8",
         max_pages=3,
     )
-    process_and_enqueue_articles(articles_bur, "Mizzima (Burmese)", seen_urls)
+    process_and_enqueue_articles(articles_mizzima, "Mizzima (Burmese)", seen_urls)
 
     print("=== BBC Burmese ===")
-    articles6 = get_bbc_burmese_articles_for(date_mmt)
-    process_and_enqueue_articles(articles6, "BBC Burmese", seen_urls)
-
-    print("=== Khit Thit Media ===")
-    articles7 = get_khit_thit_edia_articles_from_category(date_mmt, max_pages=3)
-    process_and_enqueue_articles(articles7, "Khit Thit Media", seen_urls)
+    articles_bbc = get_bbc_burmese_articles_for(date_mmt)
+    process_and_enqueue_articles(articles_bbc, "BBC Burmese", seen_urls)
 
     print("=== Irrawaddy ===")
-    articles8 = get_irrawaddy_articles_for(date_mmt)
+    articles_irrawaddy = get_irrawaddy_articles_for(date_mmt)
     # MEMO: ログ用、デバックでログ確認
-    # print("RESULTS:", json.dumps(articles8, ensure_ascii=False, indent=2))
+    # print("RESULTS:", json.dumps(articles_irrawaddy, ensure_ascii=False, indent=2))
     process_and_enqueue_articles(
-        articles8,
+        articles_irrawaddy,
         "Irrawaddy",
         seen_urls,
         bypass_keyword=True,  # ← Irrawaddyはキーワードで落とさない
         trust_existing_body=True,  # ← さっき入れた body をそのまま使う（再フェッチしない）
     )
+
+    print("=== Khit Thit Media ===")
+    articles_khit = get_khit_thit_media_articles_from_category(date_mmt, max_pages=3)
+    process_and_enqueue_articles(articles_khit, "Khit Thit Media", seen_urls)
 
     # URLベースの重複排除を先に行う
     print(f"⚙️ Removing URL duplicates from {len(translation_queue)} articles...")
