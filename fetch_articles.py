@@ -41,7 +41,8 @@ except Exception:
 
 
 # Gemini本番用
-client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+client_summary = genai.Client(api_key=os.getenv("GEMINI_API_SUMMARY_KEY"))
+client_dedupe = genai.Client(api_key=os.getenv("GEMINI_API_DEDUPE_KEY"))
 
 
 # Chat GPT
@@ -1354,7 +1355,7 @@ def process_translation_batches(batch_size=5, wait_seconds=60):
                 print(f"BODY[:{BODY_MAX_CHARS}]: {item['body'][:BODY_MAX_CHARS]}")
 
                 resp = call_gemini_with_retries(
-                    client, prompt, model="gemini-2.5-flash"
+                    client_summary, prompt, model="gemini-2.5-flash"
                 )
                 output_text = resp.text.strip()
 
@@ -1410,7 +1411,7 @@ def process_translation_batches(batch_size=5, wait_seconds=60):
             time.sleep(wait_seconds)
 
     # 重複判定→片方残し（最終アウトプットの形式は変えない）
-    deduped = dedupe_articles_with_llm(client, summarized_results)
+    deduped = dedupe_articles_with_llm(client_dedupe, summarized_results)
 
     # 念のため：返却フォーマットを固定（余計なキーが混ざっていたら落とす）
     normalized = [
