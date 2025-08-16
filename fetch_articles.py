@@ -41,8 +41,12 @@ except Exception:
 
 
 # Gemini本番用
-client_summary = genai.Client(api_key=os.getenv("GEMINI_API_SUMMARY_KEY"))
-client_dedupe = genai.Client(api_key=os.getenv("GEMINI_API_DEDUPE_KEY"))
+# client_summary = genai.Client(api_key=os.getenv("GEMINI_API_SUMMARY_KEY"))
+# client_dedupe = genai.Client(api_key=os.getenv("GEMINI_API_DEDUPE_KEY"))
+
+# Geminiテスト用
+client_summary = genai.Client(api_key=os.getenv("GEMINI_API_TEST_SUMMARY_KEY"))
+client_dedupe = genai.Client(api_key=os.getenv("GEMINI_API_TEST_DEDUPE_KEY"))
 
 
 # Chat GPT
