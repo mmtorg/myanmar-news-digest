@@ -1240,9 +1240,12 @@ def log_dedupe_report(
         meta = id_to_meta.get(kid, {})
         why = (k.get("why") or "").strip()
         if kid in id_map:
+            why_part = (
+                f"  | why: {why}" if why else ""
+            )  # ← バックスラッシュを式に入れない
             printer(
                 f"  ✓ [{kid}] {meta.get('title','(no title)')}  | src={meta.get('source','')}"
-                f"{'  | why: ' + why if why else ''}"
+                f"{why_part}"
             )
         else:
             printer(f"  ✓ [{kid}] (unknown id)")
@@ -1261,10 +1264,11 @@ def log_dedupe_report(
         if dup and dup not in id_map:
             unknown_flags.append("KEPT_NOT_IN_INPUT")
         uf = f"  [{', '.join(unknown_flags)}]" if unknown_flags else ""
+        reason_line = f"\n      reason: {why}" if why else ""  # ← 先に作る
         printer(
             f"  - [{rid}] {rmeta['title']}  | src={rmeta['source']}\n"
             f"      → duplicate of [{dup}] {kmeta['title']}  | src={kmeta['source']}{uf}"
-            f"{'\n      reason: ' + why if why else ''}"
+            f"{reason_line}"
         )
 
     # 3) 実差分（入力 - kept）
@@ -1277,10 +1281,11 @@ def log_dedupe_report(
             dup = rrec.get("duplicate_of")
             why = (rrec.get("why") or "").strip()
             kmeta = id_to_meta.get(dup, {"title": "(unknown)", "source": ""})
+            reason_line = f"\n      reason: {why}" if why else ""  # ← 先に作る
             printer(
                 f"  - [{rid}] {rmeta['title']}  | src={rmeta['source']}\n"
                 f"      → duplicate of [{dup}] {kmeta['title']}  | src={kmeta['source']}"
-                f"{'\n      reason: ' + why if why else ''}"
+                f"{reason_line}"
             )
         else:
             printer(
