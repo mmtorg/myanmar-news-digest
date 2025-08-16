@@ -1335,80 +1335,100 @@ def dedupe_articles_with_llm(
 ):
     """
     summarized_results (list[dict]) を受け取り、重複クラスターごとに1本だけ残した配列を返す。
-    返却形式は元と同じ（source, url, title, summary のみ）。
-    - debug=True のとき、詳細ログ（BEFORE/SENT/DEDUE REPORT）を出力。
-    - logger を渡すと logger.info を使って出力（未指定なら print）。
+    Irrawaddy（source == "Irrawaddy" または URL に "irrawaddy.com" を含む）は
+    LLM での重複判定をスキップして常に keep する。
     依存: call_gemini_with_retries, _safe_json_loads_maybe_extract, _strip_tags, log_dedupe_report
     """
+
     if not summarized_results:
         return summarized_results
 
-    # 出力関数の決定
+    # 出力関数
     if debug:
         printer = logger.info if logger else print
     else:
 
         def _noop(*args, **kwargs):
-            # no-op (lint-safe)
             return None
 
         printer = _noop
 
-    if not summarized_results:
-        if debug:
-            printer("⚠️ dedupe_articles_with_llm: 入力が空です")
-        return summarized_results
+    # ===== LLM入力用（Irrawaddy を除外）を構築 =====
+    irrawaddy_ids = set()
+    articles_for_llm = []
+    id_map_llm = {}
+    id_to_meta_llm = {}
+    ids_in_order_llm = []
+    all_ids_in_order = []  # 返却時の順序維持用
 
-    # ===== ① summarized_results のまま表示 =====
-    # if debug:
-    #     printer("===== DEBUG 1: summarized_results BEFORE DEDUPE =====")
-    #     printer(_pprint.pformat(summarized_results, width=120, compact=False))
-    #     printer("===== END DEBUG 1 =====\n")
-
-    # LLM入力用に articles を構築（id はURL優先、なければ連番）
-    articles = []
-    id_map = {}  # id -> 元オブジェクト
-    id_to_meta = {}  # id -> {title, source}
-    article_ids_in_order = []
     for idx, it in enumerate(summarized_results):
         _id = it.get("url") or f"idx-{idx}"
-        article_ids_in_order.append(_id)
-        id_map[_id] = it
-        id_to_meta[_id] = {"title": it.get("title"), "source": it.get("source")}
+        all_ids_in_order.append(_id)
 
+        # Irrawaddy 判定（ご指定どおり）
+        is_irrawaddy = (it.get("source") == "Irrawaddy") or (
+            "irrawaddy.com" in (it.get("url") or "")
+        )
+        if is_irrawaddy:
+            irrawaddy_ids.add(_id)
+            continue  # LLM には送らない
+
+        # 非 Irrawaddy → LLM 入力へ
         body_ultra = (it.get("ultra") or "").strip()
         body_fallback = _strip_tags(it.get("summary", ""))[:summary_fallback_chars]
         body = body_ultra[:ultra_max_chars] if body_ultra else body_fallback
 
-        articles.append(
+        ids_in_order_llm.append(_id)
+        id_map_llm[_id] = it
+        id_to_meta_llm[_id] = {"title": it.get("title"), "source": it.get("source")}
+        articles_for_llm.append(
             {
                 "id": _id,
                 "source": it.get("source"),
                 "title": it.get("title"),
-                "body": body,  # ★ 超要約優先
+                "body": body,
             }
         )
 
-    # ===== LLMに渡すarticlesも確認 =====
+    # すべて Irrawaddy だった場合はそのまま返す
+    if not articles_for_llm:
+        if debug and irrawaddy_ids:
+            printer(
+                f"⏭️ 全 {len(irrawaddy_ids)} 件が Irrawaddy。LLM 重複判定はスキップします。"
+            )
+        return summarized_results
+
+    # ===== デバッグ出力（LLM に送る分のみ） =====
     if debug:
+        if irrawaddy_ids:
+            printer(f"⏭️ Irrawaddy {len(irrawaddy_ids)} 件は常に keep（LLM スキップ）。")
         printer("===== DEBUG 2: articles SENT TO LLM =====")
-        printer(_pprint.pformat(articles, width=120, compact=False))
+        printer(_pprint.pformat(articles_for_llm, width=120, compact=False))
         printer("===== END DEBUG 2 =====\n")
 
+    # ===== プロンプト（非 Irrawaddy のみ） =====
     prompt = (
         "あなたはニュースの重複判定フィルタです。\n"
         "以後の判定は各記事の「title」と「body（これは超要約または短縮要約）」のみを使用し、元本文には戻って再参照しません。\n"
-        "目的：同一主旨（トピック＋角度）を報じる記事を束ね、各クラスターから1本だけ残します。出力は必ずJSONのみ。\n\n"
+        "目的：同一主旨（トピック＋角度＋発信主体）を報じる記事を束ね、各クラスターから1本だけ残します。出力は必ずJSONのみ。\n\n"
         "【定義】\n"
         "・トピック一致：who / what / where / when のうち少なくとも3要素が一致（言い換え・言語差は同一扱い。日付は±14日を同一扱い可）。\n"
         "・角度（focus）：以下の語彙のいずれか1つ。\n"
-        "  政策発表要点, 価格/経済影響, 背景解説, 人物声明, 組織声明, 公示\n"
+        "  政策発表要点, 価格/経済影響, 背景解説, 人物声明, 組織声明, 公示,\n"
+        "  内容規制（発言・表現の可否）, 運用・手続（許認可/場所/時間/警備/管理）\n"
         "  近い同義語は内部で正規化：『談話/発言/声明→人物声明』『プレスリリース/発表→組織声明』\n"
-        "  『告示/公告→公示』『物価/価格→価格/経済影響』等。\n"
-        "  判別不能な場合は focus=不明 とし、角度一致には数えない。\n\n"
+        "  判別不能な場合は focus=不明 とし、角度一致には数えない。\n"
+        "・発信主体（provenance）：以下のいずれか1つを内部で推定して用いる。\n"
+        "  ① 本人指示/首長の直言（例：ミン・アウン・フラインが「指示/命令/表明」）\n"
+        "  ② 公式機関の発表（官報/会見/文書/広報）\n"
+        "  ③ 匿名の軍筋/関係者/消息筋/内部筋（「軍筋によれば」「関係者によると」等）\n"
+        "  ④ 現地運用・治安部隊/委員会の実務通達\n\n"
         "【判定方針】\n"
-        "1) 同一主旨＝『トピック一致』かつ『角度一致（focusが一致、かつ不明以外）』の両方を満たす場合に限る。\n"
+        "1) 同一主旨＝『トピック一致』かつ『角度一致（focusが一致、かつ不明以外）』かつ『発信主体（provenance）一致』の全てを満たす場合に限る。\n"
         "   ※ まとめ/ダイジェスト/複数案件列挙の要約と、単一案件の速報・解説は重複にしない（別クラスター）。\n"
+        "   ※ 同一テーマ（例：選挙運動規制）でも『内容規制』と『運用・手続（許認可/場所/時間/警備/管理）』は別角度として必ず別クラスターにする。\n"
+        "   例：〈軍への批判的選挙運動を禁じる（内容規制）〉と〈軍の管理下・事前許可でのみ選挙活動可（運用・手続）〉は別クラスター。\n"
+        "   例：〈MAH本人が“批判禁止”を指示（本人指示）〉と〈ネピドー軍筋が“許可制・管理下”と伝聞（軍筋）〉は、角度も発信主体も異なるため別クラスター。\n"
         "2) クラスター化：記事は最も一致度が高いクラスターにのみ所属。不確実なら別クラスターにする。\n"
         "3) 残す基準：a)固有情報量（地名/人数/金額/組織名/新規事実） b)具体性/明瞭さ c)タイトル情報量。\n"
         "   同点なら 本文長（bodyの文字数）→ source昇順 → id昇順 の順で決定。\n"
@@ -1420,7 +1440,7 @@ def dedupe_articles_with_llm(
         "・removed[].duplicate_of は同一クラスター内の kept id を指すこと。\n"
         "・why は16〜24字程度、event_key は25字以内に収めること。\n\n"
         "入力:\n"
-        f'{{\n  "articles": {json.dumps(articles, ensure_ascii=False)}\n}}\n\n'
+        f'{{\\n  "articles": {json.dumps(articles_for_llm, ensure_ascii=False)}\\n}}\\n\\n'
         "出力フォーマット（JSONのみ）:\n"
         "{\n"
         '  "kept": [ {"id":"<残す記事ID>", "cluster_id":"<ID>", "why":"16-24字"} ],\n'
@@ -1430,38 +1450,37 @@ def dedupe_articles_with_llm(
     )
 
     try:
-        # JSON厳格化したい場合（call_gemini_with_retries が **kwargs を透過するなら）:
-        # resp = call_gemini_with_retries(client, prompt, model="gemini-2.5-flash",
-        #     generation_config={"temperature": 0, "top_p": 0, "top_k": 1, "response_mime_type": "application/json"}
-        # )
         resp = call_gemini_with_retries(client, prompt, model="gemini-2.5-flash")
         data = _safe_json_loads_maybe_extract(resp.text)
 
-        kept_ids = [x.get("id") for x in data.get("kept", []) if x.get("id") in id_map]
+        kept_ids_others = [
+            x.get("id") for x in data.get("kept", []) if x.get("id") in id_map_llm
+        ]
 
-        # ===== レポート出力を外部関数で実施 =====
+        # レポート（LLM に送った分のみ）
         if debug:
             log_dedupe_report(
                 data=data,
-                id_map=id_map,
-                id_to_meta=id_to_meta,
-                article_ids_in_order=article_ids_in_order,
+                id_map=id_map_llm,
+                id_to_meta=id_to_meta_llm,
+                article_ids_in_order=ids_in_order_llm,
                 printer=printer,
-                header="🧩 DEDUPE REPORT",
+                header="🧩 DEDUPE REPORT (non-Irrawaddy only)",
             )
 
-        # ===== フィルタ適用（元順序を保持） =====
-        if kept_ids:
-            # ★ 順序安全に kept を適用（index(obj) は使わない）
+        # kept が出たときのみフィルタ適用し、Irrawaddy を合流
+        if kept_ids_others:
+            kept_union = set(kept_ids_others) | irrawaddy_ids
             filtered = [
                 obj
-                for obj, _id in zip(summarized_results, article_ids_in_order)
-                if _id in kept_ids
+                for obj, _id in zip(summarized_results, all_ids_in_order)
+                if _id in kept_union
             ]
             return filtered
 
-        # うまく判定できなかったら原本を返す
+        # うまく判定できなかったら原本を返す（Irrawaddy も当然残る）
         return summarized_results
+
     except Exception as e:
         print(f"🛑 Dedupe failed, returning original list: {e}")
         return summarized_results
