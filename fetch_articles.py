@@ -123,7 +123,7 @@ def call_gemini_with_retries(
 
 
 # 要約用に送る本文の最大文字数（固定）
-BODY_MAX_CHARS = 1800
+BODY_MAX_CHARS = 3000
 
 # ミャンマー標準時 (UTC+6:30)
 MMT = timezone(timedelta(hours=6, minutes=30))
