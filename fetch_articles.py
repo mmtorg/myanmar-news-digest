@@ -828,6 +828,7 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
         "/category/specials/women",
         "/category/from-the-archive",
         "/category/Specials/myanmar-china-watch",
+        "/specials",
         # "/category/Video" # 除外依頼有
         # "/category/culture/books" #除外依頼有
         # "/category/Cartoons" # 除外依頼有
