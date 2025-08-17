@@ -1588,40 +1588,72 @@ def process_translation_batches(batch_size=5, wait_seconds=60):
                 )
                 output_text = resp.text.strip()
 
-                # デバッグ: モデル出力を確認
                 print("----- DEBUG: Model Output -----")
                 print(output_text)
 
-                # exitが返ってきたらスキップ
-                if output_text.strip().lower() == "exit":
+                # --- exit を広めに判定（バッククォートや句読点混入対策）---
+                EXIT_ONLY_RE = re.compile(
+                    r"^\s*(?:`{0,3})?\s*exit\s*(?:`{0,3})?\.?\s*$", re.IGNORECASE
+                )
+                if EXIT_ONLY_RE.match(output_text):
                     continue
 
-                # タイトル、超要約を抽出
-                lines = [ln.strip() for ln in output_text.splitlines() if ln.strip()]
-                title_line = next(
-                    (ln for ln in lines if ln.startswith("【タイトル】")), None
-                )
-                ultra_line = next(
-                    (ln for ln in lines if ln.startswith("【超要約】")), None
-                )
-
-                if title_line:
-                    translated_title = title_line.replace("【タイトル】", "").strip()
-                else:
-                    translated_title = "（翻訳失敗）"
-
-                ultra_text = (
-                    ultra_line.replace("【超要約】", "").strip() if ultra_line else ""
-                )
-
-                # 要約本文は「タイトル行」と「超要約行」を除いた残り
-                summary_lines = [
-                    ln
-                    for ln in lines
-                    if not ln.startswith("【タイトル】")
-                    and not ln.startswith("【超要約】")
+                # --- 行整形（NFC + 空行除去）---
+                lines = [
+                    unicodedata.normalize("NFC", ln).strip()
+                    for ln in output_text.splitlines()
+                    if ln.strip()
                 ]
-                summary_text = "\n".join(summary_lines).strip()
+
+                # --- 超要約を先に抜く（本文からも消す）---
+                ultra_text = ""
+                for i, ln in enumerate(list(lines)):  # list()でコピーして安全にpop
+                    if re.match(r"^【\s*超?\s*要約\s*】", ln):
+                        ultra_text = re.sub(r"^【\s*超?\s*要約\s*】\s*", "", ln).strip()
+                        lines.pop(i)
+                        break
+
+                # --- タイトル抽出（要件に合わせて厳格化）---
+                # ルール:
+                #  A) 「【タイトル】訳題」= 同一行
+                #  B) 1行目が「【タイトル】」のみ → 次の行を訳題として採用
+                #  C) 上記以外のラベル揺れ（タイトル:, Title: など）は無視（救済しない）
+                title_text = ""
+                title_idx = next(
+                    (
+                        i
+                        for i, ln in enumerate(lines)
+                        if re.match(r"^【\s*タイトル\s*】", ln)
+                    ),
+                    None,
+                )
+                if title_idx is not None:
+                    # マーカー行を解析
+                    m = re.match(r"^【\s*タイトル\s*】\s*(.*)$", lines[title_idx])
+                    inline = (m.group(1) or "").strip()
+                    # マーカー行は消す
+                    lines.pop(title_idx)
+
+                    if inline:
+                        # A) 同一行（【タイトル】◯◯）
+                        # 先頭にコロンが紛れる事故だけ軽く除去（ラベル救済ではない）
+                        title_text = inline.lstrip(":：").strip()
+                    else:
+                        # B) 次の行をタイトルとして採用（存在すれば）
+                        if title_idx < len(lines):
+                            title_text = lines[title_idx].strip()
+                            lines.pop(title_idx)
+
+                # 最終フォールバック（空を許さない）
+                translated_title = (
+                    title_text or item.get("title") or "（翻訳失敗）"
+                ).strip()
+
+                # --- 要約ラベルを先頭に強制 ---
+                if not lines or not re.match(r"^【\s*要約\s*】\s*$", lines[0]):
+                    lines.insert(0, "【要約】")
+
+                summary_text = "\n".join(lines).strip()
                 summary_html = summary_text.replace("\n", "<br>")
 
                 summarized_results.append(
@@ -1630,7 +1662,7 @@ def process_translation_batches(batch_size=5, wait_seconds=60):
                         "url": item["url"],
                         "title": translated_title,
                         "summary": summary_html,
-                        "ultra": ultra_text,  # ★ 追加
+                        "ultra": ultra_text,
                     }
                 )
 
