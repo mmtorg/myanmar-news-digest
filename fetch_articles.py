@@ -137,7 +137,7 @@ def get_today_date_mmt():
     # 本番用、今日の日付
     # now_mmt = datetime.now(MMT)
     # テスト用、昨日の日付にする
-    now_mmt = datetime.now(MMT) - timedelta(days=1)
+    now_mmt = datetime.now(MMT) - timedelta(days=2)
     return now_mmt.date()
 
 
@@ -1019,6 +1019,8 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
         dbg(f"  - {_one(r.get('title'))} | {r.get('url')}")
     if len(results) > 3:
         dbg(f"  ... (+{len(results)-3} more)")
+
+    sys.exit(1)  # デバッグ用、ここで終了する
 
     return results
 
