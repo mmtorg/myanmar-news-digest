@@ -1575,6 +1575,40 @@ def build_prompt(item: dict, *, skip_filters: bool, body_max: int) -> str:
     return header + pre + STEP3_TASK + "\n" + input_block
 
 
+# 超要約を先に抜く処理
+def _cut_block(lines, header_re):
+    """
+    lines: ラインのリスト（すでにstrip/NFC済みを想定）
+    header_re: 見出し行にマッチする正規表現（先頭一致）
+    戻り値: (block_text, new_lines)
+    - block_text は見出し行の“同一行の本文”＋“次の見出し行までの本文”を連結
+    - new_lines は当該ブロックを除去した残り
+    """
+    for i, ln in enumerate(lines):
+        m = re.match(header_re, ln)
+        if not m:
+            continue
+
+        # 見出し行の同一行本文（あれば）
+        inline = re.sub(header_re, "", ln).strip()
+        start = i + 1
+
+        # 次の見出し（例: 【要約】/【タイトル】/【...】）までを本文として収集
+        end = start
+        while end < len(lines) and not re.match(r"^【\s*[^】]+?\s*】", lines[end]):
+            end += 1
+
+        parts = []
+        if inline:
+            parts.append(inline)
+        parts.extend(lines[start:end])
+
+        new_lines = lines[:i] + lines[end:]
+        return " ".join(parts).strip(), new_lines
+
+    return "", lines
+
+
 # 本処理関数
 def process_translation_batches(batch_size=5, wait_seconds=60):
     # MEMO: TEST用、Geminiを呼ばず、URLリストだけ返す
@@ -1630,12 +1664,7 @@ def process_translation_batches(batch_size=5, wait_seconds=60):
                 ]
 
                 # --- 超要約を先に抜く（本文からも消す）---
-                ultra_text = ""
-                for i, ln in enumerate(list(lines)):  # list()でコピーして安全にpop
-                    if re.match(r"^【\s*超?\s*要約\s*】", ln):
-                        ultra_text = re.sub(r"^【\s*超?\s*要約\s*】\s*", "", ln).strip()
-                        lines.pop(i)
-                        break
+                ultra_text, lines = _cut_block(lines, r"^【\s*超?\s*要約\s*】")
 
                 # --- タイトル抽出（要件に合わせて厳格化）---
                 # ルール:
