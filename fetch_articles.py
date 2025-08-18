@@ -1576,32 +1576,53 @@ def build_prompt(item: dict, *, skip_filters: bool, body_max: int) -> str:
 
 
 # 超要約を先に抜く処理
-def _cut_block(lines, header_re):
+def _normalize_heading_text(s: str) -> str:
+    """見出し検出のための軽量正規化（括弧の異体字や不可視文字を吸収）"""
+    trans = {
+        ord("［"): "【",
+        ord("〔"): "【",
+        ord("〖"): "【",  # 左
+        ord("］"): "】",
+        ord("〕"): "】",
+        ord("〗"): "】",  # 右
+    }
+    s = s.translate(trans)
+    # 全角スペース→半角、NBSP/ZWSP/FEFF/ZWJ/ZWNJ を除去
+    s = s.replace("\u3000", " ").replace("\xa0", " ")
+    s = re.sub(r"[\u200b\u200c\u200d\ufeff]", "", s)
+    # 「要」「約」の間の変則スペースも吸収
+    s = re.sub(r"(要)\s+(約)", r"\1\2", s)
+    return unicodedata.normalize("NFC", s)
+
+
+def _cut_ultra_block(lines):
     """
-    lines: ラインのリスト（すでにstrip/NFC済みを想定）
-    header_re: 見出し行にマッチする正規表現（先頭一致）
-    戻り値: (block_text, new_lines)
-    - block_text は見出し行の“同一行の本文”＋“次の見出し行までの本文”を連結
-    - new_lines は当該ブロックを除去した残り
+    「超要約」ブロック（見出し行〜次見出し直前まで）を切り出して削除。
+    括弧の異体字（［］/〖〗/〔〕）や不可視文字、全角スペースに耐性あり。
     """
-    for i, ln in enumerate(lines):
-        m = re.match(header_re, ln)
-        if not m:
+    # 正規化した影を作る（検出はこっち、削除は元linesで）
+    norm = [_normalize_heading_text(ln) for ln in lines]
+
+    HEAD_RE = re.compile(r"^【\s*超?\s*要\s*約\s*】")
+    NEXT_HDR_RE = re.compile(r"^【.*?】")  # 他の見出し（要約/タイトル等）
+
+    for i, ln_norm in enumerate(norm):
+        if not HEAD_RE.match(ln_norm):
             continue
 
-        # 見出し行の同一行本文（あれば）
-        inline = re.sub(header_re, "", ln).strip()
+        # 見出し行の“同一行本文”（正規化後でOK）
+        inline = HEAD_RE.sub("", ln_norm).strip()
         start = i + 1
 
-        # 次の見出し（例: 【要約】/【タイトル】/【...】）までを本文として収集
+        # 次の見出し直前まで
         end = start
-        while end < len(lines) and not re.match(r"^【\s*[^】]+?\s*】", lines[end]):
+        while end < len(norm) and not NEXT_HDR_RE.match(norm[end]):
             end += 1
 
         parts = []
         if inline:
             parts.append(inline)
-        parts.extend(lines[start:end])
+        parts.extend(lines[start:end])  # 本文は元の行を使う
 
         new_lines = lines[:i] + lines[end:]
         return " ".join(parts).strip(), new_lines
@@ -1664,7 +1685,7 @@ def process_translation_batches(batch_size=5, wait_seconds=60):
                 ]
 
                 # --- 超要約を先に抜く（本文からも消す）---
-                ultra_text, lines = _cut_block(lines, r"^【\s*超?\s*要約\s*】")
+                ultra_text, lines = _cut_ultra_block(lines)
 
                 # --- タイトル抽出（要件に合わせて厳格化）---
                 # ルール:
