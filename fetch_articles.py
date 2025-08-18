@@ -1619,7 +1619,9 @@ def _cut_ultra_block(lines):
     # 正規化した影を作る（検出はこっち、削除は元linesで）
     norm = [_normalize_heading_text(ln) for ln in lines]
 
-    HEAD_RE = re.compile(r"^【\s*超?\s*要\s*約\s*】")
+    HEAD_RE = re.compile(
+        r"^【[\s\u3000\u200b\ufeff]*超[\s\u3000\u200b\ufeff]*要[\s\u3000\u200b\ufeff]*約[\s\u3000\u200b\ufeff]*】"
+    )
     NEXT_HDR_RE = re.compile(r"^【.*?】")  # 他の見出し（要約/タイトル等）
 
     for i, ln_norm in enumerate(norm):
