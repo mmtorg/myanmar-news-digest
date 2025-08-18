@@ -746,22 +746,35 @@ def get_bbc_burmese_articles_for(target_date_mmt):
 
 # khit_thit_mediaカテゴリーページ巡回で取得
 def get_khit_thit_media_articles_from_category(date_obj, max_pages=3):
-    base_url = "https://yktnews.com/category/news/"
-    article_urls = []
+    # 追加カテゴリを含む巡回対象
+    CATEGORY_URLS = [
+        "https://yktnews.com/category/news/",
+        "https://yktnews.com/category/politics/",
+        "https://yktnews.com/category/editor-choice/",
+        "https://yktnews.com/category/interview/",
+        "https://yktnews.com/category/china-watch/",
+    ]
 
-    for page in range(1, max_pages + 1):
-        url = f"{base_url}page/{page}/" if page > 1 else base_url
-        print(f"Fetching {url}")
-        res = fetch_with_retry(url)
-        soup = BeautifulSoup(res.content, "html.parser")
+    collected_urls = set()  # ← 収集段階で重複スキップ
+    for base_url in CATEGORY_URLS:
+        for page in range(1, max_pages + 1):
+            url = f"{base_url}page/{page}/" if page > 1 else base_url
+            print(f"Fetching {url}")
+            res = fetch_with_retry(url)
+            soup = BeautifulSoup(res.content, "html.parser")
 
-        # 記事リンク抽出
-        entry_links = soup.select("p.entry-title.td-module-title a[href]")
-        page_article_urls = [a["href"] for a in entry_links if a.has_attr("href")]
-        article_urls.extend(page_article_urls)
+            # 記事リンク抽出
+            entry_links = soup.select("p.entry-title.td-module-title a[href]")
+            for a in entry_links:
+                href = a.get("href")
+                if not href:
+                    continue
+                # ここで既出URLはスキップ
+                if href not in collected_urls:
+                    collected_urls.add(href)
 
     filtered_articles = []
-    for url in article_urls:
+    for url in collected_urls:
         try:
             res_article = fetch_with_retry(url)
             soup_article = BeautifulSoup(res_article.content, "html.parser")
@@ -774,7 +787,6 @@ def get_khit_thit_media_articles_from_category(date_obj, max_pages=3):
             article_datetime_utc = datetime.fromisoformat(date_str)
             article_datetime_mmt = article_datetime_utc.astimezone(MMT)
             article_date = article_datetime_mmt.date()
-
             if article_date != date_obj:
                 continue  # 対象日でなければスキップ
 
@@ -784,11 +796,10 @@ def get_khit_thit_media_articles_from_category(date_obj, max_pages=3):
                 continue
             title = title_tag.get_text(strip=True)
 
-            # 本文取得 (khit_thit_edia用パターン)
+            # 本文取得
             paragraphs = extract_paragraphs_with_wait(soup_article)
             body_text = "\n".join(p.get_text(strip=True) for p in paragraphs)
             body_text = unicodedata.normalize("NFC", body_text)
-
             if not body_text.strip():
                 continue  # 本文が空ならスキップ
 
@@ -799,12 +810,20 @@ def get_khit_thit_media_articles_from_category(date_obj, max_pages=3):
                 continue  # キーワード無しは除外
 
             filtered_articles.append(
-                {"url": url, "title": title, "date": date_obj.isoformat()}
+                {
+                    "url": url,
+                    "title": title,
+                    "date": date_obj.isoformat(),
+                    "source": "Khit Thit Media",  # deduplicate_by_urlのログで使われる
+                }
             )
-
         except Exception as e:
             print(f"Error processing {url}: {e}")
             continue
+
+    before = len(filtered_articles)
+    filtered_articles = deduplicate_by_url(filtered_articles)
+    print(f"[khitthit] dedup: {before} -> {len(filtered_articles)}")  # 最小ログ
 
     return filtered_articles
 
