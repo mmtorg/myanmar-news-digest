@@ -783,23 +783,30 @@ def get_khit_thit_media_articles_from_category(date_obj, max_pages=3):
         "https://yktnews.com/category/china-watch/",
     ]
 
-    collected_urls = set()  # ← 収集段階で重複スキップ
+    collected_urls = set()
     for base_url in CATEGORY_URLS:
         for page in range(1, max_pages + 1):
             url = f"{base_url}page/{page}/" if page > 1 else base_url
             print(f"Fetching {url}")
-            res = fetch_with_retry(url)
-            soup = BeautifulSoup(res.content, "html.parser")
+            try:
+                res = fetch_with_retry(url)
+            except Exception as e:
+                print(f"[khitthit] stop pagination (missing/unreachable): {url} -> {e}")
+                break
 
-            # 記事リンク抽出
+            soup = BeautifulSoup(res.content, "html.parser")
             entry_links = soup.select("p.entry-title.td-module-title a[href]")
+            if not entry_links:
+                print(f"[khitthit] stop pagination (no entries): {url}")
+                break
+
             for a in entry_links:
                 href = a.get("href")
                 if not href:
                     continue
-                # ここで既出URLはスキップ
-                if href not in collected_urls:
-                    collected_urls.add(href)
+                if href in collected_urls:  # ← 既出URLは明示スキップ
+                    continue
+                collected_urls.add(href)
 
     filtered_articles = []
     for url in collected_urls:
