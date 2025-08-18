@@ -200,18 +200,46 @@ NEWS_KEYWORDS = [unicodedata.normalize("NFC", kw) for kw in NEWS_KEYWORDS]
 # 「チャット」語のバリエーションを通貨語として拾う
 CURRENCY_WORD = r"(?:မြန်မာ(?:့)?(?:နိုင်ငံ)?\s*)?(?:ငွေ\s*)?ကျပ်(?:ငွေ)?"
 
-# 数字→通貨 と 通貨→数字 の両方に対応（任意で「သောင်း/သိန်း/သန်း」や「ကျော်/လောက်/ခန့်」を許可）
-KYAT_PATTERN = re.compile(
+_DIGITS = r"[0-9၀-၉][0-9၀-၉,\.]*"
+_SCALE = r"(?:သောင်း|သိန်း|သန်း)"
+_TRAIL = r"(?:\s*(?:ကျော်|လောက်|ခန့်))?"
+
+# 1) 数字→通貨（num/scale はここで1回だけ定義）
+_KYAT_NUM_FIRST = re.compile(
     rf"""
-    (?:
-    (?P<num>[0-9၀-၉][0-9၀-၉,\.]*)\s*(?P<scale>သောင်း|သိန်း|သန်း)?\s*{CURRENCY_WORD}
-    |
-    {CURRENCY_WORD}\s*(?P<scale>သောင်း|သိန်း|သန်း)?\s*(?P<num>[0-9၀-၉][0-9၀-၉,\.]*)
-    )
-    (?:\s*(?:ကျော်|လောက်|ခန့်))?
+    (?P<num>{_DIGITS})\s*(?P<scale>{_SCALE})?\s*(?:{CURRENCY_WORD})
+    {_TRAIL}
     """,
     re.VERBOSE,
 )
+
+# 2) 通貨→数字（同じグループ名をここでも1回だけ定義）
+_KYAT_CCY_FIRST = re.compile(
+    rf"""
+    (?:{CURRENCY_WORD})\s*(?P<scale>{_SCALE})?\s*(?P<num>{_DIGITS})
+    {_TRAIL}
+    """,
+    re.VERBOSE,
+)
+
+
+class _OrPattern:
+    """複数の compiled regex をまとめ、.search で最初に当たった Match を返す薄いラッパ"""
+
+    def __init__(self, *compiled):
+        self._compiled = compiled
+        self.pattern = " | ".join(p.pattern for p in compiled)  # 参考用
+        self.flags = compiled[0].flags if compiled else 0
+
+    def search(self, string, pos=0):
+        for p in self._compiled:
+            m = p.search(string, pos)
+            if m:
+                return m
+        return None
+
+
+KYAT_PATTERN = _OrPattern(_KYAT_NUM_FIRST, _KYAT_CCY_FIRST)
 
 
 def any_keyword_hit(title: str, body: str) -> bool:
