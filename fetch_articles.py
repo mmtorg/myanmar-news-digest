@@ -41,8 +41,8 @@ except Exception:
 
 
 # Gemini本番用
-client_summary = genai.Client(api_key=os.getenv("GEMINI_API_SUMMARY_KEY"))
-client_dedupe = genai.Client(api_key=os.getenv("GEMINI_API_DEDUPE_KEY"))
+# client_summary = genai.Client(api_key=os.getenv("GEMINI_API_SUMMARY_KEY"))
+# client_dedupe = genai.Client(api_key=os.getenv("GEMINI_API_DEDUPE_KEY"))
 
 
 # Geminiテスト用
@@ -135,9 +135,7 @@ MMT = timezone(timedelta(hours=6, minutes=30))
 # ニュースの速報性重視で今日分のニュース配信の方針
 def get_today_date_mmt():
     # 本番用、今日の日付
-    # now_mmt = datetime.now(MMT)
-    # テスト用、昨日の日付にする
-    now_mmt = datetime.now(MMT) - timedelta(days=1)
+    now_mmt = datetime.now(MMT)
     return now_mmt.date()
 
 
