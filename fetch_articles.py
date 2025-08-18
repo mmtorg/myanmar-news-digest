@@ -197,8 +197,21 @@ NEWS_KEYWORDS = [
 # Unicode正規化（NFC）を適用
 NEWS_KEYWORDS = [unicodedata.normalize("NFC", kw) for kw in NEWS_KEYWORDS]
 
-# チャットは数字に続くもののみ（通貨判定）
-KYAT_PATTERN = re.compile(r"(?<=[0-9၀-၉])[\s,\.]*(?:သောင်း|သိန်း|သန်း)?\s*ကျပ်")
+# 「チャット」語のバリエーションを通貨語として拾う
+CURRENCY_WORD = r"(?:မြန်မာ(?:့)?(?:နိုင်ငံ)?\s*)?(?:ငွေ\s*)?ကျပ်(?:ငွေ)?"
+
+# 数字→通貨 と 通貨→数字 の両方に対応（任意で「သောင်း/သိန်း/သန်း」や「ကျော်/လောက်/ခန့်」を許可）
+KYAT_PATTERN = re.compile(
+    rf"""
+    (?:
+    (?P<num>[0-9၀-၉][0-9၀-၉,\.]*)\s*(?P<scale>သောင်း|သိန်း|သန်း)?\s*{CURRENCY_WORD}
+    |
+    {CURRENCY_WORD}\s*(?P<scale>သောင်း|သိန်း|သန်း)?\s*(?P<num>[0-9၀-၉][0-9၀-၉,\.]*)
+    )
+    (?:\s*(?:ကျော်|လောက်|ခန့်))?
+    """,
+    re.VERBOSE,
+)
 
 
 def any_keyword_hit(title: str, body: str) -> bool:
