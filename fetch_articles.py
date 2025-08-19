@@ -1,6 +1,6 @@
 import requests
 from bs4 import BeautifulSoup
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, date
 from dateutil.parser import parse as parse_date
 import re
 
@@ -18,8 +18,8 @@ from collections import defaultdict
 import time
 import json
 import pprint as _pprint
-
 import random
+from typing import List, Dict, Optional
 
 try:
     import httpx
@@ -1193,6 +1193,204 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
     return results
 
 
+# DVB
+def get_dvb_articles_for(date_obj: date, debug: bool = True) -> List[Dict]:
+    """
+    - 対象カテゴリ（相対パス）は下の CATEGORY_PATHS に列挙
+    - カテゴリ一覧ページの構造は、
+        class="md:grid grid-cols-3 gap-4 mt-5" のブロック配下に、
+        記事ごとの <a class="block ..." href="/post/xxxxx"> ... <div>August 16, 2025</div> ... </a>
+        が並ぶ（*他カテゴリでも同様の構造）。
+    - この日付（例: "August 16, 2025"）が指定日と一致する記事のみ候補。
+    - カテゴリページは最大 2 ページ目（?page=2）まで探索。
+        2ページ目が存在しない場合はエラーにせずスキップ。
+    - 記事ページ：
+        <title>...</title> をタイトル、
+        class="full_content" 内の <p> を本文として抽出。
+    - 返り値: [{url, title, date, body, source}] （date は ISO 8601 文字列）
+    """
+
+    BASE = "https://burmese.dvb.no"
+
+    CATEGORY_PATHS = [
+        "/category/8/news",
+        "/category/17/news_politics-new",
+        "/category/16/news_economics-new",
+        "/category/15/news_health-news-news",
+        "/category/18/news_social-news",
+        "/category/1787/news_education-news",
+        "/category/10/news_environment-weather",
+        "/category/1789/news_labour-news",
+        "/category/1788/news_farmers-news",
+        "/category/1797/news_criminals-news",
+        "/category/9/news_media-news",
+        "/category/6/features",
+        "/category/13/interview",
+        "/category/1799/international-news",
+        "/category/1793/sports-news",
+    ]
+
+    # -----------------------------
+    # Utilities
+    # -----------------------------
+
+    def _norm_path(p: str) -> str:
+        return re.sub(r"/{2,}", "/", (p or "").strip())
+
+    def _parse_dvb_date(text: str) -> Optional[date]:
+        """ "August 16, 2025" のような表記を date にする。
+        空/不正なら None を返す。
+        """
+        if not text:
+            return None
+        s = re.sub(r"\s+", " ", text.strip())
+        try:
+            dt = datetime.strptime(s, "%B %d, %Y")
+            return dt.date()
+        except ValueError:
+            # ミャンマー語や別表記が来る可能性に備えてフォールバックを少しだけ
+            # （必要ならここに追加の strptime パターンを継ぎ足す）
+            return None
+
+    def _extract_title_dvb(soup: BeautifulSoup) -> str:
+        # <title>～</title> を優先。なければ h1/記事見出しを探索
+        t = (soup.title.string or "").strip() if soup.title else ""
+        if t:
+            return t
+        # 予備: 本文見出しっぽい要素
+        h = soup.select_one(".text-2xl, h1, .post-title")
+        return (h.get_text(" ", strip=True) if h else "").strip()
+
+    def _extract_body_dvb(soup: BeautifulSoup) -> str:
+        # class="full_content" 内の <p> を連結
+        host = soup.select_one(".full_content")
+        if not host:
+            return ""
+        parts = []
+        for p in host.select("p"):
+            txt = p.get_text(" ", strip=True)
+            txt = re.sub(r"\s+", " ", txt)
+            if txt:
+                parts.append(txt)
+        return "\n".join(parts).strip()
+
+    log = (lambda *a, **k: print(*a, **k)) if debug else (lambda *a, **k: None)
+
+    session = requests.Session()
+    results: List[Dict] = []
+    candidate_urls: List[str] = []
+    seen_urls = set()
+
+    # ---- 1) カテゴリ一覧巡回（各カテゴリにつき page=1,2 を見る）
+    for rel in CATEGORY_PATHS:
+        rel = _norm_path(rel)
+        for page_no in (1, 2):
+            url = f"{BASE}{rel}"
+            if page_no == 2:
+                url = f"{url}?page=2"
+            try:
+                res = fetch_with_retry(url, session=session)
+            except Exception as e:
+                # 通信エラーは無視して次へ
+                log(f"[warn] fetch fail {url}: {e}")
+                continue
+
+            if res.status_code != 200:
+                # 2ページ目の 404 などはスキップ
+                log(f"[skip] non-200 ({res.status_code}) {url}")
+                continue
+
+            soup = BeautifulSoup(res.content, "html.parser")
+
+            # 一覧ブロック（厳密なクラス一致は避け、特徴からゆるく特定）
+            blocks = soup.select(
+                "div.md\\:grid.grid-cols-3.gap-4.mt-5, div.grid.grid-cols-3.gap-4.mt-5"
+            )
+            if not blocks:
+                # レイアウト差異に備え、フォールバックでページ全体から <a href^="/post/"><div>DATE</div> 探索
+                blocks = [soup]
+
+            found = 0
+            for scope in blocks:
+                # 記事カードの a[href^="/post/"] を拾う
+                # 本番では class の完全一致を避け、href でフィルタ
+                anchors = scope.select('a[href^="/post/"]')
+                for a in anchors:
+                    href = a.get("href") or ""
+                    # 日付要素は a 内の "flex gap-1 text-xs mt-2 text-gray-500" の div 配下にある子 <div>
+                    # ただし将来の変更に備えて、a 内の "August xx, yyyy" パターンを総当たりで探す
+                    # 1) 推奨: 指定のパスに近いセレクタ
+                    date_div = a.select_one(
+                        "div.flex.gap-1.text-xs.mt-2.text-gray-500 div"
+                    )
+                    date_text = (
+                        date_div.get_text(" ", strip=True) if date_div else ""
+                    ).strip()
+                    # 2) フォールバック: 英語月名を含むテキストを探索
+                    if not date_text:
+                        # a 内テキストからそれっぽい日付（英語月名）を拾う
+                        full = a.get_text(" ", strip=True)
+                        m = re.search(
+                            r"(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s*\d{4}",
+                            full,
+                        )
+                        date_text = m.group(0) if m else ""
+
+                    d = _parse_dvb_date(date_text)
+                    if d and d == date_obj:
+                        uabs = href if href.startswith("http") else f"{BASE}{href}"
+                        if uabs not in seen_urls:
+                            candidate_urls.append(uabs)
+                            seen_urls.add(uabs)
+                            found += 1
+            log(f"[list] {url} -> candidates+{found}")
+
+    log(f"[dvb] candidates total = {len(candidate_urls)} (unique)")
+
+    # ---- 2) 候補記事ページで厳密抽出
+    for url in candidate_urls:
+        try:
+            res = fetch_with_retry(url, session=session)
+            if res.status_code != 200:
+                log(f"[skip] non-200 article {res.status_code} {url}")
+                continue
+            soup = BeautifulSoup(res.content, "html.parser")
+            title = _extract_title_dvb(soup)
+            body = _extract_body_dvb(soup)
+            if not title or not body:
+                log(f"[skip] empty title/body {url}")
+                continue
+
+            results.append(
+                {
+                    "url": url,
+                    "title": title,
+                    "date": date_obj.isoformat(),
+                    "body": body,
+                    "source": "dvb",
+                }
+            )
+        except Exception as e:
+            log(f"[warn] article fail {url}: {e}")
+            continue
+
+    # ---- 3) 重複排除
+    before = len(results)
+    results = deduplicate_by_url(results)
+    log(f"[dvb] dedup: {before} -> {len(results)}")
+
+    # ---- 4) デバッグ表示（先頭数件）
+    def _one(s: str, n: int = 60) -> str:
+        return re.sub(r"\s+", " ", (s or "").strip())[:n]
+
+    for r in results[:3]:
+        log(f"  - {_one(r.get('title'))} | {r.get('url')}")
+    if len(results) > 3:
+        log(f"  ... (+{len(results)-3} more)")
+
+    return results
+
+
 # 同じURLの重複削除
 def deduplicate_by_url(articles):
     seen_urls = set()
@@ -2004,6 +2202,13 @@ if __name__ == "__main__":
     print("=== Khit Thit Media ===")
     articles_khit = get_khit_thit_media_articles_from_category(date_mmt, max_pages=3)
     process_and_enqueue_articles(articles_khit, "Khit Thit Media", seen_urls)
+
+    print("=== DVB ===")
+    articles_dvb = get_dvb_articles_for(date_mmt, debug=True)
+
+    sys.exit(1)  # MEMO: TEST用、ここで終了
+
+    process_and_enqueue_articles(articles_dvb, "DVB", seen_urls)
 
     # URLベースの重複排除を先に行う
     print(f"⚙️ Removing URL duplicates from {len(translation_queue)} articles...")
