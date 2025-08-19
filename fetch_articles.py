@@ -344,62 +344,101 @@ def get_body_with_refetch(
 # 本文が取得できるまで「requestsでリトライする」
 def fetch_with_retry_irrawaddy(url, retries=3, wait_seconds=2, session=None):
     """
-    Irrawaddy専用フェッチャ：最初から cloudscraper で取得し、403/429/503 は指数バックオフで再試行。
-    最後の手段として requests にフォールバック（ほぼ到達しない想定）。
+    まず curl_cffi(HTTP/2 + Chrome指紋) を使い、ダメなら cloudscraper、
+    最後に requests へフォールバック。403/429/503 は指数バックオフ。
+    プロキシは環境変数 HTTP_PROXY/HTTPS_PROXY を自動利用。
     """
     import random
-
-    try:
-        import cloudscraper
-    except ImportError:
-        raise RuntimeError(
-            "cloudscraper が必要です。pip install cloudscraper を実行してください。"
-        )
-
-    sess = session or requests.Session()
+    import time
 
     UA = (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/126.0.0.0 Safari/537.36"
+        "Chrome/128.0.0.0 Safari/537.36"
     )
     HEADERS = {
         "User-Agent": UA,
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
+        "Upgrade-Insecure-Requests": "1",
+        "Sec-Fetch-Site": "none",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-User": "?1",
+        "Sec-Fetch-Dest": "document",
         "Accept-Encoding": "gzip, deflate, br",
         "Referer": "https://www.irrawaddy.com/",
         "Connection": "keep-alive",
     }
 
-    # cloudscraper を最初に使う（既存 Session をラップしてクッキー共有）
-    scraper = cloudscraper.create_scraper(
-        sess=sess,
-        browser={"browser": "chrome", "platform": "windows", "mobile": False},
-    )
+    # --- Try 1: curl_cffi (HTTP/2 + Chrome指紋) ---
+    try:
+        from curl_cffi import requests as cfr  # type: ignore[import-not-found]
 
-    for attempt in range(retries):
-        try:
-            r = scraper.get(url, headers=HEADERS, timeout=30, allow_redirects=True)
-            # print(
-            #     f"[fetch-cs] {attempt + 1}/{retries}: HTTP {r.status_code} len={len(getattr(r, 'text', ''))} → {url}"
-            # )
-            if r.status_code == 200 and getattr(r, "text", "").strip():
+        for attempt in range(retries):
+            r = cfr.get(
+                url,
+                headers=HEADERS,
+                impersonate="chrome124",  # 124〜最新ならOK
+                http2=True,
+                timeout=30,
+                allow_redirects=True,
+                # 環境変数 HTTP_PROXY/HTTPS_PROXY を自動参照
+            )
+            # curl_cffi の r.text は既にデコード済み
+            if r.status_code == 200 and (r.text or "").strip():
                 return r
             if r.status_code in (403, 429, 503):
                 time.sleep(wait_seconds * (2**attempt) + random.uniform(0, 0.8))
                 continue
             break
-        except Exception as e:
-            print(f"[fetch-cs] {attempt + 1}/{retries} EXC: {e} → {url}")
-            time.sleep(wait_seconds * (2**attempt) + random.uniform(0, 0.8))
+    except Exception as e:
+        print(f"[fetch-cffi] EXC: {e} → {url}")
 
-    # 非常用フォールバック（ほぼ不要）。成功すれば返す。
+    # --- Try 2: cloudscraper ---
     try:
+        import cloudscraper
+        import requests as rq
+
+        sess = session or rq.Session()
+        scraper = cloudscraper.create_scraper(
+            sess=sess,
+            browser={"browser": "chrome", "platform": "windows", "mobile": False},
+            delay=7,  # CFの5sチャレンジ対策で余裕
+        )
+        for attempt in range(retries):
+            try:
+                r = scraper.get(url, headers=HEADERS, timeout=30, allow_redirects=True)
+                if r.status_code == 200 and getattr(r, "text", "").strip():
+                    return r
+                if r.status_code in (403, 429, 503):
+                    time.sleep(wait_seconds * (2**attempt) + random.uniform(0, 0.8))
+                    continue
+                break
+            except Exception as e:
+                print(f"[fetch-cs] {attempt+1}/{retries} EXC: {e} → {url}")
+                time.sleep(wait_seconds * (2**attempt) + random.uniform(0, 0.8))
+    except Exception as e:
+        print(f"[fetch-cs] INIT EXC: {e} → {url}")
+
+    # --- Try 3: requests（最終手段） ---
+    try:
+        import requests
+
+        sess = session or requests.Session()
         r2 = sess.get(url, headers=HEADERS, timeout=20, allow_redirects=True)
-        print(f"[fetch-rq] final: HTTP {r2.status_code} len={len(r2.text)} → {url}")
-        if r2.status_code == 200 and r2.text.strip():
+        print(
+            f"[fetch-rq] final: HTTP {r2.status_code} len={len(getattr(r2,'text',''))} → {url}"
+        )
+        if r2.status_code == 200 and getattr(r2, "text", "").strip():
             return r2
+        # デバッグ用にヘッダの一部を出すとWAF種別の当たりがつく
+        try:
+            svr = r2.headers.get("server") or r2.headers.get("Server")
+            ray = r2.headers.get("cf-ray")
+            sucuri = r2.headers.get("x-sucuri-id") or r2.headers.get("x-sucuri-block")
+            print(f"[fetch-rq] headers: server={svr} cf-ray={ray} sucuri={sucuri}")
+        except Exception:
+            pass
     except Exception as e:
         print(f"[fetch-rq] EXC final: {e} → {url}")
 

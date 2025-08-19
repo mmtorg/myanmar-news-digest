@@ -12,3 +12,5 @@ google-genai
 google-api-core
 cloudscraper
 brotli
+curl_cffi>=0.6.0.post4
+brotlicffi>=1.1.0
