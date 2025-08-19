@@ -809,6 +809,7 @@ def get_mizzima_articles_from_category(
                     "url": url,
                     "title": title,
                     "date": article_date.isoformat(),
+                    "body": body_text,
                 }
             )
 
@@ -969,6 +970,8 @@ def get_bbc_burmese_articles_for(target_date_mmt):
                     "title": title_nfc,
                     "url": link,
                     "date": pub_date_mmt.isoformat(),
+                    "source": "BBC Burmese",
+                    "body": body_text_nfc,
                 }
             )
 
@@ -1078,6 +1081,7 @@ def get_khit_thit_media_articles_from_category(date_obj, max_pages=3):
                     "title": title,
                     "date": date_obj.isoformat(),
                     "source": "Khit Thit Media",  # deduplicate_by_urlのログで使われる
+                    "body": body_text,
                 }
             )
         except Exception as e:
@@ -2286,11 +2290,15 @@ if __name__ == "__main__":
         "/category/%e1%80%9e%e1%80%90%e1%80%84%e1%80%ba%e1%80%b8/%e1%80%99%e1%80%bc%e1%80%94%e1%80%ba%e1%80%99%e1%80%ac%e1%80%9e%e1%80%90%e1%80%84%e1%80%ba%e1%80%b8",
         max_pages=3,
     )
-    process_and_enqueue_articles(articles_mizzima, "Mizzima (Burmese)", seen_urls)
+    process_and_enqueue_articles(
+        articles_mizzima, "Mizzima (Burmese)", seen_urls, trust_existing_body=True
+    )
 
     print("=== BBC Burmese ===")
     articles_bbc = get_bbc_burmese_articles_for(date_mmt)
-    process_and_enqueue_articles(articles_bbc, "BBC Burmese", seen_urls)
+    process_and_enqueue_articles(
+        articles_bbc, "BBC Burmese", seen_urls, trust_existing_body=True
+    )
 
     print("=== Irrawaddy ===")
     articles_irrawaddy = get_irrawaddy_articles_for(date_mmt)
@@ -2310,7 +2318,9 @@ if __name__ == "__main__":
 
     print("=== DVB ===")
     articles_dvb = get_dvb_articles_for(date_mmt, debug=True)
-    process_and_enqueue_articles(articles_dvb, "DVB", seen_urls)
+    process_and_enqueue_articles(
+        articles_dvb, "DVB", seen_urls, trust_existing_body=True
+    )
 
     # URLベースの重複排除を先に行う
     print(f"⚙️ Removing URL duplicates from {len(translation_queue)} articles...")
