@@ -1353,8 +1353,8 @@ def get_dvb_articles_for(date_obj: date, debug: bool = True) -> List[Dict]:
         "/category/9/news_media-news",
         "/category/6/features",
         "/category/13/interview",
-        "/category/1799/international-news",
-        "/category/1793/sports-news",
+        # "/category/1799/international-news",
+        # "/category/1793/sports-news",
     ]
 
     def _norm_path(p: str) -> str:
