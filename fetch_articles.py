@@ -495,6 +495,133 @@ def fetch_with_retry_irrawaddy(url, retries=3, wait_seconds=2, session=None):
     raise Exception(f"Failed to fetch {url} after {retries} attempts.")
 
 
+# === DVB専用 ===
+def fetch_with_retry_dvb(url, retries=4, wait_seconds=2, session=None):
+    """
+    DVB (https://burmese.dvb.no) 向けの多段フェッチャ。
+    1) curl_cffi(Chrome指紋) → 2) cloudscraper → 3) requests の順。
+    403/429/503 は指数バックオフ。/post/* では /amp / ?output=amp も試す。
+    """
+    import os
+    import time
+    import random
+
+    UA = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/128.0.0.0 Safari/537.36"
+    )
+    BASE = "https://burmese.dvb.no"
+    HEADERS = {
+        "User-Agent": UA,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9,my;q=0.8,ja;q=0.7",
+        "Upgrade-Insecure-Requests": "1",
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-User": "?1",
+        "Sec-Fetch-Dest": "document",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Referer": f"{BASE}/",
+        "Connection": "keep-alive",
+    }
+
+    def _amp_candidates(u: str):
+        u = u.strip()
+        q = "&" if "?" in u else "?"
+        return [u.rstrip("/") + "/amp", u + f"{q}output=amp"]
+
+    # --- Try 1: curl_cffi ---
+    try:
+        from curl_cffi import requests as cfr  # type: ignore
+
+        proxies = {
+            "http": os.getenv("HTTP_PROXY") or os.getenv("http_proxy"),
+            "https": os.getenv("HTTPS_PROXY") or os.getenv("https_proxy"),
+        }
+        for attempt in range(retries):
+            r = cfr.get(
+                url,
+                headers=HEADERS,
+                impersonate="chrome124",
+                timeout=30,
+                allow_redirects=True,
+                proxies={k: v for k, v in proxies.items() if v},
+            )
+            if r.status_code == 200 and (r.text or "").strip():
+                return r
+            # 記事URLはAMP系も試す
+            if r.status_code in (403, 503) and "/post/" in url:
+                for amp in _amp_candidates(url):
+                    r2 = cfr.get(
+                        amp,
+                        headers=HEADERS,
+                        impersonate="chrome124",
+                        timeout=30,
+                        allow_redirects=True,
+                        proxies={k: v for k, v in proxies.items() if v},
+                    )
+                    if r2.status_code == 200 and (r2.text or "").strip():
+                        return r2
+            if r.status_code in (403, 429, 503):
+                time.sleep(wait_seconds * (2**attempt) + random.uniform(0, 0.8))
+                continue
+            break
+    except Exception as e:
+        print(f"[dvb-cffi] EXC: {e} → {url}")
+
+    # --- Try 2: cloudscraper ---
+    try:
+        import cloudscraper
+        import requests as rq
+
+        sess = session or rq.Session()
+        scraper = cloudscraper.create_scraper(
+            sess=sess,
+            browser={"browser": "chrome", "platform": "windows", "mobile": False},
+            delay=7,
+        )
+        for attempt in range(retries):
+            try:
+                r = scraper.get(url, headers=HEADERS, timeout=30, allow_redirects=True)
+                if r.status_code == 200 and getattr(r, "text", "").strip():
+                    return r
+                if r.status_code in (403, 503) and "/post/" in url:
+                    for amp in _amp_candidates(url):
+                        r2 = scraper.get(
+                            amp, headers=HEADERS, timeout=30, allow_redirects=True
+                        )
+                        if r2.status_code == 200 and getattr(r2, "text", "").strip():
+                            return r2
+                if r.status_code in (403, 429, 503):
+                    time.sleep(wait_seconds * (2**attempt) + random.uniform(0, 0.8))
+                    continue
+                break
+            except Exception as e:
+                print(f"[dvb-cs] {attempt+1}/{retries} EXC: {e} → {url}")
+                time.sleep(wait_seconds * (2**attempt) + random.uniform(0, 0.8))
+    except Exception as e:
+        print(f"[dvb-cs] INIT EXC: {e} → {url}")
+
+    # --- Try 3: requests ---
+    try:
+        import requests
+
+        sess = session or requests.Session()
+        r2 = sess.get(url, headers=HEADERS, timeout=30, allow_redirects=True)
+        if r2.status_code == 200 and getattr(r2, "text", "").strip():
+            return r2
+        if r2.status_code in (403, 503) and "/post/" in url:
+            for amp in _amp_candidates(url):
+                r3 = sess.get(amp, headers=HEADERS, timeout=30, allow_redirects=True)
+                if r3.status_code == 200 and getattr(r3, "text", "").strip():
+                    return r3
+    except Exception as e:
+        print(f"[dvb-rq] EXC final: {e} → {url}")
+
+    raise Exception(f"Failed to fetch DVB {url} after {retries} attempts.")
+
+
 def _norm_text(text: str) -> str:
     return unicodedata.normalize("NFC", text)
 
@@ -1196,22 +1323,13 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
 # DVB
 def get_dvb_articles_for(date_obj: date, debug: bool = True) -> List[Dict]:
     """
-    - 対象カテゴリ（相対パス）は下の CATEGORY_PATHS に列挙
-    - カテゴリ一覧ページの構造は、
-        class="md:grid grid-cols-3 gap-4 mt-5" のブロック配下に、
-        記事ごとの <a class="block ..." href="/post/xxxxx"> ... <div>August 16, 2025</div> ... </a>
-        が並ぶ（*他カテゴリでも同様の構造）。
-    - この日付（例: "August 16, 2025"）が指定日と一致する記事のみ候補。
-    - カテゴリページは最大 2 ページ目（?page=2）まで探索。
-        2ページ目が存在しない場合はエラーにせずスキップ。
-    - 記事ページ：
-        <title>...</title> をタイトル、
-        class="full_content" 内の <p> を本文として抽出。
-    - 返り値: [{url, title, date, body, source}] （date は ISO 8601 文字列）
+    - /category/... の一覧（1ページ目＋?page=2）から、指定日と一致するカードだけ候補化。
+    - 記事ページでは <title> / .full_content p を抽出。
+    - タイトル・本文をNFC正規化して any_keyword_hit でフィルタ。
+    - 返り値: [{url, title, date, body, source}]
+    ※ DVB専用 fetch_with_retry_dvb を使用。
     """
-
     BASE = "https://burmese.dvb.no"
-
     CATEGORY_PATHS = [
         "/category/8/news",
         "/category/17/news_politics-new",
@@ -1230,21 +1348,15 @@ def get_dvb_articles_for(date_obj: date, debug: bool = True) -> List[Dict]:
         "/category/1793/sports-news",
     ]
 
-    # -----------------------------
-    # Utilities
-    # -----------------------------
-
     def _norm_path(p: str) -> str:
         return re.sub(r"/{2,}", "/", (p or "").strip())
 
     def _parse_dvb_date(text: str) -> Optional[date]:
-        """ "August 16, 2025" のような表記を date にする。空/不正なら None。"""
         if not text:
             return None
         s = re.sub(r"\s+", " ", text.strip())
         try:
-            dt = datetime.strptime(s, "%B %d, %Y")
-            return dt.date()
+            return datetime.strptime(s, "%B %d, %Y").date()
         except ValueError:
             return None
 
@@ -1268,45 +1380,45 @@ def get_dvb_articles_for(date_obj: date, debug: bool = True) -> List[Dict]:
         return "\n".join(parts).strip()
 
     log = (lambda *a, **k: print(*a, **k)) if debug else (lambda *a, **k: None)
-
     results: List[Dict] = []
     candidate_urls: List[str] = []
     seen_urls = set()
 
-    # ---- 1) カテゴリ一覧巡回（各カテゴリにつき page=1,2 を見る）
+    # 共有セッション（cookies/指紋を一覧→記事で引き継ぐ）
+    try:
+        sess = requests.Session()
+    except Exception:
+        sess = None
+
+    # ---- 1) カテゴリ一覧巡回（各カテゴリにつき page=1,2）
     for rel in CATEGORY_PATHS:
         rel = _norm_path(rel)
         for page_no in (1, 2):
-            url = f"{BASE}{rel}"
-            if page_no == 2:
-                url = f"{url}?page=2"
+            url = f"{BASE}{rel}" if page_no == 1 else f"{BASE}{rel}?page=2"
             try:
-                # fetch_with_retry は session 引数を受けないため渡さない
-                res = fetch_with_retry(url)
+                res = fetch_with_retry_dvb(url, retries=4, wait_seconds=2, session=sess)
             except Exception as e:
                 log(f"[warn] fetch fail {url}: {e}")
                 continue
 
-            if res.status_code != 200:
+            if getattr(res, "status_code", 200) != 200:
                 log(f"[skip] non-200 ({res.status_code}) {url}")
                 continue
 
-            soup = BeautifulSoup(res.content, "html.parser")
+            soup = BeautifulSoup(
+                getattr(res, "content", None) or res.text, "html.parser"
+            )
 
-            # 一覧ブロック（厳密一致は避け、特徴からゆるく特定）
+            # 一覧ブロック（特徴で特定。無ければフォールバックでページ全体）
             blocks = soup.select(
                 "div.md\\:grid.grid-cols-3.gap-4.mt-5, div.grid.grid-cols-3.gap-4.mt-5"
-            )
-            if not blocks:
-                # フォールバック：ページ全体から探索
-                blocks = [soup]
+            ) or [soup]
 
             found = 0
             for scope in blocks:
                 anchors = scope.select('a[href^="/post/"]')
                 for a in anchors:
                     href = a.get("href") or ""
-
                     # 第一候補：カード内の date ブロック
                     date_div = a.select_one(
                         "div.flex.gap-1.text-xs.mt-2.text-gray-500 div"
@@ -1314,8 +1426,7 @@ def get_dvb_articles_for(date_obj: date, debug: bool = True) -> List[Dict]:
                     date_text = (
                         date_div.get_text(" ", strip=True) if date_div else ""
                     ).strip()
-
-                    # フォールバック：英語月名パターンを a 内から拾う
+                    # フォールバック：英語月名パターン
                     if not date_text:
                         full = a.get_text(" ", strip=True)
                         m = re.search(
@@ -1323,7 +1434,6 @@ def get_dvb_articles_for(date_obj: date, debug: bool = True) -> List[Dict]:
                             full,
                         )
                         date_text = m.group(0) if m else ""
-
                     d = _parse_dvb_date(date_text)
                     if d and d == date_obj:
                         uabs = href if href.startswith("http") else f"{BASE}{href}"
@@ -1335,14 +1445,16 @@ def get_dvb_articles_for(date_obj: date, debug: bool = True) -> List[Dict]:
 
     log(f"[dvb] candidates total = {len(candidate_urls)} (unique)")
 
-    # ---- 2) 候補記事ページで厳密抽出（any_keyword_hit で絞り込み）
+    # ---- 2) 候補記事ページで抽出（any_keyword_hit で絞り込み）
     for url in candidate_urls:
         try:
-            res = fetch_with_retry(url)
-            if res.status_code != 200:
+            res = fetch_with_retry_dvb(url, retries=4, wait_seconds=2, session=sess)
+            if getattr(res, "status_code", 200) != 200:
                 log(f"[skip] non-200 article {res.status_code} {url}")
                 continue
-            soup = BeautifulSoup(res.content, "html.parser")
+            soup = BeautifulSoup(
+                getattr(res, "content", None) or res.text, "html.parser"
+            )
 
             title = _extract_title_dvb(soup)
             body = _extract_body_dvb(soup)
@@ -1350,7 +1462,6 @@ def get_dvb_articles_for(date_obj: date, debug: bool = True) -> List[Dict]:
                 log(f"[skip] empty title/body {url}")
                 continue
 
-            # キーワード判定（NFC正規化してから）
             title_nfc = unicodedata.normalize("NFC", title)
             body_nfc = unicodedata.normalize("NFC", body)
             if not any_keyword_hit(title_nfc, body_nfc):
