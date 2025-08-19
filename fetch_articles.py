@@ -1238,9 +1238,7 @@ def get_dvb_articles_for(date_obj: date, debug: bool = True) -> List[Dict]:
         return re.sub(r"/{2,}", "/", (p or "").strip())
 
     def _parse_dvb_date(text: str) -> Optional[date]:
-        """ "August 16, 2025" のような表記を date にする。
-        空/不正なら None を返す。
-        """
+        """ "August 16, 2025" のような表記を date にする。空/不正なら None。"""
         if not text:
             return None
         s = re.sub(r"\s+", " ", text.strip())
@@ -1248,21 +1246,16 @@ def get_dvb_articles_for(date_obj: date, debug: bool = True) -> List[Dict]:
             dt = datetime.strptime(s, "%B %d, %Y")
             return dt.date()
         except ValueError:
-            # ミャンマー語や別表記が来る可能性に備えてフォールバックを少しだけ
-            # （必要ならここに追加の strptime パターンを継ぎ足す）
             return None
 
     def _extract_title_dvb(soup: BeautifulSoup) -> str:
-        # <title>～</title> を優先。なければ h1/記事見出しを探索
         t = (soup.title.string or "").strip() if soup.title else ""
         if t:
             return t
-        # 予備: 本文見出しっぽい要素
         h = soup.select_one(".text-2xl, h1, .post-title")
         return (h.get_text(" ", strip=True) if h else "").strip()
 
     def _extract_body_dvb(soup: BeautifulSoup) -> str:
-        # class="full_content" 内の <p> を連結
         host = soup.select_one(".full_content")
         if not host:
             return ""
@@ -1276,7 +1269,6 @@ def get_dvb_articles_for(date_obj: date, debug: bool = True) -> List[Dict]:
 
     log = (lambda *a, **k: print(*a, **k)) if debug else (lambda *a, **k: None)
 
-    session = requests.Session()
     results: List[Dict] = []
     candidate_urls: List[str] = []
     seen_urls = set()
@@ -1289,46 +1281,42 @@ def get_dvb_articles_for(date_obj: date, debug: bool = True) -> List[Dict]:
             if page_no == 2:
                 url = f"{url}?page=2"
             try:
-                res = fetch_with_retry(url, session=session)
+                # fetch_with_retry は session 引数を受けないため渡さない
+                res = fetch_with_retry(url)
             except Exception as e:
-                # 通信エラーは無視して次へ
                 log(f"[warn] fetch fail {url}: {e}")
                 continue
 
             if res.status_code != 200:
-                # 2ページ目の 404 などはスキップ
                 log(f"[skip] non-200 ({res.status_code}) {url}")
                 continue
 
             soup = BeautifulSoup(res.content, "html.parser")
 
-            # 一覧ブロック（厳密なクラス一致は避け、特徴からゆるく特定）
+            # 一覧ブロック（厳密一致は避け、特徴からゆるく特定）
             blocks = soup.select(
                 "div.md\\:grid.grid-cols-3.gap-4.mt-5, div.grid.grid-cols-3.gap-4.mt-5"
             )
             if not blocks:
-                # レイアウト差異に備え、フォールバックでページ全体から <a href^="/post/"><div>DATE</div> 探索
+                # フォールバック：ページ全体から探索
                 blocks = [soup]
 
             found = 0
             for scope in blocks:
-                # 記事カードの a[href^="/post/"] を拾う
-                # 本番では class の完全一致を避け、href でフィルタ
                 anchors = scope.select('a[href^="/post/"]')
                 for a in anchors:
                     href = a.get("href") or ""
-                    # 日付要素は a 内の "flex gap-1 text-xs mt-2 text-gray-500" の div 配下にある子 <div>
-                    # ただし将来の変更に備えて、a 内の "August xx, yyyy" パターンを総当たりで探す
-                    # 1) 推奨: 指定のパスに近いセレクタ
+
+                    # 第一候補：カード内の date ブロック
                     date_div = a.select_one(
                         "div.flex.gap-1.text-xs.mt-2.text-gray-500 div"
                     )
                     date_text = (
                         date_div.get_text(" ", strip=True) if date_div else ""
                     ).strip()
-                    # 2) フォールバック: 英語月名を含むテキストを探索
+
+                    # フォールバック：英語月名パターンを a 内から拾う
                     if not date_text:
-                        # a 内テキストからそれっぽい日付（英語月名）を拾う
                         full = a.get_text(" ", strip=True)
                         m = re.search(
                             r"(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s*\d{4}",
@@ -1347,26 +1335,34 @@ def get_dvb_articles_for(date_obj: date, debug: bool = True) -> List[Dict]:
 
     log(f"[dvb] candidates total = {len(candidate_urls)} (unique)")
 
-    # ---- 2) 候補記事ページで厳密抽出
+    # ---- 2) 候補記事ページで厳密抽出（any_keyword_hit で絞り込み）
     for url in candidate_urls:
         try:
-            res = fetch_with_retry(url, session=session)
+            res = fetch_with_retry(url)
             if res.status_code != 200:
                 log(f"[skip] non-200 article {res.status_code} {url}")
                 continue
             soup = BeautifulSoup(res.content, "html.parser")
+
             title = _extract_title_dvb(soup)
             body = _extract_body_dvb(soup)
             if not title or not body:
                 log(f"[skip] empty title/body {url}")
                 continue
 
+            # キーワード判定（NFC正規化してから）
+            title_nfc = unicodedata.normalize("NFC", title)
+            body_nfc = unicodedata.normalize("NFC", body)
+            if not any_keyword_hit(title_nfc, body_nfc):
+                log_no_keyword_hit("DVB", url, title_nfc, body_nfc, "dvb:article")
+                continue
+
             results.append(
                 {
                     "url": url,
-                    "title": title,
+                    "title": title_nfc,
                     "date": date_obj.isoformat(),
-                    "body": body,
+                    "body": body_nfc,
                     "source": "dvb",
                 }
             )
