@@ -822,6 +822,21 @@ def get_khit_thit_media_articles_from_category(date_obj, max_pages=3):
         "https://yktnews.com/category/china-watch/",
     ]
 
+    HASHTAG_TOKEN_RE = re.compile(
+        r"(?:(?<=\s)|^)\#[^\s#]+"
+    )  # 空白or行頭から始まる #トークンを除去（多言語対応）
+
+    def _remove_hashtag_links(soup):
+        """
+        <a>や<strong><a>…</a></strong>のような入れ子を含め、
+        テキストが '#' で始まるアンカーを本文から除去する。
+        """
+        # a要素の中で可視テキストが '#' で始まるものをまるごと削除
+        for a in soup.select("a"):
+            txt = a.get_text(strip=True)
+            if txt.startswith("#"):
+                a.decompose()
+
     collected_urls = set()
     for base_url in CATEGORY_URLS:
         for page in range(1, max_pages + 1):
@@ -870,9 +885,15 @@ def get_khit_thit_media_articles_from_category(date_obj, max_pages=3):
                 continue
             title = title_tag.get_text(strip=True)
 
-            # 本文取得
+            # 本文取得  ← この直前に “ハッシュタグ除去” を差し込む
+            _remove_hashtag_links(soup_article)  # ① HTML段階で #アンカーを除去
             paragraphs = extract_paragraphs_with_wait(soup_article)
-            body_text = "\n".join(p.get_text(strip=True) for p in paragraphs)
+            # ② テキスト化後も保険で #トークンを除去
+            body_text = "\n".join(
+                HASHTAG_TOKEN_RE.sub("", p.get_text(strip=True)).strip()
+                for p in paragraphs
+                if p.get_text(strip=True)  # 空パラはそもそも捨てる
+            )
             body_text = unicodedata.normalize("NFC", body_text)
             if not body_text.strip():
                 continue  # 本文が空ならスキップ
