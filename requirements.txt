@@ -14,3 +14,4 @@ cloudscraper
 brotli
 curl_cffi>=0.6.0.post4
 brotlicffi>=1.1.0
+feedparser>=6.0.11

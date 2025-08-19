@@ -18,6 +18,7 @@ from collections import defaultdict
 import time
 import json
 import pprint as _pprint
+import feedparser
 
 import random
 
@@ -351,12 +352,13 @@ def get_body_with_refetch(
 # 本文が取得できるまで「requestsでリトライする」
 def fetch_with_retry_irrawaddy(url, retries=3, wait_seconds=2, session=None):
     """
-    まず curl_cffi(HTTP/2 + Chrome指紋) を使い、ダメなら cloudscraper、
-    最後に requests へフォールバック。403/429/503 は指数バックオフ。
-    プロキシは環境変数 HTTP_PROXY/HTTPS_PROXY を自動利用。
+    まず curl_cffi(Chrome指紋) を使い、ダメなら cloudscraper、最後に requests。
+    403/429/503 は指数バックオフ。記事URLは /amp も試す。
     """
+    import os
     import random
     import time
+    import urllib.parse
 
     UA = (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -377,23 +379,47 @@ def fetch_with_retry_irrawaddy(url, retries=3, wait_seconds=2, session=None):
         "Connection": "keep-alive",
     }
 
-    # --- Try 1: curl_cffi (HTTP/2 + Chrome指紋) ---
+    def _amp_url(u: str) -> str:
+        # https://.../path/ なら https://.../path/amp
+        # https://.../path  なら https://.../path/amp
+        if not u.endswith("/"):
+            u = u + "/"
+        return urllib.parse.urljoin(u, "amp")
+
+    # --- Try 1: curl_cffi (Chrome 指紋) ---
     try:
         from curl_cffi import requests as cfr  # type: ignore[import-not-found]
 
+        proxies = {
+            "http": os.getenv("HTTP_PROXY") or os.getenv("http_proxy"),
+            "https": os.getenv("HTTPS_PROXY") or os.getenv("https_proxy"),
+        }
         for attempt in range(retries):
             r = cfr.get(
                 url,
                 headers=HEADERS,
-                impersonate="chrome124",  # 124〜最新ならOK
-                http2=True,
+                impersonate="chrome124",  # ★ http2= は渡さない
                 timeout=30,
                 allow_redirects=True,
-                # 環境変数 HTTP_PROXY/HTTPS_PROXY を自動参照
+                proxies={k: v for k, v in proxies.items() if v},
             )
-            # curl_cffi の r.text は既にデコード済み
             if r.status_code == 200 and (r.text or "").strip():
                 return r
+
+            # 記事URLで 403/503 のときは /amp も試す
+            if r.status_code in (403, 503) and "/news/" in url:
+                amp = _amp_url(url)
+                r2 = cfr.get(
+                    amp,
+                    headers=HEADERS,
+                    impersonate="chrome124",
+                    timeout=30,
+                    allow_redirects=True,
+                    proxies={k: v for k, v in proxies.items() if v},
+                )
+                if r2.status_code == 200 and (r2.text or "").strip():
+                    return r2
+
             if r.status_code in (403, 429, 503):
                 time.sleep(wait_seconds * (2**attempt) + random.uniform(0, 0.8))
                 continue
@@ -410,13 +436,23 @@ def fetch_with_retry_irrawaddy(url, retries=3, wait_seconds=2, session=None):
         scraper = cloudscraper.create_scraper(
             sess=sess,
             browser={"browser": "chrome", "platform": "windows", "mobile": False},
-            delay=7,  # CFの5sチャレンジ対策で余裕
+            delay=7,
         )
         for attempt in range(retries):
             try:
                 r = scraper.get(url, headers=HEADERS, timeout=30, allow_redirects=True)
                 if r.status_code == 200 and getattr(r, "text", "").strip():
                     return r
+
+                # 記事URLのときは /amp も
+                if r.status_code in (403, 503) and "/news/" in url:
+                    amp = _amp_url(url)
+                    r2 = scraper.get(
+                        amp, headers=HEADERS, timeout=30, allow_redirects=True
+                    )
+                    if r2.status_code == 200 and getattr(r2, "text", "").strip():
+                        return r2
+
                 if r.status_code in (403, 429, 503):
                     time.sleep(wait_seconds * (2**attempt) + random.uniform(0, 0.8))
                     continue
@@ -427,7 +463,7 @@ def fetch_with_retry_irrawaddy(url, retries=3, wait_seconds=2, session=None):
     except Exception as e:
         print(f"[fetch-cs] INIT EXC: {e} → {url}")
 
-    # --- Try 3: requests（最終手段） ---
+    # --- Try 3: requests ---
     try:
         import requests
 
@@ -438,7 +474,15 @@ def fetch_with_retry_irrawaddy(url, retries=3, wait_seconds=2, session=None):
         )
         if r2.status_code == 200 and getattr(r2, "text", "").strip():
             return r2
-        # デバッグ用にヘッダの一部を出すとWAF種別の当たりがつく
+        if r2.status_code in (403, 503) and "/news/" in url:
+            amp = _amp_url(url)
+            r3 = sess.get(amp, headers=HEADERS, timeout=20, allow_redirects=True)
+            print(
+                f"[fetch-rq] amp: HTTP {r3.status_code} len={len(getattr(r3,'text',''))} → {amp}"
+            )
+            if r3.status_code == 200 and getattr(r3, "text", "").strip():
+                return r3
+
         try:
             svr = r2.headers.get("server") or r2.headers.get("Server")
             ray = r2.headers.get("cf-ray")
@@ -926,23 +970,13 @@ def get_khit_thit_media_articles_from_category(date_obj, max_pages=3):
 # irrawaddy
 def get_irrawaddy_articles_for(date_obj, debug=True):
     """
-    指定の Irrawaddy カテゴリURL群（相対パス）を1回ずつ巡回し、
-    MMTの指定日(既定: 今日)にヒットする記事のみ返す。
-    さらにホーム https://www.irrawaddy.com/ の
-    data-id="kuDRpuo" カラム内からも同様に候補収集する。
-
-    - /category/news/asia, /category/news/world は除外（先頭一致・大小無視）
-    - 一覧では「時計アイコン付きの日付リンク」から当日候補を抽出
-    - 記事側では <meta property="article:published_time"> を MMT に変換して再確認
-    - 本文は <div class="content-inner "> 配下の <p> から抽出（特定ブロック配下は除外）
-    返り値: [{url, title, date}]
-    依存: MMT, get_today_date_mmt, fetch_with_retry, any_keyword_hit
+    - カテゴリ一覧HTMLは見に行かず、各カテゴリの /feed/ だけを読む
+    - 403/503 は fetch_with_retry_irrawaddy 側で /amp フォールバック
+    - 記事側の <meta property="article:published_time"> を MMT で再確認
     """
 
-    session = requests.Session()
-
     # ==== 巡回対象（相対パス、重複ありでもOK：内部でユニーク化） ====
-    CATEGORY_PATHS_RAW = [
+    IRRAWADDY_CATEGORY_PATHS = [
         "/category/news/",
         "/category/politics",
         "/category/news/war-against-the-junta",
@@ -981,6 +1015,7 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
         # "/category/photo-essay", # 2021年で更新止まってる
     ]
     BASE = "https://www.irrawaddy.com"
+
     EXCLUDE_PREFIXES = [
         "/category/news/asia",  # 除外依頼有
         "/category/news/world",  # 除外依頼有
@@ -990,130 +1025,84 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
     def norm(p: str) -> str:
         return re.sub(r"/{2,}", "/", p.strip())
 
-    paths, seen = [], set()
-    for p in CATEGORY_PATHS_RAW:
-        q = norm(p)
-        if any(q.lower().startswith(x) for x in EXCLUDE_PREFIXES):
-            continue
-        if q not in seen:
-            seen.add(q)
-            paths.append(q)
+    def _category_to_feed_url(path: str) -> str:
+        return f"{BASE}{path.rstrip('/')}/feed/"
 
-    # 2) 簡易ロガー（消す時はこの1行と dbg(...) を消すだけ）
-    dbg = (lambda *a, **k: print(*a, **k)) if debug else (lambda *a, **k: None)
+    def _iter_feed_entries(feed_url: str):
+        d = feedparser.parse(feed_url)
+        return getattr(d, "entries", []) or []
+
+    def _entry_date_mmt(entry) -> datetime.date | None:
+        tm = getattr(entry, "published_parsed", None) or getattr(
+            entry, "updated_parsed", None
+        )
+        if not tm:
+            return None
+        dt_utc = datetime(*tm[:6], tzinfo=timezone.utc)
+        return dt_utc.astimezone(MMT).date()
+
+    # # 2) 簡易ロガー（消す時はこの1行と dbg(...) を消すだけ）
+    # dbg = (lambda *a, **k: print(*a, **k)) if debug else (lambda *a, **k: None)
+
+    feed_urls = {f"{BASE}/feed/"}  # サイト全体フィード
+    for p in IRRAWADDY_CATEGORY_PATHS:
+        # 除外パスならスキップ
+        lp = p.lower()
+        if any(lp.startswith(x) for x in EXCLUDE_PREFIXES):
+            if debug:
+                print(f"[rss] skip excluded category: {p}")
+            continue
+        feed_urls.add(_category_to_feed_url(p))
 
     results = []
     seen_urls = set()
     candidate_urls = []
+    total_entries = 0
 
-    # ==== 1) 各カテゴリURLを1回ずつ巡回 → 当日候補抽出 ====
-    for rel_path in paths:
-        url = f"{BASE}{rel_path}"
-        # print(f"Fetching {url}")
+    # ==== RSS スキャン ====
+    for f in sorted(feed_urls):
         try:
-            res = fetch_with_retry_irrawaddy(url, session=session)
+            entries = _iter_feed_entries(f)
+            total_entries += len(entries)
+            if debug:
+                print(f"[rss] {f} entries={len(entries)}")
         except Exception as e:
-            print(f"Error fetching {url}: {e}")
+            if debug:
+                print(f"[rss] ERROR parse {f}: {e}")
             continue
 
-        soup = BeautifulSoup(res.content, "html.parser")
-        wrapper = soup.select_one("div.jeg_content")  # テーマによっては無いこともある
+        for e in entries:
+            url = getattr(e, "link", None)
+            if not url or url in seen_urls:
+                continue
 
-        # ✅ union 方式：wrapper 内→見つからなければページ全体の順で探索
-        scopes = ([wrapper] if wrapper else []) + [soup]
+            d = _entry_date_mmt(e)
+            if d != date_obj:
+                continue
 
-        for scope in scopes:
-            # ヒーロー枠＋通常リスト＋汎用メタを一発で拾う
-            links = scope.select(
-                ".jnews_category_hero_container .jeg_meta_date a[href], "
-                "div.jeg_postblock_content .jeg_meta_date a[href], "
-                ".jeg_post_meta .jeg_meta_date a[href]"
-            )
-            # 時計アイコン付きだけに限定（ノイズ回避）
-            links = [a for a in links if a.find("i", class_="fa fa-clock-o")]
+            candidate_urls.append(url)
+            seen_urls.add(url)
 
-            # （任意）デバッグ表示
-            # dbg(f"[cat] union-links={len(links)} @ {url}")
-            for a in links[:2]:
-                _txt = re.sub(r"\s+", " ", a.get_text(" ", strip=True))
-                # dbg("   →", _txt, "|", a.get("href"))
+    # ==== ログ（元々の candidates 出力）====
+    if debug:
+        print(f"[irrawaddy] candidates={len(candidate_urls)} (unique)")
 
-            found = 0
-            for a in links:
-                href = a.get("href") or ""
-                raw = a.get_text(" ", strip=True)
-                try:
-                    shown_date = _parse_category_date_text(raw)
-                except Exception:
-                    # 必要最小限のデバッグだけ
-                    # dbg("[cat] date-parse-fail:", re.sub(r"\s+", " ", raw)[:120])
-                    continue
-
-                if shown_date == date_obj and href and href not in seen_urls:
-                    candidate_urls.append(href)
-                    seen_urls.add(href)
-                    found += 1
-
-            # wrapper 内で“当日”が見つかったら soup まで広げず終了。
-            # wrapper が無い場合（scopes が [soup] だけの時）も1周で抜ける。
-            if found > 0:
-                # dbg(f"[cat] STOP (added {found} candidates) @ {url}")
-                break
-
-    # ==== 1.5) ホーム（kuDRpuoカラム）巡回 → 当日候補抽出（新規） ====
-    try:
-        home_url = f"{BASE}/"
-        res_home = fetch_with_retry_irrawaddy(home_url, session=session)
-        soup_home = BeautifulSoup(res_home.content, "html.parser")
-
-        # data-id でスコープ特定（class でも拾えるように冗長化）
-        home_scope = soup_home.select_one(
-            'div.elementor-element-kuDRpuo[data-id="kuDRpuo"], '
-            "div.elementor-element-kuDRpuo, "
-            '[data-id="kuDRpuo"]'
-        )
-
-        if home_scope:
-            links = home_scope.select(".jeg_meta_date a[href]")
-            links = [a for a in links if a.find("i", class_="fa fa-clock-o")]
-            for a in links:
-                href = a.get("href") or ""
-                raw = a.get_text(" ", strip=True)
-                try:
-                    shown_date = _parse_category_date_text(raw)
-                except Exception:
-                    continue
-
-                if shown_date == date_obj and href and href not in seen_urls:
-                    candidate_urls.append(href)
-                    seen_urls.add(href)
-    except Exception as e:
-        print(f"Error scanning homepage column kuDRpuo: {e}")
-
-    # ログ、候補URL収集が終わった直後（カテゴリ＋ホーム統合のあと）
-    dbg(f"[irrawaddy] candidates={len(candidate_urls)} (unique)")
-
-    # ==== 2) 候補記事で厳密確認（meta日付/本文/キーワード） ====
+    # ==== 候補記事で厳密確認 ====
     for url in candidate_urls:
         try:
-            res_article = fetch_with_retry_irrawaddy(url, session=session)
-            soup_article = BeautifulSoup(res_article.content, "html.parser")
+            r = fetch_with_retry_irrawaddy(url, retries=2, wait_seconds=2)
+            html = getattr(r, "text", None) or r.content.decode("utf-8", "ignore")
+            soup = BeautifulSoup(html, "html.parser")
 
-            if _article_date_from_meta_mmt(soup_article) != date_obj:
+            if _article_date_from_meta_mmt(soup) != date_obj:
                 continue
 
-            title = _extract_title(soup_article)
-            if not title:
+            title = _extract_title(soup)
+            body = extract_body_irrawaddy(soup)
+            if not (title and body):
+                if debug:
+                    print(f"[rss] no title/body: {url}")
                 continue
-
-            body = extract_body_irrawaddy(soup_article)
-            if not body:
-                continue
-
-            # irrawaddyはどの記事もほしいとのことなのでキーワード検索は外す
-            # 大半ミャンマー記事でキーワード含んでなくても取得対象のこともあった、無駄記事の取得が目立つようであれば追加検討
-            # if not any_keyword_hit(title, body):
-            #     continue
 
             results.append(
                 {
@@ -1121,31 +1110,35 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
                     "title": title,
                     "date": date_obj.isoformat(),
                     "body": body,
-                    "source": "irrawaddy",  # 重複削除関数を使うため追加
+                    "source": "irrawaddy",
                 }
             )
         except Exception as e:
-            print(f"Error processing {url}: {e}")
+            if debug:
+                print(f"[rss] fetch ERROR: {url} -> {e}")
             continue
 
-    # ==== 3) 最終重複排除（URLでユニーク化・先勝ち） ====
+    # ==== 重複排除 ====
     before_dedup = len(results)
     results = deduplicate_by_url(results)
 
-    # ログ、重複削除件数
-    dbg(f"[irrawaddy] dedup: {before_dedup} -> {len(results)}")
+    if debug:
+        print(
+            f"[rss] scanned feeds={len(feed_urls)} total_entries~={total_entries} kept_before_dedup={before_dedup}"
+        )
+        print(f"[irrawaddy] dedup: {before_dedup} -> {len(results)}")
+        print(f"[irrawaddy] kept={len(results)}")
 
-    # ログ、最終的なresultの中身
-    dbg(f"[irrawaddy] kept={len(results)}")
+        def _one(s: str, n: int = 60) -> str:
+            import re
 
-    def _one(s: str, n: int = 60) -> str:
-        s = re.sub(r"\s+", " ", (s or "")).strip()
-        return s[:n]
+            s = re.sub(r"\s+", " ", (s or "")).strip()
+            return s[:n]
 
-    for r in results[:3]:
-        dbg(f"  - {_one(r.get('title'))} | {r.get('url')}")
-    if len(results) > 3:
-        dbg(f"  ... (+{len(results)-3} more)")
+        for r in results[:3]:
+            print(f"  - {_one(r.get('title'))} | {r.get('url')}")
+        if len(results) > 3:
+            print(f"  ... (+{len(results)-3} more)")
 
     return results
 
