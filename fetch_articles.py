@@ -19,7 +19,7 @@ import time
 import json
 import pprint as _pprint
 import feedparser
-
+from typing import Optional
 import random
 
 try:
@@ -1032,7 +1032,7 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
         d = feedparser.parse(feed_url)
         return getattr(d, "entries", []) or []
 
-    def _entry_date_mmt(entry) -> datetime.date | None:
+    def _entry_date_mmt(entry) -> Optional[datetime.date]:
         tm = getattr(entry, "published_parsed", None) or getattr(
             entry, "updated_parsed", None
         )
