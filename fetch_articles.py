@@ -41,13 +41,8 @@ except Exception:
 
 
 # Gemini本番用
-# client_summary = genai.Client(api_key=os.getenv("GEMINI_API_SUMMARY_KEY"))
-# client_dedupe = genai.Client(api_key=os.getenv("GEMINI_API_DEDUPE_KEY"))
-
-
-# Geminiテスト用
-client_summary = genai.Client(api_key=os.getenv("GEMINI_API_TEST_SUMMARY_KEY"))
-client_dedupe = genai.Client(api_key=os.getenv("GEMINI_API_TEST_DEDUPE_KEY"))
+client_summary = genai.Client(api_key=os.getenv("GEMINI_API_SUMMARY_KEY"))
+client_dedupe = genai.Client(api_key=os.getenv("GEMINI_API_DEDUPE_KEY"))
 
 
 # Chat GPT
@@ -2226,9 +2221,7 @@ def send_email_digest(summaries):
     sender_email = os.getenv("EMAIL_SENDER")
     sender_pass = os.getenv("GMAIL_APP_PASSWORD")
     # メール送信先本番用
-    # recipient_emails = os.getenv("EMAIL_RECIPIENTS", "").split(",")
-    # メール送信先テスト用
-    recipient_emails = ["yasu.23721740311@gmail.com"]
+    recipient_emails = os.getenv("EMAIL_RECIPIENTS", "").split(",")
 
     # ✅ 今日の日付を取得してフォーマット
     digest_date = get_today_date_mmt()
