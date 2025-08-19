@@ -1140,6 +1140,8 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
         if len(results) > 3:
             print(f"  ... (+{len(results)-3} more)")
 
+    sys.exit(1)
+
     return results
 
 
