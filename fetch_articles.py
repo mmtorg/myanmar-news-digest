@@ -1793,9 +1793,7 @@ def dedupe_articles_with_llm(
 
     for idx, it in enumerate(summarized_results):
         _id = it.get("url") or f"idx-{idx}"
-        # ★ URL正規化（末尾のスラッシュ統一）
-        if _id.startswith("http"):
-            _id = _id.rstrip("/")  # ← 末尾スラッシュは常に削除
+        all_ids_in_order.append(_id)
 
         # Irrawaddy 判定（ご指定どおり）
         is_irrawaddy = (it.get("source") == "Irrawaddy") or (
