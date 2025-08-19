@@ -351,12 +351,13 @@ def get_body_with_refetch(
 # 本文が取得できるまで「requestsでリトライする」
 def fetch_with_retry_irrawaddy(url, retries=3, wait_seconds=2, session=None):
     """
-    まず curl_cffi(HTTP/2 + Chrome指紋) を使い、ダメなら cloudscraper、
-    最後に requests へフォールバック。403/429/503 は指数バックオフ。
-    プロキシは環境変数 HTTP_PROXY/HTTPS_PROXY を自動利用。
+    まず curl_cffi(Chrome指紋) を使い、ダメなら cloudscraper、最後に requests。
+    403/429/503 は指数バックオフ。記事URLは /amp も試す。
     """
+    import os
     import random
     import time
+    import urllib.parse
 
     UA = (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -377,23 +378,47 @@ def fetch_with_retry_irrawaddy(url, retries=3, wait_seconds=2, session=None):
         "Connection": "keep-alive",
     }
 
-    # --- Try 1: curl_cffi (HTTP/2 + Chrome指紋) ---
+    def _amp_url(u: str) -> str:
+        # https://.../path/ なら https://.../path/amp
+        # https://.../path  なら https://.../path/amp
+        if not u.endswith("/"):
+            u = u + "/"
+        return urllib.parse.urljoin(u, "amp")
+
+    # --- Try 1: curl_cffi (Chrome 指紋) ---
     try:
         from curl_cffi import requests as cfr  # type: ignore[import-not-found]
 
+        proxies = {
+            "http": os.getenv("HTTP_PROXY") or os.getenv("http_proxy"),
+            "https": os.getenv("HTTPS_PROXY") or os.getenv("https_proxy"),
+        }
         for attempt in range(retries):
             r = cfr.get(
                 url,
                 headers=HEADERS,
-                impersonate="chrome124",  # 124〜最新ならOK
-                http2=True,
+                impersonate="chrome124",  # ★ http2= は渡さない
                 timeout=30,
                 allow_redirects=True,
-                # 環境変数 HTTP_PROXY/HTTPS_PROXY を自動参照
+                proxies={k: v for k, v in proxies.items() if v},
             )
-            # curl_cffi の r.text は既にデコード済み
             if r.status_code == 200 and (r.text or "").strip():
                 return r
+
+            # 記事URLで 403/503 のときは /amp も試す
+            if r.status_code in (403, 503) and "/news/" in url:
+                amp = _amp_url(url)
+                r2 = cfr.get(
+                    amp,
+                    headers=HEADERS,
+                    impersonate="chrome124",
+                    timeout=30,
+                    allow_redirects=True,
+                    proxies={k: v for k, v in proxies.items() if v},
+                )
+                if r2.status_code == 200 and (r2.text or "").strip():
+                    return r2
+
             if r.status_code in (403, 429, 503):
                 time.sleep(wait_seconds * (2**attempt) + random.uniform(0, 0.8))
                 continue
@@ -410,13 +435,23 @@ def fetch_with_retry_irrawaddy(url, retries=3, wait_seconds=2, session=None):
         scraper = cloudscraper.create_scraper(
             sess=sess,
             browser={"browser": "chrome", "platform": "windows", "mobile": False},
-            delay=7,  # CFの5sチャレンジ対策で余裕
+            delay=7,
         )
         for attempt in range(retries):
             try:
                 r = scraper.get(url, headers=HEADERS, timeout=30, allow_redirects=True)
                 if r.status_code == 200 and getattr(r, "text", "").strip():
                     return r
+
+                # 記事URLのときは /amp も
+                if r.status_code in (403, 503) and "/news/" in url:
+                    amp = _amp_url(url)
+                    r2 = scraper.get(
+                        amp, headers=HEADERS, timeout=30, allow_redirects=True
+                    )
+                    if r2.status_code == 200 and getattr(r2, "text", "").strip():
+                        return r2
+
                 if r.status_code in (403, 429, 503):
                     time.sleep(wait_seconds * (2**attempt) + random.uniform(0, 0.8))
                     continue
@@ -427,7 +462,7 @@ def fetch_with_retry_irrawaddy(url, retries=3, wait_seconds=2, session=None):
     except Exception as e:
         print(f"[fetch-cs] INIT EXC: {e} → {url}")
 
-    # --- Try 3: requests（最終手段） ---
+    # --- Try 3: requests ---
     try:
         import requests
 
@@ -438,7 +473,15 @@ def fetch_with_retry_irrawaddy(url, retries=3, wait_seconds=2, session=None):
         )
         if r2.status_code == 200 and getattr(r2, "text", "").strip():
             return r2
-        # デバッグ用にヘッダの一部を出すとWAF種別の当たりがつく
+        if r2.status_code in (403, 503) and "/news/" in url:
+            amp = _amp_url(url)
+            r3 = sess.get(amp, headers=HEADERS, timeout=20, allow_redirects=True)
+            print(
+                f"[fetch-rq] amp: HTTP {r3.status_code} len={len(getattr(r3,'text',''))} → {amp}"
+            )
+            if r3.status_code == 200 and getattr(r3, "text", "").strip():
+                return r3
+
         try:
             svr = r2.headers.get("server") or r2.headers.get("Server")
             ray = r2.headers.get("cf-ray")
