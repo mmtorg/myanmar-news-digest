@@ -135,9 +135,7 @@ MMT = timezone(timedelta(hours=6, minutes=30))
 # ニュースの速報性重視で今日分のニュース配信の方針
 def get_today_date_mmt():
     # 本番用、今日の日付
-    # now_mmt = datetime.now(MMT)
-    # テスト用、昨日の日付にする
-    now_mmt = datetime.now(MMT) - timedelta(days=1)
+    now_mmt = datetime.now(MMT)
     return now_mmt.date()
 
 
@@ -2312,9 +2310,6 @@ if __name__ == "__main__":
 
     print("=== DVB ===")
     articles_dvb = get_dvb_articles_for(date_mmt, debug=True)
-
-    sys.exit(1)  # MEMO: TEST用、ここで終了
-
     process_and_enqueue_articles(articles_dvb, "DVB", seen_urls)
 
     # URLベースの重複排除を先に行う
