@@ -624,6 +624,13 @@ def _norm_text(text: str) -> str:
     return unicodedata.normalize("NFC", text)
 
 
+def _norm_id(u):
+    """ID/URL照合用の軽量正規化：末尾スラッシュを落とす"""
+    if isinstance(u, str):
+        return u.rstrip("/")
+    return u
+
+
 def _parse_category_date_text(text: str):
     # 例: 'August 9, 2025'
     text = re.sub(r"\s+", " ", text.strip())
@@ -1792,7 +1799,8 @@ def dedupe_articles_with_llm(
     all_ids_in_order = []  # 返却時の順序維持用
 
     for idx, it in enumerate(summarized_results):
-        _id = it.get("url") or f"idx-{idx}"
+        _id_raw = it.get("url") or f"idx-{idx}"
+        _id = _norm_id(_id_raw)  # ★ 入力側（自分側）のIDを正規化
         all_ids_in_order.append(_id)
 
         # Irrawaddy 判定（ご指定どおり）
@@ -1884,6 +1892,21 @@ def dedupe_articles_with_llm(
     try:
         resp = call_gemini_with_retries(client, prompt, model="gemini-2.5-flash")
         data = _safe_json_loads_maybe_extract(resp.text)
+
+        # ★ LLM応答内のIDをすべて正規化しておく
+        for k in ("kept", "removed"):
+            arr = data.get(k) or []
+            for rec in arr:
+                if "id" in rec:
+                    rec["id"] = _norm_id(rec["id"])
+                if "duplicate_of" in rec and rec["duplicate_of"]:
+                    rec["duplicate_of"] = _norm_id(rec["duplicate_of"])
+
+        for c in data.get("clusters", []) or []:
+            if "cluster_id" in c:
+                c["cluster_id"] = _norm_id(c["cluster_id"])
+            if "member_ids" in c and isinstance(c["member_ids"], list):
+                c["member_ids"] = [_norm_id(x) for x in c["member_ids"]]
 
         kept_ids_others = [
             x.get("id") for x in data.get("kept", []) if x.get("id") in id_map_llm
@@ -2158,10 +2181,12 @@ def process_translation_batches(batch_size=5, wait_seconds=60):
                 summary_text = "\n".join(lines).strip()
                 summary_html = summary_text.replace("\n", "<br>")
 
+                norm_url = _norm_id(item.get("url") or "")
+
                 summarized_results.append(
                     {
                         "source": item["source"],
-                        "url": item["url"],
+                        "url": norm_url,  # ★ 正規化済み
                         "title": translated_title,
                         "summary": summary_html,
                         "ultra": ultra_text,
