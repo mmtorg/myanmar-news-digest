@@ -347,9 +347,9 @@ def get_body_with_refetch(
     return ""
 
 
-# === Irrawaddy専用 ===
+# === Irrawaddy/DVB専用 ===
 # 本文が取得できるまで「requestsでリトライする」
-def fetch_with_retry_irrawaddy(url, retries=3, wait_seconds=2, session=None):
+def fetch_with_retry_deep(url, retries=3, wait_seconds=2, session=None, referer=None):
     """
     まず curl_cffi(Chrome指紋) を使い、ダメなら cloudscraper、最後に requests。
     403/429/503 は指数バックオフ。記事URLは /amp も試す。
@@ -374,7 +374,8 @@ def fetch_with_retry_irrawaddy(url, retries=3, wait_seconds=2, session=None):
         "Sec-Fetch-User": "?1",
         "Sec-Fetch-Dest": "document",
         "Accept-Encoding": "gzip, deflate, br",
-        "Referer": "https://www.irrawaddy.com/",
+        # 既定は Irrawaddy。必要に応じて呼び出し側で変更可（DVB 等）
+        "Referer": referer,
         "Connection": "keep-alive",
     }
 
@@ -558,9 +559,15 @@ def extract_body_irrawaddy(soup):
     return "\n".join(paragraphs).strip()
 
 
-#  Irrawaddy 用 fetch_once（既存の fetch_with_retry_irrawaddy を1回ラップ）
+#  Irrawaddy 用 fetch_once（既存の fetch_with_retry_deep を1回ラップ）
 def fetch_once_irrawaddy(url, session=None):
-    r = fetch_with_retry_irrawaddy(url, retries=1, wait_seconds=0, session=session)
+    r = fetch_with_retry_deep(
+        url,
+        retries=1,
+        wait_seconds=0,
+        session=session,
+        referer="https://www.irrawaddy.com/",
+    )
     # cloudscraper のレスポンスも bytes を返す（デコードは BeautifulSoup に任せる）
     return r.content
 
@@ -1052,9 +1059,11 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
     # ==== 1) 各カテゴリURLを1回ずつ巡回 → 当日候補抽出 ====
     for rel_path in paths:
         url = f"{BASE}{rel_path}"
-        # print(f"Fetching {url}")
+        print(f"Fetching {url}")
         try:
-            res = fetch_with_retry_irrawaddy(url, session=session)
+            res = fetch_with_retry_deep(
+                url, session=session, referer="https://www.irrawaddy.com/"
+            )
         except Exception as e:
             print(f"Error fetching {url}: {e}")
             continue
@@ -1106,7 +1115,9 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
     # ==== 1.5) ホーム（kuDRpuoカラム）巡回 → 当日候補抽出（新規） ====
     try:
         home_url = f"{BASE}/"
-        res_home = fetch_with_retry_irrawaddy(home_url, session=session)
+        res_home = fetch_with_retry_deep(
+            home_url, session=session, referer="https://www.irrawaddy.com/"
+        )
         soup_home = BeautifulSoup(res_home.content, "html.parser")
 
         # data-id でスコープ特定（class でも拾えるように冗長化）
@@ -1139,7 +1150,9 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
     # ==== 2) 候補記事で厳密確認（meta日付/本文/キーワード） ====
     for url in candidate_urls:
         try:
-            res_article = fetch_with_retry_irrawaddy(url, session=session)
+            res_article = fetch_with_retry_deep(
+                url, session=session, referer="https://www.irrawaddy.com/"
+            )
             soup_article = BeautifulSoup(res_article.content, "html.parser")
 
             if _article_date_from_meta_mmt(soup_article) != date_obj:
@@ -1209,6 +1222,8 @@ def get_dvb_articles_for(date_obj: date, debug: bool = True) -> List[Dict]:
         class="full_content" 内の <p> を本文として抽出。
     - 返り値: [{url, title, date, body, source}] （date は ISO 8601 文字列）
     """
+
+    session = requests.Session()
 
     BASE = "https://burmese.dvb.no"
 
@@ -1281,8 +1296,9 @@ def get_dvb_articles_for(date_obj: date, debug: bool = True) -> List[Dict]:
             if page_no == 2:
                 url = f"{url}?page=2"
             try:
-                # fetch_with_retry は session 引数を受けないため渡さない
-                res = fetch_with_retry(url)
+                res = fetch_with_retry_deep(
+                    url, session=session, referer="https://burmese.dvb.no/"
+                )
             except Exception as e:
                 log(f"[warn] fetch fail {url}: {e}")
                 continue
