@@ -1335,19 +1335,26 @@ def get_dvb_articles_for(date_obj: date, debug: bool = True) -> List[Dict]:
     """
     BASE = "https://burmese.dvb.no"
     CATEGORY_PATHS = [
+        """
+        以下3カテゴリ以外の記事は、すべて/category/8/newsに含まれている。
+        - /category/1799/international-news
+        - /category/1793/sports-news
+        - /category/6/features
+        当該3カテゴリは除外したいグループになるので/category/8/newsのみを取得対象とする。
+        """
         "/category/8/news",
-        "/category/17/news_politics-new",
-        "/category/16/news_economics-new",
-        "/category/15/news_health-news-news",
-        "/category/18/news_social-news",
-        "/category/1787/news_education-news",
-        "/category/10/news_environment-weather",
-        "/category/1789/news_labour-news",
-        "/category/1788/news_farmers-news",
-        "/category/1797/news_criminals-news",
-        "/category/9/news_media-news",
-        "/category/6/features",
-        "/category/13/interview",
+        # "/category/17/news_politics-new",
+        # "/category/16/news_economics-new",
+        # "/category/15/news_health-news-news",
+        # "/category/18/news_social-news",
+        # "/category/1787/news_education-news",
+        # "/category/10/news_environment-weather",
+        # "/category/1789/news_labour-news",
+        # "/category/1788/news_farmers-news",
+        # "/category/1797/news_criminals-news",
+        # "/category/9/news_media-news",
+        # "/category/6/features",
+        # "/category/13/interview",
         # "/category/1799/international-news",
         # "/category/1793/sports-news",
     ]
