@@ -2,38 +2,96 @@ name: Daily Myanmar News Digest
 
 on:
   schedule:
-    - cron: "30 16 * * *" # ミャンマー時間 23:00
-  workflow_dispatch:
+    - cron: "30 16 * * *" # ミャンマー時間 23:00（UTC+6:30）
+  workflow_dispatch: # 手動＝開発で実行
 
 jobs:
-  run-script:
+  prod:
+    if: ${{ github.event_name == 'schedule' }}
+    name: Run (production / main)
     runs-on: ubuntu-latest
-
-    env:
-      OPENAI_API_KEY: ${{ vars.OPENAI_API_KEY }}
-      GMAIL_APP_PASSWORD: ${{ vars.GMAIL_APP_PASSWORD }}
-      EMAIL_SENDER: ${{ vars.EMAIL_SENDER }}
-      EMAIL_RECIPIENTS: ${{ vars.EMAIL_RECIPIENTS }}
-      GEMINI_API_SUMMARY_KEY: ${{ vars.GEMINI_API_SUMMARY_KEY }}
-      GEMINI_API_DEDUPE_KEY: ${{ vars.GEMINI_API_DEDUPE_KEY }}
-      GEMINI_API_TEST_SUMMARY_KEY: ${{ vars.GEMINI_API_TEST_SUMMARY_KEY }}
-      GEMINI_API_TEST_DEDUPE_KEY: ${{ vars.GEMINI_API_TEST_DEDUPE_KEY }}
+    environment: production
+    concurrency:
+      group: daily-digest-production
+      cancel-in-progress: false
 
     steps:
-      - uses: actions/checkout@v3
-
-      - name: Set up Python
-        uses: actions/setup-python@v4
+      - uses: actions/checkout@v4
         with:
-          python-version: "3.10"
+          ref: main
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
 
       - name: Install dependencies
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
-          pip install fugashi[unidic-lite] ipadic
+          pip install "fugashi[unidic-lite]" ipadic
           pip install --upgrade google-genai google-api-core
           rm -rf ~/.cache/huggingface
 
       - name: Run fetch script
+        env:
+          TZ: Asia/Yangon
+          OPENAI_API_KEY: ${{ vars.OPENAI_API_KEY }}
+          GMAIL_APP_PASSWORD: ${{ vars.GMAIL_APP_PASSWORD }}
+          EMAIL_SENDER: ${{ vars.EMAIL_SENDER }}
+          EMAIL_RECIPIENTS: ${{ vars.EMAIL_RECIPIENTS }}
+          GEMINI_API_SUMMARY_KEY: ${{ vars.GEMINI_API_SUMMARY_KEY }}
+          GEMINI_API_DEDUPE_KEY: ${{ vars.GEMINI_API_DEDUPE_KEY }}
+          GEMINI_API_TEST_SUMMARY_KEY: ${{ vars.GEMINI_API_TEST_SUMMARY_KEY }}
+          GEMINI_API_TEST_DEDUPE_KEY: ${{ vars.GEMINI_API_TEST_DEDUPE_KEY }}
+        run: python fetch_articles.py
+
+  dev:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    name: Run (development / develop)
+    runs-on: ubuntu-latest
+    environment: development
+    concurrency:
+      group: daily-digest-development
+      cancel-in-progress: true # 手動は新しい方を優先して前の実行を止める
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: develop
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install "fugashi[unidic-lite]" ipadic
+          pip install --upgrade google-genai google-api-core
+          rm -rf ~/.cache/huggingface
+
+      - name: Run fetch script
+        env:
+          TZ: Asia/Yangon
+          OPENAI_API_KEY: ${{ vars.OPENAI_API_KEY }}
+          GMAIL_APP_PASSWORD: ${{ vars.GMAIL_APP_PASSWORD }}
+          EMAIL_SENDER: ${{ vars.EMAIL_SENDER }}
+          EMAIL_RECIPIENTS: ${{ vars.EMAIL_RECIPIENTS }}
+          GEMINI_API_SUMMARY_KEY: ${{ vars.GEMINI_API_SUMMARY_KEY }}
+          GEMINI_API_DEDUPE_KEY: ${{ vars.GEMINI_API_DEDUPE_KEY }}
+          GEMINI_API_TEST_SUMMARY_KEY: ${{ vars.GEMINI_API_TEST_SUMMARY_KEY }}
+          GEMINI_API_TEST_DEDUPE_KEY: ${{ vars.GEMINI_API_TEST_DEDUPE_KEY }}
         run: python fetch_articles.py
