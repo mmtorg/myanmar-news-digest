@@ -1158,6 +1158,7 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
     EXCLUDE_PREFIXES = [
         "/category/news/asia",  # 除外依頼有
         "/category/news/world",  # 除外依頼有
+        "/video",  # "/category/Video"は除外対象だがこのパターンもある
     ]  # 先頭一致・大小無視
 
     # ==== 正規化・ユニーク化・除外 ====
@@ -2225,10 +2226,8 @@ def process_translation_batches(batch_size=5, wait_seconds=60):
 def send_email_digest(summaries):
     sender_email = os.getenv("EMAIL_SENDER")
     sender_pass = os.getenv("GMAIL_APP_PASSWORD")
-    # メール送信先本番用
     recipient_emails = os.getenv("EMAIL_RECIPIENTS", "").split(",")
 
-    # ✅ 今日の日付を取得してフォーマット
     digest_date = get_today_date_mmt()
     date_str = digest_date.strftime("%Y年%-m月%-d日") + "分"
 
@@ -2237,27 +2236,40 @@ def send_email_digest(summaries):
     for item in summaries:
         media_grouped[item["source"]].append(item)
 
-    # メールタイトル
     subject = "ミャンマー関連ニュース【" + date_str + "】"
 
-    # メール本文のHTML生成
+    # ✅ ヘッドライン部分を先に構築
+    headlines = []
+    for item in summaries:
+        headlines.append(f"✓ {item['title']}")  # ← 半角スペース追加
+
+    headline_html = (
+        "<div style='margin-bottom:20px'>"
+        f"------- ヘッドライン ({len(summaries)}本) -------<br>"
+        + "<br>".join(headlines)  # ← 各タイトルを改行で表示
+        + "</div><hr>"
+    )
+
+    # ✅ メール本文全体のHTML
     html_content = """
     <html>
     <body style="font-family: Arial, sans-serif; background-color: #ffffff; color: #333333;">
     """
 
-    # メディアでグループ化は使うが、見出しは各記事の中に入れる
+    # 先頭にヘッドライン挿入
+    html_content += headline_html
+
+    # 記事ごとの本文
     for media, articles in media_grouped.items():
         for item in articles:
-            title_jp = item["title"]  # 「タイトル: 」の接頭辞は外す
+            title_jp = item["title"]
             url = item["url"]
-            summary_html = item["summary"]  # 既に <br> 整形済み
+            summary_html = item["summary"]
 
-            # 参考HTML準拠：見出し(h2)の右側にメディア名。
             heading_html = (
                 "<h2 style='margin-bottom:5px'>"
                 f"{title_jp}　"
-                "<span style='font-size:0.83rem;font-weight:600'>"  # ← h5相当
+                "<span style='font-size:0.83rem;font-weight:600'>"
                 f"{media} "
                 "</span>"
                 "</h2>"
@@ -2271,7 +2283,6 @@ def send_email_digest(summaries):
                 "</div>"
                 f"<p><a href='{url}' style='color:#1a0dab' target='_blank'>本文を読む</a></p>"
                 "</div><hr style='border-top: 1px solid #cccccc;'>"
-                "</div>"
             )
 
     html_content += "</body></html>"
