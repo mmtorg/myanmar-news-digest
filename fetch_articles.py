@@ -20,6 +20,7 @@ import json
 import pprint as _pprint
 import random
 from typing import List, Dict, Optional
+from urllib.parse import urlparse  # 追加
 
 try:
     import httpx
@@ -1161,13 +1162,20 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
         "/video",  # "/category/Video"は除外対象だがこのパターンもある
     ]  # 先頭一致・大小無視
 
+    def _is_excluded_url(href: str) -> bool:
+        try:
+            p = urlparse(href or "").path.lower()
+        except Exception:
+            p = (href or "").lower()
+        return any(p.startswith(x) for x in EXCLUDE_PREFIXES)
+
     # ==== 正規化・ユニーク化・除外 ====
-    def norm(p: str) -> str:
+    def _norm(p: str) -> str:
         return re.sub(r"/{2,}", "/", p.strip())
 
     paths, seen = [], set()
     for p in CATEGORY_PATHS_RAW:
-        q = norm(p)
+        q = _norm(p)
         if any(q.lower().startswith(x) for x in EXCLUDE_PREFIXES):
             continue
         if q not in seen:
@@ -1224,6 +1232,10 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
                     # dbg("[cat] date-parse-fail:", re.sub(r"\s+", " ", raw)[:120])
                     continue
 
+                # ▼ ここで /video などを除外
+                if _is_excluded_url(href):
+                    continue
+
                 if shown_date == date_obj and href and href not in seen_urls:
                     candidate_urls.append(href)
                     seen_urls.add(href)
@@ -1259,6 +1271,10 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
                 except Exception:
                     continue
 
+                # ▼ ここでも除外
+                if _is_excluded_url(href):
+                    continue
+
                 if shown_date == date_obj and href and href not in seen_urls:
                     candidate_urls.append(href)
                     seen_urls.add(href)
@@ -1270,6 +1286,8 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
 
     # ==== 2) 候補記事で厳密確認（meta日付/本文/キーワード） ====
     for url in candidate_urls:
+        if _is_excluded_url(url):  # ベルト＆サスペンダー
+            continue
         try:
             res_article = fetch_with_retry_irrawaddy(url, session=session)
             soup_article = BeautifulSoup(res_article.content, "html.parser")
