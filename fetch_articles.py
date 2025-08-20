@@ -2240,14 +2240,13 @@ def send_email_digest(summaries):
     # ✅ ヘッドライン部分を先に構築
     headlines = []
     for item in summaries:
-        headlines.append(f"✓{item['title']}")
+        headlines.append(f"✓ {item['title']}")  # ← 半角スペース追加
 
     headline_html = (
         "<div style='margin-bottom:20px'>"
-        f"<h2>------- ヘッドライン ({len(summaries)}本) -------</h2>"
-        "<div style='background-color:#f0f0f0;padding:10px;border-radius:8px;white-space:pre-line;'>"
-        + "\n".join(headlines)
-        + "</div></div><hr>"
+        f"------- ヘッドライン ({len(summaries)}本) -------<br>"
+        + "<br>".join(headlines)  # ← 各タイトルを改行で表示
+        + "</div><hr>"
     )
 
     # ✅ メール本文全体のHTML
