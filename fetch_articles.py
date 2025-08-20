@@ -1332,16 +1332,14 @@ def get_dvb_articles_for(date_obj: date, debug: bool = True) -> List[Dict]:
     - タイトル・本文をNFC正規化して any_keyword_hit でフィルタ。
     - 返り値: [{url, title, date, body, source}]
     ※ DVB専用 fetch_with_retry_dvb を使用。
+    以下3カテゴリ以外の記事は、すべて/category/8/newsに含まれている。
+    - /category/1799/international-news
+    - /category/1793/sports-news
+    - /category/6/features
+    当該3カテゴリは除外したいグループになるので/category/8/newsのみを取得対象とする。
     """
     BASE = "https://burmese.dvb.no"
     CATEGORY_PATHS = [
-        """
-        以下3カテゴリ以外の記事は、すべて/category/8/newsに含まれている。
-        - /category/1799/international-news
-        - /category/1793/sports-news
-        - /category/6/features
-        当該3カテゴリは除外したいグループになるので/category/8/newsのみを取得対象とする。
-        """
         "/category/8/news",
         # "/category/17/news_politics-new",
         # "/category/16/news_economics-new",
