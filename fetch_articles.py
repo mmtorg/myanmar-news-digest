@@ -1158,6 +1158,7 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
     EXCLUDE_PREFIXES = [
         "/category/news/asia",  # 除外依頼有
         "/category/news/world",  # 除外依頼有
+        "/video",  # "/category/Video"は除外対象だがこのパターンもある
     ]  # 先頭一致・大小無視
 
     # ==== 正規化・ユニーク化・除外 ====
