@@ -2586,10 +2586,6 @@ if __name__ == "__main__":
     date_mmt = get_today_date_mmt()
     seen_urls = set()
 
-    print("🧪 SUBJECT_TEST=1 → 記事収集をスキップして件名のみ送信テスト")
-    send_email_digest([])  # 空のダイジェスト（件名だけ確認）
-    sys.exit(0)
-
     # articles = get_frontier_articles_for(date_mmt)
     # for art in articles:
     #     print(f"{art['date']} - {art['title']}\n{art['url']}\n")
