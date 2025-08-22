@@ -2335,7 +2335,7 @@ def _cut_ultra_block(lines):
 
 
 # 本処理関数
-def process_translation_batches(batch_size=5, wait_seconds=60):
+def process_translation_batches(batch_size=3, wait_seconds=60):
     # MEMO: TEST用、Geminiを呼ばず、URLリストだけ返す
     # summarized_results = []
     # for item in translation_queue:
@@ -2613,6 +2613,6 @@ if __name__ == "__main__":
     translation_queue = deduplicate_by_url(translation_queue)
 
     # バッチ翻訳実行 (5件ごとに1分待機)
-    all_summaries = process_translation_batches(batch_size=5, wait_seconds=60)
+    all_summaries = process_translation_batches(batch_size=3, wait_seconds=60)
 
     send_email_digest(all_summaries)
