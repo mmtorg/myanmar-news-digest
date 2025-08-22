@@ -34,9 +34,12 @@ try:
         ServiceUnavailable,
         ResourceExhausted,
         DeadlineExceeded,
+        InternalServerError,
     )
 except Exception:
-    ServiceUnavailable = ResourceExhausted = DeadlineExceeded = Exception
+    ServiceUnavailable = ResourceExhausted = DeadlineExceeded = InternalServerError = (
+        Exception
+    )
 
 from collections import deque
 
@@ -51,7 +54,10 @@ def _is_retriable_exc(e: Exception) -> bool:
     name = e.__class__.__name__.lower()
 
     # Google系の明示的リトライ対象
-    if isinstance(e, (ServiceUnavailable, ResourceExhausted, DeadlineExceeded)):
+    if isinstance(
+        e,
+        (ServiceUnavailable, ResourceExhausted, DeadlineExceeded, InternalServerError),
+    ):
         return True
 
     # httpx/urllib3系（環境に無ければ無視）
@@ -77,8 +83,11 @@ def _is_retriable_exc(e: Exception) -> bool:
     # 文字列での判定（実装差分吸収）
     hints = [
         "remoteprotocolerror",
+        "servererror",
+        "internal",  # "500 internal", "internal error" など
         "server disconnected",
         "unavailable",
+        "500",
         "503",
         "502",
         "504",
