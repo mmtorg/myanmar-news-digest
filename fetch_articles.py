@@ -1160,6 +1160,7 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
         "/category/news/asia",  # 除外依頼有
         "/category/news/world",  # 除外依頼有
         "/video",  # "/category/Video"は除外対象だがこのパターンもある
+        "/cartoons",  # "/category/Cartoons"は除外対象だがこのパターンもある
     ]  # 先頭一致・大小無視
 
     def _is_excluded_url(href: str) -> bool:
