@@ -4,7 +4,6 @@ from datetime import datetime, timedelta, timezone, date
 from dateutil.parser import parse as parse_date
 import re
 
-import smtplib
 import os
 import sys
 from email.message import EmailMessage
@@ -43,6 +42,10 @@ except Exception:
 
 from collections import deque
 
+import base64
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+from google.oauth2.credentials import Credentials
 
 # Gemini本番用
 client_summary = genai.Client(api_key=os.getenv("GEMINI_API_SUMMARY_KEY"))
@@ -2476,8 +2479,26 @@ def process_translation_batches(batch_size=3, wait_seconds=60):
 
 
 def send_email_digest(summaries):
+    def _build_gmail_service():
+        cid = os.getenv("GMAIL_CLIENT_ID")
+        csec = os.getenv("GMAIL_CLIENT_SECRET")
+        rtok = os.getenv("GMAIL_REFRESH_TOKEN")
+        if not (cid and csec and rtok):
+            raise RuntimeError(
+                "Gmail API credentials (CLIENT_ID/SECRET/REFRESH_TOKEN) are missing."
+            )
+        creds = Credentials(
+            token=None,
+            refresh_token=rtok,
+            token_uri="https://oauth2.googleapis.com/token",
+            client_id=cid,
+            client_secret=csec,
+            scopes=["https://mail.google.com/"],
+        )
+        # discovery キャッシュは不要
+        return build("gmail", "v1", credentials=creds, cache_discovery=False)
+
     sender_email = os.getenv("EMAIL_SENDER")
-    sender_pass = os.getenv("GMAIL_APP_PASSWORD")
     recipient_emails = os.getenv("EMAIL_RECIPIENTS", "").split(",")
 
     digest_date = get_today_date_mmt()
@@ -2550,12 +2571,13 @@ def send_email_digest(summaries):
     msg.add_alternative(html_content, subtype="html", charset="utf-8")
 
     try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-            server.login(sender_email, sender_pass)
-            server.send_message(msg)
-            print("✅ メール送信完了")
-    except Exception as e:
-        print(f"❌ メール送信エラー: {e}")
+        service = _build_gmail_service()
+        raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
+        body = {"raw": raw}
+        sent = service.users().messages().send(userId="me", body=body).execute()
+        print("✅ Gmail API 送信完了 messageId:", sent.get("id"))
+    except HttpError as e:
+        print(f"❌ Gmail API エラー: {e}")
         sys.exit(1)
 
 
