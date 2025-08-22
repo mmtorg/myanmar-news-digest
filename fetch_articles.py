@@ -7,7 +7,6 @@ import re
 import os
 import sys
 from email.message import EmailMessage
-from email.policy import SMTPUTF8
 from email.utils import formataddr
 import unicodedata
 from google import genai
@@ -18,6 +17,13 @@ import pprint as _pprint
 import random
 from typing import List, Dict, Optional
 from urllib.parse import urlparse  # 追加
+from collections import deque
+import base64
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+from google.oauth2.credentials import Credentials
+from email.policy import SMTP
+from email.header import Header
 
 try:
     import httpx
@@ -40,12 +46,6 @@ except Exception:
         Exception
     )
 
-from collections import deque
-
-import base64
-from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
-from google.oauth2.credentials import Credentials
 
 # Gemini本番用
 client_summary = genai.Client(api_key=os.getenv("GEMINI_API_SUMMARY_KEY"))
@@ -2563,9 +2563,9 @@ def send_email_digest(summaries):
 
     from_display_name = "Myanmar News Digest"
 
-    msg = EmailMessage(policy=SMTPUTF8)
-    msg["Subject"] = subject
-    msg["From"] = formataddr((from_display_name, sender_email))
+    msg = EmailMessage(policy=SMTP)
+    msg["Subject"] = Header(subject, "utf-8").encode()
+    msg["From"] = formataddr((str(Header(from_display_name, "utf-8")), sender_email))
     msg["To"] = ", ".join(recipient_emails)
     msg.set_content("HTMLメールを開ける環境でご確認ください。", charset="utf-8")
     msg.add_alternative(html_content, subtype="html", charset="utf-8")
