@@ -2487,15 +2487,15 @@ def send_email_digest(summaries):
             raise RuntimeError(
                 "Gmail API credentials (CLIENT_ID/SECRET/REFRESH_TOKEN) are missing."
             )
+
+        # リフレッシュトークンがある場合、scopes を渡さない
         creds = Credentials(
             token=None,
             refresh_token=rtok,
             token_uri="https://oauth2.googleapis.com/token",
             client_id=cid,
             client_secret=csec,
-            scopes=["https://mail.google.com/"],
         )
-        # discovery キャッシュは不要
         return build("gmail", "v1", credentials=creds, cache_discovery=False)
 
     sender_email = os.getenv("EMAIL_SENDER")
