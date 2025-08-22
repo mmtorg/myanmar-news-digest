@@ -81,8 +81,9 @@ jobs:
           pip install -r requirements.txt
           pip install "fugashi[unidic-lite]" ipadic
           pip install --upgrade google-genai google-api-core
+          pip install --upgrade pip setuptools wheel
+          pip install google-auth google-auth-oauthlib
           rm -rf ~/.cache/huggingface
-          pip install google-api-python-client google-auth google-auth-oauthli
 
       - name: Run fetch script
         env:
