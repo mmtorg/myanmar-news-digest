@@ -4,13 +4,9 @@ from datetime import datetime, timedelta, timezone, date
 from dateutil.parser import parse as parse_date
 import re
 
-# Chat GPT
-# from openai import OpenAI, OpenAIError
-import smtplib
 import os
 import sys
 from email.message import EmailMessage
-from email.policy import SMTPUTF8
 from email.utils import formataddr
 import unicodedata
 from google import genai
@@ -21,6 +17,13 @@ import pprint as _pprint
 import random
 from typing import List, Dict, Optional
 from urllib.parse import urlparse  # 追加
+from collections import deque
+import base64
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+from google.oauth2.credentials import Credentials
+from email.policy import SMTP
+from email.header import Header
 
 try:
     import httpx
@@ -36,9 +39,12 @@ try:
         ServiceUnavailable,
         ResourceExhausted,
         DeadlineExceeded,
+        InternalServerError,
     )
 except Exception:
-    ServiceUnavailable = ResourceExhausted = DeadlineExceeded = Exception
+    ServiceUnavailable = ResourceExhausted = DeadlineExceeded = InternalServerError = (
+        Exception
+    )
 
 
 # Gemini本番用
@@ -46,16 +52,15 @@ client_summary = genai.Client(api_key=os.getenv("GEMINI_API_SUMMARY_KEY"))
 client_dedupe = genai.Client(api_key=os.getenv("GEMINI_API_DEDUPE_KEY"))
 
 
-# Chat GPT
-# client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
-
 def _is_retriable_exc(e: Exception) -> bool:
     msg = (str(e) or "").lower()
     name = e.__class__.__name__.lower()
 
     # Google系の明示的リトライ対象
-    if isinstance(e, (ServiceUnavailable, ResourceExhausted, DeadlineExceeded)):
+    if isinstance(
+        e,
+        (ServiceUnavailable, ResourceExhausted, DeadlineExceeded, InternalServerError),
+    ):
         return True
 
     # httpx/urllib3系（環境に無ければ無視）
@@ -81,8 +86,11 @@ def _is_retriable_exc(e: Exception) -> bool:
     # 文字列での判定（実装差分吸収）
     hints = [
         "remoteprotocolerror",
+        "servererror",
+        "internal",  # "500 internal", "internal error" など
         "server disconnected",
         "unavailable",
+        "500",
         "503",
         "502",
         "504",
@@ -103,18 +111,246 @@ def call_gemini_with_retries(
     max_retries=5,
     base_delay=2.0,
     max_delay=30.0,
+    *,
+    usage_tag=None,
+    temperature=None,
 ):
+    """
+    - usage_tag: ログ識別子（'summary' など）
+    - temperature: 任意（未指定なら既定）
+    - ※ 出力トークン上限は設定しません（要求により撤廃）
+    """
+
+    # === Gemini 使用量ログ（入出力トークン） ======================================
+    def _usage_from_resp(resp):
+        """
+        google-genai のレスポンスから usage を取り出す（snake/camel双方に耐性）。
+        戻り値: dict(prompt_token_count, candidates_token_count, total_token_count,
+                    cache_creation_input_token_count, cache_read_input_token_count)
+        """
+        usage = (
+            getattr(resp, "usage_metadata", None)
+            or getattr(resp, "usageMetadata", None)
+            or {}
+        )
+        ud = {}
+        if usage:
+            get = (
+                usage.get
+                if isinstance(usage, dict)
+                else lambda k, d=None: getattr(usage, k, d)
+            )
+            ud["prompt_token_count"] = get(
+                "prompt_token_count", get("input_token_count", get("input_tokens", 0))
+            )
+            ud["candidates_token_count"] = get(
+                "candidates_token_count",
+                get("output_token_count", get("output_tokens", 0)),
+            )
+            ud["total_token_count"] = get(
+                "total_token_count",
+                get(
+                    "total_tokens",
+                    (ud.get("prompt_token_count", 0) or 0)
+                    + (ud.get("candidates_token_count", 0) or 0),
+                ),
+            )
+            ud["cache_creation_input_token_count"] = get(
+                "cache_creation_input_token_count", 0
+            )
+            ud["cache_read_input_token_count"] = get("cache_read_input_token_count", 0)
+        return ud
+
+    def _log_gemini_usage(resp, *, tag: str = "gen", model: str = ""):
+        """標準出力＋JSONLファイル(gemini_usage.log)へ入出力トークンを記録"""
+        try:
+            u = _usage_from_resp(resp) or {}
+            rec = {
+                "ts": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                "tag": tag,
+                "model": model,
+                **u,
+            }
+            print(
+                "📊 TOKENS[{tag}] in={in_} out={out} total={tot} (cache create/read={cc}/{cr})".format(
+                    tag=tag,
+                    in_=rec.get("prompt_token_count", 0),
+                    out=rec.get("candidates_token_count", 0),
+                    tot=rec.get("total_token_count", 0),
+                    cc=rec.get("cache_creation_input_token_count", 0),
+                    cr=rec.get("cache_read_input_token_count", 0),
+                )
+            )
+            try:
+                with open("gemini_usage.log", "a", encoding="utf-8") as f:
+                    f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            except Exception:
+                pass
+        except Exception as e:
+            print(f"⚠️ usage log failed: {e}")
+
+    # === Free tier monitor (10 Requests per Minute / 250 Requests per Day / 250k Tokens per Minute[input]) ======
+    # 追加ログ: 出力側の Tokens per Minute (output) も集計して表示する
+    class _FreeTierWatch:
+        def __init__(self, rpm_limit=10, rpd_limit=250, tpm_limit=250_000):
+            self.rpm_limit = int(os.getenv("GEMINI_FREE_RPM", rpm_limit))
+            # “RPD” の略称は使わず、正式名称で扱う
+            self.requests_per_day_limit = int(os.getenv("GEMINI_FREE_RPD", rpd_limit))
+            # 無料枠のTPM判定は入力が基準
+            self.tpm_limit = int(os.getenv("GEMINI_FREE_TPM", tpm_limit))
+
+            self.req_times = deque()  # 直近60秒の成功リクエスト完了時刻
+            self.tpm_in_points = deque()  # 直近60秒の (時刻, 入力トークン)
+            self.tpm_out_points = deque()  # 直近60秒の (時刻, 出力トークン)
+            self.day_key = None  # MMT 日付キー（UTC+6:30）
+            self.requests_per_day_count = 0
+
+            # “越えた瞬間だけ”通知するためのラッチ
+            self._over_rpm = False
+            self._over_tpm_in = False
+            self._over_rpd = False
+
+            # 毎回のレート窓スナップショット出力（標準出力のみ／既定ON）
+            self._rate_window_log_enabled = str(
+                os.getenv("GEMINI_RATE_WINDOW_LOG", "1")
+            ).lower() not in ("0", "false", "off")
+
+        def _mmt_today(self, now_utc):
+            mmt = timezone(timedelta(hours=6, minutes=30))
+            return now_utc.astimezone(mmt).date()
+
+        def record(
+            self,
+            prompt_tokens: int,
+            output_tokens: int = 0,
+            *,
+            tag: str = "gen",
+            model: str = "",
+        ):
+            now = datetime.utcnow().replace(tzinfo=timezone.utc)
+
+            # 直近60秒窓（Requests per Minute / Tokens per Minute）
+            self.req_times.append(now)
+            self.tpm_in_points.append((now, int(prompt_tokens or 0)))
+            self.tpm_out_points.append((now, int(output_tokens or 0)))
+            cutoff = now - timedelta(seconds=60)
+            while self.req_times and self.req_times[0] < cutoff:
+                self.req_times.popleft()
+            while self.tpm_in_points and self.tpm_in_points[0][0] < cutoff:
+                self.tpm_in_points.popleft()
+            while self.tpm_out_points and self.tpm_out_points[0][0] < cutoff:
+                self.tpm_out_points.popleft()
+
+            rpm = len(self.req_times)
+            tpm_in = sum(tok for _, tok in self.tpm_in_points)
+            tpm_out = sum(tok for _, tok in self.tpm_out_points)
+
+            # Requests per Day — MMT日付でカウント
+            today_mmt = self._mmt_today(now)
+            if self.day_key != today_mmt:
+                self.day_key = today_mmt
+                self.requests_per_day_count = 0
+                self._over_rpd = False  # 日またぎでリセット
+            self.requests_per_day_count += 1  # この成功リクエストを計上
+
+            # 超過判定（入力TPM/RPM/Requests per Day）
+            over_rpm = rpm > self.rpm_limit
+            over_tpm_in = tpm_in > self.tpm_limit
+            over_rpd = self.requests_per_day_count > self.requests_per_day_limit
+
+            def _emit_exceeded(kind_label: str, detail: str):
+                # kind_label は正式名称で： "Requests per Minute" / "Tokens per Minute (input)" / "Requests per Day"
+                print(
+                    f"🚩 FREE-TIER EXCEEDED [{kind_label}] {detail} | tag={tag} model={model}"
+                )
+
+            # 超過通知（正式名称）
+            if over_rpm and not self._over_rpm:
+                self._over_rpm = True
+                _emit_exceeded(
+                    "Requests per Minute", f"{rpm}>{self.rpm_limit} within last 60s"
+                )
+            elif not over_rpm:
+                self._over_rpm = False
+
+            if over_tpm_in and not self._over_tpm_in:
+                self._over_tpm_in = True
+                _emit_exceeded(
+                    "Tokens per Minute (input)",
+                    f"input={tpm_in} > {self.tpm_limit} in last 60s",
+                )
+            elif not over_tpm_in:
+                self._over_tpm_in = False
+
+            if over_rpd and not self._over_rpd:
+                self._over_rpd = True
+                _emit_exceeded(
+                    "Requests per Day",
+                    f"{self.requests_per_day_count}>{self.requests_per_day_limit} (MMT day {today_mmt})",
+                )
+
+            # 毎回のレート窓スナップショット（人間可読、JSON出力なし）
+            if self._rate_window_log_enabled:
+                print(
+                    "ℹ️ WINDOW [rate] "
+                    f"Requests per Minute={rpm} | "
+                    f"Tokens per Minute (input)={tpm_in} | "
+                    f"Tokens per Minute (output)={tpm_out} | "
+                    f"Requests per Day={self.requests_per_day_count} "
+                    f"(MMT day {today_mmt}) | tag={tag} model={model}"
+                )
+
+    # 有効/無効トグル（既定=有効）
+    _FREE_TIER_CHECK_ENABLED = str(
+        os.getenv("GEMINI_FREE_TIER_CHECK", "1")
+    ).lower() not in ("0", "false", "off")
+    _FREE_TIER_MON = _FreeTierWatch() if _FREE_TIER_CHECK_ENABLED else None
+    # =============================================================================================================
+
+    # 任意パラメータだけ設定（上限は入れない）
+    cfg = {}
+    if temperature is not None:
+        cfg["temperature"] = float(temperature)
+
+    kwargs = {}
+    if cfg:
+        try:
+            kwargs["config"] = genai.types.GenerateContentConfig(**cfg)  # type: ignore[attr-defined]
+        except Exception:
+            kwargs["config"] = cfg
+
     delay = base_delay
     for attempt in range(1, max_retries + 1):
         try:
-            return client.models.generate_content(model=model, contents=prompt)
+            resp = client.models.generate_content(
+                model=model, contents=prompt, **kwargs
+            )
+
+            # 1) 使用量ログ
+            _log_gemini_usage(resp, tag=(usage_tag or "gen"), model=model)
+
+            # 2) 無料枠監視（MMT日次 / RPM / 入力TPM）
+            try:
+                if _FREE_TIER_MON:
+                    u = _usage_from_resp(resp) or {}
+                    _FREE_TIER_MON.record(
+                        int(u.get("prompt_token_count") or 0),
+                        output_tokens=int(
+                            u.get("candidates_token_count") or 0
+                        ),  # 出力量のTPM集計用
+                        tag=(usage_tag or "gen"),
+                        model=model,
+                    )
+            except Exception:
+                pass
+
+            return resp
         except Exception as e:
             if not _is_retriable_exc(e) or attempt == max_retries:
                 raise
             print(
                 f"⚠️ Gemini retry {attempt}/{max_retries} after: {e.__class__.__name__} | {e}"
             )
-            # ジッター付き指数バックオフ
             time.sleep(min(max_delay, delay) + random.random() * 0.5)
             delay *= 2
 
@@ -2102,7 +2338,7 @@ def _cut_ultra_block(lines):
 
 
 # 本処理関数
-def process_translation_batches(batch_size=5, wait_seconds=60):
+def process_translation_batches(batch_size=3, wait_seconds=60):
     # MEMO: TEST用、Geminiを呼ばず、URLリストだけ返す
     # summarized_results = []
     # for item in translation_queue:
@@ -2243,8 +2479,26 @@ def process_translation_batches(batch_size=5, wait_seconds=60):
 
 
 def send_email_digest(summaries):
+    def _build_gmail_service():
+        cid = os.getenv("GMAIL_CLIENT_ID")
+        csec = os.getenv("GMAIL_CLIENT_SECRET")
+        rtok = os.getenv("GMAIL_REFRESH_TOKEN")
+        if not (cid and csec and rtok):
+            raise RuntimeError(
+                "Gmail API credentials (CLIENT_ID/SECRET/REFRESH_TOKEN) are missing."
+            )
+
+        # リフレッシュトークンがある場合、scopes を渡さない
+        creds = Credentials(
+            token=None,
+            refresh_token=rtok,
+            token_uri="https://oauth2.googleapis.com/token",
+            client_id=cid,
+            client_secret=csec,
+        )
+        return build("gmail", "v1", credentials=creds, cache_discovery=False)
+
     sender_email = os.getenv("EMAIL_SENDER")
-    sender_pass = os.getenv("GMAIL_APP_PASSWORD")
     recipient_emails = os.getenv("EMAIL_RECIPIENTS", "").split(",")
 
     digest_date = get_today_date_mmt()
@@ -2309,20 +2563,22 @@ def send_email_digest(summaries):
 
     from_display_name = "Myanmar News Digest"
 
-    msg = EmailMessage(policy=SMTPUTF8)
+    subject = re.sub(r"[\r\n]+", " ", subject).strip()
+    msg = EmailMessage(policy=SMTP)
     msg["Subject"] = subject
-    msg["From"] = formataddr((from_display_name, sender_email))
+    msg["From"] = formataddr((str(Header(from_display_name, "utf-8")), sender_email))
     msg["To"] = ", ".join(recipient_emails)
     msg.set_content("HTMLメールを開ける環境でご確認ください。", charset="utf-8")
     msg.add_alternative(html_content, subtype="html", charset="utf-8")
 
     try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-            server.login(sender_email, sender_pass)
-            server.send_message(msg)
-            print("✅ メール送信完了")
-    except Exception as e:
-        print(f"❌ メール送信エラー: {e}")
+        service = _build_gmail_service()
+        raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
+        body = {"raw": raw}
+        sent = service.users().messages().send(userId="me", body=body).execute()
+        print("✅ Gmail API 送信完了 messageId:", sent.get("id"))
+    except HttpError as e:
+        print(f"❌ Gmail API エラー: {e}")
         sys.exit(1)
 
 
@@ -2380,6 +2636,6 @@ if __name__ == "__main__":
     translation_queue = deduplicate_by_url(translation_queue)
 
     # バッチ翻訳実行 (5件ごとに1分待機)
-    all_summaries = process_translation_batches(batch_size=5, wait_seconds=60)
+    all_summaries = process_translation_batches(batch_size=3, wait_seconds=60)
 
     send_email_digest(all_summaries)
