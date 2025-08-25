@@ -7,7 +7,8 @@ on:
 
 jobs:
   prod:
-    if: ${{ github.event_name == 'schedule' }}
+    if: (github.event_name == 'schedule' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
     name: Run (production / main)
     runs-on: ubuntu-latest
     environment: production
@@ -47,12 +48,13 @@ jobs:
           EMAIL_RECIPIENTS: ${{ vars.EMAIL_RECIPIENTS }}
           GEMINI_API_SUMMARY_KEY: ${{ vars.GEMINI_API_SUMMARY_KEY }}
           GEMINI_API_DEDUPE_KEY: ${{ vars.GEMINI_API_DEDUPE_KEY }}
-          GEMINI_API_TEST_SUMMARY_KEY: ${{ vars.GEMINI_API_TEST_SUMMARY_KEY }}
-          GEMINI_API_TEST_DEDUPE_KEY: ${{ vars.GEMINI_API_TEST_DEDUPE_KEY }}
+          GMAIL_CLIENT_ID: ${{ vars.GMAIL_CLIENT_ID }}
+          GMAIL_CLIENT_SECRET: ${{ vars.GMAIL_CLIENT_SECRET }}
+          GMAIL_REFRESH_TOKEN: ${{ vars.GMAIL_REFRESH_TOKEN }}
         run: python fetch_articles.py
 
   dev:
-    if: ${{ github.event_name == 'workflow_dispatch' }}
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/develop'
     name: Run (development / develop)
     runs-on: ubuntu-latest
     environment: development
@@ -89,10 +91,8 @@ jobs:
           OPENAI_API_KEY: ${{ vars.OPENAI_API_KEY }}
           EMAIL_SENDER: ${{ vars.EMAIL_SENDER }}
           EMAIL_RECIPIENTS: ${{ vars.EMAIL_RECIPIENTS }}
-          GEMINI_API_SUMMARY_KEY: ${{ vars.GEMINI_API_SUMMARY_KEY }}
-          GEMINI_API_DEDUPE_KEY: ${{ vars.GEMINI_API_DEDUPE_KEY }}
-          GEMINI_API_TEST_SUMMARY_KEY: ${{ vars.GEMINI_API_TEST_SUMMARY_KEY }}
-          GEMINI_API_TEST_DEDUPE_KEY: ${{ vars.GEMINI_API_TEST_DEDUPE_KEY }}
+          GEMINI_API_SUMMARY_KEY: ${{ vars.GEMINI_API_TEST_SUMMARY_KEY }}
+          GEMINI_API_DEDUPE_KEY: ${{ vars.GEMINI_API_TEST_DEDUPE_KEY }}
           GMAIL_CLIENT_ID: ${{ vars.GMAIL_CLIENT_ID }}
           GMAIL_CLIENT_SECRET: ${{ vars.GMAIL_CLIENT_SECRET }}
           GMAIL_REFRESH_TOKEN: ${{ vars.GMAIL_REFRESH_TOKEN }}
