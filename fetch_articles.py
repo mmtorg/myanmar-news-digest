@@ -406,10 +406,10 @@ NEWS_KEYWORDS = [
     "Military Service",
     "Military service",
     "military service",
-    # ロヒンギャ
-    "ရိုဟင်ဂျာ",
-    "Rohingya",
-    "rohingya",
+    # ロヒンギャ お願いされてない
+    # "ရိုဟင်ဂျာ",
+    # "Rohingya",
+    # "rohingya",
     # 国境貿易・交易
     "နယ်စပ်ကုန်သွယ်ရေး",
     # ヤンゴン管区
