@@ -2570,6 +2570,7 @@ def send_email_digest(summaries):
     msg["To"] = ", ".join(recipient_emails)
     
     print("DEBUG To:", msg["To"])
+    print(f"DEBUG To: {len(recipient_emails)} recipients")
     sys.exit(1)
     
     msg.set_content("HTMLメールを開ける環境でご確認ください。", charset="utf-8")
