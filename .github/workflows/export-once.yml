@@ -45,7 +45,7 @@ jobs:
 
       - name: Run export
         env:
-          GEMINI_API_SUMMARY_KEY: ${{ secrets.GEMINI_API_SUMMARY_KEY }}
+          GEMINI_API_SUMMARY_KEY: ${{ secrets.GEMINI_API_TEST_SUMMARY_KEY }}
           # HTTPS_PROXY: ${{ secrets.HTTPS_PROXY }}   # 必要なら
         run: |
           python export_all_articles_to_csv.py \
