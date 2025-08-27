@@ -19,30 +19,46 @@ on:
 jobs:
   run:
     runs-on: ubuntu-latest
-    environment: development # ← ここ
+    environment: development # ← 環境名は実際の名称に合わせて
     timeout-minutes: 60
     env:
+      # out未指定なら start から自動命名
       OUT: ${{ inputs.out != '' && inputs.out || format('articles_since_{0}_MMT.csv', inputs.start) }}
+      # development 環境の Secrets をマッピング
+      GEMINI_API_SUMMARY_KEY: ${{ secrets.GEMINI_API_TEST_SUMMARY_KEY }}
+      GEMINI_API_DEDUPE_KEY: ${{ secrets.GEMINI_API_TEST_DEDUPE_KEY }}
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref }} # ← ここで export_csv のコードを使う
-      - uses: actions/setup-python@v5
+          ref: ${{ inputs.ref }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
       - name: Install dependencies
         run: |
           python -m pip install -U pip
           if [ -f requirements.txt ]; then python -m pip install -r requirements.txt; fi
           python -m pip install -U google-genai
+
+      # 早めにキーが入っているか検証（原因切り分けに便利）
+      - name: Assert Gemini keys present
+        run: |
+          [ -n "$GEMINI_API_SUMMARY_KEY" ] || { echo "::error::GEMINI_API_SUMMARY_KEY is empty"; exit 1; }
+          [ -n "$GEMINI_API_DEDUPE_KEY" ]  || { echo "::error::GEMINI_API_DEDUPE_KEY is empty";  exit 1; }
+
       - name: Run export
-        env:
-          GEMINI_API_SUMMARY_KEY: ${{ secrets.GEMINI_API_TEST_SUMMARY_KEY }} # ← Secret名あわせてね
         run: |
           python export_all_articles_to_csv.py \
             --start "${{ inputs.start }}" \
             --out   "${{ env.OUT }}"
-      - uses: actions/upload-artifact@v4
+
+      - name: Upload CSV artifact
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ env.OUT }}
           path: ${{ env.OUT }}
