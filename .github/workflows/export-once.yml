@@ -19,6 +19,7 @@ on:
 jobs:
   run:
     runs-on: ubuntu-latest
+    environment: development # ← ここ
     timeout-minutes: 60
     env:
       OUT: ${{ inputs.out != '' && inputs.out || format('articles_since_{0}_MMT.csv', inputs.start) }}
