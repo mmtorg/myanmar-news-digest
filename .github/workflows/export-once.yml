@@ -1,3 +1,4 @@
+# .github/workflows/export-once.yml
 name: Export all articles CSV (manual)
 
 on:
@@ -19,17 +20,26 @@ on:
 jobs:
   run:
     runs-on: ubuntu-latest
-    environment: development # ← 環境名は実際の名称に合わせて
+    environment: export_csv # ← ここ！環境のSecretsを使う
     timeout-minutes: 60
+    concurrency: # ← 二重起動で無料枠を食い潰さない
+      group: export-csv-manual
+      cancel-in-progress: false
     env:
-      # out未指定なら start から自動命名
+      # 出力ファイル名（out未指定なら start から自動命名）
       OUT: ${{ inputs.out != '' && inputs.out || format('articles_since_{0}_MMT.csv', inputs.start) }}
-      # development 環境の Secrets をマッピング
-      GEMINI_API_SUMMARY_KEY: ${{ secrets.GEMINI_API_TEST_SUMMARY_KEY }}
-      GEMINI_API_DEDUPE_KEY: ${{ secrets.GEMINI_API_TEST_DEDUPE_KEY }}
+
+      # ===== Gemini API キー（export_csv 環境のSecretsを使用） =====
+      GEMINI_API_SUMMARY_KEY: ${{ secrets.GEMINI_API_EXPORT_SUMMARY_KEY }}
+      GEMINI_API_DEDUPE_KEY: ${{ secrets.GEMINI_API_EXPORT_DEDUPE_KEY }}
+
+      # ===== レート制御（必要に応じて数値を調整） =====
+      GEMINI_REQS_PER_MIN: "20" # 1分あたり最大リクエスト数（例）
+      GEMINI_MIN_INTERVAL_SEC: "1.5" # 連続呼び出しの最小間隔（秒）
+      GEMINI_JITTER_SEC: "0.3" # 各呼び出し前に 0〜この秒数のランダム待機（バースト緩和）
 
     steps:
-      - name: Checkout
+      - name: Checkout (export_csv)
         uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref }}
@@ -45,7 +55,6 @@ jobs:
           if [ -f requirements.txt ]; then python -m pip install -r requirements.txt; fi
           python -m pip install -U google-genai
 
-      # 早めにキーが入っているか検証（原因切り分けに便利）
       - name: Assert Gemini keys present
         run: |
           [ -n "$GEMINI_API_SUMMARY_KEY" ] || { echo "::error::GEMINI_API_SUMMARY_KEY is empty"; exit 1; }
