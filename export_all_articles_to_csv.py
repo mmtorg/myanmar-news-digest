@@ -1,3 +1,4 @@
+
 # -*- coding: utf-8 -*-
 """
 export_all_articles_to_csv.py
@@ -7,9 +8,11 @@ export_all_articles_to_csv.py
 ・ミャンマー時間で 2025-08-23(土) 以降の記事に限定
 ・タイトルを gemini-2.5-flash（同一プロンプト規約）で日本語に翻訳
 ・CSV (UTF-8 BOM付き) に A:メディア名 / B:日本語タイトル / C:発行日(YYYY-MM-DD, MMT) / D:URL を出力
+・Gemini 無料枠対策: リクエスト間隔のレートリミット（RPM/最小インターバル/ジッター）を導入
 
 使い方(例):
-  python export_all_articles_to_csv.py --start 2025-08-23 --out articles_since_2025-08-23.csv
+  python export_all_articles_to_csv.py --start 2025-08-23 --out articles_since_2025-08-23.csv \
+    --rpm 20 --min-interval 1.5 --jitter 0.3
 
 必要: 同ディレクトリに fetch_articles.py (添付ファイル) を配置し import 可能であること。
 Gemini API の認証は fetch_articles.py の実装に従います。
@@ -38,6 +41,11 @@ import unicodedata
 from datetime import datetime, date, timedelta
 from typing import Dict, List, Iterable
 
+# 追加インポート（レート制御）
+import os
+import random
+from collections import deque
+
 # --- 添付コードからインポート（そのまま利用） ---
 from fetch_articles import (
     MMT,
@@ -46,11 +54,6 @@ from fetch_articles import (
     client_summary,
     deduplicate_by_url,
 )
-
-# 既存関数は「キーワード後」の集計を前提にしているものもあるため、
-# ここでは “前段の収集部分” を必要最小限だけ新規実装します。
-# ただし、URL指定条件(CATEGORY_URLS / CATEGORY_PATHS_RAW / EXCLUDE_PREFIXES / DVBカテゴリの制限)
-# は、fetch_articles.py 内のロジックに合わせます。
 
 # ---- Utilities ----
 import re
@@ -407,7 +410,7 @@ def translate_title_only(item: Dict, *, model: str = "gemini-2.5-flash") -> str:
         text = (resp.text or "").strip()
         # 余分行を除去して「【タイトル】」行を厳格抽出
         lines = [unicodedata.normalize("NFC", ln).strip() for ln in text.splitlines() if ln.strip()]
-        # A) 同一行 / B) 次行採用 のルール（fetch_articles.py と同じ）
+        # A) 同一行 / B) 次行採用 のルール
         idx = next((i for i, ln in enumerate(lines) if re.match(r"^【\s*タイトル\s*】", ln)), None)
         if idx is not None:
             m = re.match(r"^【\s*タイトル\s*】\s*(.*)$", lines[idx])
@@ -424,12 +427,58 @@ def translate_title_only(item: Dict, *, model: str = "gemini-2.5-flash") -> str:
         return payload["title"]
 
 
+# ===== レートリミッタ =====
+class RateLimiter:
+    """リクエスト/分 と 最小インターバル を同時に満たすための単純なスライディングウィンドウ"""
+    def __init__(self, rpm: int, min_interval: float, jitter: float = 0.0):
+        self.rpm = max(1, int(rpm))
+        self.min_interval = max(0.0, float(min_interval))
+        self.jitter = max(0.0, float(jitter))
+        self._win = deque()   # 直近60秒の呼び出しtimestamp
+        self._last = 0.0
+
+    def wait(self):
+        now = time.time()
+
+        # 連続呼び出しの最小インターバル
+        if self._last:
+            delta = now - self._last
+            if delta < self.min_interval:
+                time.sleep(self.min_interval - delta)
+
+        # 1分あたりの上限
+        window = 60.0
+        now = time.time()
+        while self._win and now - self._win[0] >= window:
+            self._win.popleft()
+        if len(self._win) >= self.rpm:
+            sleep_for = window - (now - self._win[0]) + 0.01
+            if sleep_for > 0:
+                time.sleep(sleep_for)
+
+        # ランダムジッター（バースト回避）
+        if self.jitter > 0:
+            time.sleep(random.uniform(0.0, self.jitter))
+
+        # 記録
+        self._last = time.time()
+        self._win.append(self._last)
+
+
 # ===== メイン =====
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--start", type=str, default="2025-08-23", help="MMT基準の開始日 (YYYY-MM-DD)")
     parser.add_argument("--out", type=str, default="articles_since_2025-08-23_MMT.csv", help="出力CSVパス")
-    parser.add_argument("--sleep", type=float, default=0.5, help="翻訳間のスリープ秒（バースト抑制）")
+
+    # レート制御（CLI > 環境変数 > 既定）
+    parser.add_argument("--rpm", type=int, default=int(os.getenv("GEMINI_REQS_PER_MIN", "30")),
+                        help="Requests per minute limit (default: env GEMINI_REQS_PER_MIN or 30)")
+    parser.add_argument("--min-interval", type=float, default=float(os.getenv("GEMINI_MIN_INTERVAL_SEC", "0.5")),
+                        help="Minimum seconds between requests (default: env GEMINI_MIN_INTERVAL_SEC or 0.5)")
+    parser.add_argument("--jitter", type=float, default=float(os.getenv("GEMINI_JITTER_SEC", "0.0")),
+                        help="Random jitter [0..jitter] seconds per request (default: env GEMINI_JITTER_SEC or 0.0)")
+
     args = parser.parse_args(argv)
 
     # MMT 今日
@@ -474,11 +523,15 @@ def main(argv=None):
     all_rows = deduplicate_by_url(all_rows)
     print(f"Dedup by URL: after={len(all_rows)}")
 
-    # タイトル翻訳（1件ずつ。Geminiフリー枠やRPM対策で軽くスリープ）
+    # レート制御の設定ログ
+    print(f"Rate limit: rpm={args.rpm}, min_interval={args.min_interval}s, jitter<= {args.jitter}s")
+
+    # タイトル翻訳（1件ずつ）
+    limiter = RateLimiter(args.rpm, args.min_interval, args.jitter)
     for item in all_rows:
+        limiter.wait()
         jp = translate_title_only(item)
         item["title_ja"] = jp
-        time.sleep(args.sleep)
 
     # CSV 出力（UTF-8 BOM付きで文字化けを防止）
     # A: メディア名 / B: 日本語タイトル / C: 発行日 / D: URL
@@ -486,7 +539,6 @@ def main(argv=None):
         writer = csv.writer(f)
         writer.writerow(["メディア名", "日本語タイトル", "発行日(MMT)", "URL"])
         for a in all_rows:
-            # a["date"] は YYYY-MM-DD or ISO文字列。前者優先の統一化
             dd = a.get("date") or ""
             if "T" in dd:
                 try:
