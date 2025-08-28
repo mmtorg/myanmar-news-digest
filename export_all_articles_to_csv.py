@@ -39,42 +39,40 @@ import time
 import unicodedata
 from datetime import datetime, date, timedelta
 from typing import Dict, List, Iterable
-
-# 追加インポート
 import os
 import random
 from collections import deque
-
-# --- 添付コードからインポート（そのまま利用） ---
-from fetch_articles import (
-    MMT,
-    build_prompt,
-    call_gemini_with_retries,
-    client_summary,
-    deduplicate_by_url,
-)
-
-# ---- Utilities ----
 import re
 import json
 import requests
 from bs4 import BeautifulSoup
 from dateutil.parser import parse as parse_date
 
+# --- 添付コード（fetch_articles.py）から利用する関数/定数 ---
+from fetch_articles import (
+    MMT,
+    build_prompt,
+    call_gemini_with_retries,
+    client_summary,
+    deduplicate_by_url,
+    get_irrawaddy_articles_for,
+    fetch_with_retry,
+    fetch_with_retry_dvb,
+    extract_paragraphs_with_wait,
+)
+
+# ----------------------------------------------------------------
 
 def daterange_mmt(start: date, end: date) -> Iterable[date]:
+    """MMT日付で start..end（両端含む）を返す"""
     cur = start
     while cur <= end:
         yield cur
-        cur = cur + timedelta(days=1)
-
-
-# ===== Irrawaddy =====
-from fetch_articles import get_irrawaddy_articles_for  # noqa: E402
-
+        cur += timedelta(days=1)
 
 # ===== BBC Burmese (RSS) =====
 def collect_bbc_all_for_date(target_date_mmt: date) -> List[Dict]:
+    """RSSをUTC→MMT換算し、対象日一致のみ返す（キーワード絞り込みなし）"""
     rss_url = "https://feeds.bbci.co.uk/burmese/rss.xml"
     session = requests.Session()
     try:
@@ -96,7 +94,7 @@ def collect_bbc_all_for_date(target_date_mmt: date) -> List[Dict]:
             pub_dt = parse_date(pub_date_tag.text).astimezone(MMT)
             if pub_dt.date() != target_date_mmt:
                 continue
-            title = unicodedata.normalize("NFC", title_tag.text or "").strip()
+            title = unicodedata.normalize("NFC", (title_tag.text or "").strip())
             url = (link_tag.text or "").strip()
             if not (title and url):
                 continue
@@ -113,9 +111,14 @@ def collect_bbc_all_for_date(target_date_mmt: date) -> List[Dict]:
             continue
     return out
 
-
 # ===== Khit Thit Media =====
-def collect_khitthit_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List[Dict]:
+def collect_khitthit_all_for_date(target_date_mmt: date, max_pages: int = 5) -> List[Dict]:
+    """
+    fetch_articles.py と同じロジック:
+      ・カテゴリ一覧/記事取得ともに fetch_with_retry のみを使用
+      ・キーワード絞り込みは実施しない
+      ・ページ数は 5 まで拡大
+    """
     CATEGORY_URLS = [
         "https://yktnews.com/category/news/",
         "https://yktnews.com/category/politics/",
@@ -131,7 +134,6 @@ def collect_khitthit_all_for_date(target_date_mmt: date, max_pages: int = 3) -> 
                 a.decompose()
 
     HASHTAG_TOKEN_RE = re.compile(r"(?:(?<=\s)|^)\#[^\s#]+")
-    from fetch_articles import fetch_with_retry, extract_paragraphs_with_wait
 
     collected_urls = set()
     for base_url in CATEGORY_URLS:
@@ -159,6 +161,7 @@ def collect_khitthit_all_for_date(target_date_mmt: date, max_pages: int = 3) -> 
             res = fetch_with_retry(url)
             soup = BeautifulSoup(res.content, "html.parser")
 
+            # 発行日時 → MMT
             meta_tag = soup.find("meta", property="article:published_time")
             if not meta_tag or not meta_tag.has_attr("content"):
                 continue
@@ -166,11 +169,13 @@ def collect_khitthit_all_for_date(target_date_mmt: date, max_pages: int = 3) -> 
             if dt.date() != target_date_mmt:
                 continue
 
+            # タイトル
             h1 = soup.find("h1") or soup.find("title")
             title = (h1.get_text(strip=True) if h1 else "").strip()
             if not title:
                 continue
 
+            # 本文（#除去）
             _remove_hashtag_links(soup)
             paragraphs = extract_paragraphs_with_wait(soup)
             body_text = "\n".join(
@@ -194,41 +199,50 @@ def collect_khitthit_all_for_date(target_date_mmt: date, max_pages: int = 3) -> 
 
     return results
 
-
 # ===== DVB =====
 def collect_dvb_all_for_date(target_date_mmt: date) -> List[Dict]:
+    """
+    fetch_articles.py と同じ方針で、DVB 専用フェッチャ fetch_with_retry_dvb を使用。
+    一覧（/category/8/news と ?page=2）→ 記事ページの順で取得。
+    """
     BASE = "https://burmese.dvb.no"
     CATEGORY_PATHS = ["/category/8/news"]
-    from fetch_articles import fetch_with_retry
+
+    # Cookie/指紋を引き継ぐため、共有セッション（存在すれば使われる）
+    try:
+        sess = requests.Session()
+    except Exception:
+        sess = None
 
     collected_urls = set()
+
     for path in CATEGORY_PATHS:
         for page in (None, 2):
             url = f"{BASE}{path}" if page is None else f"{BASE}{path}?page={page}"
             try:
-                res = fetch_with_retry(url)
+                res = fetch_with_retry_dvb(url, retries=4, wait_seconds=2, session=sess)
             except Exception as e:
                 print(f"[dvb] list fetch fail {url}: {e}")
                 continue
 
-            soup = BeautifulSoup(res.content, "html.parser")
+            soup = BeautifulSoup(getattr(res, "content", None) or res.text, "html.parser")
 
-            def _norm(h: str) -> str:
-                return h if h.startswith("http") else BASE + h
+            def _norm_url(href: str) -> str:
+                return href if href.startswith("http") else BASE + href
 
-            cards = soup.select("div.listing_content.item.item_length-1 a[href]") or \
-                    soup.select("div.listing_content.item.item_length-2 a[href]") or \
-                    soup.select("div.listing_content.item a[href]")
+            cards = soup.select("div.listing_content.item.item_length-1 a[href]") \
+                 or soup.select("div.listing_content.item.item_length-2 a[href]") \
+                 or soup.select("div.listing_content.item a[href]")
             for a in cards:
                 href = a.get("href")
                 if href:
-                    collected_urls.add(_norm(href))
+                    collected_urls.add(_norm_url(href))
 
     results: List[Dict] = []
     for url in collected_urls:
         try:
-            res = fetch_with_retry(url)
-            soup = BeautifulSoup(res.content, "html.parser")
+            res = fetch_with_retry_dvb(url, retries=4, wait_seconds=2, session=sess)
+            soup = BeautifulSoup(getattr(res, "content", None) or res.text, "html.parser")
 
             meta = soup.find("meta", property="article:published_time")
             if not meta or not meta.has_attr("content"):
@@ -241,6 +255,7 @@ def collect_dvb_all_for_date(target_date_mmt: date) -> List[Dict]:
             title = (t.get_text(strip=True) if t else "").strip()
             body_ps = soup.select(".full_content p")
             body = "\n".join(p.get_text(strip=True) for p in body_ps).strip()
+
             if not title:
                 continue
 
@@ -259,7 +274,6 @@ def collect_dvb_all_for_date(target_date_mmt: date) -> List[Dict]:
 
     return results
 
-
 # ===== Mizzima =====
 def collect_mizzima_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List[Dict]:
     base_url = "https://bur.mizzima.com"
@@ -268,6 +282,7 @@ def collect_mizzima_all_for_date(target_date_mmt: date, max_pages: int = 3) -> L
         "%e1%80%99%e1%80%bc%e1%80%94%e1%80%ba%e1%80%99%e1%80%ac"
         "%e1%80%9e%e1%80%90%e1%80%84%e1%80%ba%e1%80%b8"
     )
+
     EXCLUDE_TITLE_KEYWORDS = [
         "နွေဦးတော်လှန်ရေး နေ့စဉ်မှတ်စု",
         "ဓာတ်ပုံသတင်း",
@@ -276,31 +291,24 @@ def collect_mizzima_all_for_date(target_date_mmt: date, max_pages: int = 3) -> L
     article_urls: List[str] = []
     session = requests.Session()
     for page_num in range(1, max_pages + 1):
-        url = (
-            f"{base_url}{category_path}"
-            if page_num == 1
-            else f"{base_url}{category_path}/page/{page_num}/"
-        )
+        url = f"{base_url}{category_path}" if page_num == 1 else f"{base_url}{category_path}/page/{page_num}/"
         try:
             res = session.get(url, timeout=10)
             if res.status_code != 200:
                 continue
             soup = BeautifulSoup(res.content, "html.parser")
-            links = [
-                a["href"]
-                for a in soup.select("main.site-main article a.post-thumbnail[href]")
-            ]
+            links = [a["href"] for a in soup.select("main.site-main article a.post-thumbnail[href]")]
             article_urls.extend(links)
         except Exception as e:
             print(f"[mizzima] list fail {url}: {e}")
             continue
 
-    from fetch_articles import fetch_with_retry
-
     results: List[Dict] = []
     for url in article_urls:
         try:
-            res = fetch_with_retry(url)
+            res = requests.get(url, timeout=10)
+            if res.status_code != 200:
+                continue
             soup = BeautifulSoup(res.content, "html.parser")
 
             meta_tag = soup.find("meta", property="article:published_time")
@@ -345,9 +353,12 @@ def collect_mizzima_all_for_date(target_date_mmt: date, max_pages: int = 3) -> L
 
     return results
 
-
 # ===== 単体翻訳（既存プロンプト流用） =====
 def translate_title_only(item: Dict, *, model: str = "gemini-2.5-flash") -> str:
+    """
+    build_prompt(..., skip_filters=True) を使い、タイトルのみ日本語化。
+    生成結果から「【タイトル】 …」を抽出。失敗時は原題を返す。
+    """
     payload = {
         "source": item.get("source") or "",
         "url": item.get("url") or "",
@@ -373,15 +384,12 @@ def translate_title_only(item: Dict, *, model: str = "gemini-2.5-flash") -> str:
         print(f"[translate] fail for {payload.get('url')}: {e}")
         return payload["title"]
 
-
 # ===== バッチ翻訳 =====
 def translate_titles_in_batch(items: List[Dict], *, model: str = "gemini-2.5-flash") -> List[str]:
     """
     items: dict の配列（source/title/url程度）。同数の日本語訳タイトル配列を返す。
     失敗時は空リストを返し、呼び出し側でフォールバック。
     """
-    # 入力を列挙し、厳密JSONでの返却を要求
-    # （出力ノイズを避けるため、説明やコードフェンスは禁止）
     numbered = []
     for i, it in enumerate(items, 1):
         src = (it.get("source") or "").replace("\n", " ").strip()
@@ -403,13 +411,11 @@ def translate_titles_in_batch(items: List[Dict], *, model: str = "gemini-2.5-fla
     try:
         resp = call_gemini_with_retries(
             client_summary,
-            # build_prompt を使わず、厳密JSON出力に特化したプロンプトを直接作る
             f"{sys_prompt}\n\n{user_prompt}",
             model=model,
         )
         text = (resp.text or "").strip()
 
-        # JSON抽出（前後にノイズが混じった場合に備えて最外カッコを拾う）
         start = text.find("{")
         end = text.rfind("}")
         if start == -1 or end == -1:
@@ -418,16 +424,14 @@ def translate_titles_in_batch(items: List[Dict], *, model: str = "gemini-2.5-fla
 
         data = json.loads(blob)
         results = data.get("results", [])
-        # i順で並べ替えて配列に
         mapping = {int(r.get("i")): (r.get("ja") or "").strip() for r in results if "i" in r and "ja" in r}
         out = []
         for i in range(1, len(items) + 1):
-            out.append(mapping.get(i, ""))  # 欠けたら空文字
+            out.append(mapping.get(i, ""))  # 欠けは空文字
         return out
     except Exception as e:
         print(f"[batch-translate] fail ({len(items)} items): {e}")
         return []
-
 
 # ===== レートリミッタ =====
 class RateLimiter:
@@ -457,7 +461,6 @@ class RateLimiter:
             time.sleep(random.uniform(0.0, self.jitter))
         self._last = time.time()
         self._win.append(self._last)
-
 
 # ===== メイン =====
 def main(argv=None):
@@ -492,38 +495,38 @@ def main(argv=None):
 
     for d in daterange_mmt(start_date, today_mmt):
         print(f"=== {d.isoformat()} (MMT) ===")
+        # Irrawaddy（既存関数）
         try:
             irw = get_irrawaddy_articles_for(d, debug=False)
         except Exception as e:
             print(f"[irrawaddy] fail: {e}")
             irw = []
         all_rows.extend(irw)
+        # BBC / Khit Thit / DVB / Mizzima
         all_rows.extend(collect_bbc_all_for_date(d))
-        all_rows.extend(collect_khitthit_all_for_date(d, max_pages=3))
+        all_rows.extend(collect_khitthit_all_for_date(d, max_pages=5))
         all_rows.extend(collect_dvb_all_for_date(d))
         all_rows.extend(collect_mizzima_all_for_date(d, max_pages=3))
 
+    # 重複除去の前後をログ
     print(f"Dedup by URL: before={len(all_rows)}")
     all_rows = deduplicate_by_url(all_rows)
     print(f"Dedup by URL: after={len(all_rows)}")
 
+    # レート制御ログ
     print(f"Rate limit: rpm={args.rpm}, min_interval={args.min_interval}s, jitter<= {args.jitter}s")
     print(f"Batch translation size: {args.batch_size}")
 
+    # バッチ翻訳
     limiter = RateLimiter(args.rpm, args.min_interval, args.jitter)
-
-    # ===== バッチ翻訳適用 =====
-    # 未翻訳分だけ対象
     pending_idx = [i for i, it in enumerate(all_rows) if not it.get("title_ja")]
     bs = max(1, int(args.batch_size))
     for s in range(0, len(pending_idx), bs):
         idxs = pending_idx[s : s + bs]
         batch_items = [all_rows[i] for i in idxs]
-        # 1バッチにつき1回だけAPIを叩く
         limiter.wait()
         ja_list = translate_titles_in_batch(batch_items)
         if len(ja_list) != len(batch_items) or any(j == "" for j in ja_list):
-            # 失敗/欠落は単体翻訳で埋める（各件ごとにレート制御）
             print(f"[batch-translate] fallback single: {len(batch_items)} items")
             for k, item in zip(idxs, batch_items):
                 limiter.wait()
@@ -532,7 +535,7 @@ def main(argv=None):
             for k, ja in zip(idxs, ja_list):
                 all_rows[k]["title_ja"] = ja
 
-    # ===== CSV 出力 =====
+    # CSV 出力（UTF-8 BOM）
     with open(args.out, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.writer(f)
         writer.writerow(["メディア名", "日本語タイトル", "発行日(MMT)", "URL"])
@@ -545,10 +548,8 @@ def main(argv=None):
                 except Exception:
                     pass
             writer.writerow([a.get("source") or "", a.get("title_ja") or "", dd, a.get("url") or ""])
-
     print(f"✅ CSV written: {args.out}")
     return 0
-
 
 if __name__ == "__main__":
     sys.exit(main())
