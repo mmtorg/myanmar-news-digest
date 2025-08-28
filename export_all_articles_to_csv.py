@@ -112,12 +112,12 @@ def collect_bbc_all_for_date(target_date_mmt: date) -> List[Dict]:
     return out
 
 # ===== Khit Thit Media =====
-def collect_khitthit_all_for_date(target_date_mmt: date, max_pages: int = 5) -> List[Dict]:
+def collect_khitthit_all_for_date(target_date_mmt: date, max_pages: int = 15) -> List[Dict]:
     """
     fetch_articles.py と同じロジック:
       ・カテゴリ一覧/記事取得ともに fetch_with_retry のみを使用
       ・キーワード絞り込みは実施しない
-      ・ページ数は 5 まで拡大
+      ・ページ数は 15 まで拡大
     """
     CATEGORY_URLS = [
         "https://yktnews.com/category/news/",
@@ -217,7 +217,7 @@ def collect_dvb_all_for_date(target_date_mmt: date) -> List[Dict]:
     collected_urls = set()
 
     for path in CATEGORY_PATHS:
-        for page in (None, 2):
+        for page in (None, 15):
             url = f"{BASE}{path}" if page is None else f"{BASE}{path}?page={page}"
             try:
                 res = fetch_with_retry_dvb(url, retries=4, wait_seconds=2, session=sess)
@@ -275,7 +275,7 @@ def collect_dvb_all_for_date(target_date_mmt: date) -> List[Dict]:
     return results
 
 # ===== Mizzima =====
-def collect_mizzima_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List[Dict]:
+def collect_mizzima_all_for_date(target_date_mmt: date, max_pages: int = 15) -> List[Dict]:
     base_url = "https://bur.mizzima.com"
     category_path = (
         "/category/%e1%80%9e%e1%80%90%e1%80%84%e1%80%ba%e1%80%b8/"
