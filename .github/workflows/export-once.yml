@@ -21,7 +21,7 @@ jobs:
   run:
     runs-on: ubuntu-latest
     environment: export_csv # ← ここ！環境のSecretsを使う
-    timeout-minutes: 60
+    timeout-minutes: 360
     concurrency: # ← 二重起動で無料枠を食い潰さない
       group: export-csv-manual
       cancel-in-progress: false
