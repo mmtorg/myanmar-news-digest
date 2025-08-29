@@ -30,7 +30,7 @@ jobs:
       - name: Install dependencies (minimal)
         run: |
           python -m pip install --upgrade pip
-          pip install requests beautifulsoup4 python-dateutil google-genai \
+          pip install requests beautifulsoup4 lxml python-dateutil google-genai \
                       google-api-python-client google-auth-httplib2 google-auth \
                       cloudscraper curl-cffi
 
@@ -49,6 +49,10 @@ jobs:
           GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
           EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
           CSV_EMAIL_RECIPIENTS: ${{ secrets.CSV_EMAIL_RECIPIENTS }}
+          LANG: C.UTF-8
+          LC_ALL: C.UTF-8
+          PYTHONUTF8: "1"
+          PYTHONIOENCODING: "UTF-8"
         run: |
           python export_today_articles_to_csv_and_mail.py \
             --out today_MMT.csv --batch-size 100 --rpm 9 --min-interval 2.0 --jitter 0.3
@@ -81,7 +85,7 @@ jobs:
       - name: Install dependencies (minimal)
         run: |
           python -m pip install --upgrade pip
-          pip install requests beautifulsoup4 python-dateutil google-genai \
+          pip install requests beautifulsoup4 lxml python-dateutil google-genai \
                       google-api-python-client google-auth-httplib2 google-auth \
                       cloudscraper curl-cffi
 
@@ -100,6 +104,10 @@ jobs:
           GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
           EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
           CSV_EMAIL_RECIPIENTS: ${{ secrets.CSV_EMAIL_RECIPIENTS }}
+          LANG: C.UTF-8
+          LC_ALL: C.UTF-8
+          PYTHONUTF8: "1"
+          PYTHONIOENCODING: "UTF-8"
         run: |
           python export_today_articles_to_csv_and_mail.py \
             --out today_MMT.csv --batch-size 100 --rpm 9 --min-interval 2.0 --jitter 0.3

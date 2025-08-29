@@ -64,6 +64,12 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 import re
 
+# --- force UTF-8 stdout/stderr for GitHub Actions ---
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+except Exception:
+    pass
 
 def _build_gmail_service():
     cid = os.getenv("GMAIL_CLIENT_ID")
