@@ -1,0 +1,54 @@
+name: Export today's Myanmar articles CSV (MMT) and mail
+
+on:
+  schedule:
+    - cron: "30 16 * * *" # ミャンマー時間 23:00（UTC+6:30）
+  workflow_dispatch: {}
+
+jobs:
+  run-export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies (minimal)
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests beautifulsoup4 python-dateutil google-genai \
+                      google-api-python-client google-auth-httplib2 google-auth \
+                      cloudscraper curl-cffi
+
+      - name: Run exporter (MMT today)
+        env:
+          # ===== Gemini (free tier) =====
+          GEMINI_API_SUMMARY_KEY: ${{ secrets.GEMINI_API_EXPORT_SUMMARY_KEY }}
+          GEMINI_API_DEDUPE_KEY: ${{ secrets.GEMINI_API_EXPORT_DEDUPE_KEY }}
+          # レート制御: free想定（必要に応じて調整可）
+          GEMINI_REQS_PER_MIN: "9"
+          GEMINI_MIN_INTERVAL_SEC: "2.0"
+          GEMINI_JITTER_SEC: "0.3"
+          GEMINI_BATCH_SIZE: "100"
+
+          # ===== Gmail =====
+          GMAIL_CLIENT_ID: ${{ secrets.GMAIL_CLIENT_ID }}
+          GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
+          GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
+          EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
+          # CSV送付先。複数可（カンマ区切り）
+          CSV_EMAIL_RECIPIENTS: ${{ secrets.CSV_EMAIL_RECIPIENTS }}
+        run: |
+          python export_today_articles_to_csv_and_mail.py \
+            --out today_MMT.csv --batch-size 100 --rpm 9 --min-interval 2.0 --jitter 0.3
+
+      - name: Post-run cleanup (in case)
+        if: always()
+        run: |
+          rm -f today_MMT.csv || true
