@@ -4,10 +4,6 @@ name: Export DVB only CSV (manual)
 on:
   workflow_dispatch:
     inputs:
-      ref:
-        description: "Git ref to checkout (branch or tag)"
-        required: false
-        default: "export_csv"
       start:
         description: "Start date in MMT (YYYY-MM-DD)"
         required: true
@@ -20,29 +16,25 @@ on:
 jobs:
   run:
     runs-on: ubuntu-latest
-    environment: export_csv
+    environment: development
     timeout-minutes: 360
     concurrency:
       group: export-csv-manual
       cancel-in-progress: false
     env:
-      # 出力ファイル名（out未指定なら start から自動命名）
       OUT: ${{ inputs.out != '' && inputs.out || format('dvb_articles_since_{0}_MMT.csv', inputs.start) }}
-
-      # ===== Gemini API キー（export_csv 環境のSecretsを使用） =====
       GEMINI_API_SUMMARY_KEY: ${{ secrets.GEMINI_API_EXPORT_SUMMARY_KEY }}
       GEMINI_API_DEDUPE_KEY: ${{ secrets.GEMINI_API_EXPORT_DEDUPE_KEY }}
-
-      # ===== レート制御（必要に応じて数値を調整） =====
       GEMINI_REQS_PER_MIN: "20"
       GEMINI_MIN_INTERVAL_SEC: "1.5"
       GEMINI_JITTER_SEC: "0.3"
 
     steps:
-      - name: Checkout (export_csv)
+      - name: Checkout (trigger branch)
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ github.ref_name }} # ← 実行したブランチ名でチェックアウト
+          fetch-depth: 0 # （任意）完全履歴が必要なら
 
       - name: Setup Python
         uses: actions/setup-python@v5
