@@ -6,6 +6,7 @@ on:
 jobs:
   mail:
     runs-on: ubuntu-latest
+    environment: development # ← 環境名に置き換え
     env:
       LANG: C.UTF-8
       LC_ALL: C.UTF-8
@@ -37,7 +38,7 @@ jobs:
           EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
           CSV_EMAIL_RECIPIENTS: ${{ secrets.CSV_EMAIL_RECIPIENTS }}
         run: |
-          python test_gmail_send.py mail_test.csv
+          python tmp.test_gmail_send.py mail_test.csv
 
       - name: Upload CSV artifact on failure
         if: failure()

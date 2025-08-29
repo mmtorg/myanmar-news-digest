@@ -5,7 +5,8 @@ export_today_articles_to_csv_and_mail.py
 目的:
 - 各メディアの「キーワード絞り込み前」の“本日(MMT)”の記事を収集
 - タイトルを gemini-2.5-flash で日本語に一括(バッチ)翻訳
-- CSV (UTF-8 BOM) を A:メディア名 / B:日本語タイトル / C:発行日(MMT) / D:URL で出力
+- CSV (UTF-8 BOM) を 1列目:発行日(MMT) / 2列目:メディア名 / 3列目:日本語タイトル で出力
+# 以前の URL 列は削除（将来復活のため該当処理はコメントアウト）
 - CSV を Gmail API で指定アドレスへ送付（fetch_articles.py と同方式）
 - 送信後は CSV を削除してストレージ抑制
 - 無料運用: バッチ翻訳 + レートリミッタ (デフォルト9RPM, 100件/リクエスト)
@@ -35,6 +36,7 @@ from email.policy import SMTP
 from email.header import Header
 from datetime import datetime
 from typing import List, Dict
+from datetime import date
 
 # ===== 既存コードから再利用 =====
 # 1) 収集・Gemini呼び出し・定数 (MMT/Irrawaddy/各種フェッチ) など
@@ -49,7 +51,6 @@ from fetch_articles import (
 from tmp.export_all_articles_to_csv import (
     collect_bbc_all_for_date,
     collect_khitthit_all_for_date,
-    collect_dvb_all_for_date,
     collect_mizzima_all_for_date,
     translate_titles_in_batch,
     translate_title_only,
@@ -57,6 +58,7 @@ from tmp.export_all_articles_to_csv import (
 )
 # 3) Irrawaddy は fetch_articles 側の関数（CATEGORY_PATHS_RAW/EXCLUDE_PREFIXES準拠）
 from fetch_articles import get_irrawaddy_articles_for
+from fetch_articles import get_dvb_articles_for
 
 # ===== Gmail APIは fetch_articles.py と同じやり方で使う =====
 from google.oauth2.credentials import Credentials
@@ -143,9 +145,14 @@ def _nfc(s: str) -> str:
     return unicodedata.normalize("NFC", s or "")
 
 
+def _jp_date(d: date) -> str:
+    """YYYY年M月D日の日本語表記（MMTの今日を想定）"""
+    return f"{d.year}年{d.month}月{d.day}日"
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--out", type=str, default="today_MMT.csv", help="出力CSVパス")
+    parser.add_argument("--out", type=str, default="myanmar_news.csv", help="出力CSVパス")
     # free tier を前提に厳しめの既定
     parser.add_argument("--rpm", type=int, default=int(os.getenv("GEMINI_REQS_PER_MIN", "9")))
     parser.add_argument("--min-interval", type=float, default=float(os.getenv("GEMINI_MIN_INTERVAL_SEC", "2.0")))
@@ -170,7 +177,8 @@ def main(argv=None) -> int:
     # 他メディア
     all_rows.extend(collect_bbc_all_for_date(today_mmt))
     all_rows.extend(collect_khitthit_all_for_date(today_mmt, max_pages=5))
-    all_rows.extend(collect_dvb_all_for_date(today_mmt))
+    dvb_items = get_dvb_articles_for(today_mmt, debug=False)
+    all_rows.extend(dvb_items)
     all_rows.extend(collect_mizzima_all_for_date(today_mmt, max_pages=3))
 
     # URL重複は既存関数で除去
@@ -195,11 +203,13 @@ def main(argv=None) -> int:
             for k, ja in zip(idxs, ja_list):
                 all_rows[k]["title_ja"] = ja
 
-    # CSV 出力（UTF-8 BOM, A-D列固定）
+    # CSV 出力（UTF-8 BOM, 列順: 発行日 / メディア名 / 日本語タイトル）
     csv_path = args.out
     with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f)
-        w.writerow(["メディア名", "日本語タイトル", "発行日(MMT)", "URL"])
+        # 列名はご指定どおり。「発行日(MMT)」→「発行日」
+        w.writerow(["発行日", "メディア名", "日本語タイトル"])
+        # w.writerow(["発行日", "メディア名", "日本語タイトル", "URL"])  # ← 将来復活用（コメントアウト）
         for a in all_rows:
             # 発行日フィールドの整形（ISO, MMT）
             dd = a.get("date") or ""
@@ -209,17 +219,20 @@ def main(argv=None) -> int:
                     dd = dt.astimezone(MMT).date().isoformat()
                 except Exception:
                     pass
+            # 出力順: 発行日 / メディア名 / 日本語タイトル
             w.writerow([
+                dd,
                 _nfc(a.get("source")),
                 _nfc(a.get("title_ja") or a.get("title")),
-                dd,
-                a.get("url", ""),
+                # a.get("url", ""),  # ← 将来URL列復活時に使用
             ])
     print(f"✅ CSV written: {csv_path}")
 
     # メール送信（成功時のみ削除）
-    subject = f"ミャンマー記事（本日 {today_mmt.isoformat()} MMT）CSV"
-    body = f"{today_mmt.isoformat()}(MMT) 分の全メディア記事CSVをお送りします。"
+    _djp = _jp_date(today_mmt)
+    # 件名・本文はご指定のフォーマット（例: ミャンマー記事CSV【2025年8月28日分】）
+    subject = f"ミャンマー記事CSV【{_djp}分】"
+    body = f"ミャンマー記事CSV【{_djp}分】を送ります。"
     try:
         send_csv_via_gmail(csv_path, subject=subject, body_text=body)
         try:
