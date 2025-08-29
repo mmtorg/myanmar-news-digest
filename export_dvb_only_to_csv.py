@@ -1,20 +1,16 @@
 # -*- coding: utf-8 -*-
 """
-export_dvb_only_to_csv.py
+export_dvb_only_to_csv.py (fixed)
 
 DVBのみを対象に、MMTで 2025-08-23(土) 以降〜今日(MMT)まで、
 日付ごとにその日に発行された記事を収集し、CSV(UTF-8 BOM)に
 A:メディア名 / B:日本語タイトル / C:発行日(MMT) / D:URL を出力。
 
-- 一覧ページ: 1〜15ページを巡回
+- 一覧ページ: 1〜15ページを巡回（カードの英語日付で一次フィルタ）
 - 一覧ページ取得は各ページ最大3回トライし、失敗したページはスキップ（処理は継続）
 - 記事ページ取得は fetch_with_retry_dvb を使用
 - タイトルの日本語化は gemini-2.5-flash-lite（バッチ翻訳→失敗時は単体翻訳）
 - 無料枠配慮のレートリミット（rpm/min_interval/jitter + batch-size）
-
-使い方(例):
-  python export_dvb_only_to_csv.py --start 2025-08-23 --out dvb_articles.csv \
-    --rpm 12 --min-interval 1.5 --jitter 0.3 --batch-size 25
 """
 
 from __future__ import annotations
@@ -135,20 +131,62 @@ def translate_titles_in_batch(items: List[Dict], *, model: str = "gemini-2.5-fla
     except Exception:
         return []
 
-# ========== DVB収集（1〜15ページ、一覧は各ページ3回リトライ） ==========
+# ======== DVB 一覧＆記事（“取得できている”コードの方針へ差し替え） ========
+_MONTHS = ("January","February","March","April","May","June","July",
+           "August","September","October","November","December")
+_DATE_RE = re.compile(
+    rf"(?:{'|'.join(_MONTHS)})\s+\d{{1,2}},\s*\d{{4}}"
+)
+
+def _parse_dvb_date(text: str):
+    """例: 'August 29, 2025' → date"""
+    if not text:
+        return None
+    s = re.sub(r"\s+", " ", text.strip())
+    try:
+        return datetime.strptime(s, "%B %d, %Y").date()
+    except ValueError:
+        return None
+
+def _abs(BASE: str, href: str) -> str:
+    return href if href.startswith("http") else f"{BASE}{href}"
+
+def _extract_title_dvb(soup: BeautifulSoup) -> str:
+    t = (soup.title.string or "").strip() if soup.title else ""
+    if t:
+        return t
+    h = soup.select_one(".text-2xl, h1, .post-title")
+    return (h.get_text(" ", strip=True) if h else "").strip()
+
+def _extract_body_dvb(soup: BeautifulSoup) -> str:
+    host = soup.select_one(".full_content")
+    if not host:
+        return ""
+    parts = []
+    for p in host.select("p"):
+        txt = re.sub(r"\s+", " ", p.get_text(" ", strip=True))
+        if txt:
+            parts.append(txt)
+    return "\n".join(parts).strip()
+
 def collect_dvb_for_date(target_date_mmt: date, max_pages: int = 15) -> List[Dict]:
+    """
+    一覧（/category/8/news の Tailwind グリッド）から /post/ のみを収集。
+    カード上の英語日付をパースして対象日一致のURLだけ候補化→記事ページ抽出。
+    一覧各ページは最大3回トライして失敗はスキップ。
+    """
     BASE = "https://burmese.dvb.no"
     CATEGORY_PATHS = ["/category/8/news"]
 
-    # セッション（クッキー/指紋を共有）
     try:
         sess = requests.Session()
     except Exception:
         sess = None
 
-    collected_urls = set()
+    candidate_urls: List[str] = []
+    seen = set()
 
-    # 一覧ページ: 1〜15ページ / 各ページ3回までトライ → 失敗ならスキップ
+    # 一覧ページ: 1〜max_pages / 各ページ3回トライ
     for path in CATEGORY_PATHS:
         for page in range(1, max_pages + 1):
             url = f"{BASE}{path}" if page == 1 else f"{BASE}{path}?page={page}"
@@ -157,16 +195,29 @@ def collect_dvb_for_date(target_date_mmt: date, max_pages: int = 15) -> List[Dic
                 try:
                     res = fetch_with_retry_dvb(url, retries=2, wait_seconds=1, session=sess)
                     soup = BeautifulSoup(getattr(res, "content", None) or res.text, "html.parser")
-                    cards = (soup.select("div.listing_content.item.item_length-1 a[href]")
-                             or soup.select("div.listing_content.item.item_length-2 a[href]")
-                             or soup.select("div.listing_content.item a[href]"))
-                    for a in cards:
-                        href = a.get("href")
-                        if not href:
-                            continue
-                        if not href.startswith("http"):
-                            href = BASE + href
-                        collected_urls.add(href)
+
+                    # グリッド（無ければページ全体）をスコープに
+                    scopes = soup.select("div.md\\:grid.grid-cols-3.gap-4.mt-5, div.grid.grid-cols-3.gap-4.mt-5") or [soup]
+
+                    found = 0
+                    for scope in scopes:
+                        for a in scope.select('a[href^="/post/"]'):
+                            href = a.get("href") or ""
+                            # カードに埋め込まれている日付テキストを探す
+                            date_div = a.select_one("div.flex.gap-1.text-xs.mt-2.text-gray-500 div")
+                            raw = (date_div.get_text(" ", strip=True) if date_div else "").strip()
+                            if not raw:
+                                # フォールバック：アンカー全体から英語日付を拾う
+                                full = a.get_text(" ", strip=True)
+                                m = _DATE_RE.search(full)
+                                raw = m.group(0) if m else ""
+                            d = _parse_dvb_date(raw)
+                            if d and d == target_date_mmt and href:
+                                u = _abs(BASE, href)
+                                if u not in seen:
+                                    candidate_urls.append(u)
+                                    seen.add(u)
+                                    found += 1
                     ok = True
                     break
                 except Exception as e:
@@ -176,30 +227,34 @@ def collect_dvb_for_date(target_date_mmt: date, max_pages: int = 15) -> List[Dic
                 print(f"[dvb] skip list page: {url}")
                 continue
 
+    # 記事ページ抽出
     results: List[Dict] = []
-    for url in collected_urls:
+    for url in candidate_urls:
         try:
             res = fetch_with_retry_dvb(url, retries=4, wait_seconds=2, session=sess)
             soup = BeautifulSoup(getattr(res, "content", None) or res.text, "html.parser")
 
-            meta = soup.find("meta", property="article:published_time")
-            if not meta or not meta.has_attr("content"):
-                continue
-            dt = datetime.fromisoformat(meta["content"]).astimezone(MMT)
-            if dt.date() != target_date_mmt:
-                continue
+            # 念のため meta の日付でも再確認（無ければスルー）
+            meta = soup.find("meta", attrs={"property": "article:published_time"})
+            if meta and meta.get("content"):
+                try:
+                    dt = datetime.fromisoformat(meta["content"]).astimezone(MMT)
+                    if dt.date() != target_date_mmt:
+                        continue
+                except Exception:
+                    pass
 
-            title_tag = soup.find("h1") or soup.find("title")
-            title = (title_tag.get_text(strip=True) if title_tag else "").strip()
+            title = _extract_title_dvb(soup)
             if not title:
                 continue
+            body = _extract_body_dvb(soup)
 
             results.append({
                 "source": "DVB",
                 "title": unicodedata.normalize("NFC", title),
                 "url": url,
                 "date": target_date_mmt.isoformat(),
-                "body": "",
+                "body": unicodedata.normalize("NFC", body),
             })
         except Exception as e:
             print(f"[dvb] article fail {url}: {e}")
