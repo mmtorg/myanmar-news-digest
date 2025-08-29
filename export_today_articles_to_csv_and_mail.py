@@ -129,7 +129,13 @@ def send_csv_via_gmail(csv_path: str, *, subject: str, body_text: str) -> None:
         sent = service.users().messages().send(userId="me", body=body).execute()
         print("✅ Gmail 送信完了 messageId:", sent.get("id"))
     except HttpError as e:
-        print(f"❌ Gmail API エラー: {e}")
+        try:
+            content = e.content.decode("utf-8", "replace") if hasattr(e, "content") else ""
+        except Exception:
+            content = ""
+        print("❌ Gmail API HttpError")
+        print(f"   status: {getattr(e, 'status_code', getattr(getattr(e, 'resp', None), 'status', 'unknown'))}")
+        print(f"   details: {content}")
         raise
 
 

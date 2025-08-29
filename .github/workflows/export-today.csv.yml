@@ -116,3 +116,11 @@ jobs:
         if: always()
         run: |
           rm -f today_MMT.csv || true
+
+      - name: Upload CSV artifact on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: today_MMT.csv
+          path: today_MMT.csv
+          retention-days: 1
