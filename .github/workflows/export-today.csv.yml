@@ -112,11 +112,6 @@ jobs:
           python export_today_articles_to_csv_and_mail.py \
             --out today_MMT.csv --batch-size 100 --rpm 9 --min-interval 2.0 --jitter 0.3
 
-      - name: Post-run cleanup (in case)
-        if: always()
-        run: |
-          rm -f today_MMT.csv || true
-
       - name: Upload CSV artifact on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -124,3 +119,8 @@ jobs:
           name: today_MMT.csv
           path: today_MMT.csv
           retention-days: 1
+
+      - name: Post-run cleanup (in case)
+        if: always()
+        run: |
+          rm -f today_MMT.csv || true
