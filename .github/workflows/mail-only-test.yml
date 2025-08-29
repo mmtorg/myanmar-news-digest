@@ -6,6 +6,7 @@ on:
 jobs:
   mail:
     runs-on: ubuntu-latest
+    environment: development # ← 環境名に置き換え
     env:
       LANG: C.UTF-8
       LC_ALL: C.UTF-8
