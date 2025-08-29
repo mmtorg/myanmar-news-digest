@@ -1,0 +1,62 @@
+name: Export DVB only (MMT)
+
+on:
+  workflow_dispatch:
+    inputs:
+      start:
+        description: "Start date in MMT (YYYY-MM-DD)"
+        required: false
+        default: "2025-08-23"
+      out:
+        description: "Output CSV path"
+        required: false
+        default: "dvb_articles_since_2025-08-23_MMT.csv"
+  schedule:
+    # 毎日 18:30 UTC 実行 = MMT (UTC+6:30) で翌日 01:00
+    - cron: "30 18 * * *"
+
+jobs:
+  export-dvb:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    concurrency:
+      group: export-dvb-only
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests beautifulsoup4 python-dateutil
+
+      - name: Run DVB-only exporter
+        env:
+          # fetch_articles.py が参照する Gemini 認証の環境変数
+          # 例: GEMINI_API_KEY（実際のキー名は fetch_articles.py の実装に合わせてください）
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          # 無料枠モード（保守的なレート設定を強制したい場合）
+          GEMINI_FREE_TIER: "1"
+          GEMINI_REQS_PER_MIN: "12"
+          GEMINI_MIN_INTERVAL_SEC: "1.5"
+          GEMINI_JITTER_SEC: "0.3"
+          GEMINI_BATCH_SIZE: "25"
+        run: |
+          # DVB専用スクリプトが repo ルートにある想定
+          python export_dvb_only_to_csv.py \
+            --start "${{ github.event.inputs.start || '2025-08-23' }}" \
+            --out   "${{ github.event.inputs.out   || 'dvb_articles_since_2025-08-23_MMT.csv' }}"
+
+      - name: Upload CSV artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dvb-csv
+          path: ${{ github.event.inputs.out || 'dvb_articles_since_2025-08-23_MMT.csv' }}
+          if-no-files-found: error
