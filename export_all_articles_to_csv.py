@@ -6,7 +6,7 @@ export_all_articles_to_csv.py
 新規処理:
 ・各メディアの「キーワード絞り込み前」の記事一覧を取得
 ・MMTで 2025-08-23(土) 以降
-・タイトルを gemini-2.5-flash で日本語翻訳（バッチ翻訳対応）
+・タイトルを gemini-2.5-flash-lite で日本語翻訳（バッチ翻訳対応）
 ・CSV (UTF-8 BOM) に A:メディア名 / B:日本語タイトル / C:発行日(MMT) / D:URL
 ・無料枠対策: レートリミット (RPM/最小インターバル/ジッター) + バッチ翻訳
 
@@ -27,7 +27,7 @@ Gemini API の認証は fetch_articles.py の実装に従います。
     - D列：記事のURL
 - タイムゾーンはミャンマー時間です
 - ミャンマー時間で8月23日土曜日以降の記事が取得対象です
-- 記事のタイトルを日本語に翻訳するには、添付したコードと同様に、gemini-2.5-flashを使ってください。プロンプトは添付したコードのタイトルを日本語に翻訳するプロンプトを使ってOKです
+- 記事のタイトルを日本語に翻訳するには、添付したコードと同様に、gemini-2.5-flash-liteを使ってください。プロンプトは添付したコードのタイトルを日本語に翻訳するプロンプトを使ってOKです
 - CSVに吐き出す日本語は文字化けしないように注意してください
 """
 
@@ -217,8 +217,8 @@ def collect_dvb_all_for_date(target_date_mmt: date) -> List[Dict]:
     collected_urls = set()
 
     for path in CATEGORY_PATHS:
-        for page in (None, 15):
-            url = f"{BASE}{path}" if page is None else f"{BASE}{path}?page={page}"
+        for page in range(1, 16):  # 1〜15ページすべて
+            url = f"{BASE}{path}?page={page}" if page > 1 else f"{BASE}{path}"
             try:
                 res = fetch_with_retry_dvb(url, retries=4, wait_seconds=2, session=sess)
             except Exception as e:
@@ -354,7 +354,7 @@ def collect_mizzima_all_for_date(target_date_mmt: date, max_pages: int = 15) -> 
     return results
 
 # ===== 単体翻訳（既存プロンプト流用） =====
-def translate_title_only(item: Dict, *, model: str = "gemini-2.5-flash") -> str:
+def translate_title_only(item: Dict, *, model: str = "gemini-2.5-flash-lite") -> str:
     """
     build_prompt(..., skip_filters=True) を使い、タイトルのみ日本語化。
     生成結果から「【タイトル】 …」を抽出。失敗時は原題を返す。
@@ -385,7 +385,7 @@ def translate_title_only(item: Dict, *, model: str = "gemini-2.5-flash") -> str:
         return payload["title"]
 
 # ===== バッチ翻訳 =====
-def translate_titles_in_batch(items: List[Dict], *, model: str = "gemini-2.5-flash") -> List[str]:
+def translate_titles_in_batch(items: List[Dict], *, model: str = "gemini-2.5-flash-lite") -> List[str]:
     """
     items: dict の配列（source/title/url程度）。同数の日本語訳タイトル配列を返す。
     失敗時は空リストを返し、呼び出し側でフォールバック。
@@ -505,7 +505,7 @@ def main(argv=None):
         # BBC / Khit Thit / DVB / Mizzima
         all_rows.extend(collect_bbc_all_for_date(d))
         all_rows.extend(collect_khitthit_all_for_date(d, max_pages=15))
-        all_rows.extend(collect_dvb_all_for_date(d))  # 既に 15 ページ対応済み
+        all_rows.extend(collect_dvb_all_for_date(d))  # DVB 内部を 1〜15 ページ対応済み
         all_rows.extend(collect_mizzima_all_for_date(d, max_pages=15))
 
     # 重複除去の前後をログ
