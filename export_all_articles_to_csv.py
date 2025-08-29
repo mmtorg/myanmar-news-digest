@@ -504,9 +504,9 @@ def main(argv=None):
         all_rows.extend(irw)
         # BBC / Khit Thit / DVB / Mizzima
         all_rows.extend(collect_bbc_all_for_date(d))
-        all_rows.extend(collect_khitthit_all_for_date(d, max_pages=5))
-        all_rows.extend(collect_dvb_all_for_date(d))
-        all_rows.extend(collect_mizzima_all_for_date(d, max_pages=3))
+        all_rows.extend(collect_khitthit_all_for_date(d, max_pages=15))
+        all_rows.extend(collect_dvb_all_for_date(d))  # 既に 15 ページ対応済み
+        all_rows.extend(collect_mizzima_all_for_date(d, max_pages=15))
 
     # 重複除去の前後をログ
     print(f"Dedup by URL: before={len(all_rows)}")
