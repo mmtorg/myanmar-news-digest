@@ -1542,18 +1542,22 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
             if not body:
                 continue
 
-            # irrawaddyはどの記事もほしいとのことなのでキーワード検索は外す
-            # 大半ミャンマー記事でキーワード含んでなくても取得対象のこともあった、無駄記事の取得が目立つようであれば追加検討
-            # if not any_keyword_hit(title, body):
-            #     continue
+            # キーワードフィルタ（他媒体と同様）追加
+            # 念のためタイトル/本文をNFC正規化してから判定
+            title_nfc = unicodedata.normalize("NFC", title)
+            body_nfc = unicodedata.normalize("NFC", body)
+            if not any_keyword_hit(title_nfc, body_nfc):
+                # ログを出してスキップ（本文抜粋は出さない共通ロガー）
+                log_no_keyword_hit("Irrawaddy", url, title_nfc, body_nfc, "irrawaddy:article")
+                continue
 
             results.append(
                 {
                     "url": url,
-                    "title": title,
+                    "title": title_nfc,
                     "date": date_obj.isoformat(),
-                    "body": body,
-                    "source": "irrawaddy",  # 重複削除関数を使うため追加
+                    "body": body_nfc,
+                    "source": "body_nfc",  # 重複削除関数を使うため追加
                 }
             )
         except Exception as e:
