@@ -1762,6 +1762,143 @@ def get_dvb_articles_for(date_obj: date, debug: bool = True) -> List[Dict]:
 
     return results
 
+# Myanmar Now (mm) 
+def get_myanmar_now_articles_mm(date_obj, max_pages=3):
+    """
+    Myanmar Now (mm) の各カテゴリから対象日の記事を取得して返す。
+    - カテゴリ一覧を最大 max_pages ページ巡回
+    - 一覧では <span class="date meta-item tie-icon">Month D, YYYY</span> を見て今日だけ抽出
+    - 個別記事では <meta property="article:published_time" content="..."> をUTC→MMT変換して最終確認
+    - タイトル末尾の " - Myanmar Now" を除去
+    - 本文は div.entry-content.entry.clearfix 内の <p> だけ（画像等は含めない）
+    返り値: list[dict] {url, title, date(ISO str, MMT), body, source="Myanmar Now (mm)"}
+    """
+
+    BASE_CATEGORIES = [
+        "https://myanmar-now.org/mm/news/category/news/",                 # ニュース
+        "https://myanmar-now.org/mm/news/category/news/3/",               # 政治
+        "https://myanmar-now.org/mm/news/category/news/17/",              # 経済
+        "https://myanmar-now.org/mm/news/category/news/social-issue/",    # 社会
+        "https://myanmar-now.org/mm/news/category/news/19/",              # 教育
+        "https://myanmar-now.org/mm/news/category/news/international-news/",  # 国際ニュース
+        "https://myanmar-now.org/mm/news/category/multimedia/16/",        # 健康
+        "https://myanmar-now.org/mm/news/category/in-depth/",             # 特集記事
+        "https://myanmar-now.org/mm/news/category/in-depth/analysis/",    # 分析
+        "https://myanmar-now.org/mm/news/category/in-depth/investigation/", # 調査報道
+        "https://myanmar-now.org/mm/news/category/in-depth/profile/",     # プロフィール
+        "https://myanmar-now.org/mm/news/category/in-depth/society/",     # 社会分野
+        "https://myanmar-now.org/mm/news/category/opinion/",              # 論説
+        "https://myanmar-now.org/mm/news/category/opinion/commentary/",   # 論評
+        "https://myanmar-now.org/mm/news/category/opinion/29/",           # 編集長の論説
+        "https://myanmar-now.org/mm/news/category/opinion/interview/",    # インタビュー
+        # "https://myanmar-now.org/mm/news/category/opinion/essay/",        # エッセイ
+        # "https://myanmar-now.org/mm/news/category/opinion/26/",           # 風刺
+        # "https://myanmar-now.org/mm/news/category/multimedia/video/",     # 動画ニュース
+        # "https://myanmar-now.org/mm/news/category/multimedia/13/",        # フォトエッセイ
+    ]
+
+    # "September 8, 2025" のような英語表記
+    today_label = f"{date_obj.strftime('%B')} {date_obj.day}, {date_obj.year}"
+
+    def _strip_source_suffix(title: str) -> str:
+        if not title:
+            return title
+        return re.sub(r"\s*-\s*Myanmar Now\s*$", "", title).strip()
+
+    def _collect_article_urls_from_category(cat_url: str) -> set[str]:
+        urls = set()
+        for page in range(1, max_pages + 1):
+            url = f"{cat_url}page/{page}/" if page > 1 else cat_url
+            try:
+                res = fetch_with_retry(url)
+            except Exception:
+                break
+            soup = BeautifulSoup(res.content, "html.parser")
+
+            for span in soup.select("span.date.meta-item.tie-icon"):
+                if (span.get_text(strip=True) or "") != today_label:
+                    continue
+                a = span.find_parent("a", href=True)
+                if not a:
+                    parent_a = span
+                    while parent_a and parent_a.name != "a":
+                        parent_a = parent_a.parent
+                    if parent_a and parent_a.name == "a" and parent_a.get("href"):
+                        a = parent_a
+                if a and a.get("href"):
+                    href = a["href"]
+                    if "/mm/news/" in href:
+                        urls.add(href)
+        return urls
+
+    collected = set()
+    for base in BASE_CATEGORIES:
+        collected |= _collect_article_urls_from_category(base)
+
+    results = []
+    for url in collected:
+        try:
+            res = fetch_with_retry(url)
+            soup = BeautifulSoup(res.content, "html.parser")
+
+            # 1) 公開日時をチェック
+            meta = soup.find("meta", attrs={"property": "article:published_time"})
+            if not meta or not meta.get("content"):
+                continue
+            try:
+                dt_utc = datetime.fromisoformat(meta["content"])
+            except Exception:
+                dt_utc = parse_date(meta["content"]).astimezone(timezone.utc)
+            dt_mmt = dt_utc.astimezone(MMT)
+            if dt_mmt.date() != date_obj:
+                continue
+
+            # 2) タイトル
+            title_raw = (soup.title.get_text(strip=True) if soup.title else "").strip()
+            title = _strip_source_suffix(unicodedata.normalize("NFC", title_raw))
+            if not title:
+                h1 = soup.find("h1")
+                if h1:
+                    title = _strip_source_suffix(unicodedata.normalize("NFC", h1.get_text(strip=True)))
+            if not title:
+                continue
+
+            # 3) 本文
+            body_parts = []
+            content_root = soup.select_one("div.entry-content.entry.clearfix") or soup
+            for p in content_root.find_all("p"):
+                txt = p.get_text(strip=True)
+                if txt:
+                    body_parts.append(txt)
+            body = unicodedata.normalize("NFC", "\n".join(body_parts).strip())
+            if not body:
+                paragraphs = extract_paragraphs_with_wait(soup)
+                body = unicodedata.normalize("NFC", "\n".join(
+                    p.get_text(strip=True) for p in paragraphs if getattr(p, "get_text", None)
+                )).strip()
+            if not body:
+                continue
+
+            # 4) キーワード判定
+            if not any_keyword_hit(title, body):
+                log_no_keyword_hit("Myanmar Now (mm)", url, title, body, "mnw:article")
+                continue
+
+            results.append({
+                "url": url,
+                "title": title,
+                "date": dt_mmt.isoformat(),
+                "body": body,
+                "source": "Myanmar Now (mm)",
+            })
+        except Exception as e:
+            print(f"[warn] Myanmar Now article fetch failed: {url} ({e})")
+            continue
+
+    before = len(results)
+    results = deduplicate_by_url(results)
+    print(f"[myanmar-now-mm] dedup: {before} -> {len(results)}")
+    return results
 
 # 同じURLの重複削除
 def deduplicate_by_url(articles):
@@ -2600,13 +2737,19 @@ if __name__ == "__main__":
         max_pages=3,
     )
     process_and_enqueue_articles(
-        articles_mizzima, "Mizzima (Burmese)", seen_urls, trust_existing_body=True
+        articles_mizzima, 
+        "Mizzima (Burmese)", 
+        seen_urls, 
+        trust_existing_body=True
     )
 
     print("=== BBC Burmese ===")
     articles_bbc = get_bbc_burmese_articles_for(date_mmt)
     process_and_enqueue_articles(
-        articles_bbc, "BBC Burmese", seen_urls, trust_existing_body=True
+        articles_bbc, 
+        "BBC Burmese", 
+        seen_urls, 
+        trust_existing_body=True
     )
 
     print("=== Irrawaddy ===")
@@ -2623,12 +2766,29 @@ if __name__ == "__main__":
 
     print("=== Khit Thit Media ===")
     articles_khit = get_khit_thit_media_articles_from_category(date_mmt, max_pages=3)
-    process_and_enqueue_articles(articles_khit, "Khit Thit Media", seen_urls)
+    process_and_enqueue_articles(
+        articles_khit, 
+        "Khit Thit Media", 
+        seen_urls
+    )
 
     print("=== DVB ===")
     articles_dvb = get_dvb_articles_for(date_mmt, debug=True)
     process_and_enqueue_articles(
-        articles_dvb, "DVB", seen_urls, trust_existing_body=True
+        articles_dvb, 
+        "DVB", 
+        seen_urls, 
+        trust_existing_body=True
+    )
+    
+    print("===  Myanmar Now (mm) ===")
+    articles_mn = get_myanmar_now_articles_mm(date_mmt, max_pages=3)
+    process_and_enqueue_articles(
+        articles_mn,
+        "Myanmar Now (mm)",
+        seen_urls,
+        bypass_keyword=False,
+        trust_existing_body=True,
     )
 
     # URLベースの重複排除を先に行う
