@@ -207,9 +207,8 @@ def main(argv=None) -> int:
     csv_path = args.out
     with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f)
-        # 列名はご指定どおり。「発行日(MMT)」→「発行日」
-        w.writerow(["発行日", "メディア名", "日本語タイトル"])
-        # w.writerow(["発行日", "メディア名", "日本語タイトル", "URL"])  # ← 将来復活用（コメントアウト）
+        # 列名は「発行日 / メディア名 / 日本語タイトル / URL」
+        w.writerow(["発行日", "メディア名", "日本語タイトル", "URL"])
         for a in all_rows:
             # 発行日フィールドの整形（ISO, MMT）
             dd = a.get("date") or ""
@@ -224,7 +223,7 @@ def main(argv=None) -> int:
                 dd,
                 _nfc(a.get("source")),
                 _nfc(a.get("title_ja") or a.get("title")),
-                # a.get("url", ""),  # ← 将来URL列復活時に使用
+                a.get("url", ""),
             ])
     print(f"✅ CSV written: {csv_path}")
 
