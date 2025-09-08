@@ -1063,13 +1063,22 @@ def get_mizzima_articles_from_category(
 
 # BCCはRSSあるのでそれ使う
 def get_bbc_burmese_articles_for(target_date_mmt):
+    
     # ==== ローカル定数 ====
     NOISE_PATTERNS = [
         r"BBC\s*News\s*မြန်မာ",  # 固定署名（Burmese表記）
         r"BBC\s*Burmese",  # 英語表記
     ]
 
-    # ==== ローカル関数 ====
+    # BBC Burmese の「タイトル除外」用キーワード（将来追加しやすいよう配列で保持）
+    EXCLUDE_TITLE_KEYWORDS = [
+        "နိုင်ငံတဝန်းသတင်းများ အနှစ်ချုပ်",
+    ]
+    # 合成差異を避けるため NFC に正規化しておく
+    EXCLUDE_TITLE_KEYWORDS = [
+        unicodedata.normalize("NFC", kw) for kw in EXCLUDE_TITLE_KEYWORDS
+    ]
+
     def _remove_noise_phrases(text: str) -> str:
         """BBC署名などのノイズフレーズを除去"""
         if not text:
@@ -1133,6 +1142,12 @@ def get_bbc_burmese_articles_for(target_date_mmt):
             (item.find("link") or {}).get_text(strip=True) if item.find("link") else ""
         )
         if not link:
+            continue
+        
+        # === タイトル除外（RSS から取得したタイトルで先に判定して早期スキップ） ===
+        rss_title_nfc = unicodedata.normalize("NFC", title or "")
+        if any(kw in rss_title_nfc for kw in EXCLUDE_TITLE_KEYWORDS):
+            print(f"SKIP: excluded title keyword (BBC) → {link} | TITLE: {rss_title_nfc}")
             continue
 
         try:
