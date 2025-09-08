@@ -2727,87 +2727,75 @@ if __name__ == "__main__":
     # for art in articles:
     #     print(f"{art['date']} - {art['title']}\n{art['url']}\n")
 
-    # # === Mizzima (Burmese) ===
-    # print("=== Mizzima (Burmese) ===")
-    # articles_mizzima = get_mizzima_articles_from_category(
-    #     date_mmt,
-    #     "https://bur.mizzima.com",
-    #     "Mizzima (Burmese)",
-    #     "/category/%e1%80%9e%e1%80%90%e1%80%84%e1%80%ba%e1%80%b8/%e1%80%99%e1%80%bc%e1%80%94%e1%80%ba%e1%80%99%e1%80%ac%e1%80%9e%e1%80%90%e1%80%84%e1%80%ba%e1%80%b8",
-    #     max_pages=3,
-    # )
-    # process_and_enqueue_articles(
-    #     articles_mizzima, 
-    #     "Mizzima (Burmese)", 
-    #     seen_urls, 
-    #     trust_existing_body=True
-    # )
+    # === Mizzima (Burmese) ===
+    print("=== Mizzima (Burmese) ===")
+    articles_mizzima = get_mizzima_articles_from_category(
+        date_mmt,
+        "https://bur.mizzima.com",
+        "Mizzima (Burmese)",
+        "/category/%e1%80%9e%e1%80%90%e1%80%84%e1%80%ba%e1%80%b8/%e1%80%99%e1%80%bc%e1%80%94%e1%80%ba%e1%80%99%e1%80%ac%e1%80%9e%e1%80%90%e1%80%84%e1%80%ba%e1%80%b8",
+        max_pages=3,
+    )
+    process_and_enqueue_articles(
+        articles_mizzima, 
+        "Mizzima (Burmese)", 
+        seen_urls, 
+        trust_existing_body=True
+    )
 
-    # print("=== BBC Burmese ===")
-    # articles_bbc = get_bbc_burmese_articles_for(date_mmt)
-    # process_and_enqueue_articles(
-    #     articles_bbc, 
-    #     "BBC Burmese", 
-    #     seen_urls, 
-    #     trust_existing_body=True
-    # )
+    print("=== BBC Burmese ===")
+    articles_bbc = get_bbc_burmese_articles_for(date_mmt)
+    process_and_enqueue_articles(
+        articles_bbc, 
+        "BBC Burmese", 
+        seen_urls, 
+        trust_existing_body=True
+    )
 
-    # print("=== Irrawaddy ===")
-    # articles_irrawaddy = get_irrawaddy_articles_for(date_mmt)
-    # # MEMO: ログ用、デバックでログ確認
-    # # print("RESULTS:", json.dumps(articles_irrawaddy, ensure_ascii=False, indent=2))
-    # process_and_enqueue_articles(
-    #     articles_irrawaddy,
-    #     "Irrawaddy",
-    #     seen_urls,
-    #     bypass_keyword=True,  # ← Irrawaddyはキーワードで落とさない
-    #     trust_existing_body=True,  # ← さっき入れた body をそのまま使う（再フェッチしない）
-    # )
+    print("=== Irrawaddy ===")
+    articles_irrawaddy = get_irrawaddy_articles_for(date_mmt)
+    # MEMO: ログ用、デバックでログ確認
+    # print("RESULTS:", json.dumps(articles_irrawaddy, ensure_ascii=False, indent=2))
+    process_and_enqueue_articles(
+        articles_irrawaddy,
+        "Irrawaddy",
+        seen_urls,
+        bypass_keyword=True,  # ← Irrawaddyはキーワードで落とさない
+        trust_existing_body=True,  # ← さっき入れた body をそのまま使う（再フェッチしない）
+    )
 
-    # print("=== Khit Thit Media ===")
-    # articles_khit = get_khit_thit_media_articles_from_category(date_mmt, max_pages=3)
-    # process_and_enqueue_articles(
-    #     articles_khit, 
-    #     "Khit Thit Media", 
-    #     seen_urls
-    # )
+    print("=== Khit Thit Media ===")
+    articles_khit = get_khit_thit_media_articles_from_category(date_mmt, max_pages=3)
+    process_and_enqueue_articles(
+        articles_khit, 
+        "Khit Thit Media", 
+        seen_urls
+    )
 
-    # print("=== DVB ===")
-    # articles_dvb = get_dvb_articles_for(date_mmt, debug=True)
-    # process_and_enqueue_articles(
-    #     articles_dvb, 
-    #     "DVB", 
-    #     seen_urls, 
-    #     trust_existing_body=True
-    # )
+    print("=== DVB ===")
+    articles_dvb = get_dvb_articles_for(date_mmt, debug=True)
+    process_and_enqueue_articles(
+        articles_dvb, 
+        "DVB", 
+        seen_urls, 
+        trust_existing_body=True
+    )
     
     print("===  Myanmar Now (mm) ===")
     articles_mn = get_myanmar_now_articles_mm(date_mmt, max_pages=3)
-    
-    print(f"件数: {len(articles_mn)}")
-    for art in articles_mn:
-        print("-" * 80)
-        print(f"Date   : {art['date']}")
-        print(f"Title  : {art['title']}")
-        print(f"URL    : {art['url']}")
-        print(f"Source : {art['source']}")
-        print(f"Body[:200]: {art['body'][:200]}...")
+    process_and_enqueue_articles(
+        articles_mn,
+        "Myanmar Now (mm)",
+        seen_urls,
+        bypass_keyword=False,
+        trust_existing_body=True,
+    )
 
-    sys.exit(0)
-    
-    # process_and_enqueue_articles(
-    #     articles_mn,
-    #     "Myanmar Now (mm)",
-    #     seen_urls,
-    #     bypass_keyword=False,
-    #     trust_existing_body=True,
-    # )
+    # URLベースの重複排除を先に行う
+    print(f"⚙️ Removing URL duplicates from {len(translation_queue)} articles...")
+    translation_queue = deduplicate_by_url(translation_queue)
 
-    # # URLベースの重複排除を先に行う
-    # print(f"⚙️ Removing URL duplicates from {len(translation_queue)} articles...")
-    # translation_queue = deduplicate_by_url(translation_queue)
+    # バッチ翻訳実行 (5件ごとに1分待機)
+    all_summaries = process_translation_batches(batch_size=3, wait_seconds=60)
 
-    # # バッチ翻訳実行 (5件ごとに1分待機)
-    # all_summaries = process_translation_batches(batch_size=3, wait_seconds=60)
-
-    # send_email_digest(all_summaries)
+    send_email_digest(all_summaries)
