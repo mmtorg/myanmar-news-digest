@@ -169,6 +169,21 @@ def main(argv=None) -> int:
     except Exception as e:
         print(f"[irrawaddy] fail: {e}")
         irw = []
+    # ログ出力（件数＋先頭数件を表示）
+    try:
+        print(f"[irrawaddy] collected: {len(irw)} items for {today_mmt}")
+        for a in irw[:10]:
+            title = (a.get("title") or "").replace("\n", " ").strip()
+            url = a.get("url", "")
+            d = a.get("date", "")
+            print(f"  - {d} | {title[:80]} | {url}")
+        if len(irw) > 10:
+            print(f"  ... (+{len(irw)-10} more)")
+    except Exception:
+        pass
+    
+    sys.exit(1)  # for debug
+    
     all_rows.extend(irw)
 
     # 他メディア
