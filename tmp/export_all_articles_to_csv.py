@@ -589,6 +589,7 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
             print(f"[irrawaddy][list] wrapper_found={'yes' if wrapper else 'no'}")
         scopes = ([wrapper] if wrapper else []) + [soup]
 
+        cat_added = 0
         for scope in scopes:
             links = scope.select(
                 ".jnews_category_hero_container .jeg_meta_date a[href], "
@@ -614,10 +615,51 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
                     candidate_urls.append(href)
                     seen_urls.add(href)
                     found += 1
+                    cat_added += 1
             if found > 0:
                 break
         if debug:
             print(f"[irrawaddy][list] added_from_category={found} total_candidates={len(candidate_urls)}")
+
+        # RSSフォールバック（カテゴリから1件も拾えない場合のみ）
+        if cat_added == 0:
+            feed_url = f"{BASE}{rel.rstrip('/')}" + "/feed"
+            try:
+                rf = session.get(feed_url, timeout=20) if session else requests.get(feed_url, timeout=20)
+                sc = getattr(rf, "status_code", "?")
+                blen = len(getattr(rf, "content", None) or getattr(rf, "text", ""))
+                if debug:
+                    print(f"[irrawaddy][list][feed] fetched: {feed_url} status={sc} bytes={blen}")
+                if getattr(rf, "status_code", 0) == 200:
+                    soup_feed = BeautifulSoup(getattr(rf, "content", None) or getattr(rf, "text", ""), "xml")
+                    items = soup_feed.find_all("item")
+                    feed_added = 0
+                    for it in items:
+                        ltag = it.find("link")
+                        ptag = it.find("pubDate")
+                        if not ltag or not (ltag.text or "").strip():
+                            continue
+                        link = (ltag.text or "").strip()
+                        if _is_excluded_url(link):
+                            continue
+                        # pubDate が対象日MMTと一致するものを候補化
+                        ok = True
+                        if ptag and (ptag.text or "").strip():
+                            try:
+                                dt_mmt = parse_date(ptag.text).astimezone(MMT)
+                                ok = (dt_mmt.date() == target_date_mmt)
+                            except Exception:
+                                ok = True  # 失敗時は記事側で最終確認
+                        if not ok:
+                            continue
+                        if link not in seen_urls:
+                            candidate_urls.append(link)
+                            seen_urls.add(link)
+                            feed_added += 1
+                    if debug:
+                        print(f"[irrawaddy][list][feed] added={feed_added} total_candidates={len(candidate_urls)}")
+            except Exception as e:
+                print(f"[irrawaddy][list][feed] fail {feed_url}: {e}")
 
     # 1.5) ホーム特定カラム（data-id=kuDRpuo）でも当日候補を収集
     try:
