@@ -34,7 +34,7 @@ from email.message import EmailMessage
 from email.utils import formataddr
 from email.policy import SMTP
 from email.header import Header
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Dict
 from datetime import date
 
@@ -158,7 +158,7 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
 
     # 本日（MMT）
-    today_mmt = datetime.now(MMT).date()
+    today_mmt = (datetime.now(MMT) - timedelta(days=1)).date()
     print(f"=== Collecting articles for {today_mmt.isoformat()} (MMT) ===")
 
     # 収集（“キーワード絞り込み前”）
