@@ -55,7 +55,11 @@ from fetch_articles import (
     call_gemini_with_retries,
     client_summary,
     deduplicate_by_url,
-    get_irrawaddy_articles_for,
+    fetch_with_retry_irrawaddy,
+    extract_body_irrawaddy,
+    _parse_category_date_text,
+    _article_date_from_meta_mmt,
+    _extract_title,
     fetch_with_retry,
     fetch_with_retry_dvb,
     extract_paragraphs_with_wait,
@@ -353,6 +357,304 @@ def collect_mizzima_all_for_date(target_date_mmt: date, max_pages: int = 15) -> 
 
     return results
 
+# ===== Myanmar Now (mm) =====
+def collect_myanmar_now_mm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List[Dict]:
+    """
+    Myanmar Now (mm) の各カテゴリから対象日の記事を取得（キーワード絞り込みなし）。
+    返り値: list[dict] {source, title, url, date(ISO str, MMT), body}
+    """
+    BASE_CATEGORIES = [
+        "https://myanmar-now.org/mm/news/category/news/",
+        "https://myanmar-now.org/mm/news/category/news/3/",
+        "https://myanmar-now.org/mm/news/category/news/17/",
+        "https://myanmar-now.org/mm/news/category/news/social-issue/",
+        "https://myanmar-now.org/mm/news/category/news/19/",
+        "https://myanmar-now.org/mm/news/category/news/international-news/",
+        "https://myanmar-now.org/mm/news/category/multimedia/16/",
+        "https://myanmar-now.org/mm/news/category/in-depth/",
+        "https://myanmar-now.org/mm/news/category/in-depth/analysis/",
+        "https://myanmar-now.org/mm/news/category/in-depth/investigation/",
+        "https://myanmar-now.org/mm/news/category/in-depth/profile/",
+        "https://myanmar-now.org/mm/news/category/in-depth/society/",
+        "https://myanmar-now.org/mm/news/category/opinion/",
+        "https://myanmar-now.org/mm/news/category/opinion/commentary/",
+        "https://myanmar-now.org/mm/news/category/opinion/29/",
+        "https://myanmar-now.org/mm/news/category/opinion/interview/",
+    ]
+
+    def _strip_source_suffix(title: str) -> str:
+        if not title:
+            return title
+        return re.sub(r"\s*-\s*Myanmar Now\s*$", "", title).strip()
+
+    today_label = f"{target_date_mmt.strftime('%B')} {target_date_mmt.day}, {target_date_mmt.year}"
+
+    def _collect_article_urls_from_category(cat_url: str) -> set[str]:
+        urls: set[str] = set()
+        for page in range(1, max_pages + 1):
+            url = f"{cat_url}page/{page}/" if page > 1 else cat_url
+            try:
+                res = fetch_with_retry(url)
+            except Exception:
+                break
+            soup = BeautifulSoup(res.content, "html.parser")
+
+            for span in soup.select("span.date.meta-item.tie-icon"):
+                if (span.get_text(strip=True) or "") != today_label:
+                    continue
+                a = span.find_parent("a", href=True)
+                if not a:
+                    parent_a = span
+                    while parent_a and parent_a.name != "a":
+                        parent_a = parent_a.parent
+                    if parent_a and parent_a.name == "a" and parent_a.get("href"):
+                        a = parent_a
+                if a and a.get("href") and "/mm/news/" in a["href"]:
+                    urls.add(a["href"])
+        return urls
+
+    collected: set[str] = set()
+    for base in BASE_CATEGORIES:
+        collected |= _collect_article_urls_from_category(base)
+
+    items: List[Dict] = []
+    for url in collected:
+        try:
+            res = fetch_with_retry(url)
+            soup = BeautifulSoup(res.content, "html.parser")
+
+            meta = soup.find("meta", attrs={"property": "article:published_time"})
+            if not meta or not meta.get("content"):
+                continue
+            try:
+                dt_utc = datetime.fromisoformat(meta["content"])  # aware if offset
+            except Exception:
+                dt_utc = parse_date(meta["content"])  # may be aware
+            dt_mmt = dt_utc.astimezone(MMT)
+            if dt_mmt.date() != target_date_mmt:
+                continue
+
+            title_raw = (soup.title.get_text(strip=True) if soup.title else "").strip()
+            title = _strip_source_suffix(unicodedata.normalize("NFC", title_raw))
+            if not title:
+                h1 = soup.find("h1")
+                if h1:
+                    title = _strip_source_suffix(unicodedata.normalize("NFC", h1.get_text(strip=True)))
+            if not title:
+                continue
+
+            body_parts = []
+            content_root = soup.select_one("div.entry-content.entry.clearfix") or soup
+            for p in content_root.find_all("p"):
+                txt = p.get_text(strip=True)
+                if txt:
+                    body_parts.append(txt)
+            body = unicodedata.normalize("NFC", "\n".join(body_parts).strip())
+            if not body:
+                paragraphs = extract_paragraphs_with_wait(soup)
+                body = unicodedata.normalize("NFC", "\n".join(
+                    p.get_text(strip=True) for p in paragraphs if getattr(p, "get_text", None)
+                )).strip()
+            if not body:
+                continue
+
+            items.append({
+                "source": "Myanmar Now (mm)",
+                "title": title,
+                "url": url,
+                "date": dt_mmt.isoformat(),
+                "body": body,
+            })
+        except Exception as e:
+            print(f"[warn] Myanmar Now (mm) article fetch failed: {url} ({e})")
+            continue
+
+    return items
+
+# ===== Irrawaddy (no keyword filter) =====
+def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -> List[Dict]:
+    """
+    Irrawaddy のカテゴリ一覧＋ホームの当日候補から、記事ページを精査して
+    指定MMT日付の記事だけを収集（キーワード絞り込みは行わない）。
+
+    返り値の仕様は本モジュール内の他媒体と同様：
+      [{"source","title","url","date","body"}]
+    """
+    from urllib.parse import urlparse
+
+    BASE = "https://www.irrawaddy.com"
+    CATEGORY_PATHS_RAW = [
+        "/category/news/",
+        "/category/politics",
+        "/category/news/war-against-the-junta",
+        "/category/news/conflicts-in-numbers",
+        "/category/news/junta-crony",
+        "/category/news/ethnic-issues",
+        "/category/business",
+        "/category/business/economy",
+        "/category/Features",
+        "/category/Opinion",
+        "/category/Opinion/editorial",
+        "/category/Opinion/commentary",
+        "/category/Opinion/guest-column",
+        "/category/Opinion/analysis",
+        "/category/in-person",
+        "/category/in-person/interview",
+        "/category/in-person/profile",
+        "/category/Specials",
+        "/category/specials/women",
+        "/category/from-the-archive",
+        "/category/Specials/myanmar-china-watch",
+        # "/category/Video" # 除外依頼有
+        # "/category/culture/books" #除外依頼有
+        # "/category/Cartoons" # 除外依頼有
+        # "/category/election-2020", # 2021年で更新止まってる
+        # "/category/Opinion/letters", # 2014年で更新止まってる
+        # "/category/Dateline", # 2020年で更新止まってる
+        # "/category/specials/places-in-history", # 2020年で更新止まってる
+        # "/category/specials/on-this-day", # 2023年で更新止まってる
+        # "/category/Specials/myanmar-covid-19", # 2022年で更新止まってる
+        # "/category/Lifestyle", # 2020年で更新止まってる
+        # "/category/Travel", # 2020年で更新止まってる
+        # "/category/Lifestyle/Food", # 2020年で更新止まってる
+        # "/category/Lifestyle/fashion-design", # 2019年で更新止まってる
+        # "/category/photo", # 2016年で更新止まってる
+        # "/category/photo-essay", # 2021年で更新止まってる
+    ]
+    EXCLUDE_PREFIXES = [
+        "/category/news/asia",  # 除外依頼有
+        "/category/news/world",  # 除外依頼有
+        "/video",  # "/category/Video"は除外対象だがこのパターンもある
+        "/cartoons",  # "/category/Cartoons"は除外対象だがこのパターンもある
+    ]
+
+    def _is_excluded_url(href: str) -> bool:
+        try:
+            p = urlparse(href or "").path.lower()
+        except Exception:
+            p = (href or "").lower()
+        return any(p.startswith(x) for x in EXCLUDE_PREFIXES)
+
+    def _norm_path(p: str) -> str:
+        p = (p or "").strip()
+        p = re.sub(r"/{2,}", "/", p)
+        return p
+
+    # 正規化＋除外＋ユニーク
+    paths, seen = [], set()
+    for p in CATEGORY_PATHS_RAW:
+        q = _norm_path(p)
+        if any(q.lower().startswith(x) for x in EXCLUDE_PREFIXES):
+            continue
+        if q not in seen:
+            seen.add(q)
+            paths.append(q)
+
+    results: List[Dict] = []
+    seen_urls = set()
+    candidate_urls: List[str] = []
+
+    # 1) 各カテゴリを1回ずつ巡回し、当日候補URLを収集
+    for rel in paths:
+        url = f"{BASE}{rel}"
+        try:
+            res = fetch_with_retry_irrawaddy(url)
+        except Exception as e:
+            print(f"[irrawaddy] list fetch fail {url}: {e}")
+            continue
+        soup = BeautifulSoup(res.content, "html.parser")
+        wrapper = soup.select_one("div.jeg_content")
+        scopes = ([wrapper] if wrapper else []) + [soup]
+
+        for scope in scopes:
+            links = scope.select(
+                ".jnews_category_hero_container .jeg_meta_date a[href], "
+                "div.jeg_postblock_content .jeg_meta_date a[href], "
+                ".jeg_post_meta .jeg_meta_date a[href]"
+            )
+            links = [a for a in links if a.find("i", class_="fa fa-clock-o")]
+
+            found = 0
+            for a in links:
+                href = (a.get("href") or "").strip()
+                raw = a.get_text(" ", strip=True)
+                try:
+                    shown_date = _parse_category_date_text(raw)
+                except Exception:
+                    continue
+                if _is_excluded_url(href):
+                    continue
+                if shown_date == target_date_mmt and href and href not in seen_urls:
+                    candidate_urls.append(href)
+                    seen_urls.add(href)
+                    found += 1
+            if found > 0:
+                break
+
+    # 1.5) ホーム特定カラム（data-id=kuDRpuo）でも当日候補を収集
+    try:
+        res_home = fetch_with_retry_irrawaddy(f"{BASE}/")
+        soup_home = BeautifulSoup(res_home.content, "html.parser")
+        home_scope = soup_home.select_one(
+            'div.elementor-element-kuDRpuo[data-id="kuDRpuo"], '
+            "div.elementor-element-kuDRpuo, "
+            '[data-id="kuDRpuo"]'
+        )
+        if home_scope:
+            links = home_scope.select(".jeg_meta_date a[href]")
+            links = [a for a in links if a.find("i", class_="fa fa-clock-o")]
+            for a in links:
+                href = (a.get("href") or "").strip()
+                raw = a.get_text(" ", strip=True)
+                try:
+                    shown_date = _parse_category_date_text(raw)
+                except Exception:
+                    continue
+                if _is_excluded_url(href):
+                    continue
+                if shown_date == target_date_mmt and href and href not in seen_urls:
+                    candidate_urls.append(href)
+                    seen_urls.add(href)
+    except Exception as e:
+        print(f"[irrawaddy] home scan fail: {e}")
+
+    if debug:
+        print(f"[irrawaddy] candidates(unique)={len(candidate_urls)}")
+
+    # 2) 各候補記事の meta 日付を MMT で厳密確認し、タイトル/本文を抽出
+    for url in candidate_urls:
+        if _is_excluded_url(url):
+            continue
+        try:
+            res = fetch_with_retry_irrawaddy(url)
+            soup = BeautifulSoup(res.content, "html.parser")
+
+            if _article_date_from_meta_mmt(soup) != target_date_mmt:
+                continue
+
+            title = _extract_title(soup) or ""
+            body = extract_body_irrawaddy(soup) or ""
+            title = unicodedata.normalize("NFC", title).strip()
+            body = unicodedata.normalize("NFC", body).strip()
+            if not title:
+                continue
+
+            results.append(
+                {
+                    "source": "Irrawaddy",
+                    "title": title,
+                    "url": url,
+                    "date": target_date_mmt.isoformat(),
+                    "body": body,
+                }
+            )
+        except Exception as e:
+            print(f"[irrawaddy] article fail {url}: {e}")
+            continue
+
+    return results
+
+
 # ===== 単体翻訳（既存プロンプト流用） =====
 def translate_title_only(item: Dict, *, model: str = "gemini-2.5-flash") -> str:
     """
@@ -495,9 +797,9 @@ def main(argv=None):
 
     for d in daterange_mmt(start_date, today_mmt):
         print(f"=== {d.isoformat()} (MMT) ===")
-        # Irrawaddy（既存関数）
+        # Irrawaddy（キーワード絞り込み前の収集版: ローカル関数）
         try:
-            irw = get_irrawaddy_articles_for(d, debug=False)
+            irw = collect_irrawaddy_all_for_date(d, debug=False)
         except Exception as e:
             print(f"[irrawaddy] fail: {e}")
             irw = []

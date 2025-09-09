@@ -44,20 +44,18 @@ from fetch_articles import (
     MMT,
     call_gemini_with_retries,
     client_summary,
-    get_irrawaddy_articles_for,
-    fetch_with_retry_irrawaddy,   # ← 追加：Irrawaddyはこの専用フェッチを使う
     deduplicate_by_url,
 )
 from tmp.export_all_articles_to_csv import (
     collect_bbc_all_for_date,
     collect_khitthit_all_for_date,
     collect_mizzima_all_for_date,
+    collect_irrawaddy_all_for_date,
+    collect_myanmar_now_mm_all_for_date,
     translate_titles_in_batch,
     translate_title_only,
     RateLimiter,
 )
-# 3) Irrawaddy は fetch_articles 側の関数（CATEGORY_PATHS_RAW/EXCLUDE_PREFIXES準拠）
-from fetch_articles import get_irrawaddy_articles_for
 from fetch_articles import get_dvb_articles_for
 
 # ===== Gmail APIは fetch_articles.py と同じやり方で使う =====
@@ -72,7 +70,6 @@ try:
     sys.stderr.reconfigure(encoding="utf-8")
 except Exception:
     pass
-
 def _build_gmail_service():
     cid = os.getenv("GMAIL_CLIENT_ID")
     csec = os.getenv("GMAIL_CLIENT_SECRET")
@@ -167,8 +164,8 @@ def main(argv=None) -> int:
     # 収集（“キーワード絞り込み前”）
     all_rows = []
     try:
-        # Irrawaddyは get_irrawaddy_articles_for 内で fetch_with_retry_irrawaddy を使用
-        irw = get_irrawaddy_articles_for(today_mmt, debug=False)
+        # Irrawaddy（キーワード絞り込み前、当日MMTのみ）
+        irw = collect_irrawaddy_all_for_date(today_mmt, debug=False)
     except Exception as e:
         print(f"[irrawaddy] fail: {e}")
         irw = []
@@ -180,6 +177,8 @@ def main(argv=None) -> int:
     dvb_items = get_dvb_articles_for(today_mmt, debug=False)
     all_rows.extend(dvb_items)
     all_rows.extend(collect_mizzima_all_for_date(today_mmt, max_pages=3))
+    # Myanmar Now (mm) — 今日分（フィルタなし）
+    all_rows.extend(collect_myanmar_now_mm_all_for_date(today_mmt, max_pages=3))
 
     # URL重複は既存関数で除去
     all_rows = deduplicate_by_url(all_rows)
