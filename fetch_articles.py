@@ -419,15 +419,23 @@ NEWS_KEYWORDS = [
     "Yangon Region",
     "Yangon region",
     "yangon region",
-    # エーヤワディ管区
+]
+
+# Unicode正規化（NFC）を適用
+NEWS_KEYWORDS = [unicodedata.normalize("NFC", kw) for kw in NEWS_KEYWORDS]
+
+# --- Ayeyarwady (エーヤワディ) 系だけを抜き出すサブセット ---
+AYEYARWADY_KEYWORDS = [
     "ဧရာဝတီတိုင်း",
     "Ayeyarwady Region",
     "Ayeyarwady region",
     "ayeyarwady region",
 ]
+AYEYARWADY_KEYWORDS = [unicodedata.normalize("NFC", kw) for kw in AYEYARWADY_KEYWORDS]
 
-# Unicode正規化（NFC）を適用
-NEWS_KEYWORDS = [unicodedata.normalize("NFC", kw) for kw in NEWS_KEYWORDS]
+def is_ayeyarwady_hit(title: str, body: str) -> bool:
+    """タイトル/本文にエーヤワディ系キーワードが含まれるか"""
+    return any(kw in title or kw in body for kw in AYEYARWADY_KEYWORDS)
 
 # 「チャット」語のバリエーションを通貨語として拾う
 CURRENCY_WORD = r"(?:မြန်မာ(?:့)?(?:နိုင်ငံ)?\s*)?(?:ငွေ\s*)?ကျပ်(?:ငွေ)?"
@@ -1986,6 +1994,9 @@ def process_and_enqueue_articles(
             # ③ 正規化
             title_nfc = unicodedata.normalize("NFC", art["title"])
             body_nfc = unicodedata.normalize("NFC", body_text)
+            
+            # エーヤワディ系ヒット判定（1回だけ）
+            is_ayeyar = is_ayeyarwady_hit(title_nfc, body_nfc)
 
             # ④ キーワード判定（Irrawaddyなど必要に応じてバイパス）
             if not bypass_keyword:
@@ -2006,6 +2017,7 @@ def process_and_enqueue_articles(
                     "url": art["url"],
                     "title": art["title"],  # 翻訳前タイトル
                     "body": body_text,  # 翻訳前本文
+                    "is_ayeyar": is_ayeyar, # エーヤワディ系ヒット判定フラグ追加
                 }
             )
 
@@ -2629,6 +2641,7 @@ def process_translation_batches(batch_size=3, wait_seconds=60):
                         "title": translated_title,
                         "summary": summary_html,
                         "ultra": ultra_text,
+                        "is_ayeyar": item.get("is_ayeyar", False), # エーヤワディ系ヒット判定フラグ追加
                     }
                 )
 
@@ -2655,13 +2668,14 @@ def process_translation_batches(batch_size=3, wait_seconds=60):
             "url": x.get("url"),
             "title": x.get("title"),
             "summary": x.get("summary"),
+            "is_ayeyar": x.get("is_ayeyar", False), # エーヤワディ系ヒット判定フラグ追加
         }
         for x in deduped
     ]
     return normalized
 
 
-def send_email_digest(summaries):
+def send_email_digest(summaries, *, recipients_env=None, subject_suffix=""):
     def _build_gmail_service():
         cid = os.getenv("GMAIL_CLIENT_ID")
         csec = os.getenv("GMAIL_CLIENT_SECRET")
@@ -2682,7 +2696,8 @@ def send_email_digest(summaries):
         return build("gmail", "v1", credentials=creds, cache_discovery=False)
 
     sender_email = os.getenv("EMAIL_SENDER")
-    recipient_emails = os.getenv("EMAIL_RECIPIENTS", "").split(",")
+    env_name = recipients_env
+    recipient_emails = os.getenv(env_name, "").split(",")
 
     digest_date = get_today_date_mmt()
     date_str = digest_date.strftime("%Y年%-m月%-d日") + "分"
@@ -2693,6 +2708,9 @@ def send_email_digest(summaries):
         media_grouped[item["source"]].append(item)
 
     subject = "ミャンマー関連ニュース【" + date_str + "】"
+    # テスト用記述
+    if subject_suffix:
+        subject += " " + subject_suffix 
 
     # ✅ ヘッドライン部分を先に構築
     headlines = []
@@ -2844,4 +2862,20 @@ if __name__ == "__main__":
     # バッチ翻訳実行 (5件ごとに1分待機)
     all_summaries = process_translation_batches(batch_size=3, wait_seconds=60)
 
-    send_email_digest(all_summaries)
+    #  A/B完全分離: A=エーヤワディ系ヒットあり / B=ヒットなし（ただし全体キーワードはヒット済）
+    summaries_A = [s for s in all_summaries if s.get("is_ayeyar", False)]
+    summaries_B = [s for s in all_summaries if not s.get("is_ayeyar", False)]
+
+    # 送信（空なら送らない）
+    if summaries_A:
+        send_email_digest(
+            summaries_A,
+            recipients_env="EMAIL_RECIPIENTS",
+            subject_suffix="/ (Ayeyarwady-hit)"
+        )
+    if summaries_B:
+        send_email_digest(
+            summaries_B,
+            recipients_env="INTERNAL_EMAIL_RECIPIENTS",
+            subject_suffix="/ (no Ayeyarwady)"
+        )
