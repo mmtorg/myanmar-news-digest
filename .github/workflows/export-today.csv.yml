@@ -32,7 +32,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests beautifulsoup4 lxml python-dateutil google-genai \
                       google-api-python-client google-auth-httplib2 google-auth \
-                      cloudscraper curl-cffi
+                      cloudscraper curl-cffi brotli brotlicffi
 
       - name: Run exporter (MMT today)
         env:
@@ -87,7 +87,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests beautifulsoup4 lxml python-dateutil google-genai \
                       google-api-python-client google-auth-httplib2 google-auth \
-                      cloudscraper curl-cffi
+                      cloudscraper curl-cffi brotli brotlicffi
 
       - name: Run exporter (MMT today)
         env:
