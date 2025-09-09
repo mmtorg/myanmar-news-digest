@@ -165,7 +165,7 @@ def main(argv=None) -> int:
     all_rows = []
     try:
         # Irrawaddy（キーワード絞り込み前、当日MMTのみ）
-        irw = collect_irrawaddy_all_for_date(today_mmt, debug=False)
+        irw = collect_irrawaddy_all_for_date(today_mmt, debug=True)
     except Exception as e:
         print(f"[irrawaddy] fail: {e}")
         irw = []

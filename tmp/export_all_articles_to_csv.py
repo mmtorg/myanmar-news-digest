@@ -830,7 +830,7 @@ def main(argv=None):
         print(f"=== {d.isoformat()} (MMT) ===")
         # Irrawaddy（キーワード絞り込み前の収集版: ローカル関数）
         try:
-            irw = collect_irrawaddy_all_for_date(d, debug=True)
+            irw = collect_irrawaddy_all_for_date(d, debug=False)
         except Exception as e:
             print(f"[irrawaddy] fail: {e}")
             irw = []
