@@ -712,6 +712,51 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
     except Exception as e:
         print(f"[irrawaddy] home scan fail: {e}")
 
+    # 1.9) ルートRSSフォールバック（カテゴリ/ホームで0件のとき）
+    if len(candidate_urls) == 0:
+        root_feed = f"{BASE}/feed"
+        try:
+            rf = session.get(root_feed, timeout=20) if session else requests.get(root_feed, timeout=20)
+            sc = getattr(rf, "status_code", "?")
+            if debug:
+                blen = len(getattr(rf, "content", None) or getattr(rf, "text", ""))
+                print(f"[irrawaddy][list][root-feed] fetched: {root_feed} status={sc} bytes={blen}")
+            if getattr(rf, "status_code", 0) == 200:
+                soup_feed = BeautifulSoup(getattr(rf, "content", None) or getattr(rf, "text", ""), "xml")
+                items = soup_feed.find_all("item")
+                feed_added = 0
+                for it in items:
+                    ltag = it.find("link")
+                    ptag = it.find("pubDate")
+                    if not ltag or not (ltag.text or "").strip():
+                        continue
+                    link = (ltag.text or "").strip()
+                    # 記事URL側の除外
+                    try:
+                        path = urlparse(link).path.lower()
+                    except Exception:
+                        path = (link or "").lower()
+                    if any(path.startswith(x) for x in ["/news/asia", "/news/world", "/video", "/cartoons"]):
+                        continue
+                    ok = True
+                    if ptag and (ptag.text or "").strip():
+                        try:
+                            dt_mmt = parse_date(ptag.text).astimezone(MMT)
+                            ok = (dt_mmt.date() == target_date_mmt)
+                        except Exception:
+                            ok = True
+                    if not ok:
+                        continue
+                    if link not in seen_urls:
+                        candidate_urls.append(link)
+                        seen_urls.add(link)
+                        feed_hints[link] = {"title": "", "date": target_date_mmt.isoformat()}
+                        feed_added += 1
+                if debug:
+                    print(f"[irrawaddy][list][root-feed] added={feed_added} total_candidates={len(candidate_urls)}")
+        except Exception as e:
+            print(f"[irrawaddy][list][root-feed] fail {root_feed}: {e}")
+
     if debug:
         print(f"[irrawaddy] candidates(unique)={len(candidate_urls)}")
         for u in candidate_urls[:5]:
