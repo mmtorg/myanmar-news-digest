@@ -212,17 +212,17 @@ def collect_dvb_all_for_date(target_date_mmt: date) -> List[Dict]:
     BASE = "https://burmese.dvb.no"
     CATEGORY_PATHS = ["/category/8/news"]
 
-    # Cookie/指紋を引き継ぐため、共有セッション（存在すれば使われる）
     try:
         sess = requests.Session()
     except Exception:
         sess = None
 
-    collected_urls = set()
+    candidate_urls: List[str] = []
+    seen_urls = set()
 
     for path in CATEGORY_PATHS:
-        for page in range(1, 16):  # 1〜15ページすべて
-            url = f"{BASE}{path}?page={page}" if page > 1 else f"{BASE}{path}"
+        for page_no in (1, 2):
+            url = f"{BASE}{path}" if page_no == 1 else f"{BASE}{path}?page=2"
             try:
                 res = fetch_with_retry_dvb(url, retries=4, wait_seconds=2, session=sess)
             except Exception as e:
@@ -231,50 +231,74 @@ def collect_dvb_all_for_date(target_date_mmt: date) -> List[Dict]:
 
             soup = BeautifulSoup(getattr(res, "content", None) or res.text, "html.parser")
 
-            def _norm_url(href: str) -> str:
-                return href if href.startswith("http") else BASE + href
+            blocks = soup.select(
+                "div.md\\:grid.grid-cols-3.gap-4.mt-5, div.grid.grid-cols-3.gap-4.mt-5"
+            ) or [soup]
 
-            cards = soup.select("div.listing_content.item.item_length-1 a[href]") \
-                 or soup.select("div.listing_content.item.item_length-2 a[href]") \
-                 or soup.select("div.listing_content.item a[href]")
-            for a in cards:
-                href = a.get("href")
-                if href:
-                    collected_urls.add(_norm_url(href))
+            for scope in blocks:
+                anchors = scope.select('a[href^="/post/"]')
+                for a in anchors:
+                    href = a.get("href") or ""
+                    date_div = a.select_one("div.flex.gap-1.text-xs.mt-2.text-gray-500 div")
+                    date_text = (date_div.get_text(" ", strip=True) if date_div else "").strip()
+                    if not date_text:
+                        full = a.get_text(" ", strip=True)
+                        m = re.search(
+                            r"(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s*\d{4}",
+                            full,
+                        )
+                        date_text = m.group(0) if m else ""
+                    d = None
+                    try:
+                        if date_text:
+                            d = _parse_category_date_text(date_text)
+                    except Exception:
+                        d = None
+                    if d and d == target_date_mmt:
+                        uabs = href if href.startswith("http") else f"{BASE}{href}"
+                        if uabs not in seen_urls:
+                            candidate_urls.append(uabs)
+                            seen_urls.add(uabs)
 
     results: List[Dict] = []
-    for url in collected_urls:
+    for url in candidate_urls:
         try:
             res = fetch_with_retry_dvb(url, retries=4, wait_seconds=2, session=sess)
             soup = BeautifulSoup(getattr(res, "content", None) or res.text, "html.parser")
 
-            meta = soup.find("meta", property="article:published_time")
-            if not meta or not meta.has_attr("content"):
-                continue
-            dt = datetime.fromisoformat(meta["content"]).astimezone(MMT)
-            if dt.date() != target_date_mmt:
-                continue
-
             t = soup.find("h1") or soup.find("title")
             title = (t.get_text(strip=True) if t else "").strip()
-            body_ps = soup.select(".full_content p")
-            body = "\n".join(p.get_text(strip=True) for p in body_ps).strip()
+            host = soup.select_one(".full_content")
+            body = ""
+            if host:
+                parts = []
+                for p in host.select("p"):
+                    txt = re.sub(r"\s+", " ", p.get_text(" ", strip=True))
+                    if txt:
+                        parts.append(txt)
+                body = "\n".join(parts).strip()
 
-            if not title:
+            if not title or not body:
                 continue
 
             results.append(
                 {
-                    "source": "DVB",
-                    "title": unicodedata.normalize("NFC", title),
                     "url": url,
+                    "title": unicodedata.normalize("NFC", title),
                     "date": target_date_mmt.isoformat(),
                     "body": unicodedata.normalize("NFC", body),
+                    "source": "dvb",
                 }
             )
         except Exception as e:
             print(f"[dvb] article fail {url}: {e}")
             continue
+
+    if results:
+        before = len(results)
+        results = deduplicate_by_url(results)
+        if before != len(results):
+            print(f"[dvb] dedup: {before} -> {len(results)}")
 
     return results
 
