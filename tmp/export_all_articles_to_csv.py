@@ -571,9 +571,22 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
             print(f"[irrawaddy] list fetch fail {url}: {e}")
             continue
         if debug:
-            print(f"[irrawaddy][list] fetched: {url}")
-        soup = BeautifulSoup(res.content, "html.parser")
+            sc = getattr(res, "status_code", "?")
+            body = getattr(res, "content", None)
+            blen = len(body) if body is not None else len(getattr(res, "text", ""))
+            print(f"[irrawaddy][list] fetched: {url} status={sc} bytes={blen}")
+        soup = BeautifulSoup(getattr(res, "content", None) or getattr(res, "text", ""), "html.parser")
+        if debug:
+            title_txt = (soup.title.get_text(strip=True) if soup.title else "")
+            c_hero = len(soup.select('.jnews_category_hero_container'))
+            c_postmeta = len(soup.select('.jeg_post_meta'))
+            c_date_links = len(soup.select('.jeg_meta_date a[href]'))
+            c_titles = len(soup.select('.jeg_post_title a[href]'))
+            c_rel_next = len([ln for ln in soup.select('link[rel="next"]') if ln.get('href')])
+            print(f"[irrawaddy][list] title='{title_txt[:60]}' hero={c_hero} post_meta={c_postmeta} date_links={c_date_links} titles={c_titles} rel_next={c_rel_next}")
         wrapper = soup.select_one("div.jeg_content")
+        if debug:
+            print(f"[irrawaddy][list] wrapper_found={'yes' if wrapper else 'no'}")
         scopes = ([wrapper] if wrapper else []) + [soup]
 
         for scope in scopes:
@@ -610,13 +623,18 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
     try:
         res_home = fetch_with_retry_irrawaddy(f"{BASE}/", session=session)
         if debug:
-            print("[irrawaddy][home] fetched: /")
-        soup_home = BeautifulSoup(res_home.content, "html.parser")
+            sc = getattr(res_home, "status_code", "?")
+            body = getattr(res_home, "content", None)
+            blen = len(body) if body is not None else len(getattr(res_home, "text", ""))
+            print(f"[irrawaddy][home] fetched: / status={sc} bytes={blen}")
+        soup_home = BeautifulSoup(getattr(res_home, "content", None) or getattr(res_home, "text", ""), "html.parser")
         home_scope = soup_home.select_one(
             'div.elementor-element-kuDRpuo[data-id="kuDRpuo"], '
             "div.elementor-element-kuDRpuo, "
             '[data-id="kuDRpuo"]'
         )
+        if debug:
+            print(f"[irrawaddy][home] home_scope_found={'yes' if home_scope else 'no'}")
         if home_scope:
             links = home_scope.select(".jeg_meta_date a[href]")
             strict = [a for a in links if a.find("i", class_="fa fa-clock-o")]
