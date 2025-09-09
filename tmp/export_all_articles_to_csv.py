@@ -266,8 +266,13 @@ def collect_dvb_all_for_date(target_date_mmt: date) -> List[Dict]:
             res = fetch_with_retry_dvb(url, retries=4, wait_seconds=2, session=sess)
             soup = BeautifulSoup(getattr(res, "content", None) or res.text, "html.parser")
 
-            t = soup.find("h1") or soup.find("title")
-            title = (t.get_text(strip=True) if t else "").strip()
+            # タイトル抽出を強化: og:title → h1/.post-title → <title> の順
+            title_tag = soup.find("meta", attrs={"property": "og:title"})
+            if title_tag and title_tag.has_attr("content"):
+                title = (title_tag["content"] or "").strip()
+            else:
+                t = soup.select_one(".text-2xl, h1, .post-title") or soup.find("title")
+                title = (t.get_text(strip=True) if t else "").strip()
             host = soup.select_one(".full_content")
             body = ""
             if host:
@@ -287,7 +292,7 @@ def collect_dvb_all_for_date(target_date_mmt: date) -> List[Dict]:
                     "title": unicodedata.normalize("NFC", title),
                     "date": target_date_mmt.isoformat(),
                     "body": unicodedata.normalize("NFC", body),
-                    "source": "dvb",
+                    "source": "DVB",
                 }
             )
         except Exception as e:
