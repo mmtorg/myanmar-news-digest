@@ -559,6 +559,8 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
     results: List[Dict] = []
     seen_urls = set()
     candidate_urls: List[str] = []
+    # RSSから得た補助情報（タイトル/日付）をURLキーで保持
+    feed_hints: Dict[str, Dict[str, str]] = {}
     if debug:
         print(f"[irrawaddy] target_date={target_date_mmt}")
 
@@ -636,11 +638,19 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
                     feed_added = 0
                     for it in items:
                         ltag = it.find("link")
+                        ttag = it.find("title")
                         ptag = it.find("pubDate")
                         if not ltag or not (ltag.text or "").strip():
                             continue
                         link = (ltag.text or "").strip()
-                        if _is_excluded_url(link):
+                        # 記事URL側の除外（/news/asia, /news/world, /video, /cartoons）
+                        try:
+                            path = urlparse(link).path.lower()
+                        except Exception:
+                            path = (link or "").lower()
+                        if any(path.startswith(x) for x in [
+                            "/news/asia", "/news/world", "/video", "/cartoons"
+                        ]):
                             continue
                         # pubDate が対象日MMTと一致するものを候補化
                         ok = True
@@ -655,6 +665,12 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
                         if link not in seen_urls:
                             candidate_urls.append(link)
                             seen_urls.add(link)
+                            # フィードの補助情報を保持（タイトル/日付）
+                            hint_title = (ttag.text or "").strip() if ttag else ""
+                            feed_hints[link] = {
+                                "title": unicodedata.normalize("NFC", hint_title),
+                                "date": target_date_mmt.isoformat(),
+                            }
                             feed_added += 1
                     if debug:
                         print(f"[irrawaddy][list][feed] added={feed_added} total_candidates={len(candidate_urls)}")
@@ -715,6 +731,23 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
             if debug:
                 print(f"[irrawaddy][article] url={url} meta_date={meta_date}")
             if meta_date != target_date_mmt:
+                # フィード補助があればフォールバック採用
+                hint = feed_hints.get(url)
+                if hint and (hint.get("date") == target_date_mmt.isoformat()):
+                    title_fb = hint.get("title") or ""
+                    if title_fb:
+                        if debug:
+                            print("  -> fallback: use feed title/date (meta_date mismatch)")
+                        results.append(
+                            {
+                                "source": "Irrawaddy",
+                                "title": unicodedata.normalize("NFC", title_fb),
+                                "url": url,
+                                "date": target_date_mmt.isoformat(),
+                                "body": "",
+                            }
+                        )
+                        continue
                 if debug:
                     print("  -> skip: date mismatch")
                 continue
@@ -724,6 +757,22 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
             title = unicodedata.normalize("NFC", title).strip()
             body = unicodedata.normalize("NFC", body).strip()
             if not title:
+                # フィード補助があればフォールバック採用
+                hint = feed_hints.get(url)
+                title_fb = (hint or {}).get("title") or ""
+                if title_fb:
+                    if debug:
+                        print("  -> fallback: use feed title (empty title)")
+                    results.append(
+                        {
+                            "source": "Irrawaddy",
+                            "title": unicodedata.normalize("NFC", title_fb),
+                            "url": url,
+                            "date": target_date_mmt.isoformat(),
+                            "body": body,  # 取れていればそのまま、無ければ空
+                        }
+                    )
+                    continue
                 if debug:
                     print("  -> skip: empty title")
                 continue
