@@ -598,10 +598,9 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
                 "div.jeg_postblock_content .jeg_meta_date a[href], "
                 ".jeg_post_meta .jeg_meta_date a[href]"
             )
-            strict_links = [a for a in links if a.find("i", class_="fa fa-clock-o")]
+            # 時計アイコン <i class="fa fa-clock-o"> が無い要素も許容する
             if debug:
-                print(f"[irrawaddy][list] candidates in-page: raw={len(links)} strict={len(strict_links)}")
-            links = strict_links
+                print(f"[irrawaddy][list] candidates in-page: raw={len(links)}")
 
             found = 0
             for a in links:
@@ -695,10 +694,9 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
             print(f"[irrawaddy][home] home_scope_found={'yes' if home_scope else 'no'}")
         if home_scope:
             links = home_scope.select(".jeg_meta_date a[href]")
-            strict = [a for a in links if a.find("i", class_="fa fa-clock-o")]
+            # 時計アイコン <i class="fa fa-clock-o"> が無い要素も許容する
             if debug:
-                print(f"[irrawaddy][home] raw={len(links)} strict={len(strict)}")
-            links = strict
+                print(f"[irrawaddy][home] raw={len(links)}")
             for a in links:
                 href = (a.get("href") or "").strip()
                 raw = a.get_text(" ", strip=True)
