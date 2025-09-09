@@ -2697,7 +2697,7 @@ def send_email_digest(summaries, *, recipients_env=None, subject_suffix=""):
 
     sender_email = os.getenv("EMAIL_SENDER")
     env_name = recipients_env
-    recipient_emails = os.getenv(env_name, "").split(",")
+    recipient_emails = [x.strip() for x in os.getenv(env_name, "").split(",") if x.strip()]
 
     digest_date = get_today_date_mmt()
     date_str = digest_date.strftime("%Y年%-m月%-d日") + "分"
@@ -2866,16 +2866,14 @@ if __name__ == "__main__":
     summaries_A = [s for s in all_summaries if s.get("is_ayeyar", False)]
     summaries_B = [s for s in all_summaries if not s.get("is_ayeyar", False)]
 
-    # 送信（空なら送らない）
-    if summaries_A:
-        send_email_digest(
-            summaries_A,
-            recipients_env="EMAIL_RECIPIENTS",
-            subject_suffix="/ (Ayeyarwady-hit)"
-        )
-    if summaries_B:
-        send_email_digest(
-            summaries_B,
-            recipients_env="INTERNAL_EMAIL_RECIPIENTS",
-            subject_suffix="/ (no Ayeyarwady)"
-        )
+    # A/Bどちらも送信
+    send_email_digest(
+        summaries_A,
+        recipients_env="EMAIL_RECIPIENTS",
+        subject_suffix="/ (Ayeyarwady-hit)"
+    )
+    send_email_digest(
+        summaries_B,
+        recipients_env="INTERNAL_EMAIL_RECIPIENTS",
+        subject_suffix="/ (no Ayeyarwady)"
+    )
