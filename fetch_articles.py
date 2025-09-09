@@ -492,6 +492,7 @@ def any_keyword_hit(title: str, body: str) -> bool:
     return False
 
 
+
 def clean_html_content(html: str) -> str:
     html = html.replace("\xa0", " ").replace("&nbsp;", " ")
     # 制御文字（カテゴリC）を除外、可視Unicodeはそのまま
@@ -1995,12 +1996,16 @@ def process_and_enqueue_articles(
             title_nfc = unicodedata.normalize("NFC", art["title"])
             body_nfc = unicodedata.normalize("NFC", body_text)
             
-            # エーヤワディ系ヒット判定（1回だけ）
+            # エーヤワディ系/全体/非エーヤワディのヒット判定（各1回のみ）
             is_ayeyar = is_ayeyarwady_hit(title_nfc, body_nfc)
+            # 非エーヤワディのヒット（NEWS_KEYWORDS のみ）
+            hit_non_aye = any_keyword_hit(title_nfc, body_nfc)
+            # 全体ヒット = 非エーヤワディ or エーヤワディ
+            hit_full = hit_non_aye or is_ayeyar
 
             # ④ キーワード判定（Irrawaddyなど必要に応じてバイパス）
             if not bypass_keyword:
-                if not any_keyword_hit(title_nfc, body_nfc):
+                if not hit_full:
                     log_no_keyword_hit(
                         source_name,
                         art["url"],
@@ -2017,7 +2022,9 @@ def process_and_enqueue_articles(
                     "url": art["url"],
                     "title": art["title"],  # 翻訳前タイトル
                     "body": body_text,  # 翻訳前本文
-                    "is_ayeyar": is_ayeyar, # エーヤワディ系ヒット判定フラグ追加
+                    "is_ayeyar": is_ayeyar,  # エーヤワディ系ヒット判定
+                    "hit_full": hit_full,  # 全体キーワード判定
+                    "hit_non_ayeyar": hit_non_aye,  # 非エーヤワディ判定
                 }
             )
 
@@ -2641,7 +2648,9 @@ def process_translation_batches(batch_size=3, wait_seconds=60):
                         "title": translated_title,
                         "summary": summary_html,
                         "ultra": ultra_text,
-                        "is_ayeyar": item.get("is_ayeyar", False), # エーヤワディ系ヒット判定フラグ追加
+                        "is_ayeyar": item.get("is_ayeyar", False),  # エーヤワディ系ヒット判定
+                        "hit_full": item.get("hit_full", False),  # 全体キーワード判定
+                        "hit_non_ayeyar": item.get("hit_non_ayeyar", False),  # 非エーヤワディ判定
                     }
                 )
 
@@ -2668,7 +2677,9 @@ def process_translation_batches(batch_size=3, wait_seconds=60):
             "url": x.get("url"),
             "title": x.get("title"),
             "summary": x.get("summary"),
-            "is_ayeyar": x.get("is_ayeyar", False), # エーヤワディ系ヒット判定フラグ追加
+            "is_ayeyar": x.get("is_ayeyar", False),  # エーヤワディ系ヒット判定
+            "hit_full": x.get("hit_full", False),  # 全体キーワード判定
+            "hit_non_ayeyar": x.get("hit_non_ayeyar", False),  # 非エーヤワディ判定
         }
         for x in deduped
     ]
@@ -2862,18 +2873,23 @@ if __name__ == "__main__":
     # バッチ翻訳実行 (5件ごとに1分待機)
     all_summaries = process_translation_batches(batch_size=3, wait_seconds=60)
 
-    #  A/B完全分離: A=エーヤワディ系ヒットあり / B=ヒットなし（ただし全体キーワードはヒット済）
-    summaries_A = [s for s in all_summaries if s.get("is_ayeyar", False)]
-    summaries_B = [s for s in all_summaries if not s.get("is_ayeyar", False)]
+    # A/B分岐
+    # ✅ A = 全キーワードでヒット（従来の any_keyword_hit 結果）
+    summaries_A = [s for s in all_summaries if s.get("hit_full")]
+    # ✅ B = エーヤワディ系を除いたキーワードだけでヒット
+    summaries_B = [s for s in all_summaries if s.get("hit_non_ayeyar")]
 
     # A/Bどちらも送信
+    # ✅ A = エーヤワディ系を含む全キーワードでヒット
     send_email_digest(
         summaries_A,
-        recipients_env="EMAIL_RECIPIENTS",
-        subject_suffix="/ (Ayeyarwady-hit)"
+        recipients_env="INTERNAL_EMAIL_RECIPIENTS",
+        subject_suffix="/ (エーヤワディ含)"
     )
+    
+    # ✅ B = エーヤワディ系を除いたキーワードでヒット
     send_email_digest(
         summaries_B,
-        recipients_env="INTERNAL_EMAIL_RECIPIENTS",
-        subject_suffix="/ (no Ayeyarwady)"
+        recipients_env="EMAIL_RECIPIENTS",
+        subject_suffix="/ (エーヤワディ含まない)"
     )
