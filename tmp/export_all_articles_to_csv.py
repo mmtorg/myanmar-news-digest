@@ -550,18 +550,28 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
             seen.add(q)
             paths.append(q)
 
+    # 共有セッション（Cookie/指紋引き継ぎ用）
+    try:
+        session = requests.Session()
+    except Exception:
+        session = None
+
     results: List[Dict] = []
     seen_urls = set()
     candidate_urls: List[str] = []
+    if debug:
+        print(f"[irrawaddy] target_date={target_date_mmt}")
 
     # 1) 各カテゴリを1回ずつ巡回し、当日候補URLを収集
     for rel in paths:
         url = f"{BASE}{rel}"
         try:
-            res = fetch_with_retry_irrawaddy(url)
+            res = fetch_with_retry_irrawaddy(url, session=session)
         except Exception as e:
             print(f"[irrawaddy] list fetch fail {url}: {e}")
             continue
+        if debug:
+            print(f"[irrawaddy][list] fetched: {url}")
         soup = BeautifulSoup(res.content, "html.parser")
         wrapper = soup.select_one("div.jeg_content")
         scopes = ([wrapper] if wrapper else []) + [soup]
@@ -572,7 +582,10 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
                 "div.jeg_postblock_content .jeg_meta_date a[href], "
                 ".jeg_post_meta .jeg_meta_date a[href]"
             )
-            links = [a for a in links if a.find("i", class_="fa fa-clock-o")]
+            strict_links = [a for a in links if a.find("i", class_="fa fa-clock-o")]
+            if debug:
+                print(f"[irrawaddy][list] candidates in-page: raw={len(links)} strict={len(strict_links)}")
+            links = strict_links
 
             found = 0
             for a in links:
@@ -590,10 +603,14 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
                     found += 1
             if found > 0:
                 break
+        if debug:
+            print(f"[irrawaddy][list] added_from_category={found} total_candidates={len(candidate_urls)}")
 
     # 1.5) ホーム特定カラム（data-id=kuDRpuo）でも当日候補を収集
     try:
-        res_home = fetch_with_retry_irrawaddy(f"{BASE}/")
+        res_home = fetch_with_retry_irrawaddy(f"{BASE}/", session=session)
+        if debug:
+            print("[irrawaddy][home] fetched: /")
         soup_home = BeautifulSoup(res_home.content, "html.parser")
         home_scope = soup_home.select_one(
             'div.elementor-element-kuDRpuo[data-id="kuDRpuo"], '
@@ -602,7 +619,10 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
         )
         if home_scope:
             links = home_scope.select(".jeg_meta_date a[href]")
-            links = [a for a in links if a.find("i", class_="fa fa-clock-o")]
+            strict = [a for a in links if a.find("i", class_="fa fa-clock-o")]
+            if debug:
+                print(f"[irrawaddy][home] raw={len(links)} strict={len(strict)}")
+            links = strict
             for a in links:
                 href = (a.get("href") or "").strip()
                 raw = a.get_text(" ", strip=True)
@@ -620,16 +640,23 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
 
     if debug:
         print(f"[irrawaddy] candidates(unique)={len(candidate_urls)}")
+        for u in candidate_urls[:5]:
+            print(f"  - {u}")
 
     # 2) 各候補記事の meta 日付を MMT で厳密確認し、タイトル/本文を抽出
     for url in candidate_urls:
         if _is_excluded_url(url):
             continue
         try:
-            res = fetch_with_retry_irrawaddy(url)
+            res = fetch_with_retry_irrawaddy(url, session=session)
             soup = BeautifulSoup(res.content, "html.parser")
 
-            if _article_date_from_meta_mmt(soup) != target_date_mmt:
+            meta_date = _article_date_from_meta_mmt(soup)
+            if debug:
+                print(f"[irrawaddy][article] url={url} meta_date={meta_date}")
+            if meta_date != target_date_mmt:
+                if debug:
+                    print("  -> skip: date mismatch")
                 continue
 
             title = _extract_title(soup) or ""
@@ -637,7 +664,11 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
             title = unicodedata.normalize("NFC", title).strip()
             body = unicodedata.normalize("NFC", body).strip()
             if not title:
+                if debug:
+                    print("  -> skip: empty title")
                 continue
+            if not body and debug:
+                print("  -> note: empty body")
 
             results.append(
                 {
@@ -799,7 +830,7 @@ def main(argv=None):
         print(f"=== {d.isoformat()} (MMT) ===")
         # Irrawaddy（キーワード絞り込み前の収集版: ローカル関数）
         try:
-            irw = collect_irrawaddy_all_for_date(d, debug=False)
+            irw = collect_irrawaddy_all_for_date(d, debug=True)
         except Exception as e:
             print(f"[irrawaddy] fail: {e}")
             irw = []
