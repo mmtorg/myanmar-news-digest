@@ -1560,7 +1560,7 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
         # Google News RSS（Irrawaddy限定）
         gnews = (
             "https://news.google.com/rss/search?"  
-            "q=site:irrawaddy.com&hl=en-US&gl=US&ceid=US:en"
+            "q=site:irrawaddy.com+when:2d&hl=en-US&gl=US&ceid=US:en"
         )
         xml = _fetch_text(gnews)
         if not xml:
@@ -1673,17 +1673,32 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
                     except Exception:
                         items = []
 
+            recent_bucket: List[Dict[str, str]] = []
             for it in items:
                 link = it.get("link") or ""
                 title = it.get("title") or ""
                 pub = it.get("pubDate") or ""
                 dt = _parse_rfc822_date(pub)
-                if link and dt and _mmt_date(dt) == date_obj and not _is_excluded_url(link):
-                    cands.append({
+                if not link or _is_excluded_url(link):
+                    continue
+                if dt:
+                    d_mmt = _mmt_date(dt)
+                    if d_mmt == date_obj or d_mmt == (date_obj - timedelta(days=1)):
+                        cands.append({
+                            "url": link,
+                            "title": title,
+                            "date": date_obj.isoformat(),
+                        })
+                        continue
+                if len(recent_bucket) < 8:
+                    recent_bucket.append({
                         "url": link,
                         "title": title,
                         "date": date_obj.isoformat(),
                     })
+
+            if not cands and recent_bucket:
+                cands.extend(recent_bucket)
 
         # ユニーク化
         seen = set()
