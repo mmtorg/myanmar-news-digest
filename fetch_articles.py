@@ -866,6 +866,50 @@ def _extract_title(soup):
     return None
 
 
+def _title_from_slug(u: str) -> str:
+    try:
+        from urllib.parse import urlparse, unquote
+        path = urlparse(u).path or ""
+        seg = path.rstrip("/").split("/")[-1]
+        seg = seg.replace(".html", "")
+        seg = unquote(seg)
+        seg = seg.replace("-", " ")
+        # 先頭大文字化（英文タイトル用の簡易整形）
+        return _norm_text(seg.title())
+    except Exception:
+        return ""
+
+
+def _oembed_title_irrawaddy(u: str) -> str:
+    try:
+        api = (
+            "https://www.irrawaddy.com/wp-json/oembed/1.0/embed?url="
+            + requests.utils.requote_uri(u)
+        )
+        r = requests.get(
+            api,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/128.0.0.0 Safari/537.36"
+                )
+            },
+            timeout=10,
+        )
+        if r.status_code == 200 and r.text.strip():
+            try:
+                data = r.json()
+            except Exception:
+                # JSONとして読めない場合は諦める
+                return ""
+            t = (data.get("title") or "").strip()
+            return _norm_text(t)
+    except Exception:
+        pass
+    return ""
+
+
 def _is_excluded_by_ancestor(node) -> bool:
     excluded = {
         "jnews_inline_related_post",
@@ -1795,6 +1839,15 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
                     if not title:
                         # フィードで拾ったタイトルを最終手段として流用
                         title = fallback_titles.get(url, "")
+
+            # ③ それでもタイトルが空なら、oEmbed またはスラッグから補完
+            if not title:
+                if "irrawaddy.com" in (url or ""):
+                    t2 = _oembed_title_irrawaddy(url)
+                    if t2:
+                        title = t2
+                if not title:
+                    title = _title_from_slug(url)
 
             # キーワードフィルタ（他媒体と同様）追加
             # 念のためタイトル/本文をNFC正規化してから判定
