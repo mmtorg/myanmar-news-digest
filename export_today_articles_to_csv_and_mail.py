@@ -170,18 +170,18 @@ def main(argv=None) -> int:
         print(f"[irrawaddy] fail: {e}")
         irw = []
         
-    # # Irrawaddyログ出力（件数＋先頭数件を表示）
-    # try:
-    #     print(f"[irrawaddy] collected: {len(irw)} items for {today_mmt}")
-    #     for a in irw[:10]:
-    #         title = (a.get("title") or "").replace("\n", " ").strip()
-    #         url = a.get("url", "")
-    #         d = a.get("date", "")
-    #         print(f"  - {d} | {title[:80]} | {url}")
-    #     if len(irw) > 10:
-    #         print(f"  ... (+{len(irw)-10} more)")
-    # except Exception:
-    #     pass
+    # Irrawaddyログ出力（件数＋先頭数件を表示）
+    try:
+        print(f"[irrawaddy] collected: {len(irw)} items for {today_mmt}")
+        for a in irw[:10]:
+            title = (a.get("title") or "").replace("\n", " ").strip()
+            url = a.get("url", "")
+            d = a.get("date", "")
+            print(f"  - {d} | {title[:80]} | {url}")
+        if len(irw) > 10:
+            print(f"  ... (+{len(irw)-10} more)")
+    except Exception:
+        pass
     
     all_rows.extend(irw)
 
@@ -192,7 +192,23 @@ def main(argv=None) -> int:
     all_rows.extend(collect_dvb_all_for_date(today_mmt))
     all_rows.extend(collect_mizzima_all_for_date(today_mmt, max_pages=3))
     # Myanmar Now (mm) — 今日分（フィルタなし）
-    all_rows.extend(collect_myanmar_now_mm_all_for_date(today_mmt, max_pages=3))
+    mm = collect_myanmar_now_mm_all_for_date(today_mmt, max_pages=3)
+    all_rows.extend(mm)
+
+    # Irrawaddyログ出力（件数＋先頭数件を表示）
+    try:
+        print(f"[Myanmar Now (mm)] collected: {len(mm)} items for {today_mmt}")
+        for a in mm[:10]:
+            title = (a.get("title") or "").replace("\n", " ").strip()
+            url = a.get("url", "")
+            d = a.get("date", "")
+            print(f"  - {d} | {title[:80]} | {url}")
+        if len(mm) > 10:
+            print(f"  ... (+{len(mm)-10} more)")
+    except Exception:
+        pass
+    
+    sys.exit(1)
 
     # URL重複は既存関数で除去
     all_rows = deduplicate_by_url(all_rows)
