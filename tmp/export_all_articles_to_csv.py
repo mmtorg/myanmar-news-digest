@@ -447,43 +447,103 @@ def collect_myanmar_now_mm_all_for_date(target_date_mmt: date, max_pages: int = 
         collected |= _collect_article_urls_from_category(base)
 
     items: List[Dict] = []
+
+    def _fetch_text(url: str, timeout: int = 20) -> str:
+        try:
+            r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=timeout)
+            if r.status_code == 200 and (r.text or "").strip():
+                return r.text
+        except Exception:
+            pass
+        return ""
+
+    def _fetch_text_via_jina(url: str, timeout: int = 25) -> str:
+        try:
+            alt = f"https://r.jina.ai/http://{url.lstrip('/')}"
+            r = requests.get(alt, headers={"User-Agent": "Mozilla/5.0"}, timeout=timeout)
+            if r.status_code == 200 and (r.text or "").strip():
+                return r.text
+        except Exception:
+            pass
+        return ""
+
+    def _oembed_title(u: str) -> str:
+        try:
+            api = (
+                "https://myanmar-now.org/wp-json/oembed/1.0/embed?url="
+                + requests.utils.requote_uri(u)
+            )
+            r = requests.get(api, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+            if r.status_code == 200 and (r.text or "").strip():
+                data = r.json()
+                return unicodedata.normalize("NFC", (data.get("title") or "").strip())
+        except Exception:
+            pass
+        return ""
+
+    def _title_from_slug(u: str) -> str:
+        try:
+            from urllib.parse import urlparse, unquote
+            seg = urlparse(u).path.rstrip("/").split("/")[-1]
+            seg = unquote(seg).replace("-", " ")
+            return unicodedata.normalize("NFC", seg)
+        except Exception:
+            return ""
     for url in collected:
         try:
-            res = fetch_with_retry(url)
-            soup = BeautifulSoup(res.content, "html.parser")
-
-            meta = soup.find("meta", attrs={"property": "article:published_time"})
-            if not meta or not meta.get("content"):
-                continue
+            title = ""
+            body = ""
+            meta_date_ok = False
+            soup = None
             try:
-                dt_utc = datetime.fromisoformat(meta["content"])  # aware if offset
+                res = fetch_with_retry(url)
+                soup = BeautifulSoup(res.content, "html.parser")
             except Exception:
-                dt_utc = parse_date(meta["content"])  # may be aware
-            dt_mmt = dt_utc.astimezone(MMT)
-            if dt_mmt.date() != target_date_mmt:
+                soup = None
+
+            if soup is not None:
+                meta = soup.find("meta", attrs={"property": "article:published_time"})
+                if meta and meta.get("content"):
+                    try:
+                        dt_utc = datetime.fromisoformat(meta["content"])  # aware if offset
+                    except Exception:
+                        dt_utc = parse_date(meta["content"])  # may be aware
+                    dt_mmt = dt_utc.astimezone(MMT)
+                    if dt_mmt.date() == target_date_mmt:
+                        meta_date_ok = True
+
+            # タイトル
+            if soup is not None:
+                title_raw = (soup.title.get_text(strip=True) if soup.title else "").strip()
+                title = _strip_source_suffix(unicodedata.normalize("NFC", title_raw))
+                if not title:
+                    h1 = soup.find("h1")
+                    if h1:
+                        title = _strip_source_suffix(unicodedata.normalize("NFC", h1.get_text(strip=True)))
+            if not title:
+                title = _oembed_title(url) or _title_from_slug(url)
+                title = _strip_source_suffix(title)
+            if not title:
                 continue
 
-            title_raw = (soup.title.get_text(strip=True) if soup.title else "").strip()
-            title = _strip_source_suffix(unicodedata.normalize("NFC", title_raw))
-            if not title:
-                h1 = soup.find("h1")
-                if h1:
-                    title = _strip_source_suffix(unicodedata.normalize("NFC", h1.get_text(strip=True)))
-            if not title:
-                continue
-
-            body_parts = []
-            content_root = soup.select_one("div.entry-content.entry.clearfix") or soup
-            for p in content_root.find_all("p"):
-                txt = p.get_text(strip=True)
-                if txt:
-                    body_parts.append(txt)
-            body = unicodedata.normalize("NFC", "\n".join(body_parts).strip())
+            # 本文
+            if soup is not None:
+                body_parts = []
+                content_root = soup.select_one("div.entry-content.entry.clearfix") or soup
+                for p in content_root.find_all("p"):
+                    txt = p.get_text(strip=True)
+                    if txt:
+                        body_parts.append(txt)
+                body = unicodedata.normalize("NFC", "\n".join(body_parts).strip())
+                if not body:
+                    paragraphs = extract_paragraphs_with_wait(soup)
+                    body = unicodedata.normalize("NFC", "\n".join(
+                        p.get_text(strip=True) for p in paragraphs if getattr(p, "get_text", None)
+                    )).strip()
             if not body:
-                paragraphs = extract_paragraphs_with_wait(soup)
-                body = unicodedata.normalize("NFC", "\n".join(
-                    p.get_text(strip=True) for p in paragraphs if getattr(p, "get_text", None)
-                )).strip()
+                body = _fetch_text_via_jina(url)
+                if not body:
+                    body = _fetch_text(url)
             if not body:
                 continue
 
@@ -491,7 +551,9 @@ def collect_myanmar_now_mm_all_for_date(target_date_mmt: date, max_pages: int = 
                 "source": "Myanmar Now (mm)",
                 "title": title,
                 "url": url,
-                "date": dt_mmt.isoformat(),
+                # 直接HTMLでmeta日付確認できた場合はその日付、
+                # そうでない場合もカテゴリ抽出が当日なので target_date_mmt を採用
+                "date": (dt_mmt.isoformat() if meta_date_ok else target_date_mmt.isoformat()),
                 "body": body,
             })
         except Exception as e:
@@ -588,6 +650,7 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
     results: List[Dict] = []
     seen_urls = set()
     candidate_urls: List[str] = []
+    origins: Dict[str, str] = {}
     # RSS/検索から得た補助情報（タイトル/日付）をURLキーで保持
     feed_hints: Dict[str, Dict[str, str]] = {}
     if debug:
@@ -644,6 +707,7 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
                 if shown_date == target_date_mmt and href and href not in seen_urls:
                     candidate_urls.append(href)
                     seen_urls.add(href)
+                    origins[href] = origins.get(href, "cat")
                     found += 1
                     cat_added += 1
             if found > 0:
@@ -686,6 +750,7 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
                 if shown_date == target_date_mmt and href and href not in seen_urls:
                     candidate_urls.append(href)
                     seen_urls.add(href)
+                    origins[href] = origins.get(href, "home")
     except Exception as e:
         print(f"[irrawaddy] home scan fail: {e}")
 
@@ -783,6 +848,7 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
                         if link not in seen_urls:
                             candidate_urls.append(link)
                             seen_urls.add(link)
+                            origins[link] = "feed"
                         feed_hints[link] = {"title": tt, "date": target_date_mmt.isoformat()}
             except Exception:
                 pass
@@ -807,6 +873,7 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
                             if link not in seen_urls:
                                 candidate_urls.append(link)
                                 seen_urls.add(link)
+                                origins[link] = "feed"
                             feed_hints[link] = {"title": title, "date": target_date_mmt.isoformat()}
                 except Exception:
                     pass
@@ -825,6 +892,7 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
                     if link not in seen_urls:
                         candidate_urls.append(link)
                         seen_urls.add(link)
+                        origins[link] = "feed"
                     feed_hints[link] = {"title": title, "date": target_date_mmt.isoformat()}
         if debug:
             print(f"[irrawaddy] fallback candidates={len(candidate_urls)}")
@@ -865,6 +933,31 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
                             }
                         )
                         continue
+                # カテゴリ/ホーム由来の場合は、一覧の当日判定を信頼して採用
+                if origins.get(url) in ("cat", "home"):
+                    title_fb = (feed_hints.get(url, {}).get("title") or "").strip()
+                    if not title_fb:
+                        # 最低限のタイトル補完（oEmbed/slug）
+                        # 再利用の簡易関数をここでも使用
+                        def _title_from_slug_local(u: str) -> str:
+                            try:
+                                from urllib.parse import urlparse, unquote
+                                seg = urlparse(u).path.rstrip("/").split("/")[-1]
+                                seg = unquote(seg).replace(".html", "").replace("-", " ")
+                                return unicodedata.normalize("NFC", seg.title())
+                            except Exception:
+                                return ""
+                        title_fb = _title_from_slug_local(url)
+                    results.append(
+                        {
+                            "source": "Irrawaddy",
+                            "title": unicodedata.normalize("NFC", title_fb),
+                            "url": url,
+                            "date": target_date_mmt.isoformat(),
+                            "body": "",
+                        }
+                    )
+                    continue
                 if debug:
                     print("  -> skip: date mismatch")
                 continue
