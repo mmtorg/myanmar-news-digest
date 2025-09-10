@@ -2151,44 +2151,105 @@ def get_myanmar_now_articles_mm(date_obj, max_pages=3):
     results = []
     for url in collected:
         try:
-            res = fetch_with_retry(url)
-            soup = BeautifulSoup(res.content, "html.parser")
+            # --- helpers ---
+            def _fetch_text(u: str, timeout: int = 20) -> str:
+                try:
+                    r = requests.get(u, headers={"User-Agent": "Mozilla/5.0"}, timeout=timeout)
+                    if r.status_code == 200 and (r.text or "").strip():
+                        return r.text
+                except Exception:
+                    pass
+                return ""
 
-            # 1) 公開日時をチェック
-            meta = soup.find("meta", attrs={"property": "article:published_time"})
-            if not meta or not meta.get("content"):
-                continue
+            def _fetch_text_via_jina(u: str, timeout: int = 25) -> str:
+                try:
+                    alt = f"https://r.jina.ai/http://{u.lstrip('/')}"
+                    r = requests.get(alt, headers={"User-Agent": "Mozilla/5.0"}, timeout=timeout)
+                    if r.status_code == 200 and (r.text or "").strip():
+                        return r.text
+                except Exception:
+                    pass
+                return ""
+
+            def _oembed_title(u: str) -> str:
+                try:
+                    api = (
+                        "https://myanmar-now.org/wp-json/oembed/1.0/embed?url="
+                        + requests.utils.requote_uri(u)
+                    )
+                    r = requests.get(api, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+                    if r.status_code == 200 and (r.text or "").strip():
+                        data = r.json()
+                        return unicodedata.normalize("NFC", (data.get("title") or "").strip())
+                except Exception:
+                    pass
+                return ""
+
+            def _title_from_slug(u: str) -> str:
+                try:
+                    from urllib.parse import urlparse, unquote
+                    seg = urlparse(u).path.rstrip("/").split("/")[-1]
+                    seg = unquote(seg).replace("-", " ")
+                    return unicodedata.normalize("NFC", seg)
+                except Exception:
+                    return ""
+
+            # --- fetch once ---
+            soup = None
+            dt_mmt = None
             try:
-                dt_utc = datetime.fromisoformat(meta["content"])
+                res = fetch_with_retry(url)
+                soup = BeautifulSoup(res.content, "html.parser")
+                meta = soup.find("meta", attrs={"property": "article:published_time"})
+                if meta and meta.get("content"):
+                    try:
+                        dt_utc = datetime.fromisoformat(meta["content"])
+                    except Exception:
+                        dt_utc = parse_date(meta["content"]).astimezone(timezone.utc)
+                    dt_mmt = dt_utc.astimezone(MMT)
             except Exception:
-                dt_utc = parse_date(meta["content"]).astimezone(timezone.utc)
-            dt_mmt = dt_utc.astimezone(MMT)
-            if dt_mmt.date() != date_obj:
+                soup = None
+            meta_ok = dt_mmt is not None and dt_mmt.date() == date_obj
+
+            # --- title ---
+            title = ""
+            if soup is not None:
+                title_raw = (soup.title.get_text(strip=True) if soup.title else "").strip()
+                title = _strip_source_suffix(unicodedata.normalize("NFC", title_raw))
+                if not title:
+                    h1 = soup.find("h1")
+                    if h1:
+                        title = _strip_source_suffix(
+                            unicodedata.normalize("NFC", h1.get_text(strip=True))
+                        )
+            if not title:
+                title = _oembed_title(url) or _title_from_slug(url)
+                title = _strip_source_suffix(title)
+            if not title:
                 continue
 
-            # 2) タイトル
-            title_raw = (soup.title.get_text(strip=True) if soup.title else "").strip()
-            title = _strip_source_suffix(unicodedata.normalize("NFC", title_raw))
-            if not title:
-                h1 = soup.find("h1")
-                if h1:
-                    title = _strip_source_suffix(unicodedata.normalize("NFC", h1.get_text(strip=True)))
-            if not title:
-                continue
-
-            # 3) 本文
-            body_parts = []
-            content_root = soup.select_one("div.entry-content.entry.clearfix") or soup
-            for p in content_root.find_all("p"):
-                txt = p.get_text(strip=True)
-                if txt:
-                    body_parts.append(txt)
-            body = unicodedata.normalize("NFC", "\n".join(body_parts).strip())
+            # --- body ---
+            body = ""
+            if soup is not None:
+                content_root = soup.select_one("div.entry-content.entry.clearfix") or soup
+                parts = []
+                for p in content_root.find_all("p"):
+                    txt = p.get_text(strip=True)
+                    if txt:
+                        parts.append(txt)
+                body = unicodedata.normalize("NFC", "\n".join(parts).strip())
+                if not body:
+                    paragraphs = extract_paragraphs_with_wait(soup)
+                    body = unicodedata.normalize(
+                        "NFC",
+                        "\n".join(
+                            p.get_text(strip=True)
+                            for p in paragraphs
+                            if getattr(p, "get_text", None)
+                        ),
+                    ).strip()
             if not body:
-                paragraphs = extract_paragraphs_with_wait(soup)
-                body = unicodedata.normalize("NFC", "\n".join(
-                    p.get_text(strip=True) for p in paragraphs if getattr(p, "get_text", None)
-                )).strip()
+                body = _fetch_text_via_jina(url) or _fetch_text(url)
             if not body:
                 continue
 
@@ -2200,7 +2261,7 @@ def get_myanmar_now_articles_mm(date_obj, max_pages=3):
             results.append({
                 "url": url,
                 "title": title,
-                "date": dt_mmt.isoformat(),
+                "date": (dt_mmt.isoformat() if meta_ok else date_obj.isoformat()),
                 "body": body,
                 "source": "Myanmar Now (mm)",
             })
