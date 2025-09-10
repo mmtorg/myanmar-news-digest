@@ -3083,53 +3083,32 @@ if __name__ == "__main__":
     date_mmt = get_today_date_mmt()
     seen_urls = set()
 
-    # articles = get_frontier_articles_for(date_mmt)
-    # for art in articles:
-    #     print(f"{art['date']} - {art['title']}\n{art['url']}\n")
+    print("=== Mizzima (Burmese) ===")
+    articles_mizzima = get_mizzima_articles_from_category(
+        date_mmt,
+        "https://bur.mizzima.com",
+        "Mizzima (Burmese)",
+        "/category/%e1%80%9e%e1%80%90%e1%80%84%e1%80%ba%e1%80%b8/%e1%80%99%e1%80%bc%e1%80%94%e1%80%ba%e1%80%99%e1%80%ac%e1%80%9e%e1%80%90%e1%80%84%e1%80%ba%e1%80%b8",
+        max_pages=3,
+    )
+    process_and_enqueue_articles(
+        articles_mizzima, 
+        "Mizzima (Burmese)", 
+        seen_urls, 
+        trust_existing_body=True
+    )
 
-    # === Mizzima (Burmese) ===
-    # print("=== Mizzima (Burmese) ===")
-    # articles_mizzima = get_mizzima_articles_from_category(
-    #     date_mmt,
-    #     "https://bur.mizzima.com",
-    #     "Mizzima (Burmese)",
-    #     "/category/%e1%80%9e%e1%80%90%e1%80%84%e1%80%ba%e1%80%b8/%e1%80%99%e1%80%bc%e1%80%94%e1%80%ba%e1%80%99%e1%80%ac%e1%80%9e%e1%80%90%e1%80%84%e1%80%ba%e1%80%b8",
-    #     max_pages=3,
-    # )
-    # process_and_enqueue_articles(
-    #     articles_mizzima, 
-    #     "Mizzima (Burmese)", 
-    #     seen_urls, 
-    #     trust_existing_body=True
-    # )
-
-    # print("=== BBC Burmese ===")
-    # articles_bbc = get_bbc_burmese_articles_for(date_mmt)
-    # process_and_enqueue_articles(
-    #     articles_bbc, 
-    #     "BBC Burmese", 
-    #     seen_urls, 
-    #     trust_existing_body=True
-    # )
+    print("=== BBC Burmese ===")
+    articles_bbc = get_bbc_burmese_articles_for(date_mmt)
+    process_and_enqueue_articles(
+        articles_bbc, 
+        "BBC Burmese", 
+        seen_urls, 
+        trust_existing_body=True
+    )
 
     print("=== Irrawaddy ===")
     articles_irrawaddy = get_irrawaddy_articles_for(date_mmt)
-    
-    # ログ出力（件数＋先頭数件を表示）
-    try:
-        print(f"[irrawaddy] collected: {len(articles_irrawaddy)} items for {date_mmt}")
-        for a in articles_irrawaddy[:10]:
-            title = (a.get("title") or "").replace("\n", " ").strip()
-            url = a.get("url", "")
-            d = a.get("date", "")
-            print(f"  - {d} | {title[:80]} | {url}")
-        if len(articles_irrawaddy) > 10:
-            print(f"  ... (+{len(articles_irrawaddy)-10} more)")
-    except Exception:
-        pass
-    
-    sys.exit(1)  # for debug
-    
     # MEMO: ログ用、デバックでログ確認
     # print("RESULTS:", json.dumps(articles_irrawaddy, ensure_ascii=False, indent=2))
     process_and_enqueue_articles(
