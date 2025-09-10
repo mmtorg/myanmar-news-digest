@@ -1560,7 +1560,7 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
         # Google News RSS（Irrawaddy限定）
         gnews = (
             "https://news.google.com/rss/search?"  
-            "q=site:irrawaddy.com+when:2d&hl=en-US&gl=US&ceid=US:en"
+            "q=site:irrawaddy.com+when:1d&hl=en-US&gl=US&ceid=US:en"
         )
         xml = _fetch_text(gnews)
         if not xml:
@@ -1648,7 +1648,7 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
             items = _rss_items_from_google_news()
             if not items:
                 gnews = (
-                    "https://news.google.com/rss/search?q=site:irrawaddy.com&hl=en-US&gl=US&ceid=US:en"
+                    "https://news.google.com/rss/search?q=site:irrawaddy.com+when:1d&hl=en-US&gl=US&ceid=US:en"
                 )
                 xml = _fetch_text_via_jina(gnews)
                 if xml:
@@ -1673,32 +1673,43 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
                     except Exception:
                         items = []
 
-            recent_bucket: List[Dict[str, str]] = []
+            def _resolve_gnews(u: str) -> str:
+                try:
+                    if "irrawaddy.com" in u or not u:
+                        return u
+                    if "news.google.com" not in u:
+                        return u
+                    UA = (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/128.0.0.0 Safari/537.36"
+                    )
+                    r = requests.get(
+                        u,
+                        headers={"User-Agent": UA},
+                        timeout=10,
+                        allow_redirects=False,
+                    )
+                    loc = r.headers.get("location") or r.headers.get("Location")
+                    if loc and "irrawaddy.com" in loc:
+                        return loc
+                except Exception:
+                    pass
+                return u
+
             for it in items:
-                link = it.get("link") or ""
+                link = _resolve_gnews(it.get("link") or "")
                 title = it.get("title") or ""
                 pub = it.get("pubDate") or ""
                 dt = _parse_rfc822_date(pub)
                 if not link or _is_excluded_url(link):
                     continue
-                if dt:
-                    d_mmt = _mmt_date(dt)
-                    if d_mmt == date_obj or d_mmt == (date_obj - timedelta(days=1)):
-                        cands.append({
-                            "url": link,
-                            "title": title,
-                            "date": date_obj.isoformat(),
-                        })
-                        continue
-                if len(recent_bucket) < 8:
-                    recent_bucket.append({
+                if dt and _mmt_date(dt) == date_obj:
+                    cands.append({
                         "url": link,
                         "title": title,
                         "date": date_obj.isoformat(),
                     })
-
-            if not cands and recent_bucket:
-                cands.extend(recent_bucket)
 
         # ユニーク化
         seen = set()
