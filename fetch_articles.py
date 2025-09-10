@@ -676,7 +676,7 @@ def fetch_with_retry_irrawaddy(url, retries=3, wait_seconds=2, session=None):
         if r2.status_code == 200 and getattr(r2, "text", "").strip():
             return r2
         # 403/503 かつ /news/ の記事URLに限り、/amp を“1回だけ”試す
-        if r2.status_code in (403, 503) and "/news/" in url:
+        if r2.status_code in (403, 503) and "/news/" in url and "/category/" not in url:
             amp = _amp_url(url)
             r3 = sess.get(amp, headers=HEADERS, timeout=20, allow_redirects=True)
             print(
@@ -1550,13 +1550,27 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
         except Exception:
             return []
         items = []
+        href_re = re.compile(r'href=["\']([^"\']+)["\']', re.I)
         for it in root.findall(".//item"):
             title = (it.findtext("title") or "").strip()
             link = (it.findtext("link") or "").strip()
             pub = (it.findtext("pubDate") or "").strip()
-            if not link:
-                continue
-            items.append({"title": title, "link": link, "pubDate": pub})
+            desc = (it.findtext("description") or "").strip()
+            # description 内の最初の Irrawaddy 直リンクを優先
+            direct = None
+            try:
+                m = href_re.search(desc)
+                if m:
+                    cand = m.group(1)
+                    if "irrawaddy.com" in cand:
+                        direct = cand
+            except Exception:
+                pass
+            items.append({
+                "title": title,
+                "link": direct or link,
+                "pubDate": pub,
+            })
         return items
 
     def _parse_rfc822_date(s: str) -> Optional[datetime]:
@@ -1635,6 +1649,7 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
     if len(candidate_urls) == 0:
         dbg("[irrawaddy] fallback to RSS/Google News due to 0 candidates")
         feed_cands = _fallback_candidates_via_feeds()
+        dbg(f"[irrawaddy] feed candidates={len(feed_cands)}")
         # 既存パスと同じ形式に合わせる
         for o in feed_cands:
             u = o.get("url") or ""
@@ -1656,9 +1671,14 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
                 html_once = _fetch_text(url, timeout=20)
                 if html_once:
                     soup_article = BeautifulSoup(html_once, "html.parser")
-                    # メタ日付で当日以外は除外
-                    if _article_date_from_meta_mmt(soup_article) != date_obj:
-                        continue
+                    # Irrawaddy ドメインのときだけ、厳密に meta 日付を照合
+                    try:
+                        host = urlparse(url).netloc.lower()
+                    except Exception:
+                        host = ""
+                    if "irrawaddy.com" in host:
+                        if _article_date_from_meta_mmt(soup_article) != date_obj:
+                            continue
                     title = _extract_title(soup_article) or ""
                     body = extract_body_irrawaddy(soup_article) or ""
             except Exception:
