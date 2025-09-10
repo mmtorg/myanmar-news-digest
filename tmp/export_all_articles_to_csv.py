@@ -588,7 +588,7 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
     results: List[Dict] = []
     seen_urls = set()
     candidate_urls: List[str] = []
-    # RSSから得た補助情報（タイトル/日付）をURLキーで保持
+    # RSS/検索から得た補助情報（タイトル/日付）をURLキーで保持
     feed_hints: Dict[str, Dict[str, str]] = {}
     if debug:
         print(f"[irrawaddy] target_date={target_date_mmt}")
@@ -694,22 +694,164 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
         for u in candidate_urls[:5]:
             print(f"  - {u}")
 
+    # 1.9) 候補が空なら RSS / Google News からフォールバック
+    def _fetch_text(url: str, timeout: int = 20) -> str:
+        try:
+            r = requests.get(
+                url,
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/128.0.0.0 Safari/537.36"
+                    )
+                },
+                timeout=timeout,
+            )
+            if r.status_code == 200 and (r.text or "").strip():
+                return r.text
+        except Exception:
+            pass
+        return ""
+
+    def _fetch_text_via_jina(url: str, timeout: int = 25) -> str:
+        try:
+            alt = f"https://r.jina.ai/http://{url.lstrip('/')}"
+            r = requests.get(alt, headers={"User-Agent": "Mozilla/5.0"}, timeout=timeout)
+            if r.status_code == 200 and (r.text or "").strip():
+                return r.text
+        except Exception:
+            pass
+        return ""
+
+    def _mmt_date(dt_utc: datetime) -> date:
+        return dt_utc.astimezone(MMT).date()
+
+    def _rss_items_from_google_news() -> List[Dict[str, str]]:
+        # 当日限定（MMT判定は後段）
+        gnews = (
+            "https://news.google.com/rss/search?"
+            "q=site:irrawaddy.com+when:1d&hl=en-US&gl=US&ceid=US:en"
+        )
+        xml = _fetch_text(gnews)
+        if not xml:
+            xml = _fetch_text_via_jina(gnews)
+            if not xml:
+                return []
+        try:
+            from xml.etree import ElementTree as ET
+            root = ET.fromstring(xml)
+        except Exception:
+            return []
+        import re as _re
+        href_re = _re.compile(r'href=["\']([^"\']+)["\']', _re.I)
+        items = []
+        for it in root.findall(".//item"):
+            title = (it.findtext("title") or "").strip()
+            link = (it.findtext("link") or "").strip()
+            pub = (it.findtext("pubDate") or "").strip()
+            desc = (it.findtext("description") or "").strip()
+            direct = None
+            m = href_re.search(desc)
+            if m and "irrawaddy.com" in m.group(1):
+                direct = m.group(1)
+            items.append({"title": title, "link": direct or link, "pubDate": pub})
+        return items
+
+    if len(candidate_urls) == 0:
+        # 1) WP JSON
+        wp_url = (
+            "https://www.irrawaddy.com/wp-json/wp/v2/posts?per_page=50&_fields=link,date,title"
+        )
+        wp_json = _fetch_text(wp_url) or _fetch_text_via_jina(wp_url)
+        if wp_json:
+            try:
+                arr = json.loads(wp_json)
+                for o in arr:
+                    link = (o.get("link") or "").strip()
+                    ds = o.get("date") or ""
+                    t = o.get("title")
+                    if isinstance(t, dict):
+                        tt = (t.get("rendered") or "").strip()
+                    else:
+                        tt = (t or "").strip()
+                    try:
+                        dt = parse_date(ds)
+                    except Exception:
+                        dt = None
+                    if link and dt and _mmt_date(dt) == target_date_mmt and not _is_excluded_url(link):
+                        if link not in seen_urls:
+                            candidate_urls.append(link)
+                            seen_urls.add(link)
+                        feed_hints[link] = {"title": tt, "date": target_date_mmt.isoformat()}
+            except Exception:
+                pass
+
+        # 2) RSS
+        if len(candidate_urls) == 0:
+            feed_url = "https://www.irrawaddy.com/feed"
+            feed_xml = _fetch_text(feed_url) or _fetch_text_via_jina(feed_url)
+            if feed_xml:
+                try:
+                    from xml.etree import ElementTree as ET
+                    root = ET.fromstring(feed_xml)
+                    for it in root.findall(".//item"):
+                        title = (it.findtext("title") or "").strip()
+                        link = (it.findtext("link") or "").strip()
+                        pub = (it.findtext("pubDate") or "").strip()
+                        try:
+                            dt = parse_date(pub)
+                        except Exception:
+                            dt = None
+                        if link and dt and _mmt_date(dt) == target_date_mmt and not _is_excluded_url(link):
+                            if link not in seen_urls:
+                                candidate_urls.append(link)
+                                seen_urls.add(link)
+                            feed_hints[link] = {"title": title, "date": target_date_mmt.isoformat()}
+                except Exception:
+                    pass
+
+        # 3) Google News（当日のみ）
+        if len(candidate_urls) == 0:
+            for it in _rss_items_from_google_news():
+                title = it.get("title") or ""
+                link = (it.get("link") or "").strip()
+                pub = it.get("pubDate") or ""
+                try:
+                    dt = parse_date(pub)
+                except Exception:
+                    dt = None
+                if link and dt and _mmt_date(dt) == target_date_mmt and not _is_excluded_url(link):
+                    if link not in seen_urls:
+                        candidate_urls.append(link)
+                        seen_urls.add(link)
+                    feed_hints[link] = {"title": title, "date": target_date_mmt.isoformat()}
+        if debug:
+            print(f"[irrawaddy] fallback candidates={len(candidate_urls)}")
+
     # 2) 各候補記事の meta 日付を MMT で厳密確認し、タイトル/本文を抽出
     for url in candidate_urls:
         if _is_excluded_url(url):
             continue
         try:
-            res = fetch_with_retry_irrawaddy(url, session=session)
-            soup = BeautifulSoup(res.content, "html.parser")
+            # 2.1) 直接HTML（1回）→ 失敗時は空のまま
+            title = ""
+            body = ""
+            try:
+                res = fetch_with_retry_irrawaddy(url, session=session)
+                soup = BeautifulSoup(getattr(res, "content", None) or res.text, "html.parser")
+                meta_date = _article_date_from_meta_mmt(soup)
+            except Exception:
+                soup = None
+                meta_date = None
 
-            meta_date = _article_date_from_meta_mmt(soup)
             if debug:
                 print(f"[irrawaddy][article] url={url} meta_date={meta_date}")
             if meta_date != target_date_mmt:
                 # フィード補助があればフォールバック採用
                 hint = feed_hints.get(url)
                 if hint and (hint.get("date") == target_date_mmt.isoformat()):
-                    title_fb = hint.get("title") or ""
+                    title_fb = (hint.get("title") or "").strip()
                     if title_fb:
                         if debug:
                             print("  -> fallback: use feed title/date (meta_date mismatch)")
@@ -727,10 +869,37 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
                     print("  -> skip: date mismatch")
                 continue
 
-            title = _extract_title(soup) or ""
-            body = extract_body_irrawaddy(soup) or ""
+            if soup is not None:
+                title = _extract_title(soup) or ""
+                body = extract_body_irrawaddy(soup) or ""
             title = unicodedata.normalize("NFC", title).strip()
             body = unicodedata.normalize("NFC", body).strip()
+
+            # 2.2) タイトルが空ならフィード→ oEmbed → スラッグ
+            def _title_from_slug(u: str) -> str:
+                try:
+                    from urllib.parse import urlparse, unquote
+                    seg = urlparse(u).path.rstrip("/").split("/")[-1]
+                    seg = unquote(seg).replace(".html", "").replace("-", " ")
+                    return unicodedata.normalize("NFC", seg.title())
+                except Exception:
+                    return ""
+
+            def _oembed_title(u: str) -> str:
+                try:
+                    api = (
+                        "https://www.irrawaddy.com/wp-json/oembed/1.0/embed?url="
+                        + requests.utils.requote_uri(u)
+                    )
+                    r = requests.get(api, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+                    if r.status_code == 200 and (r.text or "").strip():
+                        data = r.json()
+                        t = (data.get("title") or "").strip()
+                        return unicodedata.normalize("NFC", t)
+                except Exception:
+                    pass
+                return ""
+
             if not title:
                 # フィード補助があればフォールバック採用
                 hint = feed_hints.get(url)
@@ -748,9 +917,25 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
                         }
                     )
                     continue
-                if debug:
-                    print("  -> skip: empty title")
-                continue
+                # oEmbed / slug
+                title = _oembed_title(url) or _title_from_slug(url)
+                title = (title or "").strip()
+                if not title:
+                    if debug:
+                        print("  -> skip: empty title")
+                    continue
+
+            # 2.3) 本文が空なら r.jina.ai の本文テキストにフォールバック
+            if not body:
+                alt = f"https://r.jina.ai/http://{url.lstrip('/')}"
+                txt = _fetch_text(alt, timeout=25)
+                if (not txt) and "/news/" in url:
+                    from urllib.parse import urljoin as _urljoin
+                    amp = url if url.endswith("/amp") else _urljoin(url.rstrip("/") + "/", "amp")
+                    alt2 = f"https://r.jina.ai/http://{amp.lstrip('/')}"
+                    txt = _fetch_text(alt2, timeout=25)
+                if txt:
+                    body = unicodedata.normalize("NFC", txt).strip()
             if not body and debug:
                 print("  -> note: empty body")
 
