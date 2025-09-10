@@ -2913,6 +2913,18 @@ def send_email_digest(summaries, *, recipients_env=None, subject_suffix=""):
 
 
 if __name__ == "__main__":
+    # テスト: Irrawaddy のみ実行して早期終了
+    # - 終了時はメール送信など実行せずに終了する
+    d = get_today_date_mmt()
+    print("=== Irrawaddy (TEST ONLY) ===")
+    arts = get_irrawaddy_articles_for(d, debug=True)
+    print(f"[test] Irrawaddy count={len(arts)}")
+    for a in arts[:10]:
+        print(" - ", a.get("title"), a.get("url"))
+    if len(arts) > 10:
+        print(f" ... (+{len(arts)-10} more)")
+    sys.exit(0)
+
     date_mmt = get_today_date_mmt()
     seen_urls = set()
 
