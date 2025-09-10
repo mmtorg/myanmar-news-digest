@@ -851,8 +851,19 @@ def _article_date_from_meta_mmt(soup):
 
 
 def _extract_title(soup):
+    # 1) 明示の見出し
+    h = soup.select_one("h1.jeg_post_title") or soup.select_one("h1.entry-title") or soup.find("h1")
+    if h and h.get_text(strip=True):
+        return _norm_text(h.get_text(strip=True))
+    # 2) og:title
+    og = soup.find("meta", attrs={"property": "og:title"})
+    if og and og.get("content"):
+        return _norm_text(og.get("content", "").strip())
+    # 3) <title>
     t = soup.find("title")
-    return _norm_text(t.get_text(strip=True)) if t else None
+    if t and t.get_text(strip=True):
+        return _norm_text(t.get_text(strip=True))
+    return None
 
 
 def _is_excluded_by_ancestor(node) -> bool:
@@ -1604,7 +1615,7 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
 
     def _fallback_candidates_via_feeds() -> List[Dict[str, str]]:
         # 1) WordPress JSON（多くの場合WAF対象）
-        wp_url = "https://www.irrawaddy.com/wp-json/wp/v2/posts?per_page=50&_fields=link,date"
+        wp_url = "https://www.irrawaddy.com/wp-json/wp/v2/posts?per_page=50&_fields=link,date,title"
         wp_json = _fetch_text(wp_url) or _fetch_text_via_jina(wp_url)
         cands: List[Dict[str, str]] = []
         if wp_json:
@@ -1613,11 +1624,17 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
                 for o in arr:
                     link = (o.get("link") or "").strip()
                     ds = o.get("date") or ""
+                    # タイトル（WPは title.rendered のことが多い）
+                    t = o.get("title")
+                    if isinstance(t, dict):
+                        tt = (t.get("rendered") or "").strip()
+                    else:
+                        tt = (t or "").strip()
                     dt = _parse_rfc822_date(ds) or (
                         parse_date(ds) if ds else None
                     )
                     if link and dt and _mmt_date(dt) == date_obj and not _is_excluded_url(link):
-                        cands.append({"url": link, "title": "", "date": date_obj.isoformat()})
+                        cands.append({"url": link, "title": tt, "date": date_obj.isoformat()})
             except Exception:
                 pass
 
