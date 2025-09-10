@@ -1536,6 +1536,26 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
             pass
         return ""
 
+    def _fetch_text_via_jina(url: str, timeout: int = 25) -> str:
+        try:
+            alt = f"https://r.jina.ai/http://{url.lstrip('/')}"
+            r = requests.get(
+                alt,
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/128.0.0.0 Safari/537.36"
+                    )
+                },
+                timeout=timeout,
+            )
+            if r.status_code == 200 and (r.text or "").strip():
+                return r.text
+        except Exception:
+            pass
+        return ""
+
     def _rss_items_from_google_news() -> List[Dict[str, str]]:
         # Google News RSS（Irrawaddy限定）
         gnews = (
@@ -1584,9 +1604,8 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
 
     def _fallback_candidates_via_feeds() -> List[Dict[str, str]]:
         # 1) WordPress JSON（多くの場合WAF対象）
-        wp_json = _fetch_text(
-            "https://www.irrawaddy.com/wp-json/wp/v2/posts?per_page=50&_fields=link,date"
-        )
+        wp_url = "https://www.irrawaddy.com/wp-json/wp/v2/posts?per_page=50&_fields=link,date"
+        wp_json = _fetch_text(wp_url) or _fetch_text_via_jina(wp_url)
         cands: List[Dict[str, str]] = []
         if wp_json:
             try:
@@ -1604,7 +1623,8 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
 
         # 2) サイトRSS（403の可能性あり → 失敗時はスキップ）
         if not cands:
-            feed_xml = _fetch_text("https://www.irrawaddy.com/feed")
+            feed_url = "https://www.irrawaddy.com/feed"
+            feed_xml = _fetch_text(feed_url) or _fetch_text_via_jina(feed_url)
             if feed_xml:
                 try:
                     root = ET.fromstring(feed_xml)
@@ -1624,7 +1644,36 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
 
         # 3) Google News RSS（最終フォールバック）
         if not cands:
-            for it in _rss_items_from_google_news():
+            # Google News RSS も通常取得→ダメなら Jina 経由で試す
+            items = _rss_items_from_google_news()
+            if not items:
+                gnews = (
+                    "https://news.google.com/rss/search?q=site:irrawaddy.com&hl=en-US&gl=US&ceid=US:en"
+                )
+                xml = _fetch_text_via_jina(gnews)
+                if xml:
+                    try:
+                        root = ET.fromstring(xml)
+                        href_re = re.compile(r'href=["\']([^"\']+)["\']', re.I)
+                        items = []
+                        for it in root.findall(".//item"):
+                            title = (it.findtext("title") or "").strip()
+                            link = (it.findtext("link") or "").strip()
+                            pub = (it.findtext("pubDate") or "").strip()
+                            desc = (it.findtext("description") or "").strip()
+                            direct = None
+                            m = href_re.search(desc)
+                            if m and "irrawaddy.com" in m.group(1):
+                                direct = m.group(1)
+                            items.append({
+                                "title": title,
+                                "link": direct or link,
+                                "pubDate": pub,
+                            })
+                    except Exception:
+                        items = []
+
+            for it in items:
                 link = it.get("link") or ""
                 title = it.get("title") or ""
                 pub = it.get("pubDate") or ""
