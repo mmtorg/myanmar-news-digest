@@ -24,6 +24,8 @@ from googleapiclient.errors import HttpError
 from google.oauth2.credentials import Credentials
 from email.policy import SMTP
 from email.header import Header
+import xml.etree.ElementTree as ET
+from urllib.parse import urljoin
 
 try:
     import httpx
@@ -592,8 +594,9 @@ def get_body_with_refetch(
 # 本文が取得できるまで「requestsでリトライする」
 def fetch_with_retry_irrawaddy(url, retries=3, wait_seconds=2, session=None):
     """
-    まず curl_cffi(Chrome指紋) を使い、ダメなら cloudscraper、最後に requests。
-    403/429/503 は指数バックオフ。記事URLは /amp も試す。
+    Irrawaddy 専用フェッチャ（単発トライ版）。
+    - curl_cffi で1回 → 失敗なら cloudscraper で1回 → 失敗なら requests で1回。
+    - 追加のリトライや /amp への再試行は実施しない。
     """
     import os
     import random
@@ -626,87 +629,45 @@ def fetch_with_retry_irrawaddy(url, retries=3, wait_seconds=2, session=None):
             u = u + "/"
         return urllib.parse.urljoin(u, "amp")
 
-    # --- Try 1: curl_cffi (Chrome 指紋) ---
+    # --- Try 1: curl_cffi (Chrome 指紋) 単発 ---
     try:
         from curl_cffi import requests as cfr  # type: ignore[import-not-found]
-
         proxies = {
             "http": os.getenv("HTTP_PROXY") or os.getenv("http_proxy"),
             "https": os.getenv("HTTPS_PROXY") or os.getenv("https_proxy"),
         }
-        for attempt in range(retries):
-            r = cfr.get(
-                url,
-                headers=HEADERS,
-                impersonate="chrome124",  # ★ http2= は渡さない
-                timeout=30,
-                allow_redirects=True,
-                proxies={k: v for k, v in proxies.items() if v},
-            )
-            if r.status_code == 200 and (r.text or "").strip():
-                return r
-
-            # 記事URLで 403/503 のときは /amp も試す
-            if r.status_code in (403, 503) and "/news/" in url:
-                amp = _amp_url(url)
-                r2 = cfr.get(
-                    amp,
-                    headers=HEADERS,
-                    impersonate="chrome124",
-                    timeout=30,
-                    allow_redirects=True,
-                    proxies={k: v for k, v in proxies.items() if v},
-                )
-                if r2.status_code == 200 and (r2.text or "").strip():
-                    return r2
-
-            if r.status_code in (403, 429, 503):
-                time.sleep(wait_seconds * (2**attempt) + random.uniform(0, 0.8))
-                continue
-            break
+        r = cfr.get(
+            url,
+            headers=HEADERS,
+            impersonate="chrome124",
+            timeout=30,
+            allow_redirects=True,
+            proxies={k: v for k, v in proxies.items() if v},
+        )
+        if r.status_code == 200 and (r.text or "").strip():
+            return r
     except Exception as e:
         print(f"[fetch-cffi] EXC: {e} → {url}")
 
-    # --- Try 2: cloudscraper ---
+    # --- Try 2: cloudscraper 単発 ---
     try:
         import cloudscraper
         import requests as rq
-
         sess = session or rq.Session()
         scraper = cloudscraper.create_scraper(
             sess=sess,
             browser={"browser": "chrome", "platform": "windows", "mobile": False},
             delay=7,
         )
-        for attempt in range(retries):
-            try:
-                r = scraper.get(url, headers=HEADERS, timeout=30, allow_redirects=True)
-                if r.status_code == 200 and getattr(r, "text", "").strip():
-                    return r
-
-                # 記事URLのときは /amp も
-                if r.status_code in (403, 503) and "/news/" in url:
-                    amp = _amp_url(url)
-                    r2 = scraper.get(
-                        amp, headers=HEADERS, timeout=30, allow_redirects=True
-                    )
-                    if r2.status_code == 200 and getattr(r2, "text", "").strip():
-                        return r2
-
-                if r.status_code in (403, 429, 503):
-                    time.sleep(wait_seconds * (2**attempt) + random.uniform(0, 0.8))
-                    continue
-                break
-            except Exception as e:
-                print(f"[fetch-cs] {attempt+1}/{retries} EXC: {e} → {url}")
-                time.sleep(wait_seconds * (2**attempt) + random.uniform(0, 0.8))
+        r = scraper.get(url, headers=HEADERS, timeout=30, allow_redirects=True)
+        if r.status_code == 200 and getattr(r, "text", "").strip():
+            return r
     except Exception as e:
-        print(f"[fetch-cs] INIT EXC: {e} → {url}")
+        print(f"[fetch-cs] EXC: {e} → {url}")
 
-    # --- Try 3: requests ---
+    # --- Try 3: requests 単発（/news/ のときのみ /amp を1回だけ試す） ---
     try:
         import requests
-
         sess = session or requests.Session()
         r2 = sess.get(url, headers=HEADERS, timeout=20, allow_redirects=True)
         print(
@@ -714,6 +675,7 @@ def fetch_with_retry_irrawaddy(url, retries=3, wait_seconds=2, session=None):
         )
         if r2.status_code == 200 and getattr(r2, "text", "").strip():
             return r2
+        # 403/503 かつ /news/ の記事URLに限り、/amp を“1回だけ”試す
         if r2.status_code in (403, 503) and "/news/" in url:
             amp = _amp_url(url)
             r3 = sess.get(amp, headers=HEADERS, timeout=20, allow_redirects=True)
@@ -722,7 +684,6 @@ def fetch_with_retry_irrawaddy(url, retries=3, wait_seconds=2, session=None):
             )
             if r3.status_code == 200 and getattr(r3, "text", "").strip():
                 return r3
-
         try:
             svr = r2.headers.get("server") or r2.headers.get("Server")
             ray = r2.headers.get("cf-ray")
@@ -1451,6 +1412,7 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
     results = []
     seen_urls = set()
     candidate_urls = []
+    fallback_titles: Dict[str, str] = {}
 
     # ==== 1) 各カテゴリURLを1回ずつ巡回 → 当日候補抽出 ====
     for rel_path in paths:
@@ -1547,24 +1509,180 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
     # ログ、候補URL収集が終わった直後（カテゴリ＋ホーム統合のあと）
     dbg(f"[irrawaddy] candidates={len(candidate_urls)} (unique)")
 
+    # ==== 1.9) フィード/外部RSSフォールバック（GitHub Actions等で403が続く場合） ====
+    def _mmt_date(dt: datetime) -> date:
+        try:
+            return dt.astimezone(MMT).date()
+        except Exception:
+            # naive の場合はUTC→MMT換算とみなす
+            return (dt.replace(tzinfo=timezone.utc)).astimezone(MMT).date()
+
+    def _fetch_text(url: str, timeout: int = 20) -> str:
+        try:
+            r = requests.get(
+                url,
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/128.0.0.0 Safari/537.36"
+                    )
+                },
+                timeout=timeout,
+            )
+            if r.status_code == 200 and (r.text or "").strip():
+                return r.text
+        except Exception:
+            pass
+        return ""
+
+    def _rss_items_from_google_news() -> List[Dict[str, str]]:
+        # Google News RSS（Irrawaddy限定）
+        gnews = (
+            "https://news.google.com/rss/search?"  
+            "q=site:irrawaddy.com&hl=en-US&gl=US&ceid=US:en"
+        )
+        xml = _fetch_text(gnews)
+        if not xml:
+            return []
+        try:
+            root = ET.fromstring(xml)
+        except Exception:
+            return []
+        items = []
+        for it in root.findall(".//item"):
+            title = (it.findtext("title") or "").strip()
+            link = (it.findtext("link") or "").strip()
+            pub = (it.findtext("pubDate") or "").strip()
+            if not link:
+                continue
+            items.append({"title": title, "link": link, "pubDate": pub})
+        return items
+
+    def _parse_rfc822_date(s: str) -> Optional[datetime]:
+        s = (s or "").strip()
+        if not s:
+            return None
+        try:
+            return parse_date(s)
+        except Exception:
+            return None
+
+    def _fallback_candidates_via_feeds() -> List[Dict[str, str]]:
+        # 1) WordPress JSON（多くの場合WAF対象）
+        wp_json = _fetch_text(
+            "https://www.irrawaddy.com/wp-json/wp/v2/posts?per_page=50&_fields=link,date"
+        )
+        cands: List[Dict[str, str]] = []
+        if wp_json:
+            try:
+                arr = json.loads(wp_json)
+                for o in arr:
+                    link = (o.get("link") or "").strip()
+                    ds = o.get("date") or ""
+                    dt = _parse_rfc822_date(ds) or (
+                        parse_date(ds) if ds else None
+                    )
+                    if link and dt and _mmt_date(dt) == date_obj and not _is_excluded_url(link):
+                        cands.append({"url": link, "title": "", "date": date_obj.isoformat()})
+            except Exception:
+                pass
+
+        # 2) サイトRSS（403の可能性あり → 失敗時はスキップ）
+        if not cands:
+            feed_xml = _fetch_text("https://www.irrawaddy.com/feed")
+            if feed_xml:
+                try:
+                    root = ET.fromstring(feed_xml)
+                    for it in root.findall(".//item"):
+                        title = (it.findtext("title") or "").strip()
+                        link = (it.findtext("link") or "").strip()
+                        pub = (it.findtext("pubDate") or "").strip()
+                        dt = _parse_rfc822_date(pub)
+                        if link and dt and _mmt_date(dt) == date_obj and not _is_excluded_url(link):
+                            cands.append({
+                                "url": link,
+                                "title": title,
+                                "date": date_obj.isoformat(),
+                            })
+                except Exception:
+                    pass
+
+        # 3) Google News RSS（最終フォールバック）
+        if not cands:
+            for it in _rss_items_from_google_news():
+                link = it.get("link") or ""
+                title = it.get("title") or ""
+                pub = it.get("pubDate") or ""
+                dt = _parse_rfc822_date(pub)
+                if link and dt and _mmt_date(dt) == date_obj and not _is_excluded_url(link):
+                    cands.append({
+                        "url": link,
+                        "title": title,
+                        "date": date_obj.isoformat(),
+                    })
+
+        # ユニーク化
+        seen = set()
+        uniq = []
+        for o in cands:
+            u = o["url"].strip()
+            if u and u not in seen:
+                seen.add(u)
+                uniq.append(o)
+        return uniq
+
+    if len(candidate_urls) == 0:
+        dbg("[irrawaddy] fallback to RSS/Google News due to 0 candidates")
+        feed_cands = _fallback_candidates_via_feeds()
+        # 既存パスと同じ形式に合わせる
+        for o in feed_cands:
+            u = o.get("url") or ""
+            if u and u not in seen_urls:
+                candidate_urls.append(u)
+                seen_urls.add(u)
+                if o.get("title"):
+                    fallback_titles[u] = o.get("title") or ""
+
     # ==== 2) 候補記事で厳密確認（meta日付/本文/キーワード） ====
     for url in candidate_urls:
         if _is_excluded_url(url):  # ベルト＆サスペンダー
             continue
         try:
-            res_article = fetch_with_retry_irrawaddy(url, session=session)
-            soup_article = BeautifulSoup(res_article.content, "html.parser")
+            title = ""
+            body = ""
+            # ① 直接取得（1回だけ）
+            try:
+                html_once = _fetch_text(url, timeout=20)
+                if html_once:
+                    soup_article = BeautifulSoup(html_once, "html.parser")
+                    # メタ日付で当日以外は除外
+                    if _article_date_from_meta_mmt(soup_article) != date_obj:
+                        continue
+                    title = _extract_title(soup_article) or ""
+                    body = extract_body_irrawaddy(soup_article) or ""
+            except Exception:
+                pass
 
-            if _article_date_from_meta_mmt(soup_article) != date_obj:
-                continue
-
-            title = _extract_title(soup_article)
-            if not title:
-                continue
-
-            body = extract_body_irrawaddy(soup_article)
+            # ② 直接取得できない場合、r.jina.ai 経由の本文テキストにフォールバック
             if not body:
-                continue
+                def _jina_fetch(u: str) -> str:
+                    # r.jina.ai は Readability 抽出したプレーンテキストを返す
+                    alt = f"https://r.jina.ai/http://{u.lstrip('/') }"
+                    t = _fetch_text(alt, timeout=25)
+                    if not t and "/news/" in u:
+                        # AMP を試す
+                        amp = u if u.endswith("/amp") else urljoin(u.rstrip("/") + "/", "amp")
+                        alt2 = f"https://r.jina.ai/http://{amp.lstrip('/') }"
+                        t = _fetch_text(alt2, timeout=25)
+                    return t
+
+                body_txt = _jina_fetch(url)
+                if body_txt:
+                    body = body_txt
+                    if not title:
+                        # フィードで拾ったタイトルを最終手段として流用
+                        title = fallback_titles.get(url, "")
 
             # キーワードフィルタ（他媒体と同様）追加
             # 念のためタイトル/本文をNFC正規化してから判定
