@@ -3214,6 +3214,17 @@ if __name__ == "__main__":
     # バッチ翻訳実行 (5件ごとに1分待機)
     all_summaries = process_translation_batches(batch_size=3, wait_seconds=60)
 
+    # ===== テスト用: エーヤワディ記事のみ特定アドレスへ送信（存在する場合のみ） =====
+    summaries_ayeyar_only = [s for s in all_summaries if s.get("is_ayeyar")]
+    if summaries_ayeyar_only:
+        send_email_digest(
+            summaries_ayeyar_only,
+            recipients_env="yasu.23721740311@gmail.com",
+            subject_suffix="/ (エーヤワディのみ:テスト)"
+        )
+    else:
+        print("[TEST] エーヤワディ記事がないため、メール送信は行いません。")
+
     # A/B分岐
     # ✅ A = 全キーワードでヒット（従来の any_keyword_hit 結果）
     summaries_A = [s for s in all_summaries if s.get("hit_full")]
