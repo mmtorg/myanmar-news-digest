@@ -368,9 +368,9 @@ MMT = timezone(timedelta(hours=6, minutes=30))
 # 今日の日付
 # ニュースの速報性重視で今日分のニュース配信の方針
 def get_today_date_mmt():
-    # 本番用、今日の日付
     now_mmt = datetime.now(MMT)
-    return now_mmt.date()
+    return (now_mmt - timedelta(days=1)).date()
+
 
 
 # 共通キーワードリスト（全メディア共通で使用する）
