@@ -3214,16 +3214,25 @@ if __name__ == "__main__":
     # バッチ翻訳実行 (5件ごとに1分待機)
     all_summaries = process_translation_batches(batch_size=3, wait_seconds=60)
 
-    # ===== テスト用: エーヤワディ記事のみ特定アドレスへ送信（存在する場合のみ） =====
+    # ===== テスト用: エーヤワディ記事のみ送信（直書き宛先／EMAIL_RECIPIENTSは上書きしない） =====
     summaries_ayeyar_only = [s for s in all_summaries if s.get("is_ayeyar")]
+    hardcoded_test_recipients = "yasu.23721740311@gmail.com"  # カンマ区切り対応可
     if summaries_ayeyar_only:
-        send_email_digest(
-            summaries_ayeyar_only,
-            recipients_env="yasu.23721740311@gmail.com",
-            subject_suffix="/ (エーヤワディのみ:テスト)"
-        )
+        print(f"[TEST] Sending Ayeyar-only digest to {hardcoded_test_recipients}")
+        _tmp_env_key = "AYEYAR_ONLY_TEST_RECIPIENTS"
+        # 既存環境に影響を与えないよう、専用キーを一時的にセット
+        os.environ[_tmp_env_key] = hardcoded_test_recipients
+        try:
+            send_email_digest(
+                summaries_ayeyar_only,
+                recipients_env=_tmp_env_key,
+                subject_suffix="/ (エーヤワディのみ:テスト)"
+            )
+        finally:
+            # 専用キーは削除してクリーンアップ
+            os.environ.pop(_tmp_env_key, None)
     else:
-        print("[TEST] エーヤワディ記事がないため、メール送信は行いません。")
+        print("[TEST] エーヤワディ記事がないため送信スキップ。")
 
     # A/B分岐
     # ✅ A = 全キーワードでヒット（従来の any_keyword_hit 結果）
