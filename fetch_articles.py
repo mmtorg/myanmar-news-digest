@@ -3247,43 +3247,24 @@ if __name__ == "__main__":
     # バッチ翻訳実行 (5件ごとに1分待機)
     all_summaries = process_translation_batches(batch_size=TRANSLATION_BATCH_SIZE, wait_seconds=60)
 
-    # ===== テスト用: エーヤワディ記事のみ送信（直書き宛先／EMAIL_RECIPIENTSは上書きしない） =====
+    # 仕様変更: 2通送信に分離
+    # 1) エーヤワディのみ（存在する場合のみ送信、内部向け）
     summaries_ayeyar_only = [s for s in all_summaries if s.get("is_ayeyar")]
-    hardcoded_test_recipients = "yasu.23721740311@gmail.com"  # カンマ区切り対応可
     if summaries_ayeyar_only:
-        print(f"[TEST] Sending Ayeyar-only digest to {hardcoded_test_recipients}")
-        _tmp_env_key = "AYEYAR_ONLY_TEST_RECIPIENTS"
-        # 既存環境に影響を与えないよう、専用キーを一時的にセット
-        os.environ[_tmp_env_key] = hardcoded_test_recipients
-        try:
-            send_email_digest(
-                summaries_ayeyar_only,
-                recipients_env=_tmp_env_key,
-                subject_suffix="/ (エーヤワディのみ:テスト)"
-            )
-        finally:
-            # 専用キーは削除してクリーンアップ
-            os.environ.pop(_tmp_env_key, None)
+        send_email_digest(
+            summaries_ayeyar_only,
+            recipients_env="INTERNAL_EMAIL_RECIPIENTS",
+            subject_suffix="/ (エーヤワディのみ)"
+        )
     else:
-        print("[TEST] エーヤワディ記事がないため送信スキップ。")
+        print("エーヤワディ記事なし: エーヤワディのみメールは送信しません。")
 
-    # A/B分岐
-    # ✅ A = 全キーワードでヒット（従来の any_keyword_hit 結果）
-    summaries_A = [s for s in all_summaries if s.get("hit_full")]
-    # ✅ B = エーヤワディ系を除いたキーワードだけでヒット
-    summaries_B = [s for s in all_summaries if s.get("hit_non_ayeyar")]
-
-    # A/Bどちらも送信
-    # ✅ A = エーヤワディ系を含む全キーワードでヒット
+    # 2) エーヤワディ以外のキーワードヒット（エーヤワディに該当しないものだけ）
+    summaries_non_ayeyar = [
+        s for s in all_summaries if s.get("hit_non_ayeyar") and not s.get("is_ayeyar")
+    ]
     send_email_digest(
-        summaries_A,
-        recipients_env="INTERNAL_EMAIL_RECIPIENTS",
-        subject_suffix="/ (エーヤワディ含)"
-    )
-    
-    # ✅ B = エーヤワディ系を除いたキーワードでヒット
-    send_email_digest(
-        summaries_B,
+        summaries_non_ayeyar,
         recipients_env="EMAIL_RECIPIENTS",
-        subject_suffix="/ (エーヤワディ含まない)"
+        subject_suffix="/ (エーヤワディ以外)"
     )
