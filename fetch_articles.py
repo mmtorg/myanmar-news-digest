@@ -3230,11 +3230,11 @@ if __name__ == "__main__":
         trust_existing_body=True
     )
     
-    print("===  Myanmar Now (Burmese) ===")
+    print("=== Myanmar Now ===")
     articles_mn = get_myanmar_now_articles_mm(date_mmt, max_pages=3)
     process_and_enqueue_articles(
         articles_mn,
-        "Myanmar Now (Burmese)",
+        "Myanmar Now",
         seen_urls,
         bypass_keyword=False,
         trust_existing_body=True,
