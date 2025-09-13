@@ -39,6 +39,31 @@ jobs:
           pip install --upgrade google-genai google-api-core
           rm -rf ~/.cache/huggingface
 
+      - name: Install Python deps
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          # もし requirements.txt に playwright を追加していない場合は↓を追加:
+          # pip install playwright
+
+      - name: Install Playwright browsers (Chromium)
+        run: |
+          python -m playwright install --with-deps chromium
+
+      # （任意・高速化）Playwright のブラウザキャッシュ
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('**/requirements.txt') }}
+
+      - name: Run crawler
+        env:
+          IRRAWADDY_USE_PLAYWRIGHT: "1"
+          # ほか、既存の環境変数（GEMINI_* / GMAIL_* 等）があればそのまま
+        run: |
+          python fetch_articles.py
+
       - name: Run fetch script
         env:
           TZ: Asia/Yangon
@@ -83,6 +108,31 @@ jobs:
           pip install "fugashi[unidic-lite]" ipadic
           pip install --upgrade google-genai google-api-core
           rm -rf ~/.cache/huggingface
+
+      - name: Install Python deps
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          # もし requirements.txt に playwright を追加していない場合は↓を追加:
+          # pip install playwright
+
+      - name: Install Playwright browsers (Chromium)
+        run: |
+          python -m playwright install --with-deps chromium
+
+      # （任意・高速化）Playwright のブラウザキャッシュ
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('**/requirements.txt') }}
+
+      - name: Run crawler
+        env:
+          IRRAWADDY_USE_PLAYWRIGHT: "1"
+          # ほか、既存の環境変数（GEMINI_* / GMAIL_* 等）があればそのまま
+        run: |
+          python fetch_articles.py
 
       - name: Run fetch script
         env:

@@ -395,7 +395,7 @@ MMT = timezone(timedelta(hours=6, minutes=30))
 def get_today_date_mmt():
     # 本番用、今日の日付
     now_mmt = datetime.now(MMT)
-    return now_mmt.date()
+    return (now_mmt - timedelta(days=1)).date()
 
 
 # 共通キーワードリスト（全メディア共通で使用する）
@@ -722,6 +722,267 @@ def fetch_with_retry_irrawaddy(url, retries=3, wait_seconds=2, session=None):
     raise Exception(f"Failed to fetch {url} after {retries} attempts.")
 
 
+# ==== Playwright 経由フェッチ（Irrawaddy用の最小実装） ====
+def _bool_env(name: str, default=False) -> bool:
+    v = (os.getenv(name) or "").strip().lower()
+    if not v:
+        return bool(default)
+    return v not in ("0", "false", "off", "no")
+
+IRRAWADDY_USE_PLAYWRIGHT = _bool_env("IRRAWADDY_USE_PLAYWRIGHT", False)
+
+def fetch_once_irrawaddy_playwright(url: str, timeout_ms: int = 20000) -> bytes:
+    """
+    Headless Chromium + JS 実行で HTML を取得。
+    - カテゴリ/記事どちらも可
+    - 403/待機不足に備え、主要セレクタを短時間待機
+    - 失敗時は例外を投げる（上位でフォールバック）
+    依存: pip install playwright && python -m playwright install --with-deps chromium
+    """
+    from playwright.sync_api import sync_playwright
+
+    UA = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/128.0.0.0 Safari/537.36"
+    )
+    EXTRA_HEADERS = {
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Upgrade-Insecure-Requests": "1",
+        "Referer": "https://www.irrawaddy.com/",
+    }
+    ARTICLE_SELECTORS = [
+        "div.content-inner",
+        "article .content-inner",
+        ".jeg_post_content",
+        ".entry-content",
+    ]
+    LISTING_SELECTORS = [
+        ".jnews_category_hero_container",
+        "div.jeg_postblock_content",
+        ".jeg_post_meta .jeg_meta_date a",
+        ".jeg_content",
+    ]
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
+        context = browser.new_context(user_agent=UA, java_script_enabled=True)
+        context.set_extra_http_headers(EXTRA_HEADERS)
+        page = context.new_page()
+
+        resp = page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+        status = (resp.status if resp else 0) or 0
+
+        ready = False
+        for sel in ARTICLE_SELECTORS + LISTING_SELECTORS:
+            try:
+                page.wait_for_selector(sel, timeout=3000)
+                ready = True
+                break
+            except Exception:
+                continue
+
+        if (status in (403, 503)) or not ready:
+            try:
+                page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                page.wait_for_timeout(1000)
+                for sel in ARTICLE_SELECTORS + LISTING_SELECTORS:
+                    try:
+                        page.wait_for_selector(sel, timeout=3000)
+                        ready = True
+                        break
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+        html = page.content()
+        browser.close()
+
+    if not html or not html.strip():
+        raise RuntimeError(f"Playwright empty content: {url}")
+    return html.encode("utf-8", errors="ignore")
+
+
+def fetch_once_irrawaddy(url: str, session=None) -> bytes:
+    """
+    既存の fetch_with_retry_irrawaddy の単発ラッパ。
+    BeautifulSoup に渡しやすい bytes を返す。
+    """
+    r = fetch_with_retry_irrawaddy(url, session=session)
+    return (r.text or "").encode("utf-8", errors="ignore")
+
+
+def fetch_once_irrawaddy_auto(url: str, session=None) -> bytes:
+    """
+    1) IRRAWADDY_USE_PLAYWRIGHT=1 なら Playwright を優先
+    2) 失敗時は既存の curl_cffi / cloudscraper / requests へフォールバック
+    """
+    if IRRAWADDY_USE_PLAYWRIGHT:
+        try:
+            return fetch_once_irrawaddy_playwright(url)
+        except Exception as e:
+            print(f"[pw] fallback due to: {e} → {url}")
+    return fetch_once_irrawaddy(url, session=session)
+
+# ==== Irrawaddy 安定化ユーティリティ ====
+SEEN_CACHE_PATH_IRRAWADDY = os.getenv("IRRAWADDY_SEEN_CACHE", "irrawaddy_seen.json")  # 永続キャッシュ
+
+def _sleep_jitter(min_s: float = 8.0, max_s: float = 12.0):
+    """各リクエスト間に 8–12 秒のジッター付きスリープを入れる"""
+    try:
+        time.sleep(random.uniform(min_s, max_s))
+    except KeyboardInterrupt:
+        raise
+
+def _exp_backoff(attempt: int, base: float = 8.0, cap: float = 90.0) -> float:
+    """指数バックオフ + 微小ジッター"""
+    return min(cap, (2 ** attempt) * base + random.random())
+
+def _norm_id(u: str) -> str:
+    try:
+        from urllib.parse import urlparse
+        p = urlparse(u)
+        return (p.scheme + "://" + p.netloc + p.path).rstrip("/")
+    except Exception:
+        return (u or "").strip().rstrip("/")
+
+def _load_seen_set(path: str = SEEN_CACHE_PATH_IRRAWADDY) -> set:
+    """前回までに取得済みの URL を永続保管（実行をまたいで差分取得する）"""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f) or {}
+        urls = data.get("urls", []) or []
+        return set(_norm_id(u) for u in urls if u)
+    except Exception:
+        return set()
+
+def _save_seen_set(seen: set, path: str = SEEN_CACHE_PATH_IRRAWADDY, max_urls: int = 5000):
+    """保存サイズを抑えつつ JSON で保存"""
+    try:
+        urls = list(seen)
+        if len(urls) > max_urls:
+            urls = urls[-max_urls:]
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"urls": urls, "ts": datetime.utcnow().isoformat() + "Z"}, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[cache] save failed: {e}")
+
+def fetch_irrawaddy_resilient(
+    url: str,
+    session=None,
+    max_attempts: int = None,
+    base_delay: float = None,
+    cap: float = None,
+    max_seconds: int = None,
+) -> bytes:
+    """
+    Irrawaddy向けの堅牢フェッチ（無限ループ防止版）
+    - 失敗時は指数バックオフでリトライ
+    - 成功時のみ 8–12 秒インターバル（次のアクセスを間引く）
+    - 致命的エラー（404/410/明白なDNS/URL不正）は即終了
+    - 回数・時間の両方に上限ガード
+    環境変数:
+      IRRAWADDY_MAX_ATTEMPTS  (既定: 4)
+      IRRAWADDY_BASE_DELAY_S  (既定: 8)
+      IRRAWADDY_BACKOFF_CAP_S (既定: 90)
+      IRRAWADDY_MAX_SECONDS   (既定: 180)
+    """
+    if max_attempts is None:
+        max_attempts = int(os.getenv("IRRAWADDY_MAX_ATTEMPTS", "4"))
+    if base_delay is None:
+        base_delay = float(os.getenv("IRRAWADDY_BASE_DELAY_S", "8"))
+    if cap is None:
+        cap = float(os.getenv("IRRAWADDY_BACKOFF_CAP_S", "90"))
+    if max_seconds is None:
+        max_seconds = int(os.getenv("IRRAWADDY_MAX_SECONDS", "180"))
+
+    deadline = time.monotonic() + max_seconds
+    last = None
+    attempt = 0
+
+    while attempt < max_attempts and time.monotonic() < deadline:
+        try:
+            buf = fetch_once_irrawaddy_auto(url, session=session)
+            _sleep_jitter(8.0, 12.0)  # 次URLへ行く前の間引き
+            return buf
+        except Exception as e:
+            last = e
+            msg = str(e) if e else ""
+
+            fatal_signatures = (
+                " 404", " 410", "Not Found", "not found",
+                "Invalid URL", "invalid url",
+                "Name or service not known", "getaddrinfo failed", "DNS", "TLSV1_ALERT"
+            )
+            if any(sig in msg for sig in fatal_signatures):
+                break
+
+            wait = _exp_backoff(attempt, base=base_delay, cap=cap)
+            remaining = deadline - time.monotonic()
+            if wait > max(0, remaining):
+                break
+
+            print(f"[irrawaddy] retry {attempt+1}/{max_attempts} after: {e} (sleep {wait:.1f}s) → {url}")
+            time.sleep(wait)
+            attempt += 1
+
+    raise last or RuntimeError(f"irrawaddy fetch failed (exhausted): {url}")
+
+# ==== RSS 一次経路（当日記事URLの収集） ====
+def _collect_irrawaddy_candidates_via_rss(target_date_mmt) -> list:
+    """
+    RSS/Atom を一次経路として利用し、MMT基準で当日記事の URL を集める。
+    - WordPress 標準のフィードや主要カテゴリのフィードを順次確認
+    - 取得失敗は黙ってスキップ（堅牢性重視）
+    """
+    FEEDS = [
+        "https://www.irrawaddy.com/feed",
+        "https://www.irrawaddy.com/category/news/feed",
+        "https://www.irrawaddy.com/category/politics/feed",
+        "https://www.irrawaddy.com/category/business/feed",
+        "https://www.irrawaddy.com/category/Features/feed",
+        "https://www.irrawaddy.com/category/Opinion/feed",
+        "https://www.irrawaddy.com/category/in-person/feed",
+        "https://www.irrawaddy.com/category/Specials/feed",
+    ]
+    urls = []
+    for feed_url in FEEDS:
+        try:
+            r = requests.get(feed_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+            if r.status_code != 200 or not (r.text or "").strip():
+                continue
+            root = ET.fromstring(r.text)
+            items = root.findall(".//item")
+            if not items:
+                items = root.findall(".//{http://www.w3.org/2005/Atom}entry")
+            for it in items:
+                pub = (it.findtext("pubDate") or it.findtext("{http://www.w3.org/2005/Atom}updated") or "").strip()
+                link = (it.findtext("link") or "").strip()
+                if not link:
+                    l = it.find("{http://www.w3.org/2005/Atom}link")
+                    if l is not None:
+                        link = (l.get("href") or "").strip()
+                if not link or not pub:
+                    continue
+                try:
+                    dt = parse_date(pub)
+                    if dt.astimezone(MMT).date() == target_date_mmt:
+                        urls.append(link)
+                except Exception:
+                    continue
+        except Exception as e:
+            print(f"[rss] skip {feed_url}: {e}")
+
+    uniq, seen = [], set()
+    for u in urls:
+        k = _norm_id(u)
+        if k not in seen:
+            seen.add(k)
+            uniq.append(u)
+    return uniq
+
 # === DVB専用 ===
 def fetch_with_retry_dvb(url, retries=4, wait_seconds=2, session=None):
     """
@@ -905,20 +1166,206 @@ def _title_from_slug(u: str) -> str:
         return ""
 
 
+def resolve_gnews_url(u: str) -> str:
+    """Resolve a Google News redirect URL to an Irrawaddy direct URL, if possible.
+    Tries requests → curl_cffi → cloudscraper, and falls back to scanning HTML anchors.
+    Returns the best-effort resolved URL (or the original on failure).
+    """
+    try:
+        if (not u) or ("irrawaddy.com" in u) or ("news.google.com" not in u):
+            return u
+        UA = (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/128.0.0.0 Safari/537.36"
+        )
+
+        def _scan_html_for_anchor(html: str) -> str:
+            if not html:
+                return ""
+            soup_tmp = BeautifulSoup(html, "html.parser")
+            anchors = []
+            for a in soup_tmp.find_all("a", href=True):
+                href = a.get("href") or ""
+                # www.irrawaddy.com のみを採用
+                if "www.irrawaddy.com" not in href:
+                    continue
+                anchors.append(href)
+            def _score(href: str) -> int:
+                try:
+                    from urllib.parse import urlparse as _urlparse
+                    p = _urlparse(href)
+                    path = (p.path or "").lower()
+                except Exception:
+                    path = href.lower()
+                s = 0
+                if "/news/" in path:
+                    s += 5
+                if re.search(r"/20\d{2}/\d{2}/\d{2}/", path):
+                    s += 3
+                if path.endswith(".html"):
+                    s += 2
+                if any(x in path for x in ("/tag/", "/category/", "/author/", "/search/")):
+                    s -= 5
+                return s
+            if anchors:
+                return max(anchors, key=_score)
+            return ""
+
+        # Try 1: requests
+        try:
+            r = requests.get(
+                u,
+                headers={"User-Agent": UA},
+                timeout=12,
+                allow_redirects=True,
+            )
+            fu = getattr(r, "url", "") or ""
+            if fu and "www.irrawaddy.com" in fu:
+                return fu
+            hit = _scan_html_for_anchor(getattr(r, "text", "") or "")
+            if hit:
+                return hit
+        except Exception:
+            pass
+
+        # Try 2: curl_cffi
+        try:
+            from curl_cffi import requests as cfr  # type: ignore
+            r2 = cfr.get(u, headers={"User-Agent": UA}, impersonate="chrome124", timeout=20, allow_redirects=True)
+            fu2 = getattr(r2, "url", "") or ""
+            if fu2 and "www.irrawaddy.com" in fu2:
+                return fu2
+            hit2 = _scan_html_for_anchor(getattr(r2, "text", "") or "")
+            if hit2:
+                return hit2
+        except Exception:
+            pass
+
+        # Try 3: cloudscraper
+        try:
+            import cloudscraper
+            sc = cloudscraper.create_scraper(
+                browser={"browser": "chrome", "platform": "windows", "mobile": False},
+                delay=7,
+            )
+            r3 = sc.get(u, headers={"User-Agent": UA}, timeout=20, allow_redirects=True)
+            fu3 = getattr(r3, "url", "") or ""
+            if fu3 and "www.irrawaddy.com" in fu3:
+                return fu3
+            hit3 = _scan_html_for_anchor(getattr(r3, "text", "") or "")
+            if hit3:
+                return hit3
+        except Exception:
+            pass
+    except Exception:
+        pass
+    return u
+
+
+def is_irrawaddy_tag_url(u: str) -> bool:
+    try:
+        from urllib.parse import urlparse as _urlparse
+        p = _urlparse(u)
+        host = (p.netloc or "").lower()
+        path = (p.path or "").lower()
+        return ("irrawaddy.com" in host) and (path.startswith("/tag") or "/tag/" in path)
+    except Exception:
+        return False
+
+
+def pick_article_from_irrawaddy_tag(u: str, target_date: date) -> str:
+    """Given a tag page URL on Irrawaddy (including burma.irrawaddy.com),
+    try to pick an article URL for the target MMT date.
+    Prefers /news/YYYY/MM/DD/*.html pattern.
+    Returns original URL on failure.
+    """
+    try:
+        UA = (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/128.0.0.0 Safari/537.36"
+        )
+        def _fetch_any(url: str):
+            try:
+                r = requests.get(url, headers={"User-Agent": UA}, timeout=15)
+                if r.status_code == 200 and (r.text or "").strip():
+                    return r.text
+            except Exception:
+                pass
+            try:
+                from curl_cffi import requests as cfr  # type: ignore
+                r2 = cfr.get(url, headers={"User-Agent": UA}, impersonate="chrome124", timeout=25)
+                if r2.status_code == 200 and (r2.text or "").strip():
+                    return r2.text
+            except Exception:
+                pass
+            try:
+                import cloudscraper
+                sc = cloudscraper.create_scraper(
+                    browser={"browser": "chrome", "platform": "windows", "mobile": False},
+                    delay=7,
+                )
+                r3 = sc.get(url, headers={"User-Agent": UA}, timeout=25)
+                if r3.status_code == 200 and (r3.text or "").strip():
+                    return r3.text
+            except Exception:
+                pass
+            return ""
+
+        html = _fetch_any(u)
+        if not html:
+            return u
+        soup = BeautifulSoup(html, "html.parser")
+        anchors = [a.get("href") or "" for a in soup.find_all("a", href=True)]
+        anchors = [h for h in anchors if "irrawaddy.com" in h]
+
+        y = f"{target_date.year:04d}"
+        m = f"{target_date.month:02d}"
+        d = f"{target_date.day:02d}"
+        date_pat = rf"/{y}/{m}/{d}/"
+
+        def _score(h: str) -> int:
+            try:
+                from urllib.parse import urlparse as _urlparse
+                path = (_urlparse(h).path or "").lower()
+            except Exception:
+                path = h.lower()
+            s = 0
+            if "/news/" in path:
+                s += 5
+            if re.search(date_pat, path):
+                s += 4
+            if path.endswith(".html"):
+                s += 2
+            if any(x in path for x in ("/tag/", "/category/", "/author/", "/search/")):
+                s -= 5
+            return s
+
+        cands = sorted(anchors, key=_score, reverse=True)
+        if cands and _score(cands[0]) > 0:
+            return cands[0]
+    except Exception:
+        pass
+    return u
+
+
 def _oembed_title_irrawaddy(u: str) -> str:
     try:
         api = (
             "https://www.irrawaddy.com/wp-json/oembed/1.0/embed?url="
             + requests.utils.requote_uri(u)
         )
+        # 機械API系には連絡先入りのUAを使用（HTML直取得とは分離）
+        contact = os.getenv("CONTACT_EMAIL") or os.getenv("CONTACT_URL")
+        ua_contact = (
+            f"MyanmarNewsDigestBot/1.0 (+{contact})" if contact else "MyanmarNewsDigestBot/1.0"
+        )
         r = requests.get(
             api,
             headers={
-                "User-Agent": (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/128.0.0.0 Safari/537.36"
-                )
+                "User-Agent": ua_contact,
+                "Accept": "application/json, text/javascript, */*;q=0.1",
             },
             timeout=10,
         )
@@ -1419,6 +1866,11 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
 
     session = requests.Session()
 
+    # ▼ 追加：永続キャッシュと挙動フラグ
+    seen_persist = _load_seen_set()
+    USE_RSS_PRIMARY = _bool_env("IRRAWADDY_RSS_PRIMARY", True)
+    USE_RESILIENT_FIRST = _bool_env("IRRAWADDY_RESILIENT_FIRST", True)
+
     # ==== 巡回対象（相対パス、重複ありでもOK：内部でユニーク化） ====
     CATEGORY_PATHS_RAW = [
         "/category/news/",
@@ -1464,6 +1916,9 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
         "/category/news/world",  # 除外依頼有
         "/video",  # "/category/Video"は除外対象だがこのパターンもある
         "/cartoons",  # "/category/Cartoons"は除外対象だがこのパターンもある
+        "/tag",      # タグアーカイブは除外
+        "/author",   # 著者ページも除外
+        "/search",   # 検索結果も除外
     ]  # 先頭一致・大小無視
 
     def _is_excluded_url(href: str) -> bool:
@@ -1493,6 +1948,21 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
     seen_urls = set()
     candidate_urls = []
     fallback_titles: Dict[str, str] = {}
+    # 収集元の由来（cat/home/feed）と、フィード由来の補助情報（title/date）を保持
+    origins: Dict[str, str] = {}
+    feed_hints: Dict[str, Dict[str, str]] = {}
+    # ▼ 追加：RSS を一次経路にして当日候補を先に投入（重複は seen_urls で回避）
+    if USE_RSS_PRIMARY:
+        try:
+            rss_urls = _collect_irrawaddy_candidates_via_rss(date_obj)
+            for u in rss_urls:
+                if u and u not in seen_urls:
+                    candidate_urls.append(u)
+                    seen_urls.add(u)
+                    origins[u] = "feed"
+        except Exception as e:
+            print(f"[irrawaddy] RSS primary failed: {e}")
+
 
     # ==== 1) 各カテゴリURLを1回ずつ巡回 → 当日候補抽出 ====
     for rel_path in paths:
@@ -1544,6 +2014,7 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
                 if shown_date == date_obj and href and href not in seen_urls:
                     candidate_urls.append(href)
                     seen_urls.add(href)
+                    origins[href] = origins.get(href, "cat")
                     found += 1
 
             # wrapper 内で“当日”が見つかったら soup まで広げず終了。
@@ -1583,6 +2054,7 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
                 if shown_date == date_obj and href and href not in seen_urls:
                     candidate_urls.append(href)
                     seen_urls.add(href)
+                    origins[href] = origins.get(href, "home")
     except Exception as e:
         print(f"Error scanning homepage column kuDRpuo: {e}")
 
@@ -1639,10 +2111,26 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
     def _rss_items_from_google_news() -> List[Dict[str, str]]:
         # Google News RSS（Irrawaddy限定）
         gnews = (
-            "https://news.google.com/rss/search?"  
-            "q=site:irrawaddy.com+when:1d&hl=en-US&gl=US&ceid=US:en"
+            "https://news.google.com/rss/search?"
+            "q=site:www.irrawaddy.com+when:1d&hl=en-US&gl=US&ceid=US:en"
         )
-        xml = _fetch_text(gnews)
+        # RSS/機械APIは連絡先入りUA
+        contact = os.getenv("CONTACT_EMAIL") or os.getenv("CONTACT_URL")
+        ua_contact = (
+            f"MyanmarNewsDigestBot/1.0 (+{contact})" if contact else "MyanmarNewsDigestBot/1.0"
+        )
+        try:
+            r0 = requests.get(
+                gnews,
+                headers={
+                    "User-Agent": ua_contact,
+                    "Accept": "application/rss+xml, application/xml;q=0.9, */*;q=0.1",
+                },
+                timeout=15,
+            )
+            xml = r0.text if r0.status_code == 200 else ""
+        except Exception:
+            xml = ""
         if not xml:
             return []
         try:
@@ -1656,16 +2144,31 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
             link = (it.findtext("link") or "").strip()
             pub = (it.findtext("pubDate") or "").strip()
             desc = (it.findtext("description") or "").strip()
-            # description 内の最初の Irrawaddy 直リンクを優先
+            # description 内に複数 href があることがある → 記事っぽさで選ぶ
             direct = None
             try:
-                m = href_re.search(desc)
-                if m:
-                    cand = m.group(1)
-                    if "irrawaddy.com" in cand:
-                        direct = cand
+                cands = href_re.findall(desc) or []
+                cands = [c for c in cands if "www.irrawaddy.com" in c]
+                def _score(h: str) -> int:
+                    try:
+                        from urllib.parse import urlparse as _urlparse
+                        path = (_urlparse(h).path or "").lower()
+                    except Exception:
+                        path = h.lower()
+                    s = 0
+                    if "/news/" in path:
+                        s += 5
+                    if re.search(r"/20\d{2}/\d{2}/\d{2}/", path):
+                        s += 3
+                    if path.endswith(".html"):
+                        s += 2
+                    if any(x in path for x in ("/tag/", "/category/", "/author/", "/search/")):
+                        s -= 5
+                    return s
+                if cands:
+                    direct = max(cands, key=_score)
             except Exception:
-                pass
+                direct = None
             items.append({
                 "title": title,
                 "link": direct or link,
@@ -1685,7 +2188,25 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
     def _fallback_candidates_via_feeds() -> List[Dict[str, str]]:
         # 1) WordPress JSON（多くの場合WAF対象）
         wp_url = "https://www.irrawaddy.com/wp-json/wp/v2/posts?per_page=50&_fields=link,date,title"
-        wp_json = _fetch_text(wp_url) or _fetch_text_via_jina(wp_url)
+        # API/JSONは連絡先入りUA
+        contact = os.getenv("CONTACT_EMAIL") or os.getenv("CONTACT_URL")
+        ua_contact = (
+            f"MyanmarNewsDigestBot/1.0 (+{contact})" if contact else "MyanmarNewsDigestBot/1.0"
+        )
+        try:
+            r_wp = requests.get(
+                wp_url,
+                headers={
+                    "User-Agent": ua_contact,
+                    "Accept": "application/json, */*;q=0.1",
+                },
+                timeout=20,
+            )
+            wp_json = r_wp.text if r_wp.status_code == 200 else ""
+        except Exception:
+            wp_json = ""
+        if not wp_json:
+            wp_json = _fetch_text_via_jina(wp_url)
         cands: List[Dict[str, str]] = []
         if wp_json:
             try:
@@ -1710,7 +2231,21 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
         # 2) サイトRSS（403の可能性あり → 失敗時はスキップ）
         if not cands:
             feed_url = "https://www.irrawaddy.com/feed"
-            feed_xml = _fetch_text(feed_url) or _fetch_text_via_jina(feed_url)
+            # RSSも連絡先入りUA
+            try:
+                r_feed = requests.get(
+                    feed_url,
+                    headers={
+                        "User-Agent": ua_contact,
+                        "Accept": "application/rss+xml, application/xml;q=0.9, */*;q=0.1",
+                    },
+                    timeout=20,
+                )
+                feed_xml = r_feed.text if r_feed.status_code == 200 else ""
+            except Exception:
+                feed_xml = ""
+            if not feed_xml:
+                feed_xml = _fetch_text_via_jina(feed_url)
             if feed_xml:
                 try:
                     root = ET.fromstring(feed_xml)
@@ -1734,7 +2269,7 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
             items = _rss_items_from_google_news()
             if not items:
                 gnews = (
-                    "https://news.google.com/rss/search?q=site:irrawaddy.com+when:1d&hl=en-US&gl=US&ceid=US:en"
+                    "https://news.google.com/rss/search?q=site:www.irrawaddy.com+when:1d&hl=en-US&gl=US&ceid=US:en"
                 )
                 xml = _fetch_text_via_jina(gnews)
                 if xml:
@@ -1749,7 +2284,7 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
                             desc = (it.findtext("description") or "").strip()
                             direct = None
                             m = href_re.search(desc)
-                            if m and "irrawaddy.com" in m.group(1):
+                            if m and "www.irrawaddy.com" in m.group(1):
                                 direct = m.group(1)
                             items.append({
                                 "title": title,
@@ -1759,32 +2294,8 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
                     except Exception:
                         items = []
 
-            def _resolve_gnews(u: str) -> str:
-                try:
-                    if "irrawaddy.com" in u or not u:
-                        return u
-                    if "news.google.com" not in u:
-                        return u
-                    UA = (
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/128.0.0.0 Safari/537.36"
-                    )
-                    r = requests.get(
-                        u,
-                        headers={"User-Agent": UA},
-                        timeout=10,
-                        allow_redirects=False,
-                    )
-                    loc = r.headers.get("location") or r.headers.get("Location")
-                    if loc and "irrawaddy.com" in loc:
-                        return loc
-                except Exception:
-                    pass
-                return u
-
             for it in items:
-                link = _resolve_gnews(it.get("link") or "")
+                link = resolve_gnews_url(it.get("link") or "")
                 title = it.get("title") or ""
                 pub = it.get("pubDate") or ""
                 dt = _parse_rfc822_date(pub)
@@ -1817,31 +2328,168 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
             if u and u not in seen_urls:
                 candidate_urls.append(u)
                 seen_urls.add(u)
-                if o.get("title"):
-                    fallback_titles[u] = o.get("title") or ""
+                origins[u] = "feed"
+                t_fb = o.get("title") or ""
+                d_fb = o.get("date") or ""
+                if t_fb:
+                    fallback_titles[u] = t_fb
+                if t_fb or d_fb:
+                    feed_hints[u] = {"title": t_fb, "date": d_fb}
 
     # ==== 2) 候補記事で厳密確認（meta日付/本文/キーワード） ====
     for url in candidate_urls:
+        # ▼ 処理件数上限（安全ガード）
+        max_per_run = int(os.getenv("IRRAWADDY_MAX_PAGES_PER_RUN", "20"))
+        processed = locals().get("_irrawaddy_processed", 0)
+        if processed >= max_per_run:
+            print(f"[irrawaddy] reached per-run limit: {max_per_run}, stop.")
+            break
+
+        # 前回までに取り込み済みならスキップ
+        normu = _norm_id(url)
+        if normu in seen_persist:
+            continue
+
+        # Resilient + Playwright を優先（失敗時は既存ロジックへフォールバック）
+        if USE_RESILIENT_FIRST:
+            try:
+                html = fetch_irrawaddy_resilient(url, session=session)
+                soup_article = BeautifulSoup(html, "html.parser")
+                try:
+                    host = urlparse(url).netloc.lower()
+                except Exception:
+                    host = ""
+                meta_date = _article_date_from_meta_mmt(soup_article) if "irrawaddy.com" in host else None
+                if (meta_date is not None) and (meta_date != date_obj):
+                    hint = feed_hints.get(url)
+                    if hint and (hint.get("date") == date_obj.isoformat()):
+                        title_fb = (hint.get("title") or "").strip() or _title_from_slug(url)
+                        results.append({
+                            "source": "Irrawaddy",
+                            "title": unicodedata.normalize("NFC", title_fb),
+                            "url": url,
+                            "date": date_obj.isoformat(),
+                            "body": "",
+                        })
+                        seen_persist.add(normu)
+                        _irrawaddy_processed = processed + 1
+                        continue
+                    if origins.get(url) in ("cat", "home"):
+                        title_fb = (feed_hints.get(url, {}).get("title") or "").strip() or _title_from_slug(url)
+                        results.append({
+                            "source": "Irrawaddy",
+                            "title": unicodedata.normalize("NFC", title_fb),
+                            "url": url,
+                            "date": date_obj.isoformat(),
+                            "body": "",
+                        })
+                        seen_persist.add(normu)
+                        _irrawaddy_processed = processed + 1
+                        continue
+
+                title = _extract_title(soup_article) or ""
+                body = extract_body_irrawaddy(soup_article) or extract_body_generic_from_soup(soup_article) or ""
+                title_nfc = unicodedata.normalize("NFC", title)
+                body_nfc = unicodedata.normalize("NFC", body)
+                results.append({
+                    "url": url,
+                    "title": title_nfc,
+                    "date": date_obj.isoformat(),
+                    "body": body_nfc,
+                    "source": "Irrawaddy",
+                })
+                seen_persist.add(normu)
+                _irrawaddy_processed = processed + 1
+                continue
+            except Exception as e:
+                print(f"[irrawaddy] resilient-first failed: {e} → {url}")
+
+
+        # Google News 由来の tag ページに着地した場合は記事URLへ置換を試みる
+        if is_irrawaddy_tag_url(url):
+            newu = pick_article_from_irrawaddy_tag(url, date_obj)
+            if newu and newu != url:
+                # フィードタイトルのフォールバックもキー引き継ぎ
+                if url in fallback_titles and newu not in fallback_titles:
+                    fallback_titles[newu] = fallback_titles.get(url, "")
+                url = newu
+        # www.irrawaddy.com 固定（他のサブドメインはスキップ）
+        try:
+            host_now = urlparse(url).netloc.lower()
+        except Exception:
+            host_now = ""
+        if host_now != "www.irrawaddy.com":
+            continue
         if _is_excluded_url(url):  # ベルト＆サスペンダー
             continue
         try:
             title = ""
             body = ""
+            # Google News 経由URLは先に直リンク解決を試みる
+            if "news.google.com" in (url or ""):
+                old = url
+                new = resolve_gnews_url(url)
+                if new and new != url:
+                    # feed タイトルのフォールバックもキーを引き継ぐ
+                    if old in fallback_titles and new not in fallback_titles:
+                        fallback_titles[new] = fallback_titles.get(old, "")
+                    url = new
+                # 解決先がタグページなら、ここで記事URLへ置換を試みる
+                if is_irrawaddy_tag_url(url):
+                    tnew = pick_article_from_irrawaddy_tag(url, date_obj)
+                    if tnew and tnew != url:
+                        if url in fallback_titles and tnew not in fallback_titles:
+                            fallback_titles[tnew] = fallback_titles.get(url, "")
+                        url = tnew
             # ① 直接取得（1回だけ）
             try:
                 html_once = _fetch_text(url, timeout=20)
                 if html_once:
                     soup_article = BeautifulSoup(html_once, "html.parser")
-                    # Irrawaddy ドメインのときだけ、厳密に meta 日付を照合
+                    # Irrawaddy ドメインのときだけ、可能なら meta 日付を照合
                     try:
                         host = urlparse(url).netloc.lower()
                     except Exception:
                         host = ""
+                    meta_date = None
                     if "irrawaddy.com" in host:
-                        if _article_date_from_meta_mmt(soup_article) != date_obj:
-                            continue
+                        meta_date = _article_date_from_meta_mmt(soup_article)
+                    # タイトル/本文抽出は続ける
                     title = _extract_title(soup_article) or ""
                     body = extract_body_irrawaddy(soup_article) or ""
+                    # メタ日付不一致時のフォールバック採用（collect_irrawaddy_all_for_date と同等）
+                    if (meta_date is not None) and (meta_date != date_obj):
+                        hint = feed_hints.get(url)
+                        if hint and (hint.get("date") == date_obj.isoformat()):
+                            title_fb = (hint.get("title") or "").strip()
+                            if title_fb:
+                                results.append(
+                                    {
+                                        "source": "Irrawaddy",
+                                        "title": unicodedata.normalize("NFC", title_fb),
+                                        "url": url,
+                                        "date": date_obj.isoformat(),
+                                        "body": "",
+                                    }
+                                )
+                                continue
+                        if origins.get(url) in ("cat", "home"):
+                            # 一覧の当日判定を信頼して採用（タイトルはヒント/スラッグで補完）
+                            title_fb = (feed_hints.get(url, {}).get("title") or "").strip()
+                            if not title_fb:
+                                title_fb = _title_from_slug(url)
+                            results.append(
+                                {
+                                    "source": "Irrawaddy",
+                                    "title": unicodedata.normalize("NFC", title_fb),
+                                    "url": url,
+                                    "date": date_obj.isoformat(),
+                                    "body": "",
+                                }
+                            )
+                            continue
+                        # それ以外はスキップ
+                        continue
             except Exception:
                 pass
 
@@ -1865,7 +2513,16 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
                         # フィードで拾ったタイトルを最終手段として流用
                         title = fallback_titles.get(url, "")
 
-            # ③ それでもタイトルが空なら、oEmbed またはスラッグから補完
+            # ③ タイトルが空、または news.google.com 由来の汎用タイトルならフォールバック採用
+            if (not title) or (title.strip().lower() == "google news"):
+                # フィードで拾ったタイトルを最優先
+                if not title:
+                    t_fb = fallback_titles.get(url, "")
+                else:
+                    t_fb = fallback_titles.get(url, "") or ""
+                if t_fb:
+                    title = t_fb
+            # ③' それでも空なら、oEmbed またはスラッグから補完
             if not title:
                 if "irrawaddy.com" in (url or ""):
                     t2 = _oembed_title_irrawaddy(url)
@@ -1874,14 +2531,9 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
                 if not title:
                     title = _title_from_slug(url)
 
-            # キーワードフィルタ（他媒体と同様）追加
-            # 念のためタイトル/本文をNFC正規化してから判定
+            # Irrawaddy はキーワードで落とさない（後段の bypass_keyword と整合）
             title_nfc = unicodedata.normalize("NFC", title)
             body_nfc = unicodedata.normalize("NFC", body)
-            if not any_keyword_hit(title_nfc, body_nfc):
-                # ログを出してスキップ（本文抜粋は出さない共通ロガー）
-                log_no_keyword_hit("Irrawaddy", url, title_nfc, body_nfc, "irrawaddy:article")
-                continue
 
             results.append(
                 {
@@ -1889,7 +2541,7 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
                     "title": title_nfc,
                     "date": date_obj.isoformat(),
                     "body": body_nfc,
-                    "source": "body_nfc",  # 重複削除関数を使うため追加
+                    "source": "Irrawaddy",
                 }
             )
         except Exception as e:
@@ -1914,6 +2566,8 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
         dbg(f"  - {_one(r.get('title'))} | {r.get('url')}")
     if len(results) > 3:
         dbg(f"  ... (+{len(results)-3} more)")
+
+    _save_seen_set(seen_persist)
 
     return results
 
@@ -2097,6 +2751,8 @@ def get_dvb_articles_for(date_obj: date, debug: bool = True) -> List[Dict]:
         log(f"  - {_one(r.get('title'))} | {r.get('url')}")
     if len(results) > 3:
         log(f"  ... (+{len(results)-3} more)")
+
+    _save_seen_set(seen_persist)
 
     return results
 
@@ -2297,6 +2953,8 @@ def get_myanmar_now_articles_mm(date_obj, max_pages=3):
     before = len(results)
     results = deduplicate_by_url(results)
     print(f"[myanmar-now-mm] dedup: {before} -> {len(results)}")
+    _save_seen_set(seen_persist)
+
     return results
 
 # 同じURLの重複削除
@@ -3177,32 +3835,49 @@ if __name__ == "__main__":
     date_mmt = get_today_date_mmt()
     seen_urls = set()
 
-    print("=== Mizzima (Burmese) ===")
-    articles_mizzima = get_mizzima_articles_from_category(
-        date_mmt,
-        "https://bur.mizzima.com",
-        "Mizzima (Burmese)",
-        "/category/%e1%80%9e%e1%80%90%e1%80%84%e1%80%ba%e1%80%b8/%e1%80%99%e1%80%bc%e1%80%94%e1%80%ba%e1%80%99%e1%80%ac%e1%80%9e%e1%80%90%e1%80%84%e1%80%ba%e1%80%b8",
-        max_pages=3,
-    )
-    process_and_enqueue_articles(
-        articles_mizzima, 
-        "Mizzima (Burmese)", 
-        seen_urls, 
-        trust_existing_body=True
-    )
+    # === Mizzima (Burmese) ===
+    # print("=== Mizzima (Burmese) ===")
+    # articles_mizzima = get_mizzima_articles_from_category(
+    #     date_mmt,
+    #     "https://bur.mizzima.com",
+    #     "Mizzima (Burmese)",
+    #     "/category/%e1%80%9e%e1%80%90%e1%80%84%e1%80%ba%e1%80%b8/%e1%80%99%e1%80%bc%e1%80%94%e1%80%ba%e1%80%99%e1%80%ac%e1%80%9e%e1%80%90%e1%80%84%e1%80%ba%e1%80%b8",
+    #     max_pages=3,
+    # )
+    # process_and_enqueue_articles(
+    #     articles_mizzima, 
+    #     "Mizzima (Burmese)", 
+    #     seen_urls, 
+    #     trust_existing_body=True
+    # )
 
-    print("=== BBC Burmese ===")
-    articles_bbc = get_bbc_burmese_articles_for(date_mmt)
-    process_and_enqueue_articles(
-        articles_bbc, 
-        "BBC Burmese", 
-        seen_urls, 
-        trust_existing_body=True
-    )
+    # print("=== BBC Burmese ===")
+    # articles_bbc = get_bbc_burmese_articles_for(date_mmt)
+    # process_and_enqueue_articles(
+    #     articles_bbc, 
+    #     "BBC Burmese", 
+    #     seen_urls, 
+    #     trust_existing_body=True
+    # )
 
     print("=== Irrawaddy ===")
     articles_irrawaddy = get_irrawaddy_articles_for(date_mmt)
+    
+    # ログ出力（件数＋先頭数件を表示）
+    try:
+        print(f"[irrawaddy] collected: {len(articles_irrawaddy)} items for {date_mmt}")
+        for a in articles_irrawaddy[:10]:
+            title = (a.get("title") or "").replace("\n", " ").strip()
+            url = a.get("url", "")
+            d = a.get("date", "")
+            print(f"  - {d} | {title[:80]} | {url}")
+        if len(articles_irrawaddy) > 10:
+            print(f"  ... (+{len(articles_irrawaddy)-10} more)")
+    except Exception:
+        pass
+    
+    sys.exit(1)  # for debug
+    
     # MEMO: ログ用、デバックでログ確認
     # print("RESULTS:", json.dumps(articles_irrawaddy, ensure_ascii=False, indent=2))
     process_and_enqueue_articles(
