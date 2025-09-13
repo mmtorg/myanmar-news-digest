@@ -1857,6 +1857,8 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
     seen_persist = _load_seen_set()
     USE_RSS_PRIMARY = _bool_env("IRRAWADDY_RSS_PRIMARY", True)
     USE_RESILIENT_FIRST = _bool_env("IRRAWADDY_RESILIENT_FIRST", True)
+    # カテゴリ/ホームの一覧取得にも Resilient/Playwright を適用（既定 ON）
+    USE_RESILIENT_LISTING = _bool_env("IRRAWADDY_RESILIENT_LISTING", True)
 
     # ==== 巡回対象（相対パス、重複ありでもOK：内部でユニーク化） ====
     CATEGORY_PATHS_RAW = [
@@ -1952,16 +1954,30 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
 
 
     # ==== 1) 各カテゴリURLを1回ずつ巡回 → 当日候補抽出 ====
+    # 一覧フェッチの共通ヘルパ（Resilient→失敗時は既存へフォールバック）
+    def _fetch_listing_html(url: str) -> bytes:
+        if USE_RESILIENT_LISTING:
+            try:
+                return fetch_irrawaddy_resilient(url, session=session)
+            except Exception as e:
+                print(f"[listing] resilient failed: {e} → {url}")
+        # フォールバックは既存の requests 系 + ジッター
+        r = fetch_with_retry_irrawaddy(url, session=session)
+        try:
+            _sleep_jitter(8.0, 12.0)
+        except Exception:
+            pass
+        return getattr(r, "content", None) or (getattr(r, "text", "") or "").encode("utf-8", "ignore")
+
     for rel_path in paths:
         url = f"{BASE}{rel_path}"
-        # print(f"Fetching {url}")
         try:
-            res = fetch_with_retry_irrawaddy(url, session=session)
+            html = _fetch_listing_html(url)
         except Exception as e:
             print(f"Error fetching {url}: {e}")
             continue
 
-        soup = BeautifulSoup(res.content, "html.parser")
+        soup = BeautifulSoup(html, "html.parser")
         wrapper = soup.select_one("div.jeg_content")  # テーマによっては無いこともある
 
         # ✅ union 方式：wrapper 内→見つからなければページ全体の順で探索
@@ -2013,8 +2029,8 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
     # ==== 1.5) ホーム（kuDRpuoカラム）巡回 → 当日候補抽出（新規） ====
     try:
         home_url = f"{BASE}/"
-        res_home = fetch_with_retry_irrawaddy(home_url, session=session)
-        soup_home = BeautifulSoup(res_home.content, "html.parser")
+        html_home = _fetch_listing_html(home_url)
+        soup_home = BeautifulSoup(html_home, "html.parser")
 
         # data-id でスコープ特定（class でも拾えるように冗長化）
         home_scope = soup_home.select_one(
@@ -2333,6 +2349,25 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
             break
 
         # 前回までに取り込み済みならスキップ
+        # 事前に Google News の中間URLを直リンク化し、タグ着地も記事へ寄せる
+        try:
+            if "news.google.com" in (url or ""):
+                old = url
+                new = resolve_gnews_url(url)
+                if new and new != url:
+                    if old in fallback_titles and new not in fallback_titles:
+                        fallback_titles[new] = fallback_titles.get(old, "")
+                    url = new
+            if is_irrawaddy_tag_url(url):
+                tnew = pick_article_from_irrawaddy_tag(url, date_obj)
+                if tnew and tnew != url:
+                    if url in fallback_titles and tnew not in fallback_titles:
+                        fallback_titles[tnew] = fallback_titles.get(url, "")
+                    url = tnew
+        except Exception:
+            pass
+
+        # 直リンク化後のURLで既読判定
         normu = _norm_id(url)
         if normu in seen_persist:
             continue

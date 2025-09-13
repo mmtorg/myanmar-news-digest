@@ -43,8 +43,6 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
-          # もし requirements.txt に playwright を追加していない場合は↓を追加:
-          # pip install playwright
 
       - name: Install Playwright browsers (Chromium)
         run: |
@@ -107,8 +105,6 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
-          # もし requirements.txt に playwright を追加していない場合は↓を追加:
-          # pip install playwright
 
       - name: Install Playwright browsers (Chromium)
         run: |
