@@ -805,15 +805,6 @@ def fetch_once_irrawaddy_playwright(url: str, timeout_ms: int = 20000) -> bytes:
     return html.encode("utf-8", errors="ignore")
 
 
-def fetch_once_irrawaddy(url: str, session=None) -> bytes:
-    """
-    既存の fetch_with_retry_irrawaddy の単発ラッパ。
-    BeautifulSoup に渡しやすい bytes を返す。
-    """
-    r = fetch_with_retry_irrawaddy(url, session=session)
-    return (r.text or "").encode("utf-8", errors="ignore")
-
-
 def fetch_once_irrawaddy_auto(url: str, session=None) -> bytes:
     """
     1) IRRAWADDY_USE_PLAYWRIGHT=1 なら Playwright を優先
@@ -1114,11 +1105,7 @@ def _norm_text(text: str) -> str:
     return unicodedata.normalize("NFC", text)
 
 
-def _norm_id(u):
-    """ID/URL照合用の軽量正規化：末尾スラッシュを落とす"""
-    if isinstance(u, str):
-        return u.rstrip("/")
-    return u
+## removed duplicate _norm_id (prefer earlier normalized form)
 
 
 def _parse_category_date_text(text: str):

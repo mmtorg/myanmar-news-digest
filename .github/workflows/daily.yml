@@ -57,19 +57,13 @@ jobs:
           path: ~/.cache/ms-playwright
           key: ${{ runner.os }}-playwright-${{ hashFiles('**/requirements.txt') }}
 
-      - name: Run crawler
-        env:
-          IRRAWADDY_USE_PLAYWRIGHT: "1"
-          # ほか、既存の環境変数（GEMINI_* / GMAIL_* 等）があればそのまま
-        run: |
-          python fetch_articles.py
-
       - name: Run fetch script
         env:
           TZ: Asia/Yangon
           EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
           EMAIL_RECIPIENTS: ${{ secrets.EMAIL_RECIPIENTS }}
           INTERNAL_EMAIL_RECIPIENTS: ${{ secrets.INTERNAL_EMAIL_RECIPIENTS }}
+          IRRAWADDY_USE_PLAYWRIGHT: "1"
           GEMINI_API_SUMMARY_KEY: ${{ secrets.GEMINI_API_SUMMARY_KEY }}
           GEMINI_API_DEDUPE_KEY: ${{ secrets.GEMINI_API_DEDUPE_KEY }}
           GMAIL_CLIENT_ID: ${{ secrets.GMAIL_CLIENT_ID }}
@@ -127,19 +121,13 @@ jobs:
           path: ~/.cache/ms-playwright
           key: ${{ runner.os }}-playwright-${{ hashFiles('**/requirements.txt') }}
 
-      - name: Run crawler
-        env:
-          IRRAWADDY_USE_PLAYWRIGHT: "1"
-          # ほか、既存の環境変数（GEMINI_* / GMAIL_* 等）があればそのまま
-        run: |
-          python fetch_articles.py
-
       - name: Run fetch script
         env:
           TZ: Asia/Yangon
           EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
           EMAIL_RECIPIENTS: ${{ secrets.EMAIL_RECIPIENTS }}
           INTERNAL_EMAIL_RECIPIENTS: ${{ secrets.INTERNAL_EMAIL_RECIPIENTS }}
+          IRRAWADDY_USE_PLAYWRIGHT: "1"
           GEMINI_API_SUMMARY_KEY: ${{ secrets.GEMINI_API_TEST_SUMMARY_KEY }}
           GEMINI_API_DEDUPE_KEY: ${{ secrets.GEMINI_API_TEST_DEDUPE_KEY }}
           GMAIL_CLIENT_ID: ${{ secrets.GMAIL_CLIENT_ID }}
