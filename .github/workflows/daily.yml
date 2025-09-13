@@ -62,12 +62,20 @@ jobs:
           EMAIL_RECIPIENTS: ${{ secrets.EMAIL_RECIPIENTS }}
           INTERNAL_EMAIL_RECIPIENTS: ${{ secrets.INTERNAL_EMAIL_RECIPIENTS }}
           IRRAWADDY_USE_PLAYWRIGHT: "1"
+          IRRAWADDY_PW_STATE_PATH: .cache/pw_state.json
           GEMINI_API_SUMMARY_KEY: ${{ secrets.GEMINI_API_SUMMARY_KEY }}
           GEMINI_API_DEDUPE_KEY: ${{ secrets.GEMINI_API_DEDUPE_KEY }}
           GMAIL_CLIENT_ID: ${{ secrets.GMAIL_CLIENT_ID }}
           GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
           GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
         run: python fetch_articles.py
+
+      - name: Save Playwright storage state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .cache/pw_state.json
+          key: pwstate-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
 
   dev:
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/develop'
@@ -117,6 +125,14 @@ jobs:
           path: ~/.cache/ms-playwright
           key: ${{ runner.os }}-playwright-${{ hashFiles('**/requirements.txt') }}
 
+      - name: Restore Playwright storage state
+        uses: actions/cache/restore@v4
+        with:
+          path: .cache/pw_state.json
+          key: pwstate-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            pwstate-${{ runner.os }}-${{ github.ref_name }}-
+
       - name: Run fetch script
         env:
           TZ: Asia/Yangon
@@ -124,9 +140,17 @@ jobs:
           EMAIL_RECIPIENTS: ${{ secrets.EMAIL_RECIPIENTS }}
           INTERNAL_EMAIL_RECIPIENTS: ${{ secrets.INTERNAL_EMAIL_RECIPIENTS }}
           IRRAWADDY_USE_PLAYWRIGHT: "1"
+          IRRAWADDY_PW_STATE_PATH: .cache/pw_state.json
           GEMINI_API_SUMMARY_KEY: ${{ secrets.GEMINI_API_TEST_SUMMARY_KEY }}
           GEMINI_API_DEDUPE_KEY: ${{ secrets.GEMINI_API_TEST_DEDUPE_KEY }}
           GMAIL_CLIENT_ID: ${{ secrets.GMAIL_CLIENT_ID }}
           GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
           GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
         run: python fetch_articles.py
+
+      - name: Save Playwright storage state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .cache/pw_state.json
+          key: pwstate-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}

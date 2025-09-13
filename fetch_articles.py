@@ -731,7 +731,7 @@ def _bool_env(name: str, default=False) -> bool:
 
 IRRAWADDY_USE_PLAYWRIGHT = _bool_env("IRRAWADDY_USE_PLAYWRIGHT", False)
 
-def fetch_once_irrawaddy_playwright(url: str, timeout_ms: int = 20000) -> bytes:
+def fetch_once_irrawaddy_playwright(url: str, timeout_ms: int = 45000) -> bytes:
     """
     Headless Chromium + JS 実行で HTML を取得。
     - カテゴリ/記事どちらも可
@@ -748,7 +748,7 @@ def fetch_once_irrawaddy_playwright(url: str, timeout_ms: int = 20000) -> bytes:
     )
     EXTRA_HEADERS = {
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Language": "en-US,en;q=0.9,my;q=0.8,ja;q=0.7",
         "Upgrade-Insecure-Requests": "1",
         "Referer": "https://www.irrawaddy.com/",
     }
@@ -768,18 +768,51 @@ def fetch_once_irrawaddy_playwright(url: str, timeout_ms: int = 20000) -> bytes:
     ]
 
     with sync_playwright() as p:
+        # Playwright: より人間らしい環境に近づける
         browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
-        context = browser.new_context(user_agent=UA, java_script_enabled=True)
+        # Storage state の永続化ファイル（存在すれば読み込み、最後に保存）
+        _PW_STATE_PATH = os.getenv("IRRAWADDY_PW_STATE_PATH", "pw_state.json")
+        _has_state = False
+        try:
+            _has_state = os.path.exists(_PW_STATE_PATH)
+        except Exception:
+            _has_state = False
+        context = browser.new_context(
+            user_agent=UA,
+            java_script_enabled=True,
+            locale="en-US",
+            timezone_id="Asia/Yangon",
+            viewport={"width": 1366, "height": 768},
+            storage_state=(_PW_STATE_PATH if _has_state else None),
+        )
         context.set_extra_http_headers(EXTRA_HEADERS)
         page = context.new_page()
+        try:
+            # webdriverフラグの緩和
+            page.add_init_script(
+                """
+                Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                """
+            )
+        except Exception:
+            pass
 
-        resp = page.goto(url, wait_until="networkidle", timeout=timeout_ms)
-        status = (resp.status if resp else 0) or 0
-
+        status = 0
         ready = False
+        try:
+            resp = page.goto(url, wait_until="networkidle", timeout=timeout_ms)
+            status = (resp.status if resp else 0) or 0
+        except Exception:
+            # networkidle が成立しない場合は domcontentloaded で再試行
+            try:
+                resp = page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+                status = (resp.status if resp else 0) or 0
+            except Exception:
+                status = 0
+
         for sel in ARTICLE_SELECTORS + LISTING_SELECTORS:
             try:
-                page.wait_for_selector(sel, timeout=3000)
+                page.wait_for_selector(sel, timeout=6000)
                 ready = True
                 break
             except Exception:
@@ -788,10 +821,10 @@ def fetch_once_irrawaddy_playwright(url: str, timeout_ms: int = 20000) -> bytes:
         if (status in (403, 503)) or not ready:
             try:
                 page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                page.wait_for_timeout(2000)
+                page.wait_for_timeout(2500)
                 for sel in ARTICLE_SELECTORS + LISTING_SELECTORS:
                     try:
-                        page.wait_for_selector(sel, timeout=3000)
+                        page.wait_for_selector(sel, timeout=6000)
                         ready = True
                         break
                     except Exception:
@@ -800,6 +833,11 @@ def fetch_once_irrawaddy_playwright(url: str, timeout_ms: int = 20000) -> bytes:
                 pass
 
         html = page.content()
+        # セッション/Cookie を保存（次回以降に活用）
+        try:
+            context.storage_state(path=_PW_STATE_PATH)
+        except Exception:
+            pass
         browser.close()
 
     if not html or not html.strip():
@@ -1969,17 +2007,42 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
             except Exception as e:
                 print(f"[listing] resilient failed: {e} → {url}")
         # フォールバックは既存の requests 系 + ジッター
-        r = fetch_with_retry_irrawaddy(url, session=session)
         try:
-            _sleep_jitter(8.0, 12.0)
-        except Exception:
-            pass
-        html = getattr(r, "content", None) or (getattr(r, "text", "") or "").encode("utf-8", "ignore")
-        try:
-            dbg(f"[listing] fallback ok: {len(html)} bytes @ {url}")
-        except Exception:
-            pass
-        return html
+            r = fetch_with_retry_irrawaddy(url, session=session)
+            try:
+                _sleep_jitter(8.0, 12.0)
+            except Exception:
+                pass
+            html = getattr(r, "content", None) or (getattr(r, "text", "") or "").encode("utf-8", "ignore")
+            try:
+                dbg(f"[listing] fallback ok: {len(html)} bytes @ {url}")
+            except Exception:
+                pass
+            return html
+        except Exception as e:
+            print(f"[listing] requests failed: {e} → {url}")
+            # 最終フォールバック: r.jina.ai 経由で静的抽出
+            try:
+                alt = f"https://r.jina.ai/http://{url.lstrip('/')}"
+                rj = requests.get(
+                    alt,
+                    headers={
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+                        "Accept": "text/plain, */*;q=0.1",
+                    },
+                    timeout=25,
+                )
+                if rj.status_code == 200 and (rj.text or "").strip():
+                    t = rj.text
+                    try:
+                        dbg(f"[listing] jina ok: {len(t)} bytes(text) @ {url}")
+                    except Exception:
+                        pass
+                    return t.encode("utf-8", "ignore")
+            except Exception as ee:
+                print(f"[listing] jina failed: {ee} → {url}")
+            # ここまで全滅なら再raise
+            raise
 
     for rel_path in paths:
         url = f"{BASE}{rel_path}"
@@ -2315,7 +2378,7 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
         # Google News RSS（Irrawaddy限定）
         gnews = (
             "https://news.google.com/rss/search?"
-            "q=site:www.irrawaddy.com+when:1d&hl=en-US&gl=US&ceid=US:en"
+            "q=site:www.irrawaddy.com+when:2d&hl=en-US&gl=US&ceid=US:en"
         )
         # RSS/機械APIは連絡先入りUA
         contact = os.getenv("CONTACT_EMAIL") or os.getenv("CONTACT_URL")
@@ -2472,7 +2535,7 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
             items = _rss_items_from_google_news()
             if not items:
                 gnews = (
-                    "https://news.google.com/rss/search?q=site:www.irrawaddy.com+when:1d&hl=en-US&gl=US&ceid=US:en"
+                    "https://news.google.com/rss/search?q=site:www.irrawaddy.com+when:2d&hl=en-US&gl=US&ceid=US:en"
                 )
                 xml = _fetch_text_via_jina(gnews)
                 if xml:
