@@ -762,6 +762,8 @@ def fetch_once_irrawaddy_playwright(url: str, timeout_ms: int = 20000) -> bytes:
         ".jnews_category_hero_container",
         "div.jeg_postblock_content",
         ".jeg_post_meta .jeg_meta_date a",
+        "h2.jeg_post_title a",
+        "h3.jeg_post_title a",
         ".jeg_content",
     ]
 
@@ -771,7 +773,7 @@ def fetch_once_irrawaddy_playwright(url: str, timeout_ms: int = 20000) -> bytes:
         context.set_extra_http_headers(EXTRA_HEADERS)
         page = context.new_page()
 
-        resp = page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+        resp = page.goto(url, wait_until="networkidle", timeout=timeout_ms)
         status = (resp.status if resp else 0) or 0
 
         ready = False
@@ -786,7 +788,7 @@ def fetch_once_irrawaddy_playwright(url: str, timeout_ms: int = 20000) -> bytes:
         if (status in (403, 503)) or not ready:
             try:
                 page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                page.wait_for_timeout(1000)
+                page.wait_for_timeout(2000)
                 for sel in ARTICLE_SELECTORS + LISTING_SELECTORS:
                     try:
                         page.wait_for_selector(sel, timeout=3000)
@@ -1989,7 +1991,10 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
 
         soup = BeautifulSoup(html, "html.parser")
         try:
-            dbg(f"[cat] page ready: url={url} bytes={len(html)}")
+            tit = (soup.title.get_text(strip=True) if soup.title else "").strip()
+            low = (soup.get_text(" ", strip=True)[:2000] or "").lower()
+            suspicious = any(x in low for x in ("cloudflare", "captcha", "verify you are human", "attention required"))
+            dbg(f"[cat] page ready: url={url} bytes={len(html)} title={tit!r} suspicious={suspicious}")
         except Exception:
             pass
         wrapper = soup.select_one("div.jeg_content")  # テーマによっては無いこともある
@@ -2046,6 +2051,47 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
                 # dbg(f"[cat] STOP (added {found} candidates) @ {url}")
                 break
 
+        # フォールバック1: タイトル見出しリンクから候補を補完（当日判定は記事側で実施）
+        if found == 0:
+            try:
+                tlinks = soup.select("h2.jeg_post_title a[href], h3.jeg_post_title a[href]")
+            except Exception:
+                tlinks = []
+            added_titles = 0
+            for a in tlinks:
+                href = a.get("href") or ""
+                if not href:
+                    continue
+                # 絶対化とフィルタ
+                try:
+                    from urllib.parse import urljoin as _ujoin, urlparse as _uparse
+                    absu = href if _uparse(href).netloc else _ujoin(BASE + "/", href)
+                    host = (_uparse(absu).netloc or "").lower()
+                    path = (_uparse(absu).path or "").lower()
+                except Exception:
+                    absu = href
+                    host = ""
+                    path = href.lower()
+                if "irrawaddy.com" not in host:
+                    continue
+                if _is_excluded_url(absu):
+                    continue
+                looks_article = ("/news/" in path) or bool(re.search(r"/20\d{2}/\d{2}/\d{2}/", path))
+                if not looks_article:
+                    continue
+                if absu in seen_urls:
+                    continue
+                candidate_urls.append(absu)
+                seen_urls.add(absu)
+                origins[absu] = origins.get(absu, "cat")
+                added_titles += 1
+                if added_titles >= 15:
+                    break
+            try:
+                dbg(f"[cat] title-links added={added_titles} @ {url}")
+            except Exception:
+                pass
+
         # 補助: 上のセレクタで当日が拾えなかった場合、ページ内のアンカーから汎用候補を追加
         if found == 0:
             try:
@@ -2057,16 +2103,29 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
                 href = a.get("href") or ""
                 if not href:
                     continue
-                # Irrawaddy 記事っぽいURLのみ（/news/ を含み、除外プレフィックスに当たらない）
-                if "www.irrawaddy.com" not in href:
+                # 絶対URLに正規化
+                try:
+                    from urllib.parse import urljoin as _ujoin, urlparse as _uparse
+                    absu = href if _uparse(href).netloc else _ujoin(BASE + "/", href)
+                    host = (_uparse(absu).netloc or "").lower()
+                    path = (_uparse(absu).path or "").lower()
+                except Exception:
+                    absu = href
+                    host = ""
+                    path = href.lower()
+                if "irrawaddy.com" not in host:
                     continue
-                if _is_excluded_url(href):
+                if _is_excluded_url(absu):
                     continue
-                if href in seen_urls:
+                # 記事らしさ（/news/ か、YYYY/MM/DD を含む）
+                looks_article = ("/news/" in path) or bool(re.search(r"/20\d{2}/\d{2}/\d{2}/", path))
+                if not looks_article:
                     continue
-                candidate_urls.append(href)
-                seen_urls.add(href)
-                origins[href] = origins.get(href, "cat")
+                if absu in seen_urls:
+                    continue
+                candidate_urls.append(absu)
+                seen_urls.add(absu)
+                origins[absu] = origins.get(absu, "cat")
                 added += 1
                 if added >= 15:  # 安全のためページあたり最大15件
                     break
@@ -2121,6 +2180,46 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
 
             # 補助: 当日が拾えない場合はホーム列から汎用候補を数件拾う
             if found_home == 0:
+                # タイトル見出しリンク優先
+                try:
+                    tlinks = home_scope.select("h2.jeg_post_title a[href], h3.jeg_post_title a[href]")
+                except Exception:
+                    tlinks = []
+                added_titles = 0
+                for a in tlinks:
+                    href = a.get("href") or ""
+                    if not href:
+                        continue
+                    try:
+                        from urllib.parse import urljoin as _ujoin, urlparse as _uparse
+                        absu = href if _uparse(href).netloc else _ujoin(BASE + "/", href)
+                        host = (_uparse(absu).netloc or "").lower()
+                        path = (_uparse(absu).path or "").lower()
+                    except Exception:
+                        absu = href
+                        host = ""
+                        path = href.lower()
+                    if "irrawaddy.com" not in host:
+                        continue
+                    if _is_excluded_url(absu):
+                        continue
+                    looks_article = ("/news/" in path) or bool(re.search(r"/20\d{2}/\d{2}/\d{2}/", path))
+                    if not looks_article:
+                        continue
+                    if absu in seen_urls:
+                        continue
+                    candidate_urls.append(absu)
+                    seen_urls.add(absu)
+                    origins[absu] = origins.get(absu, "home")
+                    added_titles += 1
+                    if added_titles >= 10:
+                        break
+                try:
+                    dbg(f"[home] title-links added={added_titles} @ {home_url}")
+                except Exception:
+                    pass
+
+            if found_home == 0 and 'added_titles' in locals() and added_titles == 0:
                 try:
                     anchors = home_scope.select("a[href]")
                 except Exception:
@@ -2130,15 +2229,28 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
                     href = a.get("href") or ""
                     if not href:
                         continue
-                    if "www.irrawaddy.com" not in href:
+                    # 絶対URLに正規化
+                    try:
+                        from urllib.parse import urljoin as _ujoin, urlparse as _uparse
+                        absu = href if _uparse(href).netloc else _ujoin(BASE + "/", href)
+                        host = (_uparse(absu).netloc or "").lower()
+                        path = (_uparse(absu).path or "").lower()
+                    except Exception:
+                        absu = href
+                        host = ""
+                        path = href.lower()
+                    if "irrawaddy.com" not in host:
                         continue
-                    if _is_excluded_url(href):
+                    if _is_excluded_url(absu):
                         continue
-                    if href in seen_urls:
+                    looks_article = ("/news/" in path) or bool(re.search(r"/20\d{2}/\d{2}/\d{2}/", path))
+                    if not looks_article:
                         continue
-                    candidate_urls.append(href)
-                    seen_urls.add(href)
-                    origins[href] = origins.get(href, "home")
+                    if absu in seen_urls:
+                        continue
+                    candidate_urls.append(absu)
+                    seen_urls.add(absu)
+                    origins[absu] = origins.get(absu, "home")
                     added += 1
                     if added >= 10:
                         break
