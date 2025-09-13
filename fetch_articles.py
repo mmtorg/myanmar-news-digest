@@ -1984,14 +1984,12 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
         scopes = ([wrapper] if wrapper else []) + [soup]
 
         for scope in scopes:
-            # ヒーロー枠＋通常リスト＋汎用メタを一発で拾う
+            # ヒーロー枠＋通常リスト＋汎用メタを一発で拾う（時計アイコン有無に依存しない）
             links = scope.select(
                 ".jnews_category_hero_container .jeg_meta_date a[href], "
                 "div.jeg_postblock_content .jeg_meta_date a[href], "
                 ".jeg_post_meta .jeg_meta_date a[href]"
             )
-            # 時計アイコン付きだけに限定（ノイズ回避）
-            links = [a for a in links if a.find("i", class_="fa fa-clock-o")]
 
             # （任意）デバッグ表示
             # dbg(f"[cat] union-links={len(links)} @ {url}")
@@ -2041,7 +2039,6 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
 
         if home_scope:
             links = home_scope.select(".jeg_meta_date a[href]")
-            links = [a for a in links if a.find("i", class_="fa fa-clock-o")]
             for a in links:
                 href = a.get("href") or ""
                 raw = a.get_text(" ", strip=True)
