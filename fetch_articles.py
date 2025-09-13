@@ -1958,7 +1958,12 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
     def _fetch_listing_html(url: str) -> bytes:
         if USE_RESILIENT_LISTING:
             try:
-                return fetch_irrawaddy_resilient(url, session=session)
+                html = fetch_irrawaddy_resilient(url, session=session)
+                try:
+                    dbg(f"[listing] resilient ok: {len(html)} bytes @ {url}")
+                except Exception:
+                    pass
+                return html
             except Exception as e:
                 print(f"[listing] resilient failed: {e} → {url}")
         # フォールバックは既存の requests 系 + ジッター
@@ -1967,7 +1972,12 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
             _sleep_jitter(8.0, 12.0)
         except Exception:
             pass
-        return getattr(r, "content", None) or (getattr(r, "text", "") or "").encode("utf-8", "ignore")
+        html = getattr(r, "content", None) or (getattr(r, "text", "") or "").encode("utf-8", "ignore")
+        try:
+            dbg(f"[listing] fallback ok: {len(html)} bytes @ {url}")
+        except Exception:
+            pass
+        return html
 
     for rel_path in paths:
         url = f"{BASE}{rel_path}"
@@ -1978,6 +1988,10 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
             continue
 
         soup = BeautifulSoup(html, "html.parser")
+        try:
+            dbg(f"[cat] page ready: url={url} bytes={len(html)}")
+        except Exception:
+            pass
         wrapper = soup.select_one("div.jeg_content")  # テーマによっては無いこともある
 
         # ✅ union 方式：wrapper 内→見つからなければページ全体の順で探索
@@ -1990,6 +2004,12 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
                 "div.jeg_postblock_content .jeg_meta_date a[href], "
                 ".jeg_post_meta .jeg_meta_date a[href]"
             )
+            try:
+                dbg(f"[cat] meta-links count={len(links)} @ {url}")
+                for a in links[:3]:
+                    dbg("   →", re.sub(r"\s+", " ", a.get_text(" ", strip=True))[:120], "|", a.get("href"))
+            except Exception:
+                pass
 
             # （任意）デバッグ表示
             # dbg(f"[cat] union-links={len(links)} @ {url}")
@@ -2004,8 +2024,10 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
                 try:
                     shown_date = _parse_category_date_text(raw)
                 except Exception:
-                    # 必要最小限のデバッグだけ
-                    # dbg("[cat] date-parse-fail:", re.sub(r"\s+", " ", raw)[:120])
+                    try:
+                        dbg("[cat] date-parse-fail:", re.sub(r"\s+", " ", raw)[:120])
+                    except Exception:
+                        pass
                     continue
 
                 # ▼ ここで /video などを除外
@@ -2024,6 +2046,35 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
                 # dbg(f"[cat] STOP (added {found} candidates) @ {url}")
                 break
 
+        # 補助: 上のセレクタで当日が拾えなかった場合、ページ内のアンカーから汎用候補を追加
+        if found == 0:
+            try:
+                anchors = soup.select("a[href]")
+            except Exception:
+                anchors = []
+            added = 0
+            for a in anchors:
+                href = a.get("href") or ""
+                if not href:
+                    continue
+                # Irrawaddy 記事っぽいURLのみ（/news/ を含み、除外プレフィックスに当たらない）
+                if "www.irrawaddy.com" not in href:
+                    continue
+                if _is_excluded_url(href):
+                    continue
+                if href in seen_urls:
+                    continue
+                candidate_urls.append(href)
+                seen_urls.add(href)
+                origins[href] = origins.get(href, "cat")
+                added += 1
+                if added >= 15:  # 安全のためページあたり最大15件
+                    break
+            try:
+                dbg(f"[cat] fallback anchors added={added} @ {url}")
+            except Exception:
+                pass
+
     # ==== 1.5) ホーム（kuDRpuoカラム）巡回 → 当日候補抽出（新規） ====
     try:
         home_url = f"{BASE}/"
@@ -2039,12 +2090,23 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
 
         if home_scope:
             links = home_scope.select(".jeg_meta_date a[href]")
+            found_home = 0
+            try:
+                dbg(f"[home] meta-links count={len(links)} @ {home_url}")
+                for a in links[:3]:
+                    dbg("   →", re.sub(r"\s+", " ", a.get_text(" ", strip=True))[:120], "|", a.get("href"))
+            except Exception:
+                pass
             for a in links:
                 href = a.get("href") or ""
                 raw = a.get_text(" ", strip=True)
                 try:
                     shown_date = _parse_category_date_text(raw)
                 except Exception:
+                    try:
+                        dbg("[home] date-parse-fail:", re.sub(r"\s+", " ", raw)[:120])
+                    except Exception:
+                        pass
                     continue
 
                 # ▼ ここでも除外
@@ -2055,6 +2117,35 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
                     candidate_urls.append(href)
                     seen_urls.add(href)
                     origins[href] = origins.get(href, "home")
+                    found_home += 1
+
+            # 補助: 当日が拾えない場合はホーム列から汎用候補を数件拾う
+            if found_home == 0:
+                try:
+                    anchors = home_scope.select("a[href]")
+                except Exception:
+                    anchors = []
+                added = 0
+                for a in anchors:
+                    href = a.get("href") or ""
+                    if not href:
+                        continue
+                    if "www.irrawaddy.com" not in href:
+                        continue
+                    if _is_excluded_url(href):
+                        continue
+                    if href in seen_urls:
+                        continue
+                    candidate_urls.append(href)
+                    seen_urls.add(href)
+                    origins[href] = origins.get(href, "home")
+                    added += 1
+                    if added >= 10:
+                        break
+                try:
+                    dbg(f"[home] fallback anchors added={added} @ {home_url}")
+                except Exception:
+                    pass
     except Exception as e:
         print(f"Error scanning homepage column kuDRpuo: {e}")
 
@@ -3880,7 +3971,7 @@ if __name__ == "__main__":
     # )
 
     print("=== Irrawaddy ===")
-    articles_irrawaddy = get_irrawaddy_articles_for(date_mmt)
+    articles_irrawaddy = get_irrawaddy_articles_for(date_mmt, debug=True)
     
     # ログ出力（件数＋先頭数件を表示）
     try:
