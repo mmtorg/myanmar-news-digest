@@ -1,47 +1,129 @@
+# .github/workflows/daily.yml
 name: Daily Myanmar News Digest
 
 on:
   schedule:
-    - cron: "30 16 * * *" # ミャンマー時間 23:00（UTC+6:30）
-  workflow_dispatch: # 手動＝開発で実行
+    - cron: "5 0 * * *" # UTC 00:05 = MMT 06:35 / JST 09:05 など。必要に応じて調整
+  workflow_dispatch:
+
+concurrency:
+  group: daily-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  TZ: Asia/Yangon
 
 jobs:
-  prod:
-    if: (github.event_name == 'schedule' && github.ref == 'refs/heads/main') ||
-      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
-    name: Run (production / main)
+  dev:
+    name: Dev run (with memory profiling)
     runs-on: ubuntu-latest
-    environment: production
-    concurrency:
-      group: daily-digest-production
-      cancel-in-progress: false
+
+    # develop ブランチのみで動かしたい場合はコメント解除
+    # if: github.ref == 'refs/heads/develop'
 
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: main
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.13"
+          cache: "pip"
 
-      - name: Cache pip
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
-
-      - name: Install dependencies
+      - name: Install dependencies (if requirements.txt exists)
+        shell: bash
         run: |
-          pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install "fugashi[unidic-lite]" ipadic
-          pip install --upgrade google-genai google-api-core
-          rm -rf ~/.cache/huggingface
+          set -euo pipefail
+          if [[ -f requirements.txt ]]; then
+            python -m pip install -U pip
+            pip install -r requirements.txt
+          else
+            echo "requirements.txt not found; skipping pip install"
+          fi
 
-      - name: Run fetch script
+      - name: Run fetch script (DEV) with memory profiling
+        id: run_dev
+        shell: bash
         env:
-          TZ: Asia/Yangon
+          EMAIL_SENDER: ${{ secrets.EMAIL_SENDER_TEST }}
+          EMAIL_RECIPIENTS: ${{ secrets.EMAIL_RECIPIENTS_TEST }}
+          INTERNAL_EMAIL_RECIPIENTS: ${{ secrets.INTERNAL_EMAIL_RECIPIENTS_TEST }}
+          GEMINI_API_SUMMARY_KEY: ${{ secrets.GEMINI_API_SUMMARY_KEY_TEST }}
+          GEMINI_API_DEDUPE_KEY: ${{ secrets.GEMINI_API_DEDUPE_KEY_TEST }}
+          GMAIL_CLIENT_ID: ${{ secrets.GMAIL_CLIENT_ID_TEST }}
+          GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET_TEST }}
+          GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN_TEST }}
+        run: |
+          set -euo pipefail
+          # ピーク実メモリ（KB）を取得
+          /usr/bin/time -v python fetch_articles.py 2> time.txt
+          # Max RSS を抽出して env に渡す
+          echo "MAX_RSS_KB=$(grep -E 'Maximum resident set size' time.txt | awk '{print $(NF-1)}')" >> "$GITHUB_ENV"
+          # ログにも生出力
+          echo "---- /usr/bin/time -v raw (DEV) ----"
+          cat time.txt
+
+      - name: Upload raw time.txt (DEV)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dev-time-txt
+          path: time.txt
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Memory summary (DEV)
+        if: always()
+        shell: bash
+        run: |
+          echo "## Memory report (DEV) — GNU time on Ubuntu" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Max RSS**: ${MAX_RSS_KB} KB" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "<details><summary>raw /usr/bin/time -v (DEV)</summary>" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          # Markdown 表崩れ回避でパイプをエスケープ
+          sed 's/|/\\|/g' time.txt >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "</details>" >> "$GITHUB_STEP_SUMMARY"
+
+  prod:
+    name: Prod run (with memory profiling)
+    runs-on: ubuntu-latest
+    needs: dev
+
+    # main ブランチのみで動かしたい場合はコメント解除
+    # if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: "pip"
+
+      - name: Install dependencies (if requirements.txt exists)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f requirements.txt ]]; then
+            python -m pip install -U pip
+            pip install -r requirements.txt
+          else
+            echo "requirements.txt not found; skipping pip install"
+          fi
+
+      - name: Run fetch script (PROD) with memory profiling
+        id: run_prod
+        shell: bash
+        env:
           EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
           EMAIL_RECIPIENTS: ${{ secrets.EMAIL_RECIPIENTS }}
           INTERNAL_EMAIL_RECIPIENTS: ${{ secrets.INTERNAL_EMAIL_RECIPIENTS }}
@@ -50,49 +132,32 @@ jobs:
           GMAIL_CLIENT_ID: ${{ secrets.GMAIL_CLIENT_ID }}
           GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
           GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
-        run: python fetch_articles.py
-
-  dev:
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/develop'
-    name: Run (development / develop)
-    runs-on: ubuntu-latest
-    environment: development
-    concurrency:
-      group: daily-digest-development
-      cancel-in-progress: true # 手動は新しい方を優先して前の実行を止める
-
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: develop
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Cache pip
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
-
-      - name: Install dependencies
         run: |
-          pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install "fugashi[unidic-lite]" ipadic
-          pip install --upgrade google-genai google-api-core
-          rm -rf ~/.cache/huggingface
+          set -euo pipefail
+          /usr/bin/time -v python fetch_articles.py 2> time.txt
+          echo "MAX_RSS_KB=$(grep -E 'Maximum resident set size' time.txt | awk '{print $(NF-1)}')" >> "$GITHUB_ENV"
+          echo "---- /usr/bin/time -v raw (PROD) ----"
+          cat time.txt
 
-      - name: Run fetch script
-        env:
-          TZ: Asia/Yangon
-          EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
-          EMAIL_RECIPIENTS: ${{ secrets.EMAIL_RECIPIENTS }}
-          INTERNAL_EMAIL_RECIPIENTS: ${{ secrets.INTERNAL_EMAIL_RECIPIENTS }}
-          GEMINI_API_SUMMARY_KEY: ${{ secrets.GEMINI_API_TEST_SUMMARY_KEY }}
-          GEMINI_API_DEDUPE_KEY: ${{ secrets.GEMINI_API_TEST_DEDUPE_KEY }}
-          GMAIL_CLIENT_ID: ${{ secrets.GMAIL_CLIENT_ID }}
-          GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
-          GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
-        run: python fetch_articles.py
+      - name: Upload raw time.txt (PROD)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: prod-time-txt
+          path: time.txt
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Memory summary (PROD)
+        if: always()
+        shell: bash
+        run: |
+          echo "## Memory report (PROD) — GNU time on Ubuntu" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Max RSS**: ${MAX_RSS_KB} KB" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "<details><summary>raw /usr/bin/time -v (PROD)</summary>" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          sed 's/|/\\|/g' time.txt >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "</details>" >> "$GITHUB_STEP_SUMMARY"
