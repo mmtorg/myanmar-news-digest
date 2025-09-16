@@ -45,8 +45,8 @@ jobs:
             echo "requirements.txt not found; skipping pip install"
           fi
 
-      - name: Run fetch script (DEV) with memory profiling
-        id: run_dev
+      - name: Run fetch script (DEV) (with memory profiling, capture even on failure)
+        id: run_with_prof
         shell: bash
         env:
           EMAIL_SENDER: ${{ secrets.EMAIL_SENDER_TEST }}
@@ -58,14 +58,23 @@ jobs:
           GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET_TEST }}
           GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN_TEST }}
         run: |
-          set -euo pipefail
-          # ピーク実メモリ（KB）を取得
-          /usr/bin/time -v python fetch_articles.py 2> time.txt
-          # Max RSS を抽出して env に渡す
-          echo "MAX_RSS_KB=$(grep -E 'Maximum resident set size' time.txt | awk '{print $(NF-1)}')" >> "$GITHUB_ENV"
-          # ログにも生出力
-          echo "---- /usr/bin/time -v raw (DEV) ----"
-          cat time.txt
+          set -uo pipefail  # -e は外す（途中で落とさない）
+          TIME_FILE="time.txt"
+
+          # 実コマンドを計測して終了コードを保持（失敗しても継続）
+          /usr/bin/time -v python fetch_articles.py 2> "$TIME_FILE"
+          CMD_STATUS=$?
+
+          # Max RSS を抽出（無ければ空のまま）
+          MAX_RSS_KB=$(grep -E 'Maximum resident set size' "$TIME_FILE" | awk '{print $(NF-1)}' || true)
+          echo "MAX_RSS_KB=$MAX_RSS_KB" >> "$GITHUB_ENV"
+          echo "CMD_STATUS=$CMD_STATUS" >> "$GITHUB_ENV"
+
+          echo "---- /usr/bin/time -v raw ----"
+          cat "$TIME_FILE" || true
+
+          # ここでは終了させない（後続Summaryで出力してから最終的に終了コードを返す）
+          exit 0
 
       - name: Upload raw time.txt (DEV)
         if: always()
@@ -80,16 +89,34 @@ jobs:
         if: always()
         shell: bash
         run: |
-          echo "## Memory report (DEV) — GNU time on Ubuntu" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Memory report — GNU time on Ubuntu" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Max RSS**: ${MAX_RSS_KB} KB" >> "$GITHUB_STEP_SUMMARY"
+
+          if [[ -n "${MAX_RSS_KB:-}" ]]; then
+            echo "- **Max RSS**: ${MAX_RSS_KB} KB" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- **Max RSS**: (not captured)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          echo "- **Command exit status**: ${CMD_STATUS:-unknown}" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "<details><summary>raw /usr/bin/time -v (DEV)</summary>" >> "$GITHUB_STEP_SUMMARY"
+          echo "<details><summary>raw /usr/bin/time -v</summary>" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          # Markdown 表崩れ回避でパイプをエスケープ
-          sed 's/|/\\|/g' time.txt >> "$GITHUB_STEP_SUMMARY"
+          if [[ -f time.txt ]]; then
+            # Markdown の表崩れ防止
+            sed 's/|/\\|/g' time.txt >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "(time.txt not found)" >> "$GITHUB_STEP_SUMMARY"
+          fi
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "</details>" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fail job if the command failed (DEV)
+        if: always()
+        shell: bash
+        run: |
+          # 元のコマンドの終了コードを返してジョブの成否を正しく反映
+          exit "${CMD_STATUS:-1}"
 
   prod:
     name: Prod run (with memory profiling)
@@ -120,8 +147,8 @@ jobs:
             echo "requirements.txt not found; skipping pip install"
           fi
 
-      - name: Run fetch script (PROD) with memory profiling
-        id: run_prod
+      - name: Run fetch script (PROD) (with memory profiling, capture even on failure)
+        id: run_with_prof
         shell: bash
         env:
           EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
@@ -133,11 +160,23 @@ jobs:
           GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
           GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
         run: |
-          set -euo pipefail
-          /usr/bin/time -v python fetch_articles.py 2> time.txt
-          echo "MAX_RSS_KB=$(grep -E 'Maximum resident set size' time.txt | awk '{print $(NF-1)}')" >> "$GITHUB_ENV"
-          echo "---- /usr/bin/time -v raw (PROD) ----"
-          cat time.txt
+          set -uo pipefail  # -e は外す（途中で落とさない）
+          TIME_FILE="time.txt"
+
+          # 実コマンドを計測して終了コードを保持（失敗しても継続）
+          /usr/bin/time -v python fetch_articles.py 2> "$TIME_FILE"
+          CMD_STATUS=$?
+
+          # Max RSS を抽出（無ければ空のまま）
+          MAX_RSS_KB=$(grep -E 'Maximum resident set size' "$TIME_FILE" | awk '{print $(NF-1)}' || true)
+          echo "MAX_RSS_KB=$MAX_RSS_KB" >> "$GITHUB_ENV"
+          echo "CMD_STATUS=$CMD_STATUS" >> "$GITHUB_ENV"
+
+          echo "---- /usr/bin/time -v raw ----"
+          cat "$TIME_FILE" || true
+
+          # ここでは終了させない（後続Summaryで出力してから最終的に終了コードを返す）
+          exit 0
 
       - name: Upload raw time.txt (PROD)
         if: always()
@@ -152,12 +191,31 @@ jobs:
         if: always()
         shell: bash
         run: |
-          echo "## Memory report (PROD) — GNU time on Ubuntu" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Memory report — GNU time on Ubuntu" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Max RSS**: ${MAX_RSS_KB} KB" >> "$GITHUB_STEP_SUMMARY"
+
+          if [[ -n "${MAX_RSS_KB:-}" ]]; then
+            echo "- **Max RSS**: ${MAX_RSS_KB} KB" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- **Max RSS**: (not captured)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          echo "- **Command exit status**: ${CMD_STATUS:-unknown}" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "<details><summary>raw /usr/bin/time -v (PROD)</summary>" >> "$GITHUB_STEP_SUMMARY"
+          echo "<details><summary>raw /usr/bin/time -v</summary>" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          sed 's/|/\\|/g' time.txt >> "$GITHUB_STEP_SUMMARY"
+          if [[ -f time.txt ]]; then
+            # Markdown の表崩れ防止
+            sed 's/|/\\|/g' time.txt >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "(time.txt not found)" >> "$GITHUB_STEP_SUMMARY"
+          fi
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "</details>" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fail job if the command failed (PROD)
+        if: always()
+        shell: bash
+        run: |
+          # 元のコマンドの終了コードを返してジョブの成否を正しく反映
+          exit "${CMD_STATUS:-1}"
