@@ -79,6 +79,19 @@ def _is_retriable_exc(e: Exception) -> bool:
     msg = (str(e) or "").lower()
     name = e.__class__.__name__.lower()
 
+# ===== Debug controls (Irrawaddy newsletter path) =====
+# デフォルト ON。環境変数 IRRAWADDY_DEBUG が未設定のときはこの既定に従う。
+IRRAWADDY_DEBUG_DEFAULT = True
+
+def _truthy(v: str) -> bool:
+    return (v or "").strip().lower() in ("1", "true", "yes", "on")
+
+def _is_irrawaddy_debug() -> bool:
+    env = os.getenv("IRRAWADDY_DEBUG", "")
+    if (env or "").strip() == "":
+        return IRRAWADDY_DEBUG_DEFAULT
+    return _truthy(env)
+
     # Google系の明示的リトライ対象
     if isinstance(
         e,
@@ -3274,6 +3287,9 @@ def _resolve_mailchimp_click(track_url, timeout=15):
     """
     try:
         r = requests.get(track_url, timeout=timeout, allow_redirects=False)
+        if _is_irrawaddy_debug():
+            loc = r.headers.get("Location")
+            print(f"[mailchimp] GET {track_url} -> status={r.status_code} location={loc}")
     except Exception as e:
         print(f"[mailchimp] GET failed: {e} ← {track_url}")
         return ""
@@ -3283,6 +3299,8 @@ def _resolve_mailchimp_click(track_url, timeout=15):
 
     # フォールバック: HTML 内の irrawaddy 直リンク
     m = re.search(r"https?://(?:www\.)?irrawaddy\.com/[^\s\"'<>]+", (r.text or ""), re.I)
+    if _is_irrawaddy_debug() and not m:
+        print("[mailchimp] fallback: no irrawaddy link in body")
     return m.group(0) if m else ""
 
 
@@ -3312,13 +3330,24 @@ def get_irrawaddy_articles_from_newsletter(*, gmail_query: str, fetch_mode: str 
     """
 
     service = _build_gmail_service_for_read()
+    if _is_irrawaddy_debug():
+        print(f"[newsletter] gmail_query='{gmail_query}' fetch_mode={fetch_mode} max_urls={max_urls}")
     msgs = _gmail_list_messages(service, query=gmail_query, max_results=5)
+    if _is_irrawaddy_debug():
+        print(f"[newsletter] messages_found={len(msgs)}")
     if not msgs:
         return []
 
     urls: list[str] = []
     for m in msgs:
-        html = _gmail_get_message_html(service, m.get("id")) or ""
+        msg_id = m.get("id")
+        html = _gmail_get_message_html(service, msg_id) or ""
+        if _is_irrawaddy_debug():
+            print(f"[newsletter] msg_id={msg_id} html_len={len(html)}")
+        tracks = MAILCHIMP_TRACK_RE.findall(html or "")
+        if _is_irrawaddy_debug():
+            print(f"[newsletter] tracks_found={len(tracks)}")
+        # 既存関数で解決
         urls.extend(extract_irrawaddy_urls_from_newsletter_html(html))
         if len(urls) >= max_urls:
             break
@@ -3336,6 +3365,10 @@ def get_irrawaddy_articles_from_newsletter(*, gmail_query: str, fetch_mode: str 
     today_mmt = get_today_date_mmt()
 
     results: list[dict] = []
+    if _is_irrawaddy_debug():
+        print(f"[newsletter] resolved_unique_urls={len(unique)}")
+        for u in unique[:6]:
+            print(f"  - {u}")
     for url in unique:
         item = {
             "url": url,
@@ -3361,6 +3394,9 @@ def get_irrawaddy_articles_from_newsletter(*, gmail_query: str, fetch_mode: str 
                     item["title"] = (ogtitle["content"] or "").strip()
                 if ogdesc and ogdesc.get("content"):
                     item["body"] = (ogdesc["content"] or "").strip()
+            else:
+                if _is_irrawaddy_debug():
+                    print(f"[ogp] status={r.status_code} @ {url}")
         except Exception as e:
             print(f"[ogp] {e} @ {url}")
 
@@ -3415,8 +3451,6 @@ if __name__ == "__main__":
     # )
 
     print("=== Irrawaddy ===")
-    def _truthy(v: str) -> bool:
-        return (v or "").strip().lower() in ("1", "true", "yes", "on")
 
     # デフォルトを newsletter=true にする
     use_newsletter = _truthy(os.getenv("IRRAWADDY_NEWSLETTER", "true")) or bool(
@@ -3428,18 +3462,21 @@ if __name__ == "__main__":
         tomorrow = today + timedelta(days=1)
         a = today.strftime("%Y/%m/%d")
         b = tomorrow.strftime("%Y/%m/%d")
-        return f"from:(yasu.23721740311@gmail.com) after:{a} before:{b}"
-        # return f"from:(dailynews@irrawaddy.org) after:{a} before:{b}"
+        return f"from:(dailynews@irrawaddy.org) after:{a} before:{b}"
 
     if use_newsletter:
         env_query = (os.getenv("NEWSLETTER_QUERY", "") or "").strip()
         query = env_query if env_query else _default_newsletter_query_today_mmt()
         fetch_mode = os.getenv("IRRAWADDY_FETCH_MODE", "ogp")  # urls-only | ogp | full
         max_urls = int(os.getenv("MAX_URLS_PER_RUN", "6"))
+        if _is_irrawaddy_debug():
+            print(f"[main] use_newsletter=True query='{query}' mode={fetch_mode} max={max_urls}")
         articles_irrawaddy = get_irrawaddy_articles_from_newsletter(
             gmail_query=query, fetch_mode=fetch_mode, max_urls=max_urls
         )
     else:
+        if _is_irrawaddy_debug():
+            print("[main] use_newsletter=False -> fallback to category crawl")
         articles_irrawaddy = get_irrawaddy_articles_for(date_mmt)
     # MEMO: ログ用、デバックでログ確認
     # print("RESULTS:", json.dumps(articles_irrawaddy, ensure_ascii=False, indent=2))
@@ -3463,8 +3500,7 @@ if __name__ == "__main__":
             print(f"  ... (+{len(articles_irrawaddy)-10} more)")
     except Exception:
         pass
-    
-    sys.exit(1)  # for debug
+    # sys.exit(1)  # for debug (disabled)
 
     print("=== Khit Thit Media ===")
     articles_khit = get_khit_thit_media_articles_from_category(date_mmt, max_pages=3)
