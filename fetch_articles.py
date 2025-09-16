@@ -3462,7 +3462,8 @@ if __name__ == "__main__":
         tomorrow = today + timedelta(days=1)
         a = today.strftime("%Y/%m/%d")
         b = tomorrow.strftime("%Y/%m/%d")
-        return f"from:(dailynews@irrawaddy.org) after:{a} before:{b}"
+        return f"from:(yasu.23721740311@gmail.com) after:{a} before:{b}"
+        # return f"from:(dailynews@irrawaddy.org) after:{a} before:{b}"
 
     if use_newsletter:
         env_query = (os.getenv("NEWSLETTER_QUERY", "") or "").strip()
@@ -3500,7 +3501,7 @@ if __name__ == "__main__":
             print(f"  ... (+{len(articles_irrawaddy)-10} more)")
     except Exception:
         pass
-    # sys.exit(1)  # for debug (disabled)
+    sys.exit(1)  # for debug (disabled)
 
     print("=== Khit Thit Media ===")
     articles_khit = get_khit_thit_media_articles_from_category(date_mmt, max_pages=3)
