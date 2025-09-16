@@ -658,8 +658,9 @@ def fetch_with_retry_irrawaddy(url, retries=3, wait_seconds=2, session=None):
     try:
         from curl_cffi import requests as cfr  # type: ignore[import-not-found]
         proxies = {
-            "http": os.getenv("HTTP_PROXY") or os.getenv("http_proxy"),
-            "https": os.getenv("HTTPS_PROXY") or os.getenv("https_proxy"),
+            # Irrawaddy専用のプロキシ指定があれば最優先で使う（他サイトには影響しない）
+            "http":  os.getenv("IRRAWADDY_HTTP_PROXY")  or os.getenv("HTTP_PROXY")  or os.getenv("http_proxy"),
+            "https": os.getenv("IRRAWADDY_HTTPS_PROXY") or os.getenv("HTTPS_PROXY") or os.getenv("https_proxy"),
         }
         r = cfr.get(
             url,
