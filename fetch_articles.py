@@ -79,19 +79,6 @@ def _is_retriable_exc(e: Exception) -> bool:
     msg = (str(e) or "").lower()
     name = e.__class__.__name__.lower()
 
-# ===== Debug controls (Irrawaddy newsletter path) =====
-# デフォルト ON。環境変数 IRRAWADDY_DEBUG が未設定のときはこの既定に従う。
-IRRAWADDY_DEBUG_DEFAULT = True
-
-def _truthy(v: str) -> bool:
-    return (v or "").strip().lower() in ("1", "true", "yes", "on")
-
-def _is_irrawaddy_debug() -> bool:
-    env = os.getenv("IRRAWADDY_DEBUG", "")
-    if (env or "").strip() == "":
-        return IRRAWADDY_DEBUG_DEFAULT
-    return _truthy(env)
-
     # Google系の明示的リトライ対象
     if isinstance(
         e,
@@ -408,7 +395,7 @@ MMT = timezone(timedelta(hours=6, minutes=30))
 def get_today_date_mmt():
     # 本番用、今日の日付
     now_mmt = datetime.now(MMT)
-    return (now_mmt - timedelta(days=1)).date()
+    return now_mmt.date()
 
 
 # 共通キーワードリスト（全メディア共通で使用する）
@@ -3184,301 +3171,38 @@ def send_email_digest(summaries, *, recipients_env=None, subject_suffix=""):
         sys.exit(1)
 
 
-# =====================
-# Irrawaddy: Mailchimp ニュースレター由来URLを処理
-# =====================
-
-MAILCHIMP_TRACK_RE = re.compile(
-    r"https://[a-z0-9.-]+/track/click\?u=[^&]+&id=[^&]+(?:&e=[^\"&\s]+)?",
-    re.I,
-)
-
-
-def _build_gmail_service_for_read():
-    """環境変数の Gmail OAuth 資格情報から Gmail API サービスを作成（読み取り用）。
-
-    既存の送信用と同様に、以下の環境変数を使用します。
-    - GMAIL_CLIENT_ID
-    - GMAIL_CLIENT_SECRET
-    - GMAIL_REFRESH_TOKEN
-
-    注意: リフレッシュトークンには gmail.readonly もしくは gmail.modify 権限が必要です。
-    """
-    cid = os.getenv("GMAIL_CLIENT_ID")
-    csec = os.getenv("GMAIL_CLIENT_SECRET")
-    rtok = os.getenv("GMAIL_REFRESH_TOKEN")
-    if not (cid and csec and rtok):
-        raise RuntimeError(
-            "Gmail API credentials (CLIENT_ID/SECRET/REFRESH_TOKEN) are missing."
-        )
-
-    creds = Credentials(
-        token=None,
-        refresh_token=rtok,
-        token_uri="https://oauth2.googleapis.com/token",
-        client_id=cid,
-        client_secret=csec,
-    )
-    return build("gmail", "v1", credentials=creds, cache_discovery=False)
-
-
-def _gmail_list_messages(service, user_id="me", query="", max_results=5):
-    try:
-        resp = (
-            service.users()
-            .messages()
-            .list(userId=user_id, q=query, maxResults=max_results)
-            .execute()
-        )
-        return resp.get("messages", []) or []
-    except Exception as e:
-        print(f"[gmail] list failed: {e}")
-        return []
-
-
-def _gmail_get_message_html(service, msg_id, user_id="me"):
-    """メッセージの text/html パートを優先して抽出。無ければ空文字。"""
-    try:
-        msg = (
-            service.users().messages().get(userId=user_id, id=msg_id, format="full").execute()
-        )
-    except Exception as e:
-        print(f"[gmail] get failed: {e}")
-        return ""
-
-    payload = msg.get("payload", {})
-
-    def _decode_body(body):
-        data = body.get("data")
-        if not data:
-            return ""
-        try:
-            return base64.urlsafe_b64decode(data).decode("utf-8", errors="replace")
-        except Exception:
-            return ""
-
-    # 単一パートが text/html
-    if payload.get("mimeType") == "text/html":
-        html = _decode_body(payload.get("body", {}))
-        if html:
-            return html
-
-    # マルチパートから text/html を探索
-    def _walk(parts):
-        for p in parts or []:
-            mime = p.get("mimeType", "")
-            if mime == "text/html":
-                html = _decode_body(p.get("body", {}))
-                if html:
-                    return html
-            if p.get("parts"):
-                t = _walk(p["parts"])
-                if t:
-                    return t
-        return None
-
-    html = _walk(payload.get("parts", []))
-    return html or ""
-
-
-def _resolve_mailchimp_click(track_url, timeout=15):
-    """Mailchimp track/click を1ホップだけ解決して Location を取得。
-    3xx Location がなければ本文中の irrawaddy.com 直リンクを探す。
-    """
-    try:
-        r = requests.get(track_url, timeout=timeout, allow_redirects=False)
-        if _is_irrawaddy_debug():
-            loc = r.headers.get("Location")
-            print(f"[mailchimp] GET {track_url} -> status={r.status_code} location={loc}")
-    except Exception as e:
-        print(f"[mailchimp] GET failed: {e} ← {track_url}")
-        return ""
-
-    if 300 <= r.status_code < 400 and "Location" in r.headers:
-        return r.headers.get("Location", "")
-
-    # フォールバック: HTML 内の irrawaddy 直リンク
-    m = re.search(r"https?://(?:www\.)?irrawaddy\.com/[^\s\"'<>]+", (r.text or ""), re.I)
-    if _is_irrawaddy_debug() and not m:
-        print("[mailchimp] fallback: no irrawaddy link in body")
-    return m.group(0) if m else ""
-
-
-def extract_irrawaddy_urls_from_newsletter_html(html: str) -> list[str]:
-    tracks = MAILCHIMP_TRACK_RE.findall(html or "")
-    urls: list[str] = []
-    seen: set[str] = set()
-    for t in tracks:
-        dest = _resolve_mailchimp_click(t)
-        if not dest:
-            continue
-        if "irrawaddy.com" in dest and "/category/" not in dest and "/video" not in dest and "/cartoons" not in dest:
-            u = dest.split("#")[0]
-            if u not in seen:
-                seen.add(u)
-                urls.append(u)
-    return urls
-
-
-def get_irrawaddy_articles_from_newsletter(*, gmail_query: str, fetch_mode: str = "ogp", max_urls: int = 6) -> list[dict]:
-    """Gmail の Irrawaddy ニュースレターから記事URLを抽出し、軽量に情報を付与する。
-
-    fetch_mode: 'urls-only' | 'ogp' | 'full'
-    - urls-only: URLのみ（title/body空）
-    - ogp: OGP タイトル/説明を取得
-    - full: 既存の Irrawaddy フェッチャで本文抽出
-    """
-
-    service = _build_gmail_service_for_read()
-    if _is_irrawaddy_debug():
-        print(f"[newsletter] gmail_query='{gmail_query}' fetch_mode={fetch_mode} max_urls={max_urls}")
-    msgs = _gmail_list_messages(service, query=gmail_query, max_results=5)
-    if _is_irrawaddy_debug():
-        print(f"[newsletter] messages_found={len(msgs)}")
-    if not msgs:
-        return []
-
-    urls: list[str] = []
-    for m in msgs:
-        msg_id = m.get("id")
-        html = _gmail_get_message_html(service, msg_id) or ""
-        if _is_irrawaddy_debug():
-            print(f"[newsletter] msg_id={msg_id} html_len={len(html)}")
-        tracks = MAILCHIMP_TRACK_RE.findall(html or "")
-        if _is_irrawaddy_debug():
-            print(f"[newsletter] tracks_found={len(tracks)}")
-        # 既存関数で解決
-        urls.extend(extract_irrawaddy_urls_from_newsletter_html(html))
-        if len(urls) >= max_urls:
-            break
-
-    # 一意化＆上限
-    unique: list[str] = []
-    seen: set[str] = set()
-    for u in urls:
-        if u not in seen:
-            seen.add(u)
-            unique.append(u)
-        if len(unique) >= max_urls:
-            break
-
-    today_mmt = get_today_date_mmt()
-
-    results: list[dict] = []
-    if _is_irrawaddy_debug():
-        print(f"[newsletter] resolved_unique_urls={len(unique)}")
-        for u in unique[:6]:
-            print(f"  - {u}")
-    for url in unique:
-        item = {
-            "url": url,
-            "title": "",
-            "body": "",
-            "source": "Irrawaddy",
-            "date": today_mmt.isoformat(),
-        }
-
-        mode = (fetch_mode or "").lower().strip()
-        if mode == "urls-only":
-            results.append(item)
-            continue
-
-        # まずは軽量に OGP
-        try:
-            r = requests.get(url, timeout=15)
-            if r.status_code == 200:
-                soup = BeautifulSoup(r.text, "html.parser")
-                ogtitle = soup.find("meta", attrs={"property": "og:title"})
-                ogdesc = soup.find("meta", attrs={"property": "og:description"})
-                if ogtitle and ogtitle.get("content"):
-                    item["title"] = (ogtitle["content"] or "").strip()
-                if ogdesc and ogdesc.get("content"):
-                    item["body"] = (ogdesc["content"] or "").strip()
-            else:
-                if _is_irrawaddy_debug():
-                    print(f"[ogp] status={r.status_code} @ {url}")
-        except Exception as e:
-            print(f"[ogp] {e} @ {url}")
-
-        if mode == "full":
-            try:
-                html = fetch_once_irrawaddy(url)
-                soup = BeautifulSoup(html, "html.parser")
-                # 既存の抽出ヘルパを再利用
-                try_title = _oembed_title_irrawaddy(url) or ""
-                title = try_title or (soup.title.get_text(strip=True) if soup.title else "")
-                body = extract_body_irrawaddy(soup) or ""
-                if title:
-                    item["title"] = title
-                if body:
-                    item["body"] = body
-            except Exception as e:
-                print(f"[full] {e} @ {url}")
-
-        results.append(item)
-
-    return results
-
-
 if __name__ == "__main__":
     
     # 今日の日付をミャンマー時間で取得
     date_mmt = get_today_date_mmt()
     seen_urls = set()
 
-    # print("=== Mizzima (Burmese) ===")
-    # articles_mizzima = get_mizzima_articles_from_category(
-    #     date_mmt,
-    #     "https://bur.mizzima.com",
-    #     "Mizzima (Burmese)",
-    #     "/category/%e1%80%9e%e1%80%90%e1%80%84%e1%80%ba%e1%80%b8/%e1%80%99%e1%80%bc%e1%80%94%e1%80%ba%e1%80%99%e1%80%ac%e1%80%9e%e1%80%90%e1%80%84%e1%80%ba%e1%80%b8",
-    #     max_pages=3,
-    # )
-    # process_and_enqueue_articles(
-    #     articles_mizzima, 
-    #     "Mizzima (Burmese)", 
-    #     seen_urls, 
-    #     trust_existing_body=True
-    # )
-
-    # print("=== BBC Burmese ===")
-    # articles_bbc = get_bbc_burmese_articles_for(date_mmt)
-    # process_and_enqueue_articles(
-    #     articles_bbc, 
-    #     "BBC Burmese", 
-    #     seen_urls, 
-    #     trust_existing_body=True
-    # )
-
-    print("=== Irrawaddy ===")
-
-    # デフォルトを newsletter=true にする
-    use_newsletter = _truthy(os.getenv("IRRAWADDY_NEWSLETTER", "true")) or bool(
-        os.getenv("NEWSLETTER_QUERY", "").strip()
+    print("=== Mizzima (Burmese) ===")
+    articles_mizzima = get_mizzima_articles_from_category(
+        date_mmt,
+        "https://bur.mizzima.com",
+        "Mizzima (Burmese)",
+        "/category/%e1%80%9e%e1%80%90%e1%80%84%e1%80%ba%e1%80%b8/%e1%80%99%e1%80%bc%e1%80%94%e1%80%ba%e1%80%99%e1%80%ac%e1%80%9e%e1%80%90%e1%80%84%e1%80%ba%e1%80%b8",
+        max_pages=3,
+    )
+    process_and_enqueue_articles(
+        articles_mizzima, 
+        "Mizzima (Burmese)", 
+        seen_urls, 
+        trust_existing_body=True
     )
 
-    def _default_newsletter_query_today_mmt() -> str:
-        today = get_today_date_mmt()
-        tomorrow = today + timedelta(days=1)
-        a = today.strftime("%Y/%m/%d")
-        b = tomorrow.strftime("%Y/%m/%d")
-        return f"from:(yasu.23721740311@gmail.com) after:{a} before:{b}"
-        # return f"from:(dailynews@irrawaddy.org) after:{a} before:{b}"
+    print("=== BBC Burmese ===")
+    articles_bbc = get_bbc_burmese_articles_for(date_mmt)
+    process_and_enqueue_articles(
+        articles_bbc, 
+        "BBC Burmese", 
+        seen_urls, 
+        trust_existing_body=True
+    )
 
-    if use_newsletter:
-        env_query = (os.getenv("NEWSLETTER_QUERY", "") or "").strip()
-        query = env_query if env_query else _default_newsletter_query_today_mmt()
-        fetch_mode = os.getenv("IRRAWADDY_FETCH_MODE", "ogp")  # urls-only | ogp | full
-        max_urls = int(os.getenv("MAX_URLS_PER_RUN", "6"))
-        if _is_irrawaddy_debug():
-            print(f"[main] use_newsletter=True query='{query}' mode={fetch_mode} max={max_urls}")
-        articles_irrawaddy = get_irrawaddy_articles_from_newsletter(
-            gmail_query=query, fetch_mode=fetch_mode, max_urls=max_urls
-        )
-    else:
-        if _is_irrawaddy_debug():
-            print("[main] use_newsletter=False -> fallback to category crawl")
-        articles_irrawaddy = get_irrawaddy_articles_for(date_mmt)
+    print("=== Irrawaddy ===")
+    articles_irrawaddy = get_irrawaddy_articles_for(date_mmt)
     # MEMO: ログ用、デバックでログ確認
     # print("RESULTS:", json.dumps(articles_irrawaddy, ensure_ascii=False, indent=2))
     process_and_enqueue_articles(
@@ -3486,22 +3210,8 @@ if __name__ == "__main__":
         "Irrawaddy",
         seen_urls,
         bypass_keyword=True,  # ← Irrawaddyはキーワードで落とさない
-        trust_existing_body=True,  # ← OGP/Full で入れた body をそのまま使う（再フェッチしない）
+        trust_existing_body=True,  # ← さっき入れた body をそのまま使う（再フェッチしない）
     )
-    
-    # ログ出力（件数＋先頭数件を表示）
-    try:
-        print(f"[irrawaddy] collected: {len(articles_irrawaddy)} items for {date_mmt}")
-        for a in articles_irrawaddy[:10]:
-            title = (a.get("title") or "").replace("\n", " ").strip()
-            url = a.get("url", "")
-            d = a.get("date", "")
-            print(f"  - {d} | {title[:80]} | {url}")
-        if len(articles_irrawaddy) > 10:
-            print(f"  ... (+{len(articles_irrawaddy)-10} more)")
-    except Exception:
-        pass
-    sys.exit(1)  # for debug (disabled)
 
     print("=== Khit Thit Media ===")
     articles_khit = get_khit_thit_media_articles_from_category(date_mmt, max_pages=3)
