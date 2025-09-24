@@ -393,7 +393,15 @@ MMT = timezone(timedelta(hours=6, minutes=30))
 # 今日の日付
 # ニュースの速報性重視で今日分のニュース配信の方針
 def get_today_date_mmt():
-    # 本番用、今日の日付
+    s = (os.getenv("DATE_MMT") or "").strip()
+    if s:
+        try:
+            # 手動実行の入力（YYYY-MM-DD）が来ていればそれを採用
+            return datetime.strptime(s, "%Y-%m-%d").date()
+        except ValueError:
+            print(f"⚠️ DATE_MMT の形式が不正です: {s}（YYYY-MM-DD で指定してください）→ 自動日付にフォールバック")
+
+    # 既存の挙動（本番用は「今日のMMT − 1日」）
     now_mmt = datetime.now(MMT)
     return (now_mmt - timedelta(days=1)).date()
 

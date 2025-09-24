@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: "30 16 * * *" # ミャンマー時間 23:00（UTC+6:30）
   workflow_dispatch: # 手動＝開発で実行
+    inputs:
+      date_mmt:
+        description: "MMT対象日 (YYYY-MM-DD)。未入力なら自動で今日扱い"
+        required: false
+        type: string
 
 jobs:
   prod:
@@ -30,6 +35,19 @@ jobs:
         with:
           path: ~/.cache/pip
           key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+
+      - name: Validate/export DATE_MMT (manual only)
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            DATE="${{ github.event.inputs.date_mmt }}"
+            if [ -n "$DATE" ]; then
+              if ! echo "$DATE" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'; then
+                echo "Invalid date_mmt format. Use YYYY-MM-DD." >&2
+                exit 1
+              fi
+              echo "DATE_MMT=$DATE" >> "$GITHUB_ENV"
+            fi
+          fi
 
       - name: Install dependencies
         run: |
@@ -100,6 +118,19 @@ jobs:
         with:
           path: ~/.cache/pip
           key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+
+      - name: Validate/export DATE_MMT (manual only)
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            DATE="${{ github.event.inputs.date_mmt }}"
+            if [ -n "$DATE" ]; then
+              if ! echo "$DATE" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'; then
+                echo "Invalid date_mmt format. Use YYYY-MM-DD." >&2
+                exit 1
+              fi
+              echo "DATE_MMT=$DATE" >> "$GITHUB_ENV"
+            fi
+          fi
 
       - name: Install dependencies
         run: |
