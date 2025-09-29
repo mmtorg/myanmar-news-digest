@@ -3072,7 +3072,14 @@ def process_translation_batches(batch_size=TRANSLATION_BATCH_SIZE, wait_seconds=
     return normalized
 
 
-def send_email_digest(summaries, *, recipients_env=None, subject_suffix=""):
+def send_email_digest(
+    summaries,
+    *,
+    recipients_env=None,
+    subject_suffix="",
+    include_read_link: bool = True,
+    trial_footer_url: Optional[str] = None,
+):
     def _build_gmail_service():
         cid = os.getenv("GMAIL_CLIENT_ID")
         csec = os.getenv("GMAIL_CLIENT_SECRET")
@@ -3152,13 +3159,27 @@ def send_email_digest(summaries, *, recipients_env=None, subject_suffix=""):
                 "<div style='background-color:#f9f9f9;padding:10px;border-radius:8px'>"
                 f"{summary_html}"
                 "</div>"
-                f"<p><a href='{url}' style='color:#1a0dab' target='_blank'>本文を読む</a></p>"
-                "</div><hr style='border-top: 1px solid #cccccc;'>"
             )
+            if include_read_link:
+                html_content += f"<p><a href='{url}' style='color:#1a0dab' target='_blank'>本文を読む</a></p>"
+            html_content += "</div><hr style='border-top: 1px solid #cccccc;'>"
 
+    # TRIAL宛て: 有料プラン案内のフッター（URLが設定されている場合のみ）
+    if trial_footer_url:
+        html_content += (
+            "<div style='margin-top:24px;padding:12px;border:1px solid #eee;border-radius:8px;background:#fafafa'>"
+            "<p style='margin:0 0 6px 0;font-weight:600'>有料プランのご案内</p>"
+            "<p style='margin:0'>より詳しいニュース要約、配信頻度の拡大、ビジネス向け機能をご利用いただける有料プランを提供しています。<br>"
+            f"<a href='{trial_footer_url}' target='_blank' style='color:#1a0dab'>こちらからお申し込みください</a></p>"
+            "</div>"
+        )
     html_content += "</body></html>"
     html_content = clean_html_content(html_content)
 
+    # 件名を最終仕様で上書き（ミャンマーニュース【…】＋サフィックス）
+    subject = "ミャンマーニュース【" + date_str + "】"
+    if subject_suffix:
+        subject += subject_suffix
     from_display_name = "Myanmar News Digest"
 
     subject = re.sub(r"[\r\n]+", " ", subject).strip()
@@ -3276,7 +3297,7 @@ if __name__ == "__main__":
         send_email_digest(
             summaries_ayeyar_only,
             recipients_env="INTERNAL_EMAIL_RECIPIENTS",
-            subject_suffix="/ (エーヤワディのみ)"
+            subject_suffix="/エーヤワディのみ"
         )
     else:
         print("エーヤワディ記事なし: エーヤワディのみメールは送信しません。")
@@ -3285,8 +3306,26 @@ if __name__ == "__main__":
     summaries_non_ayeyar = [
         s for s in all_summaries if s.get("hit_non_ayeyar") and not s.get("is_ayeyar")
     ]
+    # INTERNAL（エーヤワディ以外）
     send_email_digest(
         summaries_non_ayeyar,
-        recipients_env="EMAIL_RECIPIENTS",
-        subject_suffix="/ (エーヤワディ以外)"
+        recipients_env="INTERNAL_EMAIL_RECIPIENTS",
+        subject_suffix="/エーヤワディ以外"
+    )
+
+    # TRIAL/LITE/BUSINESS へ同内容を配信（件名サフィックスのみ差し替え）
+    send_email_digest(
+        summaries_non_ayeyar,
+        recipients_env="TRIAL_EMAIL_RECIPIENTS",
+        subject_suffix="/Trial", include_read_link=True, trial_footer_url=(os.getenv("PAID_PLAN_URL", "").strip() or None)
+    )
+    send_email_digest(
+        summaries_non_ayeyar,
+        recipients_env="LITE_EMAIL_RECIPIENTS",
+        subject_suffix="/Lite", include_read_link=False
+    )
+    send_email_digest(
+        summaries_non_ayeyar,
+        recipients_env="BUSINESS_EMAIL_RECIPIENTS",
+        subject_suffix="/Business", include_read_link=True
     )

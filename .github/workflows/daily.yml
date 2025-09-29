@@ -73,6 +73,7 @@ jobs:
           GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
           IRRAWADDY_HTTP_PROXY: ${{ secrets.IRR_PROXY_URL }}
           IRRAWADDY_HTTPS_PROXY: ${{ secrets.IRR_PROXY_URL }}
+          PAID_PLAN_URL: ${{ secrets.PAID_PLAN_URL }}
         run: /usr/bin/time -v python fetch_articles.py 2> time.txt
 
       - name: Memory summary (prod)
@@ -159,6 +160,7 @@ jobs:
           GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
           IRRAWADDY_HTTP_PROXY: ${{ secrets.IRR_PROXY_URL }}
           IRRAWADDY_HTTPS_PROXY: ${{ secrets.IRR_PROXY_URL }}
+          PAID_PLAN_URL: ${{ secrets.PAID_PLAN_URL }}
         run: /usr/bin/time -v python fetch_articles.py 2> time.txt
 
       - name: Memory summary (dev)
