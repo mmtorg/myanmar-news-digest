@@ -3234,8 +3234,6 @@ if __name__ == "__main__":
             print(f"  ... (+{len(articles_irrawaddy)-10} more)")
     except Exception:
         pass
-    
-    sys.exit(1)  # for debug
 
     print("=== Khit Thit Media ===")
     articles_khit = get_khit_thit_media_articles_from_category(date_mmt, max_pages=3)
