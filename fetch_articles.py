@@ -1,4 +1,4 @@
-import requests
+﻿import requests
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta, timezone, date
 from dateutil.parser import parse as parse_date
@@ -73,7 +73,8 @@ def _exp_backoff_sleep(attempt: int, base_delay: float, max_delay: float) -> flo
 # Gemini本番用
 client_summary = genai.Client(api_key=os.getenv("GEMINI_API_SUMMARY_KEY"))
 client_dedupe = genai.Client(api_key=os.getenv("GEMINI_API_DEDUPE_KEY"))
-
+# === Gemini（全文翻訳用） ===
+client_fulltext = genai.Client(api_key=os.getenv("GEMINI_API_FULLTEXT_KEY"))
 
 def _is_retriable_exc(e: Exception) -> bool:
     msg = (str(e) or "").lower()
@@ -3071,6 +3072,169 @@ def process_translation_batches(batch_size=TRANSLATION_BATCH_SIZE, wait_seconds=
     ]
     return normalized
 
+# ===== PDF生成（fpdf2使用 / 1記事=1ページ / 全文翻訳文面を詰め込み） =====
+def _wrap_lines_by_width(pdf, text, max_w_mm):
+    """
+    fpdfの描画前に簡易で行幅折り返しを行う。
+    ・Burmese/日本語混在に耐えるよう、文字単位（空白を優先、無ければ文字）で折り返し
+    """
+    lines = []
+    for para in (text or "").splitlines():
+        buf = ""
+        for ch in para:
+            new = buf + ch
+            if pdf.get_string_width(new) <= max_w_mm:
+                buf = new
+                continue
+            # 1) 空白位置で切れるならそこまで
+            last_space = buf.rfind(" ")
+            if last_space != -1:
+                lines.append(buf[: last_space].rstrip())
+                buf = buf[last_space + 1 :] + ch
+            else:
+                lines.append(buf)
+                buf = ch
+        lines.append(buf)
+    return lines
+
+# ===== 全文翻訳（Business向けPDF用） =====
+def translate_fulltexts_for_business(urls_in_order: List[str], url_to_source_title_body: Dict[str, Dict[str, str]]):
+    """
+    urls_in_order: Business配信対象のURL順
+    url_to_source_title_body: { url: {"title": 原題, "body": 原文本文} }
+    戻り値: [{ "title_ja": ..., "body_ja": ... }, ...]
+    """
+    out = []
+    for u in urls_in_order:
+        meta = url_to_source_title_body.get(u) or {}
+        title_src = meta.get("title", "")
+        body_src  = meta.get("body", "")
+
+        if not body_src.strip():
+            # 本文が無いものはスキップ（基本無い想定）
+            continue
+
+        prompt = (
+            "次のニュース記事を**自然な日本語**に完全翻訳してください。\n"
+            "・固有名詞は一般的な日本語表記に\n"
+            "・ビルマ語/英語が混在していてもOK\n"
+            "・見出し（タイトル）は1行\n"
+            "・本文は改行と段落を活かして読みやすく\n\n"
+            "【用語統一（厳守）】\n"
+            "クーデター指導者→総司令官 / テロリスト軍事政権→軍事政権 / 徴用→徴兵 / 等、既存のルールに従う。\n\n"
+            "【通貨換算】\n"
+            "チャット（Kyat, ကျပ်）が出る場合は『◯チャット（約◯円）』を併記。1チャット=0.033円で四捨五入。\n\n"
+            "出力はJSONのみ：\n"
+            "{\n"
+            '  "title_ja": "...",\n'
+            '  "body_ja": "..."  \n'
+            "}\n\n"
+            f"[TITLE]\n{title_src}\n\n[BODY]\n{body_src}\n"
+        )
+        try:
+            resp = call_gemini_with_retries(
+                client_fulltext, prompt, model="gemini-2.5-flash", usage_tag="fulltext"
+            )
+            data = _safe_json_loads_maybe_extract(resp.text)
+            title_ja = (data.get("title_ja") or title_src).strip()
+            body_ja  = (data.get("body_ja") or body_src).strip()
+            out.append({"title_ja": title_ja, "body_ja": body_ja, "url": u})
+        except Exception as e:
+            print("🛑 fulltext translation failed:", e)
+            # フォールバック（原文をそのままつける）
+            out.append({"title_ja": title_src, "body_ja": body_src, "url": u})
+    return out
+
+
+def build_combined_pdf_for_business(translated_items, out_path="fulltexts.pdf"):
+    """
+    translated_items: list[dict]
+      - { "title_ja": str, "body_ja": str } を想定
+    out_path: 出力ファイルパス
+
+    1記事=1ページ、A4縦固定。本文はページに収まるようフォントサイズを自動調整（最小7pt）。
+    タイトルは16〜12ptの範囲で自動調整。
+    """
+    try:
+        from fpdf import FPDF
+    except Exception as e:
+        raise RuntimeError(
+            "fpdf2 が未インストールです。pip install fpdf2 をワークフローに追加してください。"
+        ) from e
+
+    font_path = (os.getenv("PDF_FONT_PATH") or "").strip()
+    if not font_path:
+        raise RuntimeError("PDF_FONT_PATH が未設定です（日本語対応フォントの TTF/OTF 必須）。")
+
+    pdf = FPDF(orientation="P", unit="mm", format="A4")
+    pdf.set_auto_page_break(False)  # 1記事=1ページ固定
+    pdf.add_font("JP", "", font_path, uni=True)
+    pdf.add_font("JP-B", "", font_path, uni=True)  # 太字扱い代替（実フォントは同一でもOK）
+
+    # 余白・版面
+    margin_l, margin_r, margin_t, margin_b = 15, 15, 15, 15
+    page_w, page_h = 210, 297
+    content_w = page_w - margin_l - margin_r
+    content_h = page_h - margin_t - margin_b
+
+    for it in translated_items:
+        title = (it.get("title_ja") or "").strip()
+        body = (it.get("body_ja") or "").strip()
+
+        pdf.add_page()
+        pdf.set_xy(margin_l, margin_t)
+
+        # ---- タイトル（最大1〜2行想定、サイズ自動調整） ----
+        title_min, title_max = 12, 16
+        title_size = title_max
+        while title_size >= title_min:
+            pdf.set_font("JP-B", size=title_size)
+            lines = _wrap_lines_by_width(pdf, title, content_w)
+            # タイトルは最大2行までで調整
+            if len(lines) <= 2:
+                break
+            title_size -= 1
+        title_lines = _wrap_lines_by_width(pdf, title, content_w)
+        for ln in title_lines[:2]:
+            pdf.cell(w=content_w, h=7, txt=ln, ln=1)
+        # 1行空ける
+        pdf.ln(3)
+
+        used_h = pdf.get_y() - margin_t
+        remain_h = content_h - used_h
+        if remain_h <= 20:
+            # 余白がなさすぎる場合は本文最小で流す
+            pass
+
+        # ---- 本文（ページに収まるようフォントサイズ自動調整）----
+        min_size, max_size = 7, 12
+        body_size = max_size
+        packed_lines = None
+        while body_size >= min_size:
+            pdf.set_font("JP", size=body_size)
+            lines = _wrap_lines_by_width(pdf, body, content_w)
+            # 1行の高さ（和文でも潰れにくい目安）
+            lh = body_size * 0.5 + 4.0  # 例: 12pt → 約10mm行高
+            needed = len(lines) * lh
+            if needed <= remain_h:
+                packed_lines = (lines, lh)
+                break
+            body_size -= 1
+
+        if packed_lines is None:
+            # どうしても入らない場合は最小サイズで切る
+            pdf.set_font("JP", size=min_size)
+            lines = _wrap_lines_by_width(pdf, body, content_w)
+            lh = min_size * 0.5 + 4.0
+            max_lines = int(remain_h // lh)
+            packed_lines = (lines[: max_lines], lh)
+
+        lines, lh = packed_lines
+        for ln in lines:
+            pdf.cell(w=content_w, h=lh, txt=ln, ln=1)
+
+    pdf_bytes = pdf.output(dest="S").encode("latin1")
+    return pdf_bytes
 
 def send_email_digest(
     summaries,
@@ -3079,6 +3243,8 @@ def send_email_digest(
     subject_suffix="",
     include_read_link: bool = True,
     trial_footer_url: Optional[str] = None,
+    attachment_bytes: Optional[bytes] = None,
+    attachment_name: Optional[str] = None,
 ):
     def _build_gmail_service():
         cid = os.getenv("GMAIL_CLIENT_ID")
@@ -3088,8 +3254,6 @@ def send_email_digest(
             raise RuntimeError(
                 "Gmail API credentials (CLIENT_ID/SECRET/REFRESH_TOKEN) are missing."
             )
-
-        # リフレッシュトークンがある場合、scopes を渡さない
         creds = Credentials(
             token=None,
             refresh_token=rtok,
@@ -3106,44 +3270,28 @@ def send_email_digest(
     digest_date = get_today_date_mmt()
     date_str = digest_date.strftime("%Y年%-m月%-d日") + "分"
 
-    # メディアごとにまとめる
     media_grouped = defaultdict(list)
     for item in summaries:
         media_grouped[item["source"]].append(item)
 
-    subject = "ミャンマー関連ニュース【" + date_str + "】"
-    # テスト用記述
+    subject = "ミャンマーニュース【" + date_str + "】"
     if subject_suffix:
-        subject += " " + subject_suffix 
+        subject += " " + subject_suffix
 
-    # ✅ ヘッドライン部分を先に構築
-    headlines = []
-    for item in summaries:
-        headlines.append(f"✓ {item['title']}")  # ← 半角スペース追加
-
+    headlines = [f"✓ {item['title']}" for item in summaries]
     headline_html = (
         "<div style='margin-bottom:20px'>"
         f"------- ヘッドライン ({len(summaries)}本) -------<br>"
-        + "<br>".join(headlines)  # ← 各タイトルを改行で表示
+        + "<br>".join(headlines)
         + "</div><hr>"
     )
 
-    # ✅ メール本文全体のHTML
-    html_content = """
-    <html>
-    <body style="font-family: Arial, sans-serif; background-color: #ffffff; color: #333333;">
-    """
-
-    # 先頭にヘッドライン挿入
+    html_content = "<html><body style='font-family: Arial, sans-serif; background-color: #ffffff; color: #333333;'>"
     html_content += headline_html
 
-    # 記事ごとの本文
     for media, articles in media_grouped.items():
         for item in articles:
-            title_jp = item["title"]
-            url = item["url"]
-            summary_html = item["summary"]
-
+            title_jp = item["title"]; url = item["url"]; summary_html = item["summary"]
             heading_html = (
                 "<h2 style='margin-bottom:5px'>"
                 f"{title_jp}　"
@@ -3152,7 +3300,6 @@ def send_email_digest(
                 "</span>"
                 "</h2>"
             )
-
             html_content += (
                 "<div style='margin-bottom:20px'>"
                 f"{heading_html}"
@@ -3164,7 +3311,6 @@ def send_email_digest(
                 html_content += f"<p><a href='{url}' style='color:#1a0dab' target='_blank'>本文を読む</a></p>"
             html_content += "</div><hr style='border-top: 1px solid #cccccc;'>"
 
-    # TRIAL宛て: 有料プラン案内のフッター（URLが設定されている場合のみ）
     if trial_footer_url:
         html_content += (
             "<div style='margin-top:24px;padding:12px;border:1px solid #eee;border-radius:8px;background:#fafafa'>"
@@ -3176,7 +3322,6 @@ def send_email_digest(
     html_content += "</body></html>"
     html_content = clean_html_content(html_content)
 
-    # 件名を最終仕様で上書き（ミャンマーニュース【…】＋サフィックス）
     subject = "ミャンマーニュース【" + date_str + "】"
     if subject_suffix:
         subject += subject_suffix
@@ -3189,6 +3334,15 @@ def send_email_digest(
     msg["To"] = ", ".join(recipient_emails)
     msg.set_content("HTMLメールを開ける環境でご確認ください。", charset="utf-8")
     msg.add_alternative(html_content, subtype="html", charset="utf-8")
+
+    # ===== 添付（あれば） =====
+    if attachment_bytes and attachment_name:
+        msg.add_attachment(
+            attachment_bytes,
+            maintype="application",
+            subtype="pdf",
+            filename=attachment_name,
+        )
 
     try:
         service = _build_gmail_service()
@@ -3324,8 +3478,48 @@ if __name__ == "__main__":
         recipients_env="LITE_EMAIL_RECIPIENTS",
         subject_suffix="/Lite", include_read_link=False
     )
+    
+    # ===== Business向け：全文翻訳 → 1ファイルPDF化 → 添付送信 =====
+    # 1) Business に送る記事URLの順序（summaries_non_ayeyarに合わせる）
+    business_urls = [s["url"] for s in summaries_non_ayeyar]
+
+    # 2) URL→原題・原文本文のマップを組み立て（translation_queue を利用）
+    #    ※ translation_queue の各要素: {"url","title","body",...}
+    url_to_source_title_body = {}
+    for q in translation_queue:
+        u = _norm_id(q.get("url") or "")
+        if u and u not in url_to_source_title_body:
+            url_to_source_title_body[u] = {"title": q.get("title",""), "body": q.get("body","")}
+
+    # 3) 全文翻訳（Gemini）
+    fulltexts = translate_fulltexts_for_business(business_urls, url_to_source_title_body)
+    
+    # 4) URL→メール用タイトル（= 要約で使った最終タイトル）のマップ
+    url_to_mail_title = {}
+    for s in summaries_non_ayeyar:
+        url_to_mail_title[_norm_id(s["url"])] = s["title"]
+
+    # 5) PDFに使うタイトルをメールと完全一致に上書き
+    for it in fulltexts:
+        u = _norm_id(it.get("url",""))
+        if u in url_to_mail_title:
+            it["title_ja"] = url_to_mail_title[u]
+
+    # 6) PDF作成（1記事=1ページ、1ファイル）
+    pdf_bytes = None
+    attachment_name = f"fulltexts_{get_today_date_mmt().isoformat()}.pdf"
+    try:
+        pdf_bytes = build_combined_pdf_for_business(fulltexts)
+        print(f"✅ PDF built in-memory: {attachment_name} ({len(pdf_bytes)} bytes)")
+    except Exception as e:
+        print("🛑 PDF build failed:", e)
+
+    # 7) Business 配信（添付あり）
     send_email_digest(
         summaries_non_ayeyar,
         recipients_env="BUSINESS_EMAIL_RECIPIENTS",
-        subject_suffix="/Business", include_read_link=True
+        subject_suffix="/Business",
+        include_read_link=True,
+        attachment_bytes=pdf_bytes if pdf_bytes else None,
+        attachment_name=attachment_name if pdf_bytes else None,
     )
