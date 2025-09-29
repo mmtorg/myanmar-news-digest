@@ -3145,15 +3145,28 @@ def translate_fulltexts_for_business(urls_in_order: List[str], url_to_source_tit
             out.append({"title_ja": title_src, "body_ja": body_src, "url": u})
     return out
 
+# 日本語日付を作る（0埋めなし）
+def _jp_date(d: date) -> str:
+    return f"{d.year}年{d.month}月{d.day}日"
+
+# 空行（テキスト無しの行）を除去
+def _drop_blank_lines(text: str) -> str:
+    lines = [(ln or "").strip() for ln in (text or "").splitlines()]
+    lines = [ln for ln in lines if ln]  # 文字がある行だけ
+    return "\n".join(lines)
 
 def build_combined_pdf_for_business(translated_items, out_path="fulltexts.pdf"):
     """
     translated_items: list[dict]
-      - { "title_ja": str, "body_ja": str } を想定
-    out_path: 出力ファイルパス
+      - { "title_ja": str, "body_ja": str, "summary_plain": str } を想定（summary_plain は任意）
+    out_path: 未使用（in-memoryで返す）
 
-    1記事=1ページ、A4縦固定。本文はページに収まるようフォントサイズを自動調整（最小7pt）。
-    タイトルは16〜12ptの範囲で自動調整。
+    仕様:
+      * A4縦/余白15mm
+      * タイトル 14pt 太字（最大2行想定）
+      * 要約ボックス: 薄グレー (#f9f9f9) 塗り潰し矩形 + 10px相当パディング
+      * 本文 11pt（空行削除）で MultiCell。自動改ページで記事が複数ページに渡ってOK。
+      * 全記事、同一フォント・サイズを使用（自動縮小はしない）
     """
     try:
         from fpdf import FPDF
@@ -3166,76 +3179,115 @@ def build_combined_pdf_for_business(translated_items, out_path="fulltexts.pdf"):
     if not font_path:
         raise RuntimeError("PDF_FONT_PATH が未設定です（日本語対応フォントの TTF/OTF 必須）。")
 
-    pdf = FPDF(orientation="P", unit="mm", format="A4")
-    pdf.set_auto_page_break(False)  # 1記事=1ページ固定
-    pdf.add_font("JP", "", font_path, uni=True)
-    pdf.add_font("JP-B", "", font_path, uni=True)  # 太字扱い代替（実フォントは同一でもOK）
-
-    # 余白・版面
-    margin_l, margin_r, margin_t, margin_b = 15, 15, 15, 15
+    # 基本レイアウト
+    margin_l = margin_r = margin_t = margin_b = 15
     page_w, page_h = 210, 297
     content_w = page_w - margin_l - margin_r
-    content_h = page_h - margin_t - margin_b
 
-    for it in translated_items:
+    # フォントサイズ（統一）
+    TITLE_SIZE = 14
+    BODY_SIZE = 11
+
+    # パディング・行高（mm）
+    # 10px ≒ 2.65mm 程度なので 3mm を採用
+    PAD = 3.0
+    LINE_HEIGHT_TITLE = 7.0
+    LINE_HEIGHT_BODY = 6.0
+
+    pdf = FPDF(orientation="P", unit="mm", format="A4")
+    pdf.set_auto_page_break(True, margin_b)  # 自動改ページ有効
+    pdf.add_font("JP", "", font_path, uni=True)
+    pdf.add_font("JP-B", "", font_path, uni=True)  # 太字扱い代替
+
+    def _ensure_space(h_need: float):
+        """現在ページに h_need の縦スペースが無ければ改ページ"""
+        if pdf.get_y() + h_need > (page_h - margin_b):
+            pdf.add_page()
+            pdf.set_xy(margin_l, margin_t)
+
+    def _write_title(title: str):
+        title = (title or "").strip()
+        if not title:
+            return
+        pdf.set_font("JP-B", size=TITLE_SIZE)
+        pdf.set_xy(margin_l, pdf.get_y() or margin_t)
+        # タイトルは最大2行想定（超えたら勝手に折り返しされる）
+        pdf.multi_cell(w=content_w, h=LINE_HEIGHT_TITLE, txt=title, align="L")
+        pdf.ln(2)  # タイトル下の余白
+
+    def _write_summary_box(summary_text: str):
+        st = _drop_blank_lines(summary_text or "")
+        if not st:
+            return
+        pdf.set_font("JP", size=BODY_SIZE)
+        # 一旦、テキストを描いた時の高さを見積もる
+        x0, y0 = margin_l, pdf.get_y()
+        # まず仮に描いて高さを測るためのテク（fpdf2 は文字幅は測れるが行数計算が複雑なため）
+        # → 行数推定: get_string_width に基づく簡易折返しで概算
+        lines = _wrap_lines_by_width(pdf, st, content_w - PAD * 2)
+        box_h = len(lines) * LINE_HEIGHT_BODY + PAD * 2
+
+        # ページに収まらなければ改ページしてから描く
+        _ensure_space(box_h)
+
+        # 背景矩形を描画（角丸は再現不可）
+        x = margin_l
+        y = pdf.get_y()
+        pdf.set_fill_color(0xF9, 0xF9, 0xF9)  # #f9f9f9
+        pdf.rect(x, y, content_w, box_h, style="F")
+
+        # パディング内側に文字を描く
+        pdf.set_xy(x + PAD, y + PAD)
+        # 背景の上に文字を描くので fill=False
+        for ln in lines:
+            pdf.cell(w=content_w - PAD * 2, h=LINE_HEIGHT_BODY, txt=ln, ln=1)
+
+        # ボックスの下に少し余白
+        pdf.set_xy(margin_l, y + box_h)
+        pdf.ln(2)
+
+    def _write_body(body: str):
+        bt = _drop_blank_lines(body or "")
+        if not bt:
+            return
+        pdf.set_font("JP", size=BODY_SIZE)
+        # MultiCellで自動改ページに任せる
+        pdf.multi_cell(w=content_w, h=LINE_HEIGHT_BODY, txt=bt, align="L")
+        pdf.ln(2)
+
+    # ページ開始
+    pdf.add_page()
+    pdf.set_xy(margin_l, margin_t)
+
+    for idx, it in enumerate(translated_items or []):
         title = (it.get("title_ja") or "").strip()
         body = (it.get("body_ja") or "").strip()
+        summary_plain = (it.get("summary_plain") or "").strip()
 
-        pdf.add_page()
-        pdf.set_xy(margin_l, margin_t)
+        # 各記事の先頭に十分な余白がない場合は改ページして整える
+        if pdf.get_y() < margin_t + 2:
+            pdf.set_xy(margin_l, margin_t)
+        else:
+            # 記事間スペース
+            pdf.ln(2)
 
-        # ---- タイトル（最大1〜2行想定、サイズ自動調整） ----
-        title_min, title_max = 12, 16
-        title_size = title_max
-        while title_size >= title_min:
-            pdf.set_font("JP-B", size=title_size)
-            lines = _wrap_lines_by_width(pdf, title, content_w)
-            # タイトルは最大2行までで調整
-            if len(lines) <= 2:
-                break
-            title_size -= 1
-        title_lines = _wrap_lines_by_width(pdf, title, content_w)
-        for ln in title_lines[:2]:
-            pdf.cell(w=content_w, h=7, txt=ln, ln=1)
-        # 1行空ける
-        pdf.ln(3)
+        _write_title(title)
+        # 要約ボックス（あれば）
+        if summary_plain:
+            _write_summary_box(summary_plain)
 
-        used_h = pdf.get_y() - margin_t
-        remain_h = content_h - used_h
-        if remain_h <= 20:
-            # 余白がなさすぎる場合は本文最小で流す
-            pass
+        _write_body(body)
 
-        # ---- 本文（ページに収まるようフォントサイズ自動調整）----
-        min_size, max_size = 7, 12
-        body_size = max_size
-        packed_lines = None
-        while body_size >= min_size:
-            pdf.set_font("JP", size=body_size)
-            lines = _wrap_lines_by_width(pdf, body, content_w)
-            # 1行の高さ（和文でも潰れにくい目安）
-            lh = body_size * 0.5 + 4.0  # 例: 12pt → 約10mm行高
-            needed = len(lines) * lh
-            if needed <= remain_h:
-                packed_lines = (lines, lh)
-                break
-            body_size -= 1
+        # 次の記事の前に細い罫線を入れたい場合はここで描画してもOK（今回は省略）
 
-        if packed_lines is None:
-            # どうしても入らない場合は最小サイズで切る
-            pdf.set_font("JP", size=min_size)
-            lines = _wrap_lines_by_width(pdf, body, content_w)
-            lh = min_size * 0.5 + 4.0
-            max_lines = int(remain_h // lh)
-            packed_lines = (lines[: max_lines], lh)
-
-        lines, lh = packed_lines
-        for ln in lines:
-            pdf.cell(w=content_w, h=lh, txt=ln, ln=1)
-
+    # バイナリ化（bytearray/bytes/str のどれでも安全に）
     pdf_raw = pdf.output(dest="S")
-    pdf_bytes = bytes(pdf_raw) if isinstance(pdf_raw, (bytearray, bytes)) else pdf_raw.encode("latin1")
-    return pdf_bytes
+    if isinstance(pdf_raw, (bytes, bytearray)):
+        return bytes(pdf_raw)
+    else:
+        # 古い環境で str が返る場合の保険
+        return pdf_raw.encode("latin1", errors="ignore")
+
 
 def send_email_digest(
     summaries,
@@ -3507,9 +3559,11 @@ if __name__ == "__main__":
         if u in url_to_mail_title:
             it["title_ja"] = url_to_mail_title[u]
 
-    # 6) PDF作成（1記事=1ページ、1ファイル）
+    # 6) PDF作成（1記事=複数ページ可） — 添付ファイル名を日本語に
     pdf_bytes = None
-    attachment_name = f"fulltexts_{get_today_date_mmt().isoformat()}.pdf"
+    digest_d = get_today_date_mmt()
+    jp_date = _jp_date(digest_d)  # 例: 2025年9月29日
+    attachment_name = f"ミャンマーニュース全文訳【{jp_date}】.pdf"
     try:
         pdf_bytes = build_combined_pdf_for_business(fulltexts)
         print(f"✅ PDF built in-memory: {attachment_name} ({len(pdf_bytes)} bytes)")
