@@ -57,7 +57,7 @@ jobs:
           pip install --upgrade google-genai google-api-core
           rm -rf ~/.cache/huggingface
 
-      - name: Run fetch script
+      - name: Run fetch script (with memory profiling)
         env:
           TZ: Asia/Yangon
           EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
@@ -71,7 +71,32 @@ jobs:
           GMAIL_CLIENT_ID: ${{ secrets.GMAIL_CLIENT_ID }}
           GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
           GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
-        run: python fetch_articles.py
+          IRRAWADDY_HTTP_PROXY: ${{ secrets.IRR_PROXY_URL }}
+          IRRAWADDY_HTTPS_PROXY: ${{ secrets.IRR_PROXY_URL }}
+        run: /usr/bin/time -v python fetch_articles.py 2> time.txt
+
+      - name: Memory summary (prod)
+        if: always()
+        shell: bash
+        run: |
+          echo "### Memory report — GNU time on Ubuntu" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [[ -f time.txt ]]; then
+            MAX_RSS_KB=$(grep -E 'Maximum resident set size' time.txt | awk '{print $NF}' || true)
+            if [[ -n "${MAX_RSS_KB:-}" ]]; then
+              echo "- **Max RSS**: ${MAX_RSS_KB} KB" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "- **Max RSS**: (not captured)" >> "$GITHUB_STEP_SUMMARY"
+            fi
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "<details><summary>raw /usr/bin/time -v</summary>" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            sed 's/|/\\|/g' time.txt >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "</details>" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- **Max RSS**: (time.txt not found)" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   dev:
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/develop'
@@ -118,7 +143,7 @@ jobs:
           pip install --upgrade google-genai google-api-core
           rm -rf ~/.cache/huggingface
 
-      - name: Run fetch script
+      - name: Run fetch script (with memory profiling)
         env:
           TZ: Asia/Yangon
           EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
@@ -132,4 +157,29 @@ jobs:
           GMAIL_CLIENT_ID: ${{ secrets.GMAIL_CLIENT_ID }}
           GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
           GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
-        run: python fetch_articles.py
+          IRRAWADDY_HTTP_PROXY: ${{ secrets.IRR_PROXY_URL }}
+          IRRAWADDY_HTTPS_PROXY: ${{ secrets.IRR_PROXY_URL }}
+        run: /usr/bin/time -v python fetch_articles.py 2> time.txt
+
+      - name: Memory summary (dev)
+        if: always()
+        shell: bash
+        run: |
+          echo "### Memory report — GNU time on Ubuntu" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [[ -f time.txt ]]; then
+            MAX_RSS_KB=$(grep -E 'Maximum resident set size' time.txt | awk '{print $NF}' || true)
+            if [[ -n "${MAX_RSS_KB:-}" ]]; then
+              echo "- **Max RSS**: ${MAX_RSS_KB} KB" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "- **Max RSS**: (not captured)" >> "$GITHUB_STEP_SUMMARY"
+            fi
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "<details><summary>raw /usr/bin/time -v</summary>" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            sed 's/|/\\|/g' time.txt >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "</details>" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- **Max RSS**: (time.txt not found)" >> "$GITHUB_STEP_SUMMARY"
+          fi
