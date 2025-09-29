@@ -1,4 +1,4 @@
-import requests
+﻿import requests
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta, timezone, date
 from dateutil.parser import parse as parse_date
@@ -3186,29 +3186,29 @@ if __name__ == "__main__":
     date_mmt = get_today_date_mmt()
     seen_urls = set()
 
-    # print("=== Mizzima (Burmese) ===")
-    # articles_mizzima = get_mizzima_articles_from_category(
-    #     date_mmt,
-    #     "https://bur.mizzima.com",
-    #     "Mizzima (Burmese)",
-    #     "/category/%e1%80%9e%e1%80%90%e1%80%84%e1%80%ba%e1%80%b8/%e1%80%99%e1%80%bc%e1%80%94%e1%80%ba%e1%80%99%e1%80%ac%e1%80%9e%e1%80%90%e1%80%84%e1%80%ba%e1%80%b8",
-    #     max_pages=3,
-    # )
-    # process_and_enqueue_articles(
-    #     articles_mizzima, 
-    #     "Mizzima (Burmese)", 
-    #     seen_urls, 
-    #     trust_existing_body=True
-    # )
+    print("=== Mizzima (Burmese) ===")
+    articles_mizzima = get_mizzima_articles_from_category(
+        date_mmt,
+        "https://bur.mizzima.com",
+        "Mizzima (Burmese)",
+        "/category/%e1%80%9e%e1%80%90%e1%80%84%e1%80%ba%e1%80%b8/%e1%80%99%e1%80%bc%e1%80%94%e1%80%ba%e1%80%99%e1%80%ac%e1%80%9e%e1%80%90%e1%80%84%e1%80%ba%e1%80%b8",
+        max_pages=3,
+    )
+    process_and_enqueue_articles(
+        articles_mizzima, 
+        "Mizzima (Burmese)", 
+        seen_urls, 
+        trust_existing_body=True
+    )
 
-    # print("=== BBC Burmese ===")
-    # articles_bbc = get_bbc_burmese_articles_for(date_mmt)
-    # process_and_enqueue_articles(
-    #     articles_bbc, 
-    #     "BBC Burmese", 
-    #     seen_urls, 
-    #     trust_existing_body=True
-    # )
+    print("=== BBC Burmese ===")
+    articles_bbc = get_bbc_burmese_articles_for(date_mmt)
+    process_and_enqueue_articles(
+        articles_bbc, 
+        "BBC Burmese", 
+        seen_urls, 
+        trust_existing_body=True
+    )
 
     print("=== Irrawaddy ===")
     articles_irrawaddy = get_irrawaddy_articles_for(date_mmt)
