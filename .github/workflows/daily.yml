@@ -84,7 +84,6 @@ jobs:
           IRRAWADDY_HTTP_PROXY: ${{ secrets.IRR_PROXY_URL }}
           IRRAWADDY_HTTPS_PROXY: ${{ secrets.IRR_PROXY_URL }}
           PAID_PLAN_URL: ${{ secrets.PAID_PLAN_URL }}
-          PDF_FONT_PATH: ${{ github.workspace }}/NotoSansJP-Regular.ttf
           GEMINI_API_FULLTEXT_KEY: ${{ secrets.GEMINI_API_FULLTEXT_KEY }}
 
         run: /usr/bin/time -v python fetch_articles.py 2> time.txt
@@ -157,10 +156,15 @@ jobs:
           pip install --upgrade google-genai google-api-core
           rm -rf ~/.cache/huggingface
 
-      - name: Download Japanese font for PDF
+      - name: Install IPA Gothic (TTF) and set PDF_FONT_PATH
         run: |
-          curl -L -o NotoSansJP-Regular.ttf \
-            https://github.com/googlefonts/noto-cjk/raw/main/Sans/OTF/Japanese/NotoSansJP-Regular.otf
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y fonts-ipafont-gothic
+          FONT_PATH="$(fc-list | grep -i -E 'IPAGothic|IPAexGothic' | head -n1 | cut -d: -f1)"
+          [ -n "${FONT_PATH:-}" ] || { echo "JP TTF not found"; exit 1; }
+          echo "PDF_FONT_PATH=$FONT_PATH" >> "$GITHUB_ENV"
+          echo "Using font: $FONT_PATH"
 
       - name: Run fetch script (with memory profiling)
         env:
@@ -179,7 +183,6 @@ jobs:
           IRRAWADDY_HTTP_PROXY: ${{ secrets.IRR_PROXY_URL }}
           IRRAWADDY_HTTPS_PROXY: ${{ secrets.IRR_PROXY_URL }}
           PAID_PLAN_URL: ${{ secrets.PAID_PLAN_URL }}
-          PDF_FONT_PATH: ${{ github.workspace }}/NotoSansJP-Regular.ttf
           GEMINI_API_FULLTEXT_KEY: ${{ secrets.GEMINI_API_TEST_FULLTEXT_KEY }}
 
         run: /usr/bin/time -v python fetch_articles.py 2> time.txt
