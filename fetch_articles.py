@@ -401,7 +401,7 @@ def get_today_date_mmt():
         except ValueError:
             print(f"⚠️ DATE_MMT の形式が不正です: {s}（YYYY-MM-DD で指定してください）→ 自動日付にフォールバック")
 
-    # 既存の挙動（本番用は「今日のMMT − 1日」）
+    # 本番用、今日の日付
     now_mmt = datetime.now(MMT)
     return (now_mmt - timedelta(days=1)).date()
 
