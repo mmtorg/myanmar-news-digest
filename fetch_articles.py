@@ -3233,7 +3233,8 @@ def build_combined_pdf_for_business(translated_items, out_path="fulltexts.pdf"):
         for ln in lines:
             pdf.cell(w=content_w, h=lh, txt=ln, ln=1)
 
-    pdf_bytes = pdf.output(dest="S").encode("latin1")
+    pdf_raw = pdf.output(dest="S")
+    pdf_bytes = bytes(pdf_raw) if isinstance(pdf_raw, (bytearray, bytes)) else pdf_raw.encode("latin1")
     return pdf_bytes
 
 def send_email_digest(
