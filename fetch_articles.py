@@ -3380,14 +3380,14 @@ def build_combined_pdf_for_business(translated_items, out_path=None):
     TOP_MARGIN        = 16.0
     BOTTOM_MARGIN     = 16.0
 
-    TITLE_SIZE        = 13
+    TITLE_SIZE        = 15
     BODY_SIZE         = 11
     LINE_H_TITLE      = 6.5
     LINE_H_BODY       = 5.5
 
     BODY_BG_RGB       = (249, 249, 249)  # 本文背景 #f9f9f9
     
-    TITLE_BODY_GAP = 3.0  # タイトルと本文の間の余白（mm）
+    TITLE_BODY_GAP = 5.0  # タイトルと本文の間の余白（mm）
 
     # ===== 正規化ユーティリティ（不自然改行の抑止） =====
     _ZW_RE = re.compile(r"[\u200b\u200c\u200d\ufeff]")
