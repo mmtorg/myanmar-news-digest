@@ -3348,7 +3348,7 @@ def send_email_digest(
         
         # ===== メールの見た目を記事と揃えるための定数（必要なら数値だけ変えてOK）=====
         ARTICLE_TITLE_FONT = "Arial, sans-serif"
-        ARTICLE_TITLE_SIZE = 24  # 記事タイトル（h2相当）
+        ARTICLE_TITLE_SIZE = 20  # 記事タイトル（h2相当）
         ARTICLE_BODY_FONT  = "Arial, sans-serif"
         ARTICLE_BODY_SIZE  = 16  # 記事本文（body相当）
 
@@ -3357,23 +3357,30 @@ def send_email_digest(
         CTA_BG     = "#0B6465"     # ボタン背景色
         CTA_TEXT   = "#ffffff"     # ボタン文字色（白）
         
+        CTA_PAD_Y = 10           # ← 上下の余白（高さに直結）
+        CTA_PAD_X = 28           # ← 左右の余白
+        CTA_LINE_HEIGHT = 1.0   # ← テキスト行の高さ（Outlook対策はexactly併用）
+        
         html_content += (
             "<div style='margin-top:24px;padding:12px;border:1px solid #eee;border-radius:8px;background-color:#fafafa'>"
             # 見出し：記事タイトルと同じフォント＆サイズ
             f"<p style='margin:0 0 {CTA_GAP_PX}px 0;"
             f"font-family:{ARTICLE_TITLE_FONT};font-size:{ARTICLE_TITLE_SIZE}px;font-weight:700'>"
-            "有料プランのご案内</p>"
+            "継続をご希望の方へ</p>"
             # 説明文：記事本文と同じフォント＆サイズ
             f"<p style='margin:0;"
             f"font-family:{ARTICLE_BODY_FONT};font-size:{ARTICLE_BODY_SIZE}px;line-height:1.6'>"
-            "ニュース配信を継続的にご利用いただけます。</p>"
+            "<span style='display:block'>無料トライアルをお試しいただきありがとうございます。</span>"
+            "<span style='display:block'>継続をご希望の方は、目的に合わせて選べる有料プランをご利用ください。</span>"
+            "</p>"
             # 本文↔ボタンも同じ余白に
             f"<p style='margin:{CTA_GAP_PX}px 0 0 0'>"
             f"<a href='{trial_footer_url}' target='_blank' "
             f"style='display:inline-block;text-decoration:none;border-radius:12px;"
             f"background-color:{CTA_BG};color:{CTA_TEXT} !important;font-weight:700;text-align:center;"
-            f"font-family:{ARTICLE_BODY_FONT};font-size:{ARTICLE_BODY_SIZE + 6}px;line-height:1.25;"
-            "padding:18px 28px;min-width:220px;mso-line-height-rule:exactly;'>"
+            f"font-family:{ARTICLE_BODY_FONT};font-size:{ARTICLE_BODY_SIZE + 6}px;"
+            f"line-height:{CTA_LINE_HEIGHT};"
+            f"padding:{CTA_PAD_Y}px {CTA_PAD_X}px;min-width:220px;mso-line-height-rule:exactly;'>"
             "プランを比較</a></p>"
             "</div>"
         )
