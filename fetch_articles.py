@@ -2793,10 +2793,9 @@ STEP12_FILTERS = (
     "→ No の場合は Step 3 へ進んでください。\n"
 )
 
-STEP3_TASK = (
-    "Step 3: 翻訳と要約処理\n"
-    "以下のルールに従って、記事タイトルを自然な日本語に翻訳し、本文を要約してください。\n\n"
-    "【翻訳時の用語統一ルール（必ず従うこと）】\n"
+# ===== 翻訳プロンプト：共通ルール =====
+PROMPT_TERMINOLOGY_RULES = (
+    "【翻訳時の用語統一ルール（必ず従うこと）}\n"
     "このルールは記事タイトルと本文の翻訳に必ず適用してください。\n"
     "クーデター指導者⇒総司令官\n"
     "テロリスト指導者ミン・アウン・フライン⇒ミン・アウン・フライン\n"
@@ -2808,19 +2807,37 @@ STEP3_TASK = (
     "軍事評議会⇒軍事政権\n"
     "軍事委員会⇒軍事政権\n"
     "徴用⇒徴兵\n"
-    "軍事評議会軍⇒国軍\n\n"
+    "軍事評議会軍⇒国軍\n"
+)
+
+PROMPT_SPECIAL_RULES = (
     "【翻訳時の特別ルール】\n"
     "このルールも記事タイトルと本文の翻訳に必ず適用してください。\n"
     "「ဖမ်းဆီး」の訳語は文脈によって使い分けること。\n"
     "- 犯罪容疑や法律違反に対する文脈の場合は「逮捕」とする。\n"
-    "- 犯罪容疑や法律違反に基づかない文脈の場合は「拘束」とする。\n\n"
+    "- 犯罪容疑や法律違反に基づかない文脈の場合は「拘束」とする。\n"
+)
+
+PROMPT_CURRENCY_RULES = (
     "【通貨換算ルール】\n"
     "このルールも記事タイトルと本文の翻訳に必ず適用してください。\n"
     "ミャンマー通貨「チャット（Kyat、ကျပ်）」が出てきた場合は、日本円に換算して併記してください。\n"
     "- 換算レートは 1チャット = 0.033円 を必ず使用すること。\n"
     "- 記事中にチャットが出た場合は必ず「◯チャット（約◯円）」の形式に翻訳してください。\n"
     "- 日本円の表記は小数点以下は四捨五入してください（例: 16,500円）。\n"
-    "- 他のレートは使用禁止。\n\n"
+    "- 他のレートは使用禁止。\n"
+)
+
+COMMON_TRANSLATION_RULES = (
+    PROMPT_TERMINOLOGY_RULES + "\n" +
+    PROMPT_SPECIAL_RULES + "\n" +
+    PROMPT_CURRENCY_RULES + "\n"
+)
+
+STEP3_TASK = (
+    "Step 3: 翻訳と要約処理\n"
+    "以下のルールに従って、記事タイトルを自然な日本語に翻訳し、本文を要約してください。\n\n"
+    f"{COMMON_TRANSLATION_RULES}"
     "タイトル：\n"
     "- 記事タイトルを自然な日本語に翻訳してください。\n"
     "タイトルの出力条件：\n"
@@ -3072,30 +3089,6 @@ def process_translation_batches(batch_size=TRANSLATION_BATCH_SIZE, wait_seconds=
     ]
     return normalized
 
-# ===== PDF生成（fpdf2使用 / 1記事=1ページ / 全文翻訳文面を詰め込み） =====
-def _wrap_lines_by_width(pdf, text, max_w_mm):
-    """
-    fpdfの描画前に簡易で行幅折り返しを行う。
-    ・Burmese/日本語混在に耐えるよう、文字単位（空白を優先、無ければ文字）で折り返し
-    """
-    lines = []
-    for para in (text or "").splitlines():
-        buf = ""
-        for ch in para:
-            new = buf + ch
-            if pdf.get_string_width(new) <= max_w_mm:
-                buf = new
-                continue
-            # 1) 空白位置で切れるならそこまで
-            last_space = buf.rfind(" ")
-            if last_space != -1:
-                lines.append(buf[: last_space].rstrip())
-                buf = buf[last_space + 1 :] + ch
-            else:
-                lines.append(buf)
-                buf = ch
-        lines.append(buf)
-    return lines
 
 # ===== 全文翻訳（Business向けPDF用） =====
 def translate_fulltexts_for_business(urls_in_order: List[str], url_to_source_title_body: Dict[str, Dict[str, str]]):
@@ -3120,17 +3113,37 @@ def translate_fulltexts_for_business(urls_in_order: List[str], url_to_source_tit
             "・ビルマ語/英語が混在していてもOK\n"
             "・見出し（タイトル）は1行\n"
             "・本文は改行と段落を活かして読みやすく\n\n"
-            "【用語統一（厳守）】\n"
-            "クーデター指導者→総司令官 / テロリスト軍事政権→軍事政権 / 徴用→徴兵 / 等、既存のルールに従う。\n\n"
-            "【通貨換算】\n"
-            "チャット（Kyat, ကျပ်）が出る場合は『◯チャット（約◯円）』を併記。1チャット=0.033円で四捨五入。\n\n"
-            "出力はJSONのみ：\n"
+            f"{COMMON_TRANSLATION_RULES}"
+            "【本文以外は必ず除外（この関数専用）】\n"
+            "以下は原文に含まれていても翻訳・出力しないこと（含めたら減点）。\n"
+            "- 写真キャプション／クレジット（先頭が「写真:」「ဓာတ်ပုံ」「Photo」「(写真」「(Photo」「（写真」などの行）\n"
+            "- 媒体名だけの行（例: South China Morning Post / BBC Burmese / DVB / Myanmar Now などの媒体名のみ）\n"
+            "- 出典や翻訳注記（例:「このニュースは…を翻訳したものです。」「Translated by …」「Source: …」「(China’s Ministry of Public Security)」等）\n"
+            "- 記者名や配信ラベルだけの行（例: By … / Reuters / AP / SCMP などの単独行）\n"
+            "- 発行地＋日付（Dateline）の**み**の行（例: "
+            "'Yangon, Sept. 30' / 'Nay Pyi Taw, 30 September' / "
+            "'ရန်ကုန်၊ စက်တင်ဘာ ၃၀' / 'နေပြည်တော်၊ ဖေဖော်ဝါရီ ၁၅' / "
+            "'ヤンゴン、9月30日' / 'ネピドー、2024年2月15日' など）。\n"
+            "  ※行頭や本文冒頭に置かれている場合も必ず除去すること。\n\n"
+            "【入力クレンジング手順】\n"
+            "1) 行単位で走査し、上記の非本文要素に一致する行をすべて削除する。\n"
+            "2) 連続する空行は1つに圧縮し、本文段落のみ残す。\n"
+            "3) 残った本文のみを翻訳対象とする（キャプション・媒体名・注記・Datelineは訳さない）。\n\n"
+            "【出力ガード】\n"
+            "出力JSON（title_ja / body_ja）の値に、以下の語句や行が含まれていれば削除してから最終出力すること：\n"
+            "「写真:」「ဓာတ်ပုံ」「Photo」「South China Morning Post」「SCMP」「このニュースは」「翻訳」「Translated」「Source」「©」「Copyright」"
+            "「Yangon,」「Nay Pyi Taw,」「ရန်ကုန်၊」「နေပြည်တော်၊」「ヤンゴン、」「ネピドー、」\n\n"
+            "【出力仕様】出力はJSONのみ：\n"
             "{\n"
             '  "title_ja": "...",\n'
             '  "body_ja": "..."  \n'
             "}\n\n"
+            "【対象範囲】\n"
+            "- title_ja は [TITLE] のみ（媒体名・キャプション・Datelineは含めない）。\n"
+            "- body_ja はクレンジング後の [BODY] 本文のみ（非本文要素は除外）。\n\n"
             f"[TITLE]\n{title_src}\n\n[BODY]\n{body_src}\n"
         )
+        
         try:
             resp = call_gemini_with_retries(
                 client_fulltext, prompt, model="gemini-2.5-flash", usage_tag="fulltext"
@@ -3332,13 +3345,35 @@ def send_email_digest(
             html_content += "</div><hr style='border-top: 1px solid #cccccc;'>"
 
     if trial_footer_url:
+        
+        # ===== メールの見た目を記事と揃えるための定数（必要なら数値だけ変えてOK）=====
+        ARTICLE_TITLE_FONT = "Arial, sans-serif"
+        ARTICLE_TITLE_SIZE = 24  # 記事タイトル（h2相当）
+        ARTICLE_BODY_FONT  = "Arial, sans-serif"
+        ARTICLE_BODY_SIZE  = 16  # 記事本文（body相当）
+
+        # CTAの見た目
+        CTA_GAP_PX = 16            # 見出し↔本文／本文↔ボタンの上下余白を統一
+        CTA_BG     = "#0B6465"     # ボタン背景色
+        CTA_TEXT   = "#ffffff"     # ボタン文字色（白）
+        
         html_content += (
             "<div style='margin-top:24px;padding:12px;border:1px solid #eee;border-radius:8px;background-color:#fafafa'>"
-            "<p style='margin:0 0 6px 0;font-weight:600'>有料プランのご案内</p>"
-            "<p style='margin:0'>ニュース配信を継続的にご利用いただけます。<br>"
+            # 見出し：記事タイトルと同じフォント＆サイズ
+            f"<p style='margin:0 0 {CTA_GAP_PX}px 0;"
+            f"font-family:{ARTICLE_TITLE_FONT};font-size:{ARTICLE_TITLE_SIZE}px;font-weight:700'>"
+            "有料プランのご案内</p>"
+            # 説明文：記事本文と同じフォント＆サイズ
+            f"<p style='margin:0;"
+            f"font-family:{ARTICLE_BODY_FONT};font-size:{ARTICLE_BODY_SIZE}px;line-height:1.6'>"
+            "ニュース配信を継続的にご利用いただけます。</p>"
+            # 本文↔ボタンも同じ余白に
+            f"<p style='margin:{CTA_GAP_PX}px 0 0 0'>"
             f"<a href='{trial_footer_url}' target='_blank' "
-            "style='display:inline-block;text-decoration:none;padding:10px 16px;border-radius:6px;"
-            "background-color:#0B6465;color:#ffffff !important;font-weight:600;text-align:center;line-height:1.4'>"
+            f"style='display:inline-block;text-decoration:none;border-radius:12px;"
+            f"background-color:{CTA_BG};color:{CTA_TEXT} !important;font-weight:700;text-align:center;"
+            f"font-family:{ARTICLE_BODY_FONT};font-size:{ARTICLE_BODY_SIZE + 6}px;line-height:1.25;"
+            "padding:18px 28px;min-width:220px;mso-line-height-rule:exactly;'>"
             "プランを比較</a></p>"
             "</div>"
         )
