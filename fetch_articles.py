@@ -3153,30 +3153,15 @@ def _jp_date(d: date) -> str:
 
 def build_combined_pdf_for_business(translated_items, out_path=None):
     """
-    Business向け：全文翻訳PDFを結合して1本にする（PDF生成処理をこの関数内に集約）。
-
-    Parameters
-    ----------
-    translated_items : iterable of dict
-        各要素の想定キー：
-          - "title_ja": str        … 記事タイトル（日本語）
-          - "body_ja": str         … 記事の全文翻訳（日本語）
-          - "source": str          … 媒体名（Irrawaddy, DVB など）
-          - "summary_plain": str   … メール本文と同じ要約テキスト（HTML→テキスト化済み）
-    out_path : str | None
-        保存先ファイルパス。None の場合は保存しない（bytes を返す）。
-
-    Returns
-    -------
-    bytes : 生成したPDFのバイト列
+    Business向け：全文翻訳PDF（本文のみ、背景#f9f9f9）を1本に結合。
+    translated_items: 各要素に "title_ja", "body_ja", "source" を含める想定。
+                      ※ "summary_plain" はあっても無視します（描画しません）。
     """
     # ===== 依存を関数内に閉じ込める =====
-    import os
-    import re
-    import unicodedata
+    import os, re, unicodedata
     from fpdf import FPDF
 
-    # ===== レイアウト定数（必要なら調整） =====
+    # ===== レイアウト定数 =====
     LEFT_RIGHT_MARGIN = 16.0
     TOP_MARGIN        = 16.0
     BOTTOM_MARGIN     = 16.0
@@ -3186,44 +3171,37 @@ def build_combined_pdf_for_business(translated_items, out_path=None):
     LINE_H_TITLE      = 6.5
     LINE_H_BODY       = 5.5
 
-    SUMMARY_BG_RGB    = (249, 249, 249)  # #f9f9f9
+    BODY_BG_RGB       = (249, 249, 249)  # 本文背景 #f9f9f9
 
-    # ===== ユーティリティ（この関数内だけで使用） =====
-    _ZW_RE = re.compile(r"[\u200b\u200c\u200d\ufeff]")   # ゼロ幅類
-    _SOFT_BREAK_RE = re.compile(r"(?<!\n)\n(?!\n)")      # 単独改行（段落でない改行）
+    # ===== 正規化ユーティリティ（不自然改行の抑止） =====
+    _ZW_RE = re.compile(r"[\u200b\u200c\u200d\ufeff]")
+    _SOFT_BREAK_RE = re.compile(r"(?<!\n)\n(?!\n)")
 
     def _normalize_text_for_pdf(s):
-        """文中改行→スペース、段落改行は1個に。不可視文字などの正規化。"""
         if not s:
             return ""
         s = unicodedata.normalize("NFC", s)
-        s = _ZW_RE.sub("", s)
-        s = s.replace("\xa0", " ").replace("\u3000", " ")
-        s = _SOFT_BREAK_RE.sub(" ", s)         # 文中改行をスペースに
-        s = re.sub(r"\n{2,}", "\n", s)         # 段落改行は 1 つに圧縮
-        s = re.sub(r"[ \t]{2,}", " ", s)       # 連続スペース圧縮
+        s = _ZW_RE.sub("", s).replace("\xa0", " ").replace("\u3000", " ")
+        s = _SOFT_BREAK_RE.sub(" ", s)       # 文中改行→スペース
+        s = re.sub(r"\n{2,}", "\n", s)       # 段落改行は1つに
+        s = re.sub(r"[ \t]{2,}", " ", s)
         return s.strip()
 
-    def _epw(pdf):
-        """effective page width（有効幅）= 総幅 - 左右余白"""
+    # ===== PDFユーティリティ =====
+    def _epw(pdf):  # effective page width
         return pdf.w - pdf.l_margin - pdf.r_margin
 
     def _register_jp_fonts(pdf):
-        """環境変数のパスから日本語フォントを登録。"""
         font_regular = os.environ.get("PDF_FONT_PATH")
-        font_bold    = os.environ.get("PDF_FONT_BOLD_PATH")
+        font_bold    = os.environ.get("PDF_FONT_BOLD_PATH") or font_regular
         if not font_regular:
-            raise RuntimeError("PDF_FONT_PATH が未設定です（日本語フォントTTF/OTFのパスを指定してください）")
-        if not font_bold:
-            font_bold = font_regular  # 太字が無ければ代用
-
+            raise RuntimeError("PDF_FONT_PATH が未設定です（JPフォント .ttf/.otf のパスを指定）")
         try: pdf.add_font("JP",  "", font_regular, uni=True)
         except Exception: pass
         try: pdf.add_font("JP-B","", font_bold,    uni=True)
         except Exception: pass
 
     def _write_title_with_source(pdf, title, media):
-        """タイトル + （全角空白）+ 媒体名 を同一ブロックで出力。"""
         title = (title or "").strip()
         media = (media or "").strip()
         if not title:
@@ -3233,23 +3211,15 @@ def build_combined_pdf_for_business(translated_items, out_path=None):
         pdf.multi_cell(w=_epw(pdf), h=LINE_H_TITLE, txt=line, align="L", border=0)
         pdf.ln(1.5)
 
-    def _write_summary_box(pdf, summary_plain):
-        """要約ボックス（背景#f9f9f9で塗り）。"""
-        txt = _normalize_text_for_pdf(summary_plain)
-        if not txt:
-            return
-        pdf.set_font("JP", size=BODY_SIZE)
-        pdf.set_fill_color(*SUMMARY_BG_RGB)
-        pdf.multi_cell(w=_epw(pdf), h=LINE_H_BODY, txt=txt, align="L", border=0, fill=True)
-        pdf.ln(2.0)
-
-    def _write_body(pdf, body):
-        """本文。"""
+    def _write_body_with_bg(pdf, body):
+        """本文を #f9f9f9 背景で出力（複数ページにまたがってOK）。"""
         txt = _normalize_text_for_pdf(body)
         if not txt:
             return
         pdf.set_font("JP", size=BODY_SIZE)
-        pdf.multi_cell(w=_epw(pdf), h=LINE_H_BODY, txt=txt, align="L", border=0)
+        pdf.set_fill_color(*BODY_BG_RGB)
+        # 1行ごとに塗られるため、段落全体として薄グレーになります
+        pdf.multi_cell(w=_epw(pdf), h=LINE_H_BODY, txt=txt, align="L", border=0, fill=True)
         pdf.ln(2.0)
 
     # ===== PDF 本体 =====
@@ -3258,7 +3228,7 @@ def build_combined_pdf_for_business(translated_items, out_path=None):
     pdf.set_margins(LEFT_RIGHT_MARGIN, TOP_MARGIN, LEFT_RIGHT_MARGIN)
     _register_jp_fonts(pdf)
 
-    # 各記事は必ず「新しいページの先頭から」開始
+    # 各記事は必ず「新しいページの先頭から」開始。※要約は描画しない
     for item in translated_items or []:
         pdf.add_page()
         pdf.set_xy(pdf.l_margin, pdf.t_margin)
@@ -3266,21 +3236,15 @@ def build_combined_pdf_for_business(translated_items, out_path=None):
         _write_title_with_source(
             pdf,
             title=item.get("title_ja", "") or "",
-            media=item.get("source", "") or ""
+            media=item.get("source", "") or "",
         )
+        _write_body_with_bg(pdf, item.get("body_ja", "") or "")
 
-        summary_plain = item.get("summary_plain") or ""
-        if summary_plain.strip():
-            _write_summary_box(pdf, summary_plain)
-
-        _write_body(pdf, item.get("body_ja", "") or "")
-
-    # 出力（fpdf2 は環境によって str / bytes / bytearray を返すことがある）
+    # ===== 出力（bytearray対策込み） =====
     out = pdf.output(dest="S")
     if isinstance(out, (bytes, bytearray)):
-        pdf_bytes = bytes(out)  # そのままバイト列化
+        pdf_bytes = bytes(out)
     else:
-        # 旧挙動 (str を返す版) への互換
         pdf_bytes = out.encode("latin1")
 
     if out_path:
