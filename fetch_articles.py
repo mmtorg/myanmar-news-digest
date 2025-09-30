@@ -3208,6 +3208,72 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
                 time.sleep(5)
         except Exception:
             pass
+        
+    def _safe_json_loads_extract(text: str):
+        """
+        LLMが前後に余計な文やコードフェンスを付けても
+        JSON（配列/オブジェクト）を確実に取り出して読み込む。
+        """
+        import json, re
+
+        t = (text or "").strip()
+
+        # 1) まずは素で
+        try:
+            return json.loads(t)
+        except Exception:
+            pass
+
+        # 2) ```json … ``` や ``` … ``` を除去
+        t2 = re.sub(r"^\s*```(?:json)?\s*|\s*```\s*$", "", t, flags=re.I | re.M).strip()
+        if t2 != t:
+            try:
+                return json.loads(t2)
+            except Exception:
+                pass
+
+        # 3) 先頭からバランス括弧で [ … ] を優先抽出（配列）
+        def _scan_balanced(s: str, opener: str, closer: str):
+            depth = 0
+            in_str = False
+            esc = False
+            start = None
+            for i, ch in enumerate(s):
+                if in_str:
+                    if esc:
+                        esc = False
+                    elif ch == "\\":
+                        esc = True
+                    elif ch == '"':
+                        in_str = False
+                    continue
+                if ch == '"':
+                    in_str = True
+                    continue
+                if ch == opener:
+                    if depth == 0:
+                        start = i
+                    depth += 1
+                elif ch == closer and depth:
+                    depth -= 1
+                    if depth == 0 and start is not None:
+                        yield s[start : i + 1]
+
+        for block in list(_scan_balanced(t2, "[", "]")) + list(_scan_balanced(t2, "{", "}")):
+            try:
+                return json.loads(block)
+            except Exception:
+                continue
+
+        # 4) 最後の保険：最初に見つかった {…} または [… ] を丸ごと
+        m = re.search(r"(\[.*\]|\{.*\})", t2, flags=re.DOTALL)
+        if m:
+            try:
+                return json.loads(m.group(1))
+            except Exception:
+                pass
+
+        raise ValueError("Could not extract JSON from LLM response")
 
     # --- 1) 前処理（クレンジング＋6000字上限） ---
     prepared = []
@@ -3267,7 +3333,7 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
                 usage_tag="fulltext",
             )
             text = getattr(resp, "text", None) or ""
-            arr = _safe_json_loads_maybe_extract(text)
+            arr = _safe_json_loads_extract(text)
             if isinstance(arr, dict):
                 arr = [arr]
             url_to_res = {}
