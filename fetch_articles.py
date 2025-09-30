@@ -3275,9 +3275,13 @@ def build_combined_pdf_for_business(translated_items, out_path=None):
 
         _write_body(pdf, item.get("body_ja", "") or "")
 
-    # 出力（fpdf2 は str(latin1) を返すので bytes へ）
-    pdf_str = pdf.output(dest="S")
-    pdf_bytes = pdf_str.encode("latin1")
+    # 出力（fpdf2 は環境によって str / bytes / bytearray を返すことがある）
+    out = pdf.output(dest="S")
+    if isinstance(out, (bytes, bytearray)):
+        pdf_bytes = bytes(out)  # そのままバイト列化
+    else:
+        # 旧挙動 (str を返す版) への互換
+        pdf_bytes = out.encode("latin1")
 
     if out_path:
         with open(out_path, "wb") as f:

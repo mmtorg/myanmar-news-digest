@@ -65,6 +65,7 @@ jobs:
           FONT_PATH="$(fc-list | grep -i -E 'IPAGothic|IPAexGothic' | head -n1 | cut -d: -f1)"
           [ -n "${FONT_PATH:-}" ] || { echo "JP TTF not found"; exit 1; }
           echo "PDF_FONT_PATH=$FONT_PATH" >> "$GITHUB_ENV"
+          echo "PDF_FONT_BOLD_PATH=$FONT_PATH" >> "$GITHUB_ENV"   # ← これを追加
           echo "Using font: $FONT_PATH"
 
       - name: Run fetch script (with memory profiling)
@@ -164,6 +165,7 @@ jobs:
           FONT_PATH="$(fc-list | grep -i -E 'IPAGothic|IPAexGothic' | head -n1 | cut -d: -f1)"
           [ -n "${FONT_PATH:-}" ] || { echo "JP TTF not found"; exit 1; }
           echo "PDF_FONT_PATH=$FONT_PATH" >> "$GITHUB_ENV"
+          echo "PDF_FONT_BOLD_PATH=$FONT_PATH" >> "$GITHUB_ENV"   # ← これを追加
           echo "Using font: $FONT_PATH"
 
       - name: Run fetch script (with memory profiling)
