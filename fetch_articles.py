@@ -3091,23 +3091,143 @@ def process_translation_batches(batch_size=TRANSLATION_BATCH_SIZE, wait_seconds=
 
 
 # ===== 全文翻訳（Business向けPDF用） =====
-def translate_fulltexts_for_business(urls_in_order: List[str], url_to_source_title_body: Dict[str, Dict[str, str]]):
+# 方針：
+#  - 2件まとめ翻訳（JSON配列）
+#  - 本文クレンジング＋6000文字上限（入力TPM削減）
+#  - 事前レートチェック（RPM/TPM-in）で超過前に待機
+#  - 要約バッチと同じ制御（バッチ内0.6s／バッチ間60s）
+#  - 「この関数専用の処理」はなるべく関数内に閉じ込める（既存の共通処理は再利用）
+
+# 既存の COMMON_TRANSLATION_RULES / call_gemini_with_retries / _safe_json_loads_maybe_extract /
+# client_fulltext / _FREE_TIER_MON / TRANSLATION_BATCH_SIZE を使用
+def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
     """
-    urls_in_order: Business配信対象のURL順
-    url_to_source_title_body: { url: {"title": 原題, "body": 原文本文} }
-    戻り値: [{ "title_ja": ..., "body_ja": ... }, ...]
+    Business向けPDFで使う全文翻訳。順序は urls_in_order に従って返します。
+    既存のラッパー（call_gemini_with_retries）とモニタ（_FREE_TIER_MON）をそのまま利用しつつ、
+    この関数専用のクレンジング／事前チェック／2件まとめ翻訳 を関数内に閉じ込めています。
+    戻り値: [{"url","title_ja","body_ja"}, ...]
     """
-    out = []
+    # --- ローカル定数（環境変数は増やさず定数化） ---
+    FULLTEXT_MAX_CHARS = 6000
+    BATCH = TRANSLATION_BATCH_SIZE  # 既定=2（= 2件まとめ）
+    WAIT  = 60                      # 要約と同じ 1 分待機
+
+    # --- ローカル import（この関数だけが使うもの） ---
+    import re, json, time, unicodedata
+    from datetime import datetime, timezone
+
+    # --- English & Burmese leading labels / outlet-only lines ---
+    EXCLUDE_LINE_PATTERNS = [
+        # Captions / media labels (English)
+        r"^(?:Photo|Image|Video|Graphic|Map|Caption)[:：\)]",
+        r"^\((?:Photo|Image|Video|Graphic|Map)\)\s*$",
+        # Credits / sources (English)
+        r"^(?:Credit|Credits|Source|Sources|Via|Courtesy of)[:：]",
+        # Editorial / translation notes (English)
+        r"^(?:With reporting by|Reported by|Reporting by|Edited by|Compiled by|Translation|Translator|Translated by).*$",
+
+        # Captions / labels (Burmese)
+        r"^(?:ဓာတ်ပုံ|ရုပ်ပုံ)[:：]",            # photo / image
+        # Sources / credits (Burmese)
+        r"^(?:ရင်းမြစ်)[:：]",                 # source
+        # Editorial / translation notes (Burmese)
+        r"^(?:ဘာသာပြန်|ဘာသာပြန်သူ|တည်းဖြတ်)[:：]",
+
+        # Outlet-only line (English outlet names)
+        r"^(?:BBC Burmese|DVB|Myanmar Now|The Irrawaddy|Khit Thit Media|Mizzima|RFA Burmese|VOA Burmese|Eleven Media|Frontier Myanmar|Reuters|AP|Associated Press|AFP|SCMP)\s*$",
+    ]
+    EXCLUDE_RE_LIST = [re.compile(p, re.IGNORECASE) for p in EXCLUDE_LINE_PATTERNS]
+
+    def compact_body(body: str) -> str:
+        if not body:
+            return ""
+        norm_lines = []
+        for ln in body.splitlines():
+            ln = unicodedata.normalize("NFC", ln)
+            ln = re.sub(r"\s+", " ", ln).strip()
+            if not ln:
+                continue
+            if any(p.search(ln) for p in EXCLUDE_RE_LIST):
+                continue
+            norm_lines.append(ln)
+        s = "\n\n".join(norm_lines).strip()
+        return re.sub(r"\n{3,}", "\n\n", s)
+
+    def trim_by_chars(s: str, max_chars: int) -> str:
+        s = s or ""
+        return s if len(s) <= max_chars else (s[:max_chars].rstrip() + "\n\n[…本文が長いためここまでを翻訳]")
+
+    def rough_token_estimate(s: str) -> int:
+        """英語 or ビルマ語（ミャンマー文字）前提の**ざっくり**見積り。
+        - English 優勢: 4 chars ≒ 1 token
+        - Myanmar 優勢: 2 chars ≒ 1 token
+        - 混在/その他: 3 chars ≒ 1 token（安全側）
+        ※ 目的は超過前待機の“目安”なので、少し多め（安全側）に見積もります。
+        """
+        s = s or ""
+        total = len(s)
+        if total == 0:
+            return 0
+        # Unicode ブロックでミャンマー文字を概算カウント
+        my = len(re.findall(r"[\u1000-\u109F\uAA60-\uAA7F\uA9E0-\uA9FF]", s))
+        la = len(re.findall(r"[A-Za-z]", s))  # 英字の概算
+        my_ratio = my / total
+        la_ratio = la / total
+        if my_ratio >= 0.6:
+            div = 2.0
+        elif la_ratio >= 0.6:
+            div = 4.0
+        else:
+            div = 3.0
+        return max(0, int(total / div))
+
+    def precheck_sleep(predicted_prompt_tokens: int, tag: str = "fulltext-batch"):
+        """_FREE_TIER_MON の窓データで RPM/TPM(in) を事前チェックして、危なければ待機。"""
+        try:
+            mon = _FREE_TIER_MON  # 既存のグローバル（監視オブジェクト）
+        except NameError:
+            mon = None
+        if not mon:
+            return
+        try:
+            # RPM guard
+            rpm_now = len(getattr(mon, "req_times", []))
+            rpm_lim = getattr(mon, "rpm_limit", 10)
+            if rpm_now + 1 > rpm_lim:
+                oldest = mon.req_times[0] if mon.req_times else None
+                if oldest:
+                    wait = max(0.0, 60.0 - (datetime.utcnow().replace(tzinfo=timezone.utc) - oldest).total_seconds())
+                    if wait > 0:
+                        print(f"🕒 free-tier guard (RPM) sleeping {wait:.1f}s | tag={tag}")
+                        time.sleep(wait)
+            # TPM(in) guard（緩め）
+            tpm_in_now = sum(tok for _, tok in getattr(mon, "tpm_in_points", []))
+            tpm_lim = getattr(mon, "tpm_limit", 250000)
+            if tpm_in_now + int(predicted_prompt_tokens) > tpm_lim:
+                print("🕒 free-tier guard (TPM-in) sleeping 5s | tag=", tag)
+                time.sleep(5)
+        except Exception:
+            pass
+
+    # --- 1) 前処理（クレンジング＋6000字上限） ---
+    prepared = []
     for u in urls_in_order:
-        meta = url_to_source_title_body.get(u) or {}
-        title_src = meta.get("title", "")
-        body_src  = meta.get("body", "")
-
-        if not body_src.strip():
-            # 本文が無いものはスキップ（基本無い想定）
+        meta = (url_to_source_title_body.get(u) or {})
+        title_src = (meta.get("title") or "").strip()
+        body_src  = (meta.get("body")  or "").strip()
+        if not body_src:
             continue
+        body_compact = trim_by_chars(compact_body(body_src), FULLTEXT_MAX_CHARS)
+        prepared.append({"url": u, "title": title_src, "body": body_compact})
 
-        prompt = (
+    # --- 2) まとめ翻訳（JSON配列で返答） ---
+    results = []
+    for i in range(0, len(prepared), BATCH):
+        batch = prepared[i:i+BATCH]
+        input_array = [{"url": b["url"], "title": b["title"], "body": b["body"]} for b in batch]
+
+        # 文字列の隣接連結と + の混在での解析エラーを避けるため、配列で組み立て        
+        prompt_parts = (
             "次のニュース記事を**自然な日本語**に完全翻訳してください。\n"
             "・固有名詞は一般的な日本語表記に\n"
             "・ビルマ語/英語が混在していてもOK\n"
@@ -3129,34 +3249,49 @@ def translate_fulltexts_for_business(urls_in_order: List[str], url_to_source_tit
             "1) 行単位で走査し、上記の非本文要素に一致する行をすべて削除する。\n"
             "2) 連続する空行は1つに圧縮し、本文段落のみ残す。\n"
             "3) 残った本文のみを翻訳対象とする（キャプション・媒体名・注記・Datelineは訳さない）。\n\n"
-            "【出力ガード】\n"
-            "出力JSON（title_ja / body_ja）の値に、以下の語句や行が含まれていれば削除してから最終出力すること：\n"
-            "「写真:」「ဓာတ်ပုံ」「Photo」「South China Morning Post」「SCMP」「このニュースは」「翻訳」「Translated」「Source」「©」「Copyright」"
-            "「Yangon,」「Nay Pyi Taw,」「ရန်ကုန်၊」「နေပြည်တော်၊」「ヤンゴン、」「ネピドー、」\n\n"
             "【出力仕様】出力はJSONのみ：\n"
-            "{\n"
-            '  "title_ja": "...",\n'
-            '  "body_ja": "..."  \n'
-            "}\n\n"
-            "【対象範囲】\n"
-            "- title_ja は [TITLE] のみ（媒体名・キャプション・Datelineは含めない）。\n"
-            "- body_ja はクレンジング後の [BODY] 本文のみ（非本文要素は除外）。\n\n"
-            f"[TITLE]\n{title_src}\n\n[BODY]\n{body_src}\n"
+            '[{"url":str, "title_ja":str, "body_ja":str}, …]\n'
+            "input = ",
+            json.dumps(input_array, ensure_ascii=False),
         )
         
+        prompt = "".join(prompt_parts)
+
+        precheck_sleep(rough_token_estimate(prompt), tag="fulltext-batch")
+
         try:
             resp = call_gemini_with_retries(
-                client_fulltext, prompt, model="gemini-2.5-flash", usage_tag="fulltext"
+                client_fulltext,
+                prompt,
+                model="gemini-2.5-flash",
+                usage_tag="fulltext",
             )
-            data = _safe_json_loads_maybe_extract(resp.text)
-            title_ja = (data.get("title_ja") or title_src).strip()
-            body_ja  = (data.get("body_ja") or body_src).strip()
-            out.append({"title_ja": title_ja, "body_ja": body_ja, "url": u})
+            text = getattr(resp, "text", None) or ""
+            arr = _safe_json_loads_maybe_extract(text)
+            if isinstance(arr, dict):
+                arr = [arr]
+            url_to_res = {}
+            for x in (arr or []):
+                if isinstance(x, dict) and x.get("url"):
+                    url_to_res[str(x["url"])] = x
+            for b in batch:
+                x = url_to_res.get(b["url"]) or {}
+                title_ja = (x.get("title_ja") or b["title"]).strip()
+                body_ja  = (x.get("body_ja")  or b["body"]).strip()
+                results.append({"url": b["url"], "title_ja": title_ja, "body_ja": body_ja})
         except Exception as e:
-            print("🛑 fulltext translation failed:", e)
-            # フォールバック（原文をそのままつける）
-            out.append({"title_ja": title_src, "body_ja": body_src, "url": u})
-    return out
+            print("🛑 fulltext batch failed:", e)
+            for b in batch:
+                results.append({"url": b["url"], "title_ja": b["title"], "body_ja": b["body"]})
+
+        time.sleep(0.6)  # バッチ内マイクロスリープ（要約と合わせる）
+        if i + BATCH < len(prepared):
+            print(f"🕒 Waiting {WAIT} seconds before next fulltext batch …")
+            time.sleep(WAIT)  # バッチ間 1 分待機（要約と合わせる）
+
+    # --- 3) 入力順で並べ直し ---
+    url_to_item = {x["url"]: x for x in results}
+    return [url_to_item[u] for u in urls_in_order if u in url_to_item]
 
 
 # 日本語日付を作る（0埋めなし）
@@ -3168,7 +3303,7 @@ def build_combined_pdf_for_business(translated_items, out_path=None):
     """
     Business向け：全文翻訳PDF（本文のみ、背景#f9f9f9）を1本に結合。
     translated_items: 各要素に "title_ja", "body_ja", "source" を含める想定。
-                      ※ "summary_plain" はあっても無視します（描画しません）。
+    ※ "summary_plain" はあっても無視します（描画しません）。
     """
     # ===== 依存を関数内に閉じ込める =====
     import os, re, unicodedata
