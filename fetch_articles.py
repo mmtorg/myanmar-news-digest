@@ -404,7 +404,7 @@ def get_today_date_mmt():
 
     # 本番用、今日の日付
     now_mmt = datetime.now(MMT)
-    return (now_mmt - timedelta(days=1)).date()
+    return now_mmt.date()
 
 
 # 共通キーワードリスト（全メディア共通で使用する）
