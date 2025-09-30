@@ -3172,6 +3172,8 @@ def build_combined_pdf_for_business(translated_items, out_path=None):
     LINE_H_BODY       = 5.5
 
     BODY_BG_RGB       = (249, 249, 249)  # 本文背景 #f9f9f9
+    
+    TITLE_BODY_GAP = 3.0  # タイトルと本文の間の余白（mm）
 
     # ===== 正規化ユーティリティ（不自然改行の抑止） =====
     _ZW_RE = re.compile(r"[\u200b\u200c\u200d\ufeff]")
@@ -3209,7 +3211,7 @@ def build_combined_pdf_for_business(translated_items, out_path=None):
         line = f"{title}　{media}" if media else title
         pdf.set_font("JP-B", size=TITLE_SIZE)
         pdf.multi_cell(w=_epw(pdf), h=LINE_H_TITLE, txt=line, align="L", border=0)
-        pdf.ln(1.5)
+        pdf.ln(TITLE_BODY_GAP)
 
     def _write_body_with_bg(pdf, body):
         """本文を #f9f9f9 背景で出力（複数ページにまたがってOK）。"""
