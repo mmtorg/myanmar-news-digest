@@ -3331,10 +3331,13 @@ def send_email_digest(
 
     if trial_footer_url:
         html_content += (
-            "<div style='margin-top:24px;padding:12px;border:1px solid #eee;border-radius:8px;background:#fafafa'>"
+            "<div style='margin-top:24px;padding:12px;border:1px solid #eee;border-radius:8px;background-color:#fafafa'>"
             "<p style='margin:0 0 6px 0;font-weight:600'>有料プランのご案内</p>"
-            "<p style='margin:0'>より詳しいニュース要約、配信頻度の拡大、ビジネス向け機能をご利用いただける有料プランを提供しています。<br>"
-            f"<a href='{trial_footer_url}' target='_blank' style='color:#1a0dab'>こちらからお申し込みください</a></p>"
+            "<p style='margin:0'>ニュース配信を継続的にご利用いただけます。<br>"
+            f"<a href='{trial_footer_url}' target='_blank' "
+            "style='display:inline-block;text-decoration:none;padding:10px 16px;border-radius:6px;"
+            "background-color:#0B6465;color:#ffffff !important;font-weight:600;text-align:center;line-height:1.4'>"
+            "プランを比較</a></p>"
             "</div>"
         )
     html_content += "</body></html>"
