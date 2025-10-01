@@ -3926,14 +3926,14 @@ if __name__ == "__main__":
     # except Exception:
     #     pass
 
-    print("=== Khit Thit Media ===")
-    articles_khit = get_khit_thit_media_articles_from_category(date_mmt, max_pages=1)
-    # articles_khit = get_khit_thit_media_articles_from_category(date_mmt, max_pages=3)
-    process_and_enqueue_articles(
-        articles_khit, 
-        "Khit Thit Media", 
-        seen_urls
-    )
+    # print("=== Khit Thit Media ===")
+    # articles_khit = get_khit_thit_media_articles_from_category(date_mmt, max_pages=1)
+    # # articles_khit = get_khit_thit_media_articles_from_category(date_mmt, max_pages=3)
+    # process_and_enqueue_articles(
+    #     articles_khit, 
+    #     "Khit Thit Media", 
+    #     seen_urls
+    # )
 
     # print("=== DVB ===")
     # articles_dvb = get_dvb_articles_for(date_mmt, debug=True)
