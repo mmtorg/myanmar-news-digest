@@ -3072,6 +3072,7 @@ def process_translation_batches(batch_size=TRANSLATION_BATCH_SIZE, wait_seconds=
                         "is_ayeyar": item.get("is_ayeyar", False),  # エーヤワディ系ヒット判定
                         "hit_full": item.get("hit_full", False),  # 全体キーワード判定
                         "hit_non_ayeyar": item.get("hit_non_ayeyar", False),  # 非エーヤワディ判定
+                        "date": item.get("date"), 
                     }
                 )
 
@@ -3101,6 +3102,7 @@ def process_translation_batches(batch_size=TRANSLATION_BATCH_SIZE, wait_seconds=
             "is_ayeyar": x.get("is_ayeyar", False),  # エーヤワディ系ヒット判定
             "hit_full": x.get("hit_full", False),  # 全体キーワード判定
             "hit_non_ayeyar": x.get("hit_non_ayeyar", False),  # 非エーヤワディ判定
+            "date": x.get("date"), 
         }
         for x in deduped
     ]
@@ -3408,7 +3410,6 @@ def build_combined_pdf_for_business(translated_items, out_path=None):
     BODY_BG_RGB       = (249, 249, 249)  # 本文背景 #f9f9f9
 
     TITLE_BODY_GAP = 5.0  # タイトル→本文の余白（mm）
-    PARA_GAP_NL   = True  # 段落間に1行分の空行を入れるフラグ
     TITLE_META_GAP_H = LINE_H_BODY # ← 追加：タイトル→メタ行の余白（本文1行ぶん）
 
     # ===== 正規化ユーティリティ（不自然改行の抑止） =====
@@ -3517,9 +3518,6 @@ def build_combined_pdf_for_business(translated_items, out_path=None):
         txt = _normalize_text_for_pdf(body)
         if not txt:
             return
-        # 段落間の行間を1行分空ける：単一改行を二重改行へ
-        if PARA_GAP_NL:
-            txt = txt.replace("\n", "\n\n")
         pdf.set_font("JP", size=BODY_SIZE)
         pdf.set_fill_color(*BODY_BG_RGB)
         # 1行ごとに塗られるため、段落全体として薄グレーになります
@@ -3554,8 +3552,7 @@ def build_combined_pdf_for_business(translated_items, out_path=None):
             media=item.get("source", "") or "",
             date_str=item.get("date", "") or "",    # ← 日付を渡す
         )
-        body = _normalize_text_for_pdf(item.get("body_ja", "") or "")
-        _write_body_with_bg(pdf, body)
+        _write_body_with_bg(pdf, item.get("body_ja", "") or "")
         _write_url_footer(pdf, item.get("url", "") or "")
 
     # ===== 出力（bytearray対策込み） =====
