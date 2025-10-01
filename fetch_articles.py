@@ -3576,13 +3576,16 @@ def build_combined_pdf_for_business(translated_items, out_path=None):
 
         # 改行正規化
         t = text.replace("\r\n", "\n").replace("\r", "\n")
+        
+        # ゼロ幅文字の除去（既存の _ZW_RE を使う）
+        t = _ZW_RE.sub("", t)
 
         # 段落で分割（連続する空行を1つの区切りとみなす）
         paras = re.split(r"\n\s*\n", t.strip(), flags=re.MULTILINE)
         cleaned_paras = []
 
-        # 文末とみなす文字（これで終わっていれば改行を維持）
-        SENT_END = r"[。．\.！？!?…」』）」\]\)]"
+        # 文末とみなす文字（これで終わっていれば改行を維持）、カッコ/角カッコは“文末記号”ではないため除外
+        SENT_END = r"[。．\.！？!?…」』]"
 
         for p in paras:
             # 行単位に分割（空行はこの段階では存在しない前提）
