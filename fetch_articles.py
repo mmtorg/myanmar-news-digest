@@ -3579,6 +3579,28 @@ def build_combined_pdf_for_business(translated_items, out_path=None):
         
         # ゼロ幅文字の除去（既存の _ZW_RE を使う）
         t = _ZW_RE.sub("", t)
+        
+        # 単発改行だけを文脈に応じて結合（段落 \n\n は対象外）
+        s = t  # 置換の基準スナップショット
+        BULLETS = "・●○■□◆◇▶▷•*-–—"
+
+        def _soft_join(m):
+            i = m.start()                     # 改行の位置
+            left  = s[i-1] if i > 0 else ""   # 左隣の1文字
+            right = s[i+1] if i+1 < len(s) else ""  # 右隣の1文字
+
+            # 箇条書きが次行先頭なら改行は保持
+            if right and right in BULLETS:
+                return "\n"
+
+            # 英数→英数はスペースで結合（"(YA)\nmember" → "(YA) member"）
+            if re.match(r"[A-Za-z0-9\)\]]", left) and re.match(r"[A-Za-z0-9\(\[]", right):
+                return " "
+
+            # それ以外（CJK含む）は無空白で結合
+            return ""
+
+        t = _SOFT_BREAK_RE.sub(_soft_join, s)
 
         # 段落で分割（連続する空行を1つの区切りとみなす）
         paras = re.split(r"\n\s*\n", t.strip(), flags=re.MULTILINE)
