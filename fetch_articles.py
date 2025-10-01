@@ -3409,20 +3409,51 @@ def build_combined_pdf_for_business(translated_items, out_path=None):
 
     TITLE_BODY_GAP = 5.0  # タイトル→本文の余白（mm）
     PARA_GAP_NL   = True  # 段落間に1行分の空行を入れるフラグ
+    TITLE_META_GAP_H = LINE_H_BODY # ← 追加：タイトル→メタ行の余白（本文1行ぶん）
 
     # ===== 正規化ユーティリティ（不自然改行の抑止） =====
     _ZW_RE = re.compile(r"[\u200b\u200c\u200d\ufeff]")
     _SOFT_BREAK_RE = re.compile(r"(?<!\n)\n(?!\n)")
 
-    def _normalize_text_for_pdf(s):
-        if not s:
+    def _normalize_text_for_pdf(text: str) -> str:
+        """
+        段落の空行は残しつつ、段落内の“ソフト改行”を結合する。
+        - 空行(=改行のみ)で段落を区切り
+        - 段落内部は行末が句点類で終わらない限り、改行を削除して連結
+        """
+        import re
+        if not text:
             return ""
-        s = unicodedata.normalize("NFC", s)
-        s = _ZW_RE.sub("", s).replace("\xa0", " ").replace("\u3000", " ")
-        s = _SOFT_BREAK_RE.sub(" ", s)       # 文中改行→スペース
-        s = re.sub(r"\n{2,}", "\n", s)       # 段落改行は1つに
-        s = re.sub(r"[ \t]{2,}", " ", s)
-        return s.strip()
+
+        # 改行正規化
+        t = text.replace("\r\n", "\n").replace("\r", "\n")
+
+        # 段落で分割（連続する空行を1つの区切りとみなす）
+        paras = re.split(r"\n\s*\n", t.strip(), flags=re.MULTILINE)
+        cleaned_paras = []
+
+        # 文末とみなす文字（これで終わっていれば改行を維持）
+        SENT_END = r"[。．\.！？!?…」』）」\]\)]"
+
+        for p in paras:
+            # 行単位に分割（空行はこの段階では存在しない前提）
+            lines = [ln.strip() for ln in p.split("\n") if ln.strip() != ""]
+            if not lines:
+                continue
+
+            buf = lines[0]
+            for ln in lines[1:]:
+                # 直前が文末記号で終わるなら改行維持（=新しい文として連結）
+                if re.search(SENT_END + r"$", buf):
+                    buf = buf + "\n" + ln
+                else:
+                    # それ以外は“ソフト改行”とみなし、改行を削除して結合
+                    # （日本語なのでスペースは挟まない）
+                    buf = buf + ln
+            cleaned_paras.append(buf)
+
+        # 段落間は空行1つ（= \n\n）で接続
+        return "\n\n".join(cleaned_paras)
 
     # ===== PDFユーティリティ =====
     def _epw(pdf):  # effective page width
@@ -3438,36 +3469,44 @@ def build_combined_pdf_for_business(translated_items, out_path=None):
         try: pdf.add_font("JP-B","", font_bold,    uni=True)
         except Exception: pass
 
-    def _write_title_with_source(pdf, title, media, date_str=""):
-        # ---- 安全に左寄せ・幅内改行するための共通設定 ----
-        # 実効幅（effective page width）
-        epw = getattr(pdf, "epw", pdf.w - pdf.l_margin - pdf.r_margin)
-        # 左マージン位置にカーソルを戻しておく
-        pdf.set_x(pdf.l_margin)
+    def _format_meta_date(date_str: str) -> str:
+        import re
+        s = (date_str or "").strip()
+        # "YYYY-MM-DDThh:mm:ss" → "YYYY-MM-DD" に切り落とし
+        if "T" in s:
+            s = s.split("T", 1)[0]
+        m = re.fullmatch(r"(\d{4})-(\d{1,2})-(\d{1,2})", s)
+        if not m:
+            return s  # 既に和式/別形式ならそのまま
+        y, mo, d = map(int, m.groups())
+        return f"{y}年{mo}月{d}日"
 
-        # 1行目：タイトル（左寄せ・太字）
+    def _write_title_with_source(pdf, title, media, date_str=""):
+        # 実効幅
+        epw = getattr(pdf, "epw", pdf.w - pdf.l_margin - pdf.r_margin)
+
+        # 1) タイトル（左揃え・太字）
+        pdf.set_x(pdf.l_margin)
         title = (title or "").strip()
         if title:
             pdf.set_text_color(0, 0, 0)
             pdf.set_font("JP-B", size=TITLE_SIZE)
             pdf.multi_cell(w=epw, h=LINE_H_TITLE, txt=title, align="L", border=0)
 
-        # 2行目：メディア＋日付（左寄せ・通常）
+        # 2) タイトル→メタ行の“本文1行ぶん”の空白
+        pdf.ln(TITLE_META_GAP_H)
+
+        # 3) メタ行（メディア＋日付）… 例）"Khit Thit Media　2025年9月30日"
         media = (media or "").strip()
-        date_str = (date_str or "").strip()
-        meta_line = ""
-        if media and date_str:
-            meta_line = f"{media}　{date_str}"
-        elif media or date_str:
-            meta_line = media or date_str
+        date_txt = _format_meta_date(date_str)
+        meta_line = f"{media}　{date_txt}".strip("　 ")
 
         if meta_line:
-            # 念のため左マージンに戻す（multi_cell後は自動で改行されるため）
             pdf.set_x(pdf.l_margin)
             pdf.set_font("JP", size=META_SIZE)
             pdf.multi_cell(w=epw, h=LINE_H_META, txt=meta_line, align="L", border=0)
 
-        # タイトル→本文の余白
+        # 4) メタ行→本文の余白（既存の設定を尊重）
         pdf.ln(TITLE_BODY_GAP)
 
     def _write_body_with_bg(pdf, body):
@@ -3513,10 +3552,11 @@ def build_combined_pdf_for_business(translated_items, out_path=None):
             pdf,
             title=item.get("title_ja", "") or "",
             media=item.get("source", "") or "",
-            date_str=item.get("date", "") or "", 
+            date_str=item.get("date", "") or "",    # ← 日付を渡す
         )
-        _write_body_with_bg(pdf, item.get("body_ja", "") or "")
-        _write_url_footer(pdf, item.get("url", "") or "") 
+        body = _normalize_text_for_pdf(item.get("body_ja", "") or "")
+        _write_body_with_bg(pdf, body)
+        _write_url_footer(pdf, item.get("url", "") or "")
 
     # ===== 出力（bytearray対策込み） =====
     out = pdf.output(dest="S")
@@ -3850,8 +3890,14 @@ if __name__ == "__main__":
         url_to_meta[u] = {
             "source": s.get("source", "") or "",
             "summary_plain": html_to_plain(s.get("summary", "") or ""),
-            "date": s.get("date", "") or "",  # ← 追加（記事投稿日：ISO "YYYY-MM-DD" 想定）
+            "date": (s.get("date") or ""),   # ← 追加（"YYYY-MM-DD"想定。時間付きでもOK）
+            "url": u,                        # ← 追加（PDF末尾リンク用の保険）
         }
+
+    # （任意）デバッグ：date欠落を検知
+    _missing = [k for k,v in url_to_meta.items() if not v.get("date")]
+    if _missing:
+        print(f"[warn] missing date for {len(_missing)} item(s), example: {_missing[:3]}")
 
     # fulltexts（translate_fulltexts_for_business の戻り）へメタをマージ
     translated_items = []
@@ -3864,7 +3910,6 @@ if __name__ == "__main__":
             "source":        meta.get("source", "") or "",
             "date":          meta.get("date", "") or "",   # ← 追加
             "url":           u,                            # ← 追加（PDF末尾に追記）
-            "summary_plain": meta.get("summary_plain", "") or "",
         })
 
     # 6) PDF作成（1記事=複数ページ可） — 添付ファイル名を日本語に
