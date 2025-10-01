@@ -3398,13 +3398,17 @@ def build_combined_pdf_for_business(translated_items, out_path=None):
     BOTTOM_MARGIN     = 16.0
 
     TITLE_SIZE        = 15
+    META_SIZE         = 11   # メディア＋日付の1行
     BODY_SIZE         = 11
+    URL_SIZE          = 10   # URLの文字サイズ
     LINE_H_TITLE      = 6.5
+    LINE_H_META       = 5.5
     LINE_H_BODY       = 5.5
 
     BODY_BG_RGB       = (249, 249, 249)  # 本文背景 #f9f9f9
-    
-    TITLE_BODY_GAP = 5.0  # タイトルと本文の間の余白（mm）
+
+    TITLE_BODY_GAP = 5.0  # タイトル→本文の余白（mm）
+    PARA_GAP_NL   = True  # 段落間に1行分の空行を入れるフラグ
 
     # ===== 正規化ユーティリティ（不自然改行の抑止） =====
     _ZW_RE = re.compile(r"[\u200b\u200c\u200d\ufeff]")
@@ -3434,14 +3438,23 @@ def build_combined_pdf_for_business(translated_items, out_path=None):
         try: pdf.add_font("JP-B","", font_bold,    uni=True)
         except Exception: pass
 
-    def _write_title_with_source(pdf, title, media):
+    def _write_title_with_source(pdf, title, media, date_str=""):
         title = (title or "").strip()
         media = (media or "").strip()
+        date_str = (date_str or "").strip()
         if not title:
             return
-        line = f"{title}　{media}" if media else title
+
+        # 1行目：タイトル（太字）
         pdf.set_font("JP-B", size=TITLE_SIZE)
-        pdf.multi_cell(w=_epw(pdf), h=LINE_H_TITLE, txt=line, align="L", border=0)
+        pdf.multi_cell(w=_epw(pdf), h=LINE_H_TITLE, txt=title, align="L", border=0)
+
+        # 2行目：メディア名＋日付（通常） … 例）"Khit Thit Media　2025-09-30"
+        if media or date_str:
+            meta_line = f"{media}　{date_str}" if media and date_str else (media or date_str)
+            pdf.set_font("JP", size=META_SIZE)
+            pdf.multi_cell(w=_epw(pdf), h=LINE_H_META, txt=meta_line, align="L", border=0)
+
         pdf.ln(TITLE_BODY_GAP)
 
     def _write_body_with_bg(pdf, body):
@@ -3449,11 +3462,25 @@ def build_combined_pdf_for_business(translated_items, out_path=None):
         txt = _normalize_text_for_pdf(body)
         if not txt:
             return
+        # 段落間の行間を1行分空ける：単一改行を二重改行へ
+        if PARA_GAP_NL:
+            txt = txt.replace("\n", "\n\n")
         pdf.set_font("JP", size=BODY_SIZE)
         pdf.set_fill_color(*BODY_BG_RGB)
         # 1行ごとに塗られるため、段落全体として薄グレーになります
         pdf.multi_cell(w=_epw(pdf), h=LINE_H_BODY, txt=txt, align="L", border=0, fill=True)
         pdf.ln(2.0)
+        
+    def _write_url_footer(pdf, url):
+        url = (url or "").strip()
+        if not url:
+            return
+        pdf.ln(1.0)
+        pdf.set_text_color(0, 0, 200)
+        pdf.set_font("JP", size=URL_SIZE)
+        # クリック可能なリンクで書き出す
+        pdf.write(h=LINE_H_BODY, txt=url, link=url)
+        pdf.set_text_color(0, 0, 0)
 
     # ===== PDF 本体 =====
     pdf = FPDF(format="A4", unit="mm")
@@ -3470,8 +3497,10 @@ def build_combined_pdf_for_business(translated_items, out_path=None):
             pdf,
             title=item.get("title_ja", "") or "",
             media=item.get("source", "") or "",
+            date_str=item.get("date", "") or "", 
         )
         _write_body_with_bg(pdf, item.get("body_ja", "") or "")
+        _write_url_footer(pdf, item.get("url", "") or "") 
 
     # ===== 出力（bytearray対策込み） =====
     out = pdf.output(dest="S")
@@ -3789,23 +3818,23 @@ if __name__ == "__main__":
         if u in url_to_mail_title:
             it["title_ja"] = url_to_mail_title[u]
 
-    # 5.5) PDF用メタ（source / summary_plain）を結合して translated_items を作る
+    # 5.5) PDF用メタ（source / summary_plain / date）を結合して translated_items を作る
     import re
 
     def html_to_plain(s: str) -> str:
-        # 改行っぽい <br> を本当の改行に、残りのタグは除去
         s = s or ""
         s = re.sub(r"(?i)<br\s*/?>", "\n", s)
         s = re.sub(r"<[^>]+>", "", s)
         return s.strip()
 
-    # url -> {source, summary_plain}
+    # url -> {source, summary_plain, date}
     url_to_meta = {}
     for s in summaries_non_ayeyar:
         u = _norm_id(s["url"])
         url_to_meta[u] = {
             "source": s.get("source", "") or "",
-            "summary_plain": html_to_plain(s.get("summary", "") or "")
+            "summary_plain": html_to_plain(s.get("summary", "") or ""),
+            "date": s.get("date", "") or "",  # ← 追加（記事投稿日：ISO "YYYY-MM-DD" 想定）
         }
 
     # fulltexts（translate_fulltexts_for_business の戻り）へメタをマージ
@@ -3817,6 +3846,8 @@ if __name__ == "__main__":
             "title_ja":      ft.get("title_ja", "") or "",
             "body_ja":       ft.get("body_ja", "") or "",
             "source":        meta.get("source", "") or "",
+            "date":          meta.get("date", "") or "",   # ← 追加
+            "url":           u,                            # ← 追加（PDF末尾に追記）
             "summary_plain": meta.get("summary_plain", "") or "",
         })
 
