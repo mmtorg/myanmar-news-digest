@@ -579,6 +579,137 @@ def extract_body_generic_from_soup(soup):
     return "\n".join(txts).strip()
 
 
+# === メール要約と同じ感覚で本文スコープを決める：PDF専用で使用 ===
+def extract_body_mail_pdf_scoped(url: str, soup) -> str:
+    import re as _re
+    import unicodedata as _uni
+    U = (url or "").lower()
+
+    # ドメイン固有の本文コンテナ候補（優先度順）
+    DOMAIN_SCOPES = []
+    if ("yktnews.com" in U) or ("khitthit" in U) or ("mizzima" in U):
+        DOMAIN_SCOPES = ["div.td-post-content", "div.entry-content", "article .td-post-content"]
+    if ("dvb" in U):
+        DOMAIN_SCOPES = DOMAIN_SCOPES or ["div.node-content", "div.entry-content", "article"]
+    if ("myanmar-now" in U) or ("myanmarnow" in U):
+        DOMAIN_SCOPES = DOMAIN_SCOPES or ["div.article-content", "article .content-body", "article"]
+
+    # 汎用候補
+    GENERIC_SCOPES = [
+        "article", "main", "div[itemprop=articleBody]",
+        "div.entry-content", "div.node-content", "div.td-post-content",
+    ]
+
+    # 非本文ブロックは事前に除去
+    EXCLUDE_SELS = [
+        "#comments", ".comments", "section.comments",
+        "form", "form.comment-form",
+        "aside", "nav", "header", "footer",
+        ".tags", ".tagcloud", ".post-tags", ".td-post-source-tags",
+        ".related", ".td_block_related_posts", ".jeg_related_post", ".jnews_related_post_container",
+        ".share", ".social", ".post-share", ".post-meta",
+    ]
+
+    # ルート決定
+    root = None
+    for sel in DOMAIN_SCOPES:
+        n = soup.select_one(sel)
+        if n: root = n; break
+    if root is None:
+        for sel in GENERIC_SCOPES:
+            n = soup.select_one(sel)
+            if n: root = n; break
+    if root is None:
+        root = soup
+
+    for sel in EXCLUDE_SELS:
+        for n in root.select(sel):
+            n.decompose()
+
+    # #タグ雲アンカー（a要素で #始まり）を削除
+    for a in root.find_all("a"):
+        t = (a.get_text(strip=True) or "")
+        if t.startswith("#"):
+            a.decompose()
+
+    # <p> から本文を構築（タグ雲行／WPコメント定型は除外）
+    ps = root.select("p") or root.find_all("p")
+    lines = []
+    for p in ps:
+        t = p.get_text(strip=True)
+        if not t: continue
+        if "Save my name, email, and website" in t: continue
+        if _re.match(r'^(?:[#＃][^\s#]+(?:\s+|$)){3,}$', t): continue
+        t = _re.sub(r"\s+", " ", t).strip()
+        if t:
+            lines.append(_uni.normalize("NFC", t))
+    return "\n".join(lines).strip()
+
+
+def _pdf_needs_rescope(sample: str) -> bool:
+    """PDFに回す本文が明らかにノイズ混入っぽい場合だけ True（要約には影響なし）"""
+    if not sample: return True
+    import re as _re
+    s = sample[:1200]
+    patterns = [
+        r'^(?:[#＃][^\s#]+(?:\s+|$)){3,}$',         # タグ雲
+        r"Save my name, email, and website",        # WPコメント定型
+        r"^(?:Leave a comment|Post a Comment)",     # コメント誘導
+        r"^[\s\-/–—•·|\\\(\)\[\]{}“”\"\'«»。、．…／]+$",  # 記号だけ
+        r"^\s*PDF\s*$",                             # 単独PDF
+    ]
+    for ln in s.splitlines():
+        ln = ln.strip()
+        if not ln: continue
+        if any(_re.search(p, ln, _re.IGNORECASE) for p in patterns):
+            return True
+    return False
+
+
+def _fetch_and_scope_body_for_pdf(url: str) -> str:
+    """URLを再取得して extract_body_mail_pdf_scoped で本文抽出（PDF専用）。失敗時は空"""
+    try:
+        html = fetch_once_requests(url, timeout=15)  # 既存の軽量フェッチ関数を流用
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html, "html.parser")
+        return extract_body_mail_pdf_scoped(url, soup)
+    except Exception as e:
+        print(f"[pdf-rescope] failed ({e}) → {url}")
+        return ""
+
+
+def _ensure_meta_dates(url_to_meta: dict, date_mmt_iso: str):
+    """
+    url_to_meta: { url: {"source":..., "date": str|None, ...}, ... }
+    date_mmt_iso: "YYYY-MM-DD"（ダイジェスト対象日/MMT）
+    """
+    from bs4 import BeautifulSoup
+    from datetime import datetime, timezone, timedelta
+    MMT = timezone(timedelta(hours=6, minutes=30))
+
+    missing = [u for u, v in url_to_meta.items() if not v.get("date")]
+    if not missing:
+        return
+
+    fixed = 0
+    for u in missing:
+        try:
+            resp = fetch_once_requests(u, timeout=10)
+            soup = BeautifulSoup(resp, "html.parser")
+            meta = soup.find("meta", attrs={"property": "article:published_time"})
+            iso = meta.get("content").strip() if meta and meta.get("content") else None
+            if iso:
+                dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+                url_to_meta[u]["date"] = dt.astimezone(MMT).date().isoformat()
+                fixed += 1
+                continue
+        except Exception:
+            pass
+        # 取れなければダイジェスト日で埋める
+        url_to_meta[u]["date"] = date_mmt_iso
+
+    print(f"[info] meta date backfilled: {fixed} fetched, {len(missing)-fixed} filled with digest date")
+
 # === requests を使うシンプルな fetch_once（1回） ===
 def fetch_once_requests(url, timeout=15):
     r = requests.get(url, timeout=timeout)
@@ -3154,6 +3285,17 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
 
         # Outlet-only line (English outlet names)
         r"^(?:BBC Burmese|DVB|Myanmar Now|The Irrawaddy|Khit Thit Media|Mizzima|RFA Burmese|VOA Burmese|Eleven Media|Frontier Myanmar|Reuters|AP|Associated Press|AFP|SCMP)\s*$",
+        # 3個以上のハッシュタグ行（タグ雲）
+        r'^(?:[#＃][^\s#]+(?:\s+|$)){3,}$',
+        # WPコメント欄の定型文・コメント誘導
+        r'^(?:Save my name, email, and website.*)$',
+        r'^(?:Leave a comment|Post a Comment|Your email address will not be published).*$',
+        # 単独 "PDF" 行
+        r'^(?:PDF)\s*$',
+        # 記号だけの行
+        r'^[\s\-/–—•·|\\\(\)\[\]{}“”"\'«»。、．…／]+$',
+        # "##..." で始まるタグ群の行
+        r'^(?:##.*)$',
     ]
     EXCLUDE_RE_LIST = [re.compile(p, re.IGNORECASE) for p in EXCLUDE_LINE_PATTERNS]
 
@@ -3302,6 +3444,12 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
         body_src  = (meta.get("body")  or "").strip()
         if not body_src:
             continue
+        
+        if _pdf_needs_rescope(body_src):
+            body_rescoped = _fetch_and_scope_body_for_pdf(u)
+            if body_rescoped:
+                body_src = body_rescoped
+        
         body_compact = trim_by_chars(compact_body(body_src), FULLTEXT_MAX_CHARS)
         prepared.append({"url": u, "title": title_src, "body": body_compact})
 
@@ -3895,6 +4043,8 @@ if __name__ == "__main__":
     _missing = [k for k,v in url_to_meta.items() if not v.get("date")]
     if _missing:
         print(f"[warn] missing date for {len(_missing)} item(s), example: {_missing[:3]}")
+        
+    _ensure_meta_dates(url_to_meta, date_mmt.isoformat())
 
     # fulltexts（translate_fulltexts_for_business の戻り）へメタをマージ
     translated_items = []
