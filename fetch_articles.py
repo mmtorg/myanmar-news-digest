@@ -3439,26 +3439,42 @@ def build_combined_pdf_for_business(translated_items, out_path=None):
         except Exception: pass
 
     def _write_title_with_source(pdf, title, media, date_str=""):
+        # ---- 安全に左寄せ・幅内改行するための共通設定 ----
+        # 実効幅（effective page width）
+        epw = getattr(pdf, "epw", pdf.w - pdf.l_margin - pdf.r_margin)
+        # 左マージン位置にカーソルを戻しておく
+        pdf.set_x(pdf.l_margin)
+
+        # 1行目：タイトル（左寄せ・太字）
         title = (title or "").strip()
+        if title:
+            pdf.set_text_color(0, 0, 0)
+            pdf.set_font("JP-B", size=TITLE_SIZE)
+            pdf.multi_cell(w=epw, h=LINE_H_TITLE, txt=title, align="L", border=0)
+
+        # 2行目：メディア＋日付（左寄せ・通常）
         media = (media or "").strip()
         date_str = (date_str or "").strip()
-        if not title:
-            return
+        meta_line = ""
+        if media and date_str:
+            meta_line = f"{media}　{date_str}"
+        elif media or date_str:
+            meta_line = media or date_str
 
-        # 1行目：タイトル（太字）
-        pdf.set_font("JP-B", size=TITLE_SIZE)
-        pdf.multi_cell(w=_epw(pdf), h=LINE_H_TITLE, txt=title, align="L", border=0)
-
-        # 2行目：メディア名＋日付（通常） … 例）"Khit Thit Media　2025-09-30"
-        if media or date_str:
-            meta_line = f"{media}　{date_str}" if media and date_str else (media or date_str)
+        if meta_line:
+            # 念のため左マージンに戻す（multi_cell後は自動で改行されるため）
+            pdf.set_x(pdf.l_margin)
             pdf.set_font("JP", size=META_SIZE)
-            pdf.multi_cell(w=_epw(pdf), h=LINE_H_META, txt=meta_line, align="L", border=0)
+            pdf.multi_cell(w=epw, h=LINE_H_META, txt=meta_line, align="L", border=0)
 
+        # タイトル→本文の余白
         pdf.ln(TITLE_BODY_GAP)
 
     def _write_body_with_bg(pdf, body):
         """本文を #f9f9f9 背景で出力（複数ページにまたがってOK）。"""
+        
+        pdf.set_x(pdf.l_margin)  # 本文前にも左マージンに揃えて開始
+        
         txt = _normalize_text_for_pdf(body)
         if not txt:
             return
