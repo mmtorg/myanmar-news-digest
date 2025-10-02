@@ -3602,6 +3602,33 @@ def build_combined_pdf_for_business(translated_items, out_path=None):
             return ""
 
         t = _SOFT_BREAK_RE.sub(_soft_join, s)
+        
+        # ===== 半角括弧を全角に統一し、括弧のまわりの“折り返し可能な空白”を除去（URLは除外） =====
+        _URL_RE = re.compile(r"https?://\S+")
+
+        def _convert_paren_outside_urls(text: str) -> str:
+            def _conv(chunk: str) -> str:
+                # 1) 半角→全角
+                chunk = chunk.replace("(", "（").replace(")", "）")
+                # 2) 「語 + 空白 + （」を「語 + （」へ（空白を削除）
+                chunk = re.sub(r"(?<=\S) （", "（", chunk)
+                # 3) 「） + 空白 + 語」を「） + 語」へ（空白を削除）
+                chunk = re.sub(r"） (?=\S)", "）", chunk)
+                return chunk
+
+            out = []
+            last = 0
+            for m in _URL_RE.finditer(text):
+                out.append(_conv(text[last:m.start()]))  # URLの手前は変換
+                out.append(m.group(0))                   # URL本体はそのまま
+                last = m.end()
+            out.append(_conv(text[last:]))               # 末尾
+            return "".join(out)
+
+        t = _convert_paren_outside_urls(t)
+        
+        # 行頭禁則（開きカッコの直前のスペースを NBSP に変換して改行禁止）
+        t = re.sub(r"(?<=\S) (?=[\(\（\[\【])", "\u00A0", t)  # \u00A0 = NBSP
 
         # 段落で分割（連続する空行を1つの区切りとみなす）
         paras = re.split(r"\n\s*\n", t.strip(), flags=re.MULTILINE)
