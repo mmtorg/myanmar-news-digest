@@ -3960,7 +3960,7 @@ def send_email_digest(
     subject = "ミャンマーニュース【" + date_str + "】"
     if subject_suffix:
         subject += subject_suffix
-    from_display_name = "Myanmar News Digest"
+    from_display_name = "Myanmar News Alert"
 
     subject = re.sub(r"[\r\n]+", " ", subject).strip()
     msg = EmailMessage(policy=SMTP)

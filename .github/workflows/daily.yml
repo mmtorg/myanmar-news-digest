@@ -1,4 +1,4 @@
-name: Daily Myanmar News Digest
+name: Daily Myanmar News Alert
 
 on:
   schedule:
