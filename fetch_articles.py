@@ -354,7 +354,7 @@ def call_gemini_with_retries(
     for attempt in range(max_retries):
         try:
             # 実際の呼び出し（既存コードの呼び方に合わせて調整）
-            resp = client.models.generate_content(model=model, contents=prompt, request_options={"timeout": 120})
+            resp = client.models.generate_content(model=model, contents=prompt)
             # 使用量ログ
             try:
                 _log_gemini_usage(resp, tag=(usage_tag or "gen"), model=model)
