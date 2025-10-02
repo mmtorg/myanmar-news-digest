@@ -10,10 +10,6 @@ from email.message import EmailMessage
 from email.utils import formataddr
 import unicodedata
 from google import genai
-try:
-    from google.genai.types import HttpOptions
-except Exception:
-    HttpOptions = None
 from collections import defaultdict
 import time
 import json
@@ -60,7 +56,6 @@ GEMINI_MAX_DELAY = 120.0        # 既定 30.0 → 120.0
 
 # 翻訳のバッチサイズ（瞬間負荷を下げる）
 TRANSLATION_BATCH_SIZE = 2      # 既定 3 → 2
-GEMINI_TIMEOUT = float("120")  # 秒
 
 # 乱数ジッター付き指数バックオフ
 def _exp_backoff_sleep(attempt: int, base_delay: float, max_delay: float) -> float:
@@ -74,27 +69,12 @@ def _exp_backoff_sleep(attempt: int, base_delay: float, max_delay: float) -> flo
     # 0〜1秒の小さなジッターを加える（スパイク回避）
     return min(max_delay, delay + random.random())
 
-# Gemini本番用 ＋ 全文翻訳用（HttpOptions があればクライアント側で timeout を指定）
-if HttpOptions is not None:
-    client_summary = genai.Client(
-        api_key=os.getenv("GEMINI_API_SUMMARY_KEY"),
-        http_options=HttpOptions(timeout=GEMINI_TIMEOUT),
-    )
-    client_dedupe = genai.Client(
-        api_key=os.getenv("GEMINI_API_DEDUPE_KEY"),
-        http_options=HttpOptions(timeout=GEMINI_TIMEOUT),
-    )
-    # === Gemini（全文翻訳用） ===
-    client_fulltext = genai.Client(
-        api_key=os.getenv("GEMINI_API_FULLTEXT_KEY"),
-        http_options=HttpOptions(timeout=GEMINI_TIMEOUT),
-    )
-else:
-    # 古いSDKなどで HttpOptions が無い場合は従来どおり（= タイムアウト未指定）
-    client_summary = genai.Client(api_key=os.getenv("GEMINI_API_SUMMARY_KEY"))
-    client_dedupe  = genai.Client(api_key=os.getenv("GEMINI_API_DEDUPE_KEY"))
-    # === Gemini（全文翻訳用） ===
-    client_fulltext = genai.Client(api_key=os.getenv("GEMINI_API_FULLTEXT_KEY"))
+
+# Gemini本番用
+client_summary = genai.Client(api_key=os.getenv("GEMINI_API_SUMMARY_KEY"))
+client_dedupe = genai.Client(api_key=os.getenv("GEMINI_API_DEDUPE_KEY"))
+# === Gemini（全文翻訳用） ===
+client_fulltext = genai.Client(api_key=os.getenv("GEMINI_API_FULLTEXT_KEY"))
 
 def _is_retriable_exc(e: Exception) -> bool:
     msg = (str(e) or "").lower()
