@@ -360,13 +360,14 @@ def call_gemini_with_retries(
             # 例外メッセージの簡易判定（SDK差異を吸収するため文字列ベース）
             is_503 = "503" in msg or "UNAVAILABLE" in msg or "overloaded" in msg
             is_429 = "429" in msg or "RESOURCE_EXHAUSTED" in msg or "rate" in msg.lower()
+            
+            # ✅ 追加: 網羅的な判定関数を併用（server disconnected / RemoteProtocolError 等も拾う）
+            should_retry = _is_retriable_exc(e) or is_429
 
             # 再試行対象
-            if is_503 or is_429 or "timeout" in msg.lower() or "temporarily" in msg.lower():
-                # ログ（既存のprint体裁に合わせています）
+            if should_retry:
                 print(f"⚠️ Gemini retry {attempt+1}/{max_retries} after: {e}")
                 sleep_sec = _exp_backoff_sleep(attempt, base_delay, max_delay)
-                # 429の場合は少し多めに待つ（Free tierの瞬間上限回避）
                 if is_429:
                     sleep_sec = min(GEMINI_MAX_DELAY, sleep_sec + 5.0)
                 try:
