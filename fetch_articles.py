@@ -48,6 +48,10 @@ except Exception:
         Exception
     )
 
+try:
+    import zoneinfo  # 3.9+
+except ImportError:
+    from backports import zoneinfo  # 3.8系なら
 
 # ========= Gemini リトライ調整用の定数 =========
 GEMINI_MAX_RETRIES = 7          # 既定 5 → 7
@@ -3869,6 +3873,52 @@ def send_email_digest(
             client_secret=csec,
         )
         return build("gmail", "v1", credentials=creds, cache_discovery=False)
+    
+    # ===== メール件名 =====
+    SUBJECT_BRAND = "MNA"
+
+    def _date_str_yyyymmdd(actual_delivery_dt: datetime | None = None, tz_name: str = "Asia/Yangon") -> str:
+        """実際の配信日のローカル日付を yyyy/m/d で返す（先頭ゼロなし）"""
+        tz = zoneinfo.ZoneInfo(tz_name)
+        dt = (actual_delivery_dt or datetime.now(tz)).astimezone(tz)
+        return f"{dt.year}/{dt.month}/{dt.day}"
+
+    def _sanitize_one_line(s: str) -> str:
+        """改行・過剰空白を除去し、メール件名で崩れないように整形"""
+        if not s:
+            return ""
+        s = " ".join(str(s).split())          # 改行や連続空白を単一空白に
+        s = s.replace("】】", "】")            # 二重クローズ誤爆の保険
+        return s.strip()
+
+    def build_mail_subject(
+        headlines: list[str] | None,
+        is_ayeyarwady_only: bool,
+        actual_delivery_dt: datetime | None = None,
+        brand: str = SUBJECT_BRAND,
+        tz_name: str = "Asia/Yangon",
+    ) -> str:
+        """
+        要件:
+        1) エーヤワディのみのメール
+            → 【MNA yyyy/m/d】エーヤワディ関連記事
+        2) 上記以外
+            → 【MNA yyyy/m/d】ヘッドライン上位2本を「見出し / 見出し 他」
+            （1本しか無ければ「見出し 他」、0本なら「ヘッドライン」）
+        """
+        ds = _date_str_yyyymmdd(actual_delivery_dt, tz_name)
+        prefix = f"【{brand} {ds}】"
+
+        if is_ayeyarwady_only:
+            return f"{prefix}エーヤワディ関連記事"
+
+        titles = [ _sanitize_one_line(t) for t in (headlines or []) if _sanitize_one_line(t) ]
+        if len(titles) >= 2:
+            return f"{prefix}{titles[0]} / {titles[1]} 他"
+        elif len(titles) == 1:
+            return f"{prefix}{titles[0]} 他"
+        else:
+            return f"{prefix}ヘッドライン"
 
     sender_email = os.getenv("EMAIL_SENDER")
     env_name = recipients_env
@@ -3880,10 +3930,6 @@ def send_email_digest(
     media_grouped = defaultdict(list)
     for item in summaries:
         media_grouped[item["source"]].append(item)
-
-    subject = "ミャンマーニュース【" + date_str + "】"
-    if subject_suffix:
-        subject += " " + subject_suffix
 
     headlines = [f"✓ {item['title']}" for item in summaries]
     headline_html = (
@@ -3961,9 +4007,12 @@ def send_email_digest(
     html_content += "</body></html>"
     html_content = clean_html_content(html_content)
 
-    subject = "ミャンマーニュース【" + date_str + "】"
-    if subject_suffix:
-        subject += subject_suffix
+    # ===== 件名（要件準拠） =====
+    # 1) エーヤワディのみ → 【MNA yyyy/m/d】エーヤワディ関連記事
+    # 2) それ以外 → 【MNA yyyy/m/d】見出し1 / 見出し2 他（見出し数に応じて調整）
+    titles_for_subject = [it.get("title", "") for it in summaries if (it.get("title") or "").strip()]
+    is_ayeyar_only_batch = bool(summaries) and all(bool(s.get("is_ayeyar")) for s in summaries)
+    subject = build_mail_subject(titles_for_subject, is_ayeyar_only_batch)
     from_display_name = "Myanmar News Alert"
 
     subject = re.sub(r"[\r\n]+", " ", subject).strip()
