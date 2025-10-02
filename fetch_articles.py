@@ -3458,14 +3458,14 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
     results = []
     for i in range(0, len(prepared), BATCH):
         batch = prepared[i:i+BATCH]
-        input_array = [{"url": b["url"], "title": b["title"], "body": b["body"]} for b in batch]
+        input_array = [{"url": b["url"], "body": b["body"]} for b in batch]
 
         # 文字列の隣接連結と + の混在での解析エラーを避けるため、配列で組み立て        
         prompt_parts = (
-            "次のニュース記事を**自然な日本語**に完全翻訳してください。\n"
+            "次のニュース記事の【本文だけ】を**自然な日本語**に完全翻訳してください。\n"
             "・固有名詞は一般的な日本語表記に\n"
             "・ビルマ語/英語が混在していてもOK\n"
-            "・見出し（タイトル）は1行\n"
+            "・タイトル（見出し）は訳さない／出力しない\n"
             "・本文は改行と段落を活かして読みやすく\n\n"
             f"{COMMON_TRANSLATION_RULES}"
             "【本文以外は必ず除外（この関数専用）】\n"
@@ -3474,7 +3474,7 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
             "- 媒体名だけの行（例: South China Morning Post / BBC Burmese / DVB / Myanmar Now などの媒体名のみ）\n"
             "- 出典や翻訳注記（例:「このニュースは…を翻訳したものです。」「Translated by …」「Source: …」「(China’s Ministry of Public Security)」等）\n"
             "- 記者名や配信ラベルだけの行（例: By … / Reuters / AP / SCMP などの単独行）\n"
-            "- 発行地＋日付（Dateline）の**み**の行（例: "
+            "- 発行地＋日付（Dateline）のみの行（例: "
             "'Yangon, Sept. 30' / 'Nay Pyi Taw, 30 September' / "
             "'ရန်ကုန်၊ စက်တင်ဘာ ၃၀' / 'နေပြည်တော်၊ ဖေဖော်ဝါရီ ၁၅' / "
             "'ヤンゴン、9月30日' / 'ネピドー、2024年2月15日' など）。\n"
@@ -3484,7 +3484,7 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
             "2) 連続する空行は1つに圧縮し、本文段落のみ残す。\n"
             "3) 残った本文のみを翻訳対象とする（キャプション・媒体名・注記・Datelineは訳さない）。\n\n"
             "【出力仕様】出力はJSONのみ：\n"
-            '[{"url":str, "title_ja":str, "body_ja":str}, …]\n'
+            '[{"url":str, "body_ja":str}, …]\n'
             "input = ",
             json.dumps(input_array, ensure_ascii=False),
         )
@@ -3510,13 +3510,15 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
                     url_to_res[str(x["url"])] = x
             for b in batch:
                 x = url_to_res.get(b["url"]) or {}
-                title_ja = (x.get("title_ja") or b["title"]).strip()
-                body_ja  = (x.get("body_ja")  or b["body"]).strip()
-                results.append({"url": b["url"], "title_ja": title_ja, "body_ja": body_ja})
+                body_ja = (x.get("body_ja") or b["body"]).strip()
+                results.append({"url": b["url"], "body_ja": body_ja})
         except Exception as e:
             print("🛑 fulltext batch failed:", e)
             for b in batch:
-                results.append({"url": b["url"], "title_ja": b["title"], "body_ja": b["body"]})
+                results.append({
+                    "url": b["url"],
+                    "body_ja": (b.get("body") or "").strip(),  # 未翻訳本文をそのまま退避
+                })
 
         time.sleep(0.6)  # バッチ内マイクロスリープ（要約と合わせる）
         if i + BATCH < len(prepared):
