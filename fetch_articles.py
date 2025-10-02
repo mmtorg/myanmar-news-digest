@@ -3851,11 +3851,11 @@ def send_email_digest(
     summaries,
     *,
     recipients_env=None,
-    subject_suffix="",
     include_read_link: bool = True,
     trial_footer_url: Optional[str] = None,
     attachment_bytes: Optional[bytes] = None,
     attachment_name: Optional[str] = None,
+    delivery_date_mmt: Optional[date] = None,
 ):
     def _build_gmail_service():
         cid = os.getenv("GMAIL_CLIENT_ID")
@@ -3914,9 +3914,9 @@ def send_email_digest(
 
         titles = [ _sanitize_one_line(t) for t in (headlines or []) if _sanitize_one_line(t) ]
         if len(titles) >= 2:
-            return f"{prefix}{titles[0]} / {titles[1]} 他"
+            return f"{prefix}{titles[0]} / {titles[1]}　他"
         elif len(titles) == 1:
-            return f"{prefix}{titles[0]} 他"
+            return f"{prefix}{titles[0]}　他"
         else:
             return f"{prefix}ヘッドライン"
 
@@ -4012,7 +4012,15 @@ def send_email_digest(
     # 2) それ以外 → 【MNA yyyy/m/d】見出し1 / 見出し2 他（見出し数に応じて調整）
     titles_for_subject = [it.get("title", "") for it in summaries if (it.get("title") or "").strip()]
     is_ayeyar_only_batch = bool(summaries) and all(bool(s.get("is_ayeyar")) for s in summaries)
-    subject = build_mail_subject(titles_for_subject, is_ayeyar_only_batch)
+    # 件名の日付は __main__ 側で決定した date_mmt を使用
+    dt_for_subject = None
+    if delivery_date_mmt is not None:
+        try:
+            tz = zoneinfo.ZoneInfo("Asia/Yangon")
+            dt_for_subject = datetime(delivery_date_mmt.year, delivery_date_mmt.month, delivery_date_mmt.day, tzinfo=tz)
+        except Exception:
+            dt_for_subject = None
+    subject = build_mail_subject(titles_for_subject, is_ayeyar_only_batch, actual_delivery_dt=dt_for_subject)
     from_display_name = "Myanmar News Alert"
 
     subject = re.sub(r"[\r\n]+", " ", subject).strip()
@@ -4140,7 +4148,7 @@ if __name__ == "__main__":
         send_email_digest(
             summaries_ayeyar_only,
             recipients_env="INTERNAL_EMAIL_RECIPIENTS",
-            subject_suffix="/エーヤワディのみ"
+            delivery_date_mmt=date_mmt,
         )
     else:
         print("エーヤワディ記事なし: エーヤワディのみメールは送信しません。")
@@ -4149,23 +4157,20 @@ if __name__ == "__main__":
     summaries_non_ayeyar = [
         s for s in all_summaries if s.get("hit_non_ayeyar") and not s.get("is_ayeyar")
     ]
-    # INTERNAL（エーヤワディ以外）
-    send_email_digest(
-        summaries_non_ayeyar,
-        recipients_env="INTERNAL_EMAIL_RECIPIENTS",
-        subject_suffix="/エーヤワディ以外"
-    )
 
     # TRIAL/LITE/BUSINESS へ同内容を配信（件名サフィックスのみ差し替え）
     send_email_digest(
         summaries_non_ayeyar,
         recipients_env="TRIAL_EMAIL_RECIPIENTS",
-        subject_suffix="/Trial", include_read_link=True, trial_footer_url=(os.getenv("PAID_PLAN_URL", "").strip() or None)
+        include_read_link=True,
+        trial_footer_url=(os.getenv("PAID_PLAN_URL", "").strip() or None),
+        delivery_date_mmt=date_mmt,
     )
     send_email_digest(
         summaries_non_ayeyar,
         recipients_env="LITE_EMAIL_RECIPIENTS",
-        subject_suffix="/Lite", include_read_link=False
+        include_read_link=False,
+        delivery_date_mmt=date_mmt,
     )
     
     # ===== Business向け：全文翻訳 → 1ファイルPDF化 → 添付送信 =====
@@ -4250,8 +4255,18 @@ if __name__ == "__main__":
     send_email_digest(
         summaries_non_ayeyar,
         recipients_env="BUSINESS_EMAIL_RECIPIENTS",
-        subject_suffix="/Business",
         include_read_link=True,
         attachment_bytes=pdf_bytes if pdf_bytes else None,
         attachment_name=attachment_name if pdf_bytes else None,
+        delivery_date_mmt=date_mmt,
+    )
+
+    # INTERNAL にも Business と同一内容（件名・本文・添付）を送る
+    send_email_digest(
+        summaries_non_ayeyar,
+        recipients_env="INTERNAL_EMAIL_RECIPIENTS",
+        include_read_link=True,
+        attachment_bytes=pdf_bytes if pdf_bytes else None,
+        attachment_name=attachment_name if pdf_bytes else None,
+        delivery_date_mmt=date_mmt,
     )
