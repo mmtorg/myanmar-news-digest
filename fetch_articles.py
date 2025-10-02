@@ -3240,6 +3240,75 @@ def process_translation_batches(batch_size=TRANSLATION_BATCH_SIZE, wait_seconds=
     return normalized
 
 
+# ===== 正規化ユーティリティ（不自然改行の抑止） =====
+_ZW_RE = re.compile(r"[\u200b\u200c\u200d\ufeff]")
+_SOFT_BREAK_RE = re.compile(r"(?<!\n)\n(?!\n)")
+
+def _normalize_text_for_pdf(text: str) -> str:
+    """
+    段落の空行は残しつつ、段落内の“ソフト改行”を結合する。
+    - 空行(=改行のみ)で段落を区切り
+    - 段落内部は行末が句点類で終わらない限り、改行を削除して連結
+    """
+    import re
+    if not text:
+        return ""
+
+    # 改行正規化
+    t = text.replace("\r\n", "\n").replace("\r", "\n")
+    
+    # ゼロ幅文字の除去（既存の _ZW_RE を使う）
+    t = _ZW_RE.sub("", t)
+    
+    # 単発改行だけを文脈に応じて結合（段落 \n\n は対象外）
+    s = t  # 置換の基準スナップショット
+    BULLETS = "・●○■□◆◇▶▷•*-–—"
+
+    def _soft_join(m):
+        i = m.start()                     # 改行の位置
+        left  = s[i-1] if i > 0 else ""   # 左隣の1文字
+        right = s[i+1] if i+1 < len(s) else ""  # 右隣の1文字
+
+        # 箇条書きが次行先頭なら改行は保持
+        if right and right in BULLETS:
+            return "\n"
+
+        # 英数→英数はスペースで結合（"(YA)\nmember" → "(YA) member"）
+        if re.match(r"[A-Za-z0-9\)\]]", left) and re.match(r"[A-Za-z0-9\(\[]", right):
+            return " "
+
+        # それ以外（CJK含む）は無空白で結合
+        return ""
+
+    t = _SOFT_BREAK_RE.sub(_soft_join, s)
+
+    # 段落で分割（連続する空行を1つの区切りとみなす）
+    paras = re.split(r"\n\s*\n", t.strip(), flags=re.MULTILINE)
+    cleaned_paras = []
+
+    # 文末とみなす文字（これで終わっていれば改行を維持）、カッコ/角カッコは“文末記号”ではないため除外
+    SENT_END = r"[。．\.！？!?…」』]"
+
+    for p in paras:
+        # 行単位に分割（空行はこの段階では存在しない前提）
+        lines = [ln.strip() for ln in p.split("\n") if ln.strip() != ""]
+        if not lines:
+            continue
+
+        buf = lines[0]
+        for ln in lines[1:]:
+            # 直前が文末記号で終わるなら改行維持（=新しい文として連結）
+            if re.search(SENT_END + r"$", buf):
+                buf = buf + "\n" + ln
+            else:
+                # それ以外は“ソフト改行”とみなし、改行を削除して結合
+                # （日本語なのでスペースは挟まない）
+                buf = buf + ln
+        cleaned_paras.append(buf)
+
+    # 段落間は空行1つ（= \n\n）で接続
+    return "\n\n".join(cleaned_paras)
+
 # ===== 全文翻訳（Business向けPDF用） =====
 # 方針：
 #  - 2件まとめ翻訳（JSON配列）
@@ -3458,6 +3527,23 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
     for i in range(0, len(prepared), BATCH):
         batch = prepared[i:i+BATCH]
         input_array = [{"url": b["url"], "title": b["title"], "body": b["body"]} for b in batch]
+        
+        # ★ PDF全文翻訳だけで使う改行・段落ルール（メール要約には未適用）
+        PROMPT_LINEBREAK_RULES_PDF = (
+            "【行・段落・改行ルール（PDF全文翻訳のみ適用・厳守）】\n"
+            "・本文は段落内で改行（\\n）を入れない。改行は段落区切りの \\n\\n のみ許可。\n"
+            "・英単語やラテン文字を単語途中で改行しない（ハイフネーション禁止、&shy;/U+00AD 等を出力しない）。\n"
+            "・括弧や引用符の直後では改行しない（例：\"(YA)\\nの関係者\" は不可 → \"(YA)の関係者\"）。\n"
+            "・英数→英数の行結合は半角スペース1つで連結し、それ以外（日本語・CJK→日本語）は無空白で連結。\n"
+            "・入力に単発改行が混在していても、段落内は1行に整形してから翻訳・出力する。\n"
+            "・連続する空行は1つに圧縮する。\n"
+            "・出力検証：body_ja 内に『文末記号以外の直後での単発改行』が存在してはならない。\n"
+            "  文末記号＝次のみ：。．！!？?…」』）］\n"
+            "  したがって次の正規表現に一致する改行は出力しない：(?<![。．\\.！？!?…」』）\\]])\\n\n"
+            "・例（NG→OK）：\n"
+            "  NG: \"Yangon Army (YA)\\nの関係者\" → OK: \"Yangon Army (YA)の関係者\"\n"
+            "  NG: \"Y\\nangon\" → OK: \"Yangon\"\n"
+        )
 
         # 文字列の隣接連結と + の混在での解析エラーを避けるため、配列で組み立て        
         prompt_parts = (
@@ -3465,8 +3551,9 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
             "・固有名詞は一般的な日本語表記に\n"
             "・ビルマ語/英語が混在していてもOK\n"
             "・見出し（タイトル）は1行\n"
-            "・本文は改行と段落を活かして読みやすく\n\n"
-            f"{COMMON_TRANSLATION_RULES}"
+            "・本文は段落内改行を禁止し、段落間のみ \\n\\n で区切る（PDF全文翻訳専用ルール）\n\n"
+            f"{COMMON_TRANSLATION_RULES} "
+            f"{PROMPT_LINEBREAK_RULES_PDF}"
             "【本文以外は必ず除外（この関数専用）】\n"
             "以下は原文に含まれていても翻訳・出力しないこと（含めたら減点）。\n"
             "- 写真キャプション／クレジット（先頭が「写真:」「ဓာတ်ပုံ」「Photo」「(写真」「(Photo」「（写真」などの行）\n"
@@ -3484,6 +3571,7 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
             "3) 残った本文のみを翻訳対象とする（キャプション・媒体名・注記・Datelineは訳さない）。\n\n"
             "【出力仕様】出力はJSONのみ：\n"
             '[{"url":str, "title_ja":str, "body_ja":str}, …]\n'
+            "・body_ja の改行は段落区切りの \\n\\n のみ許可。段落内の単発改行（\\n）は出力禁止。\n"
             "input = ",
             json.dumps(input_array, ensure_ascii=False),
         )
@@ -3491,6 +3579,8 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
         prompt = "".join(prompt_parts)
 
         precheck_sleep(rough_token_estimate(prompt), tag="fulltext-batch")
+        
+        client_fulltext = _normalize_text_for_pdf(client_fulltext)
 
         try:
             resp = call_gemini_with_retries(
@@ -3559,75 +3649,6 @@ def build_combined_pdf_for_business(translated_items, out_path=None):
 
     TITLE_BODY_GAP = 5.0  # タイトル→本文の余白（mm）
     TITLE_META_GAP_H = LINE_H_BODY # ← 追加：タイトル→メタ行の余白（本文1行ぶん）
-
-    # ===== 正規化ユーティリティ（不自然改行の抑止） =====
-    _ZW_RE = re.compile(r"[\u200b\u200c\u200d\ufeff]")
-    _SOFT_BREAK_RE = re.compile(r"(?<!\n)\n(?!\n)")
-
-    def _normalize_text_for_pdf(text: str) -> str:
-        """
-        段落の空行は残しつつ、段落内の“ソフト改行”を結合する。
-        - 空行(=改行のみ)で段落を区切り
-        - 段落内部は行末が句点類で終わらない限り、改行を削除して連結
-        """
-        import re
-        if not text:
-            return ""
-
-        # 改行正規化
-        t = text.replace("\r\n", "\n").replace("\r", "\n")
-        
-        # ゼロ幅文字の除去（既存の _ZW_RE を使う）
-        t = _ZW_RE.sub("", t)
-        
-        # 単発改行だけを文脈に応じて結合（段落 \n\n は対象外）
-        s = t  # 置換の基準スナップショット
-        BULLETS = "・●○■□◆◇▶▷•*-–—"
-
-        def _soft_join(m):
-            i = m.start()                     # 改行の位置
-            left  = s[i-1] if i > 0 else ""   # 左隣の1文字
-            right = s[i+1] if i+1 < len(s) else ""  # 右隣の1文字
-
-            # 箇条書きが次行先頭なら改行は保持
-            if right and right in BULLETS:
-                return "\n"
-
-            # 英数→英数はスペースで結合（"(YA)\nmember" → "(YA) member"）
-            if re.match(r"[A-Za-z0-9\)\]]", left) and re.match(r"[A-Za-z0-9\(\[]", right):
-                return " "
-
-            # それ以外（CJK含む）は無空白で結合
-            return ""
-
-        t = _SOFT_BREAK_RE.sub(_soft_join, s)
-
-        # 段落で分割（連続する空行を1つの区切りとみなす）
-        paras = re.split(r"\n\s*\n", t.strip(), flags=re.MULTILINE)
-        cleaned_paras = []
-
-        # 文末とみなす文字（これで終わっていれば改行を維持）、カッコ/角カッコは“文末記号”ではないため除外
-        SENT_END = r"[。．\.！？!?…」』]"
-
-        for p in paras:
-            # 行単位に分割（空行はこの段階では存在しない前提）
-            lines = [ln.strip() for ln in p.split("\n") if ln.strip() != ""]
-            if not lines:
-                continue
-
-            buf = lines[0]
-            for ln in lines[1:]:
-                # 直前が文末記号で終わるなら改行維持（=新しい文として連結）
-                if re.search(SENT_END + r"$", buf):
-                    buf = buf + "\n" + ln
-                else:
-                    # それ以外は“ソフト改行”とみなし、改行を削除して結合
-                    # （日本語なのでスペースは挟まない）
-                    buf = buf + ln
-            cleaned_paras.append(buf)
-
-        # 段落間は空行1つ（= \n\n）で接続
-        return "\n\n".join(cleaned_paras)
 
     # ===== PDFユーティリティ =====
     def _epw(pdf):  # effective page width
