@@ -4072,14 +4072,14 @@ if __name__ == "__main__":
         trust_existing_body=True
     )
 
-    print("=== BBC Burmese ===")
-    articles_bbc = get_bbc_burmese_articles_for(date_mmt)
-    process_and_enqueue_articles(
-        articles_bbc, 
-        "BBC Burmese", 
-        seen_urls, 
-        trust_existing_body=True
-    )
+    # print("=== BBC Burmese ===")
+    # articles_bbc = get_bbc_burmese_articles_for(date_mmt)
+    # process_and_enqueue_articles(
+    #     articles_bbc, 
+    #     "BBC Burmese", 
+    #     seen_urls, 
+    #     trust_existing_body=True
+    # )
 
     # print("=== Irrawaddy ===")
     # articles_irrawaddy = get_irrawaddy_articles_for(date_mmt)
