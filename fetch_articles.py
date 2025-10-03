@@ -4158,14 +4158,7 @@ if __name__ == "__main__":
         s for s in all_summaries if s.get("hit_non_ayeyar") and not s.get("is_ayeyar")
     ]
 
-    # TRIAL/LITE/BUSINESS へ同内容を配信（件名サフィックスのみ差し替え）
-    send_email_digest(
-        summaries_non_ayeyar,
-        recipients_env="TRIAL_EMAIL_RECIPIENTS",
-        include_read_link=True,
-        trial_footer_url=(os.getenv("PAID_PLAN_URL", "").strip() or None),
-        delivery_date_mmt=date_mmt,
-    )
+    # Lite向け：要約＋本文リンクのみ（添付なし）
     send_email_digest(
         summaries_non_ayeyar,
         recipients_env="LITE_EMAIL_RECIPIENTS",
@@ -4266,6 +4259,17 @@ if __name__ == "__main__":
         summaries_non_ayeyar,
         recipients_env="INTERNAL_EMAIL_RECIPIENTS",
         include_read_link=True,
+        attachment_bytes=pdf_bytes if pdf_bytes else None,
+        attachment_name=attachment_name if pdf_bytes else None,
+        delivery_date_mmt=date_mmt,
+    )
+    
+    # TRIAL へは Business と同一内容＋フッター（= PAID_PLAN_URL があれば）
+    send_email_digest(
+        summaries_non_ayeyar,
+        recipients_env="TRIAL_EMAIL_RECIPIENTS",
+        include_read_link=True,
+        trial_footer_url=(os.getenv("PAID_PLAN_URL", "").strip() or None),
         attachment_bytes=pdf_bytes if pdf_bytes else None,
         attachment_name=attachment_name if pdf_bytes else None,
         delivery_date_mmt=date_mmt,
