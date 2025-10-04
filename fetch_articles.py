@@ -2035,7 +2035,7 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
                     "title": title_nfc,
                     "date": date_obj.isoformat(),
                     "body": body_nfc,
-                    "source": "body_nfc",  # 重複削除関数を使うため追加
+                    "source": "Irrawaddy",  # 重複削除関数を使うため追加
                 }
             )
         except Exception as e:
