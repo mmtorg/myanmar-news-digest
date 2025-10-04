@@ -3442,31 +3442,21 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
                 pass
 
         raise ValueError("Could not extract JSON from LLM response")
+    
+    # === 日本語検知（CJK+かな/カナ）と未翻訳判定 ===
+    def _contains_cjk(s: str) -> bool:
+        return bool(s and re.search(r"[\u3040-\u30FF\u4E00-\u9FFF\u3400-\u4DBF]", s))
 
-    # --- 1) 前処理（クレンジング＋6000字上限） ---
-    prepared = []
-    for u in urls_in_order:
-        meta = (url_to_source_title_body.get(u) or {})
-        title_src = (meta.get("title") or "").strip()
-        body_src  = (meta.get("body")  or "").strip()
-        if not body_src:
-            continue
-        
-        if _pdf_needs_rescope(body_src):
-            body_rescoped = _fetch_and_scope_body_for_pdf(u)
-            if body_rescoped:
-                body_src = body_rescoped
-        
-        body_compact = trim_by_chars(compact_body(body_src), FULLTEXT_MAX_CHARS)
-        prepared.append({"url": u, "title": title_src, "body": body_compact})
+    def _needs_retry_untranslated(body: str) -> bool:
+        """
+        “日本語が全く含まれない”なら未翻訳と見なす（原文がビルマ語でも英語でも対象）。
+        """
+        t = (body or "").strip()
+        return bool(t) and (not _contains_cjk(t))
 
-    # --- 2) まとめ翻訳（JSON配列で返答） ---
-    results = []
-    for i in range(0, len(prepared), BATCH):
-        batch = prepared[i:i+BATCH]
-        input_array = [{"url": b["url"], "body": b["body"]} for b in batch]
-
-        # 文字列の隣接連結と + の混在での解析エラーを避けるため、配列で組み立て        
+    # === 全文翻訳プロンプトの共通ビルダー（既存prompt_partsの共通化） ===
+    def _build_fulltext_prompt(input_array: list[dict]) -> str:
+        # 文字列の隣接連結と + の混在での解析エラーを避けるため、配列で組み立て
         prompt_parts = (
             "次のニュース記事の【本文だけ】を**自然な日本語**に完全翻訳してください。\n"
             "・固有名詞は一般的な日本語表記に\n"
@@ -3494,8 +3484,58 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
             "input = ",
             json.dumps(input_array, ensure_ascii=False),
         )
+        return "".join(prompt_parts)
+    
+    # === 未翻訳検知時の“単発リトライ”（同じプロンプトを単一要素配列で再利用） ===
+    def _single_fulltext_retry(url: str, raw_body: str, max_chars: int = 6000) -> str:
+        body_trim = trim_by_chars(raw_body or "", max_chars)
+        prompt = _build_fulltext_prompt([{"url": url, "body": body_trim}])
+
+        precheck_sleep(rough_token_estimate(prompt), tag="fulltext-retry")
+        try:
+            resp = call_gemini_with_retries(
+                client_fulltext,
+                prompt,
+                model="gemini-2.5-flash",
+                usage_tag="fulltext-retry",
+            )
+            text = getattr(resp, "text", None) or ""
+            arr  = _safe_json_loads_extract(text)
+            if isinstance(arr, dict):
+                arr = [arr]
+            if isinstance(arr, list):
+                for x in arr:
+                    if isinstance(x, dict) and x.get("url") == url:
+                        return (x.get("body_ja") or "").strip()
+        except Exception as e:
+            print("[warn] fulltext single retry failed:", e)
+        return ""
+
+    # --- 1) 前処理（クレンジング＋6000字上限） ---
+    prepared = []
+    for u in urls_in_order:
+        meta = (url_to_source_title_body.get(u) or {})
+        title_src = (meta.get("title") or "").strip()
+        body_src  = (meta.get("body")  or "").strip()
+        if not body_src:
+            continue
         
-        prompt = "".join(prompt_parts)
+        if _pdf_needs_rescope(body_src):
+            body_rescoped = _fetch_and_scope_body_for_pdf(u)
+            if body_rescoped:
+                body_src = body_rescoped
+        
+        body_compact = trim_by_chars(compact_body(body_src), FULLTEXT_MAX_CHARS)
+        prepared.append({"url": u, "title": title_src, "body": body_compact})
+
+    # --- 2) まとめ翻訳（JSON配列で返答） ---
+    results = []
+    for i in range(0, len(prepared), BATCH):
+        batch = prepared[i:i+BATCH]
+        input_array = [{"url": b["url"], "body": b["body"]} for b in batch]
+
+        # 文字列の隣接連結と + の混在での解析エラーを避けるため、配列で組み立て        
+        prompt = _build_fulltext_prompt(input_array)
 
         precheck_sleep(rough_token_estimate(prompt), tag="fulltext-batch")
 
@@ -3525,6 +3565,25 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
                     "url": b["url"],
                     "body_ja": (b.get("body") or "").strip(),  # 未翻訳本文をそのまま退避
                 })
+
+        # === このバッチで積んだ結果のうち「日本語が全く無い」ものだけ再翻訳 ===
+        start_idx = len(results) - len(batch)
+        end_idx   = len(results)
+        for j in range(start_idx, end_idx):
+            item = results[j]
+            url  = item["url"]
+            body = item.get("body_ja") or ""
+            if _needs_retry_untranslated(body):
+                print(f"[warn] fulltext seems untranslated (no Japanese detected): {url}")
+                # 元の生本文（整形前）を取り出す
+                raw_body = (url_to_source_title_body.get(url, {}) or {}).get("body") or body
+                fixed = _single_fulltext_retry(url, raw_body, max_chars=FULLTEXT_MAX_CHARS)
+                # 最終採用条件：日本語が含まれていればOK
+                if fixed and _contains_cjk(fixed):
+                    results[j]["body_ja"] = fixed
+                    print(f"[ok] repaired untranslated fulltext via single retry: {url}")
+                # 呼びすぎ回避の小休止（要約と同じ運用）
+                time.sleep(0.6)
 
         time.sleep(0.6)  # バッチ内マイクロスリープ（要約と合わせる）
         if i + BATCH < len(prepared):
