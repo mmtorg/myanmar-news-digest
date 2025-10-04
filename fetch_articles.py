@@ -683,6 +683,63 @@ def _fetch_and_scope_body_for_pdf(url: str) -> str:
         return ""
 
 
+# === PDF専用：原文の <p> を段落として抽出（liと<br>構成にもフォールバック） ===
+def _extract_original_paragraphs_from_soup_for_pdf(url: str, soup) -> list[str]:
+    import re, unicodedata
+    from bs4 import BeautifulSoup
+
+    # 1) まずは <p> / <li> を素直に段落として拾う
+    root = soup.select_one("article, main, .post, .entry-content, .content, body") or soup
+    paras = []
+    for tag in root.find_all(["p", "li"]):
+        t = tag.get_text(separator=" ", strip=True)
+        if not t:
+            continue
+        if tag.name == "li":
+            t = "・" + t  # 箇条書きが分かるように（不要なら削除OK）
+        t = re.sub(r"[ \t\u3000]+", " ", t).strip()
+        if t:
+            paras.append(unicodedata.normalize("NFC", t))
+
+    # 2) <p>が取れない媒体へのフォールバック：連続改行で段落切り
+    if not paras:
+        raw = root.get_text(separator="\n", strip=True)
+        for block in re.split(r"\n{2,}", raw):
+            t = re.sub(r"\s+", " ", block).strip()
+            if t:
+                paras.append(unicodedata.normalize("NFC", t))
+
+    return paras
+
+
+def _fetch_paragraphs_for_pdf(url: str) -> list[str]:
+    """URLを再取得し、元HTMLから“原文の段落配列”を得る。失敗時は空配列。"""
+    try:
+        html = fetch_once_requests(url, timeout=15)
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html, "html.parser")
+
+        # 既存ユーティリティで<p>タグ群を待っても良いが、ここは一発抽出に寄せる
+        paras = _extract_original_paragraphs_from_soup_for_pdf(url, soup)
+        if paras:
+            return paras
+
+        # 最後の保険：既存の「PDF用スコープ抽出→テキスト」を段落化
+        scoped = extract_body_mail_pdf_scoped(url, soup) or ""
+        if scoped:
+            import re, unicodedata
+            out = []
+            for block in re.split(r"\n{2,}", scoped.replace("\r\n", "\n").replace("\r", "\n")):
+                t = re.sub(r"\s+", " ", block).strip()
+                if t:
+                    out.append(unicodedata.normalize("NFC", t))
+            return out
+        return []
+    except Exception as e:
+        print(f"[pdf-paras] failed ({e}) → {url}")
+        return []
+
+
 def _ensure_meta_dates(url_to_meta: dict, date_mmt_iso: str):
     """
     url_to_meta: { url: {"source":..., "date": str|None, ...}, ... }
@@ -2035,7 +2092,7 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
                     "title": title_nfc,
                     "date": date_obj.isoformat(),
                     "body": body_nfc,
-                    "source": "body_nfc",  # 重複削除関数を使うため追加
+                    "source": "Irrawaddy",  # 重複削除関数を使うため追加
                 }
             )
         except Exception as e:
@@ -2909,7 +2966,7 @@ STEP12_FILTERS = (
     "    局地的治安イベントの「発生そのもの」を速報・記録・報道する記事ですか？\n"
     "    （戦闘・交戦、攻撃〔襲撃/爆破/狙撃/IED/ドローン〕、衝突、爆撃/砲撃/空爆、\n"
     "      強盗/略奪、抗議活動、投降、解放、殺人事件の発生報道・被害集計）\n"
-    "    補足：軍事政権に抗議するデモ・集会・行進などの開催や参加人数・場所を報じる記事も上記「抗議活動」に含まれ、除外対象とする。\n"
+    "    軍事政権に抗議するデモ・集会・行進などの開催や参加人数・場所を報じる記事も上記「抗議活動」に含まれ、除外対象とする。\n"
     "\n"
     "除外しない明確な例（= No とする）：\n"
     "- 人物/組織の発言・反論・声明・会見・プレスリリース・告発・否定が主題のもの\n"
@@ -3247,6 +3304,12 @@ def process_translation_batches(batch_size=TRANSLATION_BATCH_SIZE, wait_seconds=
     return normalized
 
 
+# --- 全文翻訳PDFで使う定数 ---
+FULLTEXT_MAX_CHARS = 6000
+BATCH = TRANSLATION_BATCH_SIZE  # 既定=2（= 2件まとめ）
+WAIT  = 60                      # 要約と同じ 1 分待機
+
+
 # ===== 全文翻訳（Business向けPDF用） =====
 # 方針：
 #  - 2件まとめ翻訳（JSON配列）
@@ -3264,10 +3327,6 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
     この関数専用のクレンジング／事前チェック／2件まとめ翻訳 を関数内に閉じ込めています。
     戻り値: [{"url","title_ja","body_ja"}, ...]
     """
-    # --- ローカル定数（環境変数は増やさず定数化） ---
-    FULLTEXT_MAX_CHARS = 6000
-    BATCH = TRANSLATION_BATCH_SIZE  # 既定=2（= 2件まとめ）
-    WAIT  = 60                      # 要約と同じ 1 分待機
 
     # --- ローカル import（この関数だけが使うもの） ---
     import re, json, time, unicodedata
@@ -3463,6 +3522,10 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
             "・ビルマ語/英語が混在していてもOK\n"
             "・タイトル（見出し）は訳さない／出力しない\n"
             "・本文は改行と段落を活かして読みやすく\n\n"
+            "・各段落は先頭に「§§P<番号>§§」というマーカーが付いています。\n"
+            "・このマーカーは絶対に変更・削除しないでください。\n"
+            "・段落の結合や分割はしないでください（元の段落数・順序を厳守）。\n"
+            "・出力では body_ja に同じマーカーを含めて返してください（マーカーは原文と同位置）。\n"
             f"{COMMON_TRANSLATION_RULES}"
             "【本文以外は必ず除外（この関数専用）】\n"
             "以下は原文に含まれていても翻訳・出力しないこと（含めたら減点）。\n"
@@ -3511,22 +3574,86 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
             print("[warn] fulltext single retry failed:", e)
         return ""
 
-    # --- 1) 前処理（クレンジング＋6000字上限） ---
+    # --- マーカー生成ユーティリティ（段落境界を固定） ---
+    PARA_TOKEN_FMT = "§§P{idx}§§"
+
+    def _join_with_markers(paras: list[str]) -> str:
+        return "\n\n".join(f"{PARA_TOKEN_FMT.format(idx=i)} {p}" for i, p in enumerate(paras))
+
+    def _split_by_markers(translated_text: str, original_len: int) -> list[str]:
+        import re
+        chunks = re.split(r"(§§P\d+§§)", translated_text or "")
+        out, current = [], None
+        for ch in chunks:
+            if re.fullmatch(r"§§P(\d+)§§", ch):
+                if current is not None:
+                    out.append(current.strip())
+                current = ""
+            else:
+                if current is not None:
+                    current += ch
+        if current is not None:
+            out.append(current.strip())
+        if len(out) < original_len:
+            out += [""] * (original_len - len(out))
+        return out[:original_len]
+
+    # --- 1) 前処理（“原文段落”→マーカー付き本文） ---
     prepared = []
     for u in urls_in_order:
         meta = (url_to_source_title_body.get(u) or {})
         title_src = (meta.get("title") or "").strip()
-        body_src  = (meta.get("body")  or "").strip()
-        if not body_src:
+
+        # a) 原文HTMLから段落配列（最優先）
+        paras = _fetch_paragraphs_for_pdf(u)
+
+        # b) フォールバック：既存の本文テキストから段落推定
+        if not paras:
+            body_src = (meta.get("body") or "").strip()
+            if not body_src:
+                continue
+            # 既存の再スコープも活かす
+            if _pdf_needs_rescope(body_src):
+                body_rescoped = _fetch_and_scope_body_for_pdf(u)
+                if body_rescoped:
+                    body_src = body_rescoped
+            # 空行で段落化
+            import re, unicodedata
+            for block in re.split(r"\n{2,}", body_src.replace("\r\n", "\n").replace("\r", "\n")):
+                t = re.sub(r"\s+", " ", block).strip()
+                if t:
+                    paras.append(unicodedata.normalize("NFC", t))
+
+        # c) ノイズ行の除外（この関数内にある EXCLUDE_RE_LIST を流用）
+        cleaned = []
+        for p in paras:
+            t = re.sub(r"\s+", " ", p).strip()
+            if not t:
+                continue
+            if any(rx.search(t) for rx in EXCLUDE_RE_LIST):
+                continue
+            cleaned.append(t)
+
+        if not cleaned:
             continue
-        
-        if _pdf_needs_rescope(body_src):
-            body_rescoped = _fetch_and_scope_body_for_pdf(u)
-            if body_rescoped:
-                body_src = body_rescoped
-        
-        body_compact = trim_by_chars(compact_body(body_src), FULLTEXT_MAX_CHARS)
-        prepared.append({"url": u, "title": title_src, "body": body_compact})
+
+        # d) 文字数上限に収める（段落単位で累積、最終段落だけ切り詰め可）
+        total = 0
+        bounded = []
+        for t in cleaned:
+            L = len(t)
+            if total + L <= FULLTEXT_MAX_CHARS:
+                bounded.append(t)
+                total += L
+            else:
+                if not bounded:
+                    bounded.append(t[:FULLTEXT_MAX_CHARS])
+                break
+
+        # e) マーカー付与してLLMに渡す本文にする
+        body_marked = _join_with_markers(bounded)
+        prepared.append({"url": u, "title": title_src, "body": body_marked, "para_count": len(bounded)})
+
 
     # --- 2) まとめ翻訳（JSON配列で返答） ---
     results = []
@@ -3556,7 +3683,19 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
                     url_to_res[str(x["url"])] = x
             for b in batch:
                 x = url_to_res.get(b["url"]) or {}
-                body_ja = (x.get("body_ja") or b["body"]).strip()
+                raw_ja = (x.get("body_ja") or b["body"]).strip()
+
+                # マーカーがあれば再分割→段落ごとに \n\n で結合して“原文どおりの段落”を復元
+                if "§§P0§§" in raw_ja:
+                    try:
+                        para_count = int(b.get("para_count") or 0)  # 安全に
+                    except Exception:
+                        para_count = 0
+                    paras_ja = _split_by_markers(raw_ja, para_count if para_count > 0 else 9999)
+                    body_ja = "\n\n".join(p for p in paras_ja if p.strip())
+                else:
+                    body_ja = raw_ja  # フォールバック（従来どおり）
+
                 results.append({"url": b["url"], "body_ja": body_ja})
         except Exception as e:
             print("🛑 fulltext batch failed:", e)
