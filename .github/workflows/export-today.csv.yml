@@ -2,7 +2,7 @@ name: Export today's Myanmar articles CSV (MMT) and mail
 
 on:
   schedule:
-    - cron: "30 15 * * *" # ミャンマー時間 22:00（UTC+6:30）
+    - cron: "0 15 * * *" # ミャンマー時間 21:30（UTC+6:30）
   workflow_dispatch: {}
 
 jobs:
