@@ -2,7 +2,7 @@ name: Auto-rerun on hosted runner allocation failure
 
 on:
   workflow_run:
-    workflows: ["Daily Myanmar News Digest"] # ← daily.yml の name と一致させる
+    workflows: ["Daily Myanmar News Alert"] # ← daily.yml の name と一致させる
     types: [completed]
 
 permissions:

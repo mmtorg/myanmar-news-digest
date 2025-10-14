@@ -48,6 +48,10 @@ except Exception:
         Exception
     )
 
+try:
+    import zoneinfo  # 3.9+
+except ImportError:
+    from backports import zoneinfo  # 3.8系なら
 
 # ========= Gemini リトライ調整用の定数 =========
 GEMINI_MAX_RETRIES = 7          # 既定 5 → 7
@@ -73,7 +77,8 @@ def _exp_backoff_sleep(attempt: int, base_delay: float, max_delay: float) -> flo
 # Gemini本番用
 client_summary = genai.Client(api_key=os.getenv("GEMINI_API_SUMMARY_KEY"))
 client_dedupe = genai.Client(api_key=os.getenv("GEMINI_API_DEDUPE_KEY"))
-
+# === Gemini（全文翻訳用） ===
+client_fulltext = genai.Client(api_key=os.getenv("GEMINI_API_FULLTEXT_KEY"))
 
 def _is_retriable_exc(e: Exception) -> bool:
     msg = (str(e) or "").lower()
@@ -578,6 +583,137 @@ def extract_body_generic_from_soup(soup):
     txts = [p.get_text(strip=True) for p in ps if p.get_text(strip=True)]
     return "\n".join(txts).strip()
 
+
+# === メール要約と同じ感覚で本文スコープを決める：PDF専用で使用 ===
+def extract_body_mail_pdf_scoped(url: str, soup) -> str:
+    import re as _re
+    import unicodedata as _uni
+    U = (url or "").lower()
+
+    # ドメイン固有の本文コンテナ候補（優先度順）
+    DOMAIN_SCOPES = []
+    if ("yktnews.com" in U) or ("khitthit" in U) or ("mizzima" in U):
+        DOMAIN_SCOPES = ["div.td-post-content", "div.entry-content", "article .td-post-content"]
+    if ("dvb" in U):
+        DOMAIN_SCOPES = DOMAIN_SCOPES or ["div.node-content", "div.entry-content", "article"]
+    if ("myanmar-now" in U) or ("myanmarnow" in U):
+        DOMAIN_SCOPES = DOMAIN_SCOPES or ["div.article-content", "article .content-body", "article"]
+
+    # 汎用候補
+    GENERIC_SCOPES = [
+        "article", "main", "div[itemprop=articleBody]",
+        "div.entry-content", "div.node-content", "div.td-post-content",
+    ]
+
+    # 非本文ブロックは事前に除去
+    EXCLUDE_SELS = [
+        "#comments", ".comments", "section.comments",
+        "form", "form.comment-form",
+        "aside", "nav", "header", "footer",
+        ".tags", ".tagcloud", ".post-tags", ".td-post-source-tags",
+        ".related", ".td_block_related_posts", ".jeg_related_post", ".jnews_related_post_container",
+        ".share", ".social", ".post-share", ".post-meta",
+    ]
+
+    # ルート決定
+    root = None
+    for sel in DOMAIN_SCOPES:
+        n = soup.select_one(sel)
+        if n: root = n; break
+    if root is None:
+        for sel in GENERIC_SCOPES:
+            n = soup.select_one(sel)
+            if n: root = n; break
+    if root is None:
+        root = soup
+
+    for sel in EXCLUDE_SELS:
+        for n in root.select(sel):
+            n.decompose()
+
+    # #タグ雲アンカー（a要素で #始まり）を削除
+    for a in root.find_all("a"):
+        t = (a.get_text(strip=True) or "")
+        if t.startswith("#"):
+            a.decompose()
+
+    # <p> から本文を構築（タグ雲行／WPコメント定型は除外）
+    ps = root.select("p") or root.find_all("p")
+    lines = []
+    for p in ps:
+        t = p.get_text(strip=True)
+        if not t: continue
+        if "Save my name, email, and website" in t: continue
+        if _re.match(r'^(?:[#＃][^\s#]+(?:\s+|$)){3,}$', t): continue
+        t = _re.sub(r"\s+", " ", t).strip()
+        if t:
+            lines.append(_uni.normalize("NFC", t))
+    return "\n".join(lines).strip()
+
+
+def _pdf_needs_rescope(sample: str) -> bool:
+    """PDFに回す本文が明らかにノイズ混入っぽい場合だけ True（要約には影響なし）"""
+    if not sample: return True
+    import re as _re
+    s = sample[:1200]
+    patterns = [
+        r'^(?:[#＃][^\s#]+(?:\s+|$)){3,}$',         # タグ雲
+        r"Save my name, email, and website",        # WPコメント定型
+        r"^(?:Leave a comment|Post a Comment)",     # コメント誘導
+        r"^[\s\-/–—•·|\\\(\)\[\]{}“”\"\'«»。、．…／]+$",  # 記号だけ
+        r"^\s*PDF\s*$",                             # 単独PDF
+    ]
+    for ln in s.splitlines():
+        ln = ln.strip()
+        if not ln: continue
+        if any(_re.search(p, ln, _re.IGNORECASE) for p in patterns):
+            return True
+    return False
+
+
+def _fetch_and_scope_body_for_pdf(url: str) -> str:
+    """URLを再取得して extract_body_mail_pdf_scoped で本文抽出（PDF専用）。失敗時は空"""
+    try:
+        html = fetch_once_requests(url, timeout=15)  # 既存の軽量フェッチ関数を流用
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html, "html.parser")
+        return extract_body_mail_pdf_scoped(url, soup)
+    except Exception as e:
+        print(f"[pdf-rescope] failed ({e}) → {url}")
+        return ""
+
+
+def _ensure_meta_dates(url_to_meta: dict, date_mmt_iso: str):
+    """
+    url_to_meta: { url: {"source":..., "date": str|None, ...}, ... }
+    date_mmt_iso: "YYYY-MM-DD"（ダイジェスト対象日/MMT）
+    """
+    from bs4 import BeautifulSoup
+    from datetime import datetime, timezone, timedelta
+    MMT = timezone(timedelta(hours=6, minutes=30))
+
+    missing = [u for u, v in url_to_meta.items() if not v.get("date")]
+    if not missing:
+        return
+
+    fixed = 0
+    for u in missing:
+        try:
+            resp = fetch_once_requests(u, timeout=10)
+            soup = BeautifulSoup(resp, "html.parser")
+            meta = soup.find("meta", attrs={"property": "article:published_time"})
+            iso = meta.get("content").strip() if meta and meta.get("content") else None
+            if iso:
+                dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+                url_to_meta[u]["date"] = dt.astimezone(MMT).date().isoformat()
+                fixed += 1
+                continue
+        except Exception:
+            pass
+        # 取れなければダイジェスト日で埋める
+        url_to_meta[u]["date"] = date_mmt_iso
+
+    print(f"[info] meta date backfilled: {fixed} fetched, {len(missing)-fixed} filled with digest date")
 
 # === requests を使うシンプルな fetch_once（1回） ===
 def fetch_once_requests(url, timeout=15):
@@ -1899,7 +2035,7 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
                     "title": title_nfc,
                     "date": date_obj.isoformat(),
                     "body": body_nfc,
-                    "source": "body_nfc",  # 重複削除関数を使うため追加
+                    "source": "Irrawaddy",  # 重複削除関数を使うため追加
                 }
             )
         except Exception as e:
@@ -2856,7 +2992,9 @@ STEP3_TASK = (
     "以下のルールに従って、記事タイトルを自然な日本語に翻訳し、本文を要約してください。\n\n"
     f"{COMMON_TRANSLATION_RULES}"
     "タイトル：\n"
-    "- 記事タイトルを自然な日本語に翻訳してください。\n"
+    "あなたは報道見出しの専門翻訳者です。以下の英語/ビルマ語の見出しタイトルを、"
+    "自然で簡潔な日本語見出しに翻訳してください。固有名詞は一般的な日本語表記を優先し、"
+    "意訳しすぎず要点を保ち、記号の乱用は避けます。\n"
     "タイトルの出力条件：\n"
     "- 出力は必ず1行で「【タイトル】<半角スペース1つ><訳したタイトル>」の形式にする。\n"
     "- 「【タイトル】」の直後に改行しない。\n"
@@ -3072,6 +3210,7 @@ def process_translation_batches(batch_size=TRANSLATION_BATCH_SIZE, wait_seconds=
                         "is_ayeyar": item.get("is_ayeyar", False),  # エーヤワディ系ヒット判定
                         "hit_full": item.get("hit_full", False),  # 全体キーワード判定
                         "hit_non_ayeyar": item.get("hit_non_ayeyar", False),  # 非エーヤワディ判定
+                        "date": item.get("date"), 
                     }
                 )
 
@@ -3101,13 +3240,682 @@ def process_translation_batches(batch_size=TRANSLATION_BATCH_SIZE, wait_seconds=
             "is_ayeyar": x.get("is_ayeyar", False),  # エーヤワディ系ヒット判定
             "hit_full": x.get("hit_full", False),  # 全体キーワード判定
             "hit_non_ayeyar": x.get("hit_non_ayeyar", False),  # 非エーヤワディ判定
+            "date": x.get("date"), 
         }
         for x in deduped
     ]
     return normalized
 
 
-def send_email_digest(summaries, *, recipients_env=None, subject_suffix=""):
+# ===== 全文翻訳（Business向けPDF用） =====
+# 方針：
+#  - 2件まとめ翻訳（JSON配列）
+#  - 本文クレンジング＋6000文字上限（入力TPM削減）
+#  - 事前レートチェック（RPM/TPM-in）で超過前に待機
+#  - 要約バッチと同じ制御（バッチ内0.6s／バッチ間60s）
+#  - 「この関数専用の処理」はなるべく関数内に閉じ込める（既存の共通処理は再利用）
+
+# 既存の COMMON_TRANSLATION_RULES / call_gemini_with_retries / _safe_json_loads_maybe_extract /
+# client_fulltext / _FREE_TIER_MON / TRANSLATION_BATCH_SIZE を使用
+def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
+    """
+    Business向けPDFで使う全文翻訳。順序は urls_in_order に従って返します。
+    既存のラッパー（call_gemini_with_retries）とモニタ（_FREE_TIER_MON）をそのまま利用しつつ、
+    この関数専用のクレンジング／事前チェック／2件まとめ翻訳 を関数内に閉じ込めています。
+    戻り値: [{"url","title_ja","body_ja"}, ...]
+    """
+    # --- ローカル定数（環境変数は増やさず定数化） ---
+    FULLTEXT_MAX_CHARS = 6000
+    BATCH = TRANSLATION_BATCH_SIZE  # 既定=2（= 2件まとめ）
+    WAIT  = 60                      # 要約と同じ 1 分待機
+
+    # --- ローカル import（この関数だけが使うもの） ---
+    import re, json, time, unicodedata
+    from datetime import datetime, timezone
+
+    # --- English & Burmese leading labels / outlet-only lines ---
+    EXCLUDE_LINE_PATTERNS = [
+        # Captions / media labels (English)
+        r"^(?:Photo|Image|Video|Graphic|Map|Caption)[:：\)]",
+        r"^\((?:Photo|Image|Video|Graphic|Map)\)\s*$",
+        # Credits / sources (English)
+        r"^(?:Credit|Credits|Source|Sources|Via|Courtesy of)[:：]",
+        # Editorial / translation notes (English)
+        r"^(?:With reporting by|Reported by|Reporting by|Edited by|Compiled by|Translation|Translator|Translated by).*$",
+
+        # Captions / labels (Burmese)
+        r"^(?:ဓာတ်ပုံ|ရုပ်ပုံ)[:：]",            # photo / image
+        # Sources / credits (Burmese)
+        r"^(?:ရင်းမြစ်)[:：]",                 # source
+        # Editorial / translation notes (Burmese)
+        r"^(?:ဘာသာပြန်|ဘာသာပြန်သူ|တည်းဖြတ်)[:：]",
+
+        # Outlet-only line (English outlet names)
+        r"^(?:BBC Burmese|DVB|Myanmar Now|The Irrawaddy|Khit Thit Media|Mizzima|RFA Burmese|VOA Burmese|Eleven Media|Frontier Myanmar|Reuters|AP|Associated Press|AFP|SCMP)\s*$",
+        # 3個以上のハッシュタグ行（タグ雲）
+        r'^(?:[#＃][^\s#]+(?:\s+|$)){3,}$',
+        # WPコメント欄の定型文・コメント誘導
+        r'^(?:Save my name, email, and website.*)$',
+        r'^(?:Leave a comment|Post a Comment|Your email address will not be published).*$',
+        # 単独 "PDF" 行
+        r'^(?:PDF)\s*$',
+        # 記号だけの行
+        r'^[\s\-/–—•·|\\\(\)\[\]{}“”"\'«»。、．…／]+$',
+        # "##..." で始まるタグ群の行
+        r'^(?:##.*)$',
+    ]
+    EXCLUDE_RE_LIST = [re.compile(p, re.IGNORECASE) for p in EXCLUDE_LINE_PATTERNS]
+
+    def compact_body(body: str) -> str:
+        if not body:
+            return ""
+        norm_lines = []
+        for ln in body.splitlines():
+            ln = unicodedata.normalize("NFC", ln)
+            ln = re.sub(r"\s+", " ", ln).strip()
+            if not ln:
+                continue
+            if any(p.search(ln) for p in EXCLUDE_RE_LIST):
+                continue
+            norm_lines.append(ln)
+        s = "\n\n".join(norm_lines).strip()
+        return re.sub(r"\n{3,}", "\n\n", s)
+
+    def trim_by_chars(s: str, max_chars: int) -> str:
+        s = s or ""
+        return s if len(s) <= max_chars else (s[:max_chars].rstrip() + "\n\n[…本文が長いためここまでを翻訳]")
+
+    def rough_token_estimate(s: str) -> int:
+        """英語 or ビルマ語（ミャンマー文字）前提の**ざっくり**見積り。
+        - English 優勢: 4 chars ≒ 1 token
+        - Myanmar 優勢: 2 chars ≒ 1 token
+        - 混在/その他: 3 chars ≒ 1 token（安全側）
+        ※ 目的は超過前待機の“目安”なので、少し多め（安全側）に見積もります。
+        """
+        s = s or ""
+        total = len(s)
+        if total == 0:
+            return 0
+        # Unicode ブロックでミャンマー文字を概算カウント
+        my = len(re.findall(r"[\u1000-\u109F\uAA60-\uAA7F\uA9E0-\uA9FF]", s))
+        la = len(re.findall(r"[A-Za-z]", s))  # 英字の概算
+        my_ratio = my / total
+        la_ratio = la / total
+        if my_ratio >= 0.6:
+            div = 2.0
+        elif la_ratio >= 0.6:
+            div = 4.0
+        else:
+            div = 3.0
+        return max(0, int(total / div))
+
+    def precheck_sleep(predicted_prompt_tokens: int, tag: str = "fulltext-batch"):
+        """_FREE_TIER_MON の窓データで RPM/TPM(in) を事前チェックして、危なければ待機。"""
+        try:
+            mon = _FREE_TIER_MON  # 既存のグローバル（監視オブジェクト）
+        except NameError:
+            mon = None
+        if not mon:
+            return
+        try:
+            # RPM guard
+            rpm_now = len(getattr(mon, "req_times", []))
+            rpm_lim = getattr(mon, "rpm_limit", 10)
+            if rpm_now + 1 > rpm_lim:
+                oldest = mon.req_times[0] if mon.req_times else None
+                if oldest:
+                    wait = max(0.0, 60.0 - (datetime.utcnow().replace(tzinfo=timezone.utc) - oldest).total_seconds())
+                    if wait > 0:
+                        print(f"🕒 free-tier guard (RPM) sleeping {wait:.1f}s | tag={tag}")
+                        time.sleep(wait)
+            # TPM(in) guard（緩め）
+            tpm_in_now = sum(tok for _, tok in getattr(mon, "tpm_in_points", []))
+            tpm_lim = getattr(mon, "tpm_limit", 250000)
+            if tpm_in_now + int(predicted_prompt_tokens) > tpm_lim:
+                print("🕒 free-tier guard (TPM-in) sleeping 5s | tag=", tag)
+                time.sleep(5)
+        except Exception:
+            pass
+        
+    def _safe_json_loads_extract(text: str):
+        """
+        LLMが前後に余計な文やコードフェンスを付けても
+        JSON（配列/オブジェクト）を確実に取り出して読み込む。
+        """
+        import json, re
+
+        t = (text or "").strip()
+
+        # 1) まずは素で
+        try:
+            return json.loads(t)
+        except Exception:
+            pass
+
+        # 2) ```json … ``` や ``` … ``` を除去
+        t2 = re.sub(r"^\s*```(?:json)?\s*|\s*```\s*$", "", t, flags=re.I | re.M).strip()
+        if t2 != t:
+            try:
+                return json.loads(t2)
+            except Exception:
+                pass
+
+        # 3) 先頭からバランス括弧で [ … ] を優先抽出（配列）
+        def _scan_balanced(s: str, opener: str, closer: str):
+            depth = 0
+            in_str = False
+            esc = False
+            start = None
+            for i, ch in enumerate(s):
+                if in_str:
+                    if esc:
+                        esc = False
+                    elif ch == "\\":
+                        esc = True
+                    elif ch == '"':
+                        in_str = False
+                    continue
+                if ch == '"':
+                    in_str = True
+                    continue
+                if ch == opener:
+                    if depth == 0:
+                        start = i
+                    depth += 1
+                elif ch == closer and depth:
+                    depth -= 1
+                    if depth == 0 and start is not None:
+                        yield s[start : i + 1]
+
+        for block in list(_scan_balanced(t2, "[", "]")) + list(_scan_balanced(t2, "{", "}")):
+            try:
+                return json.loads(block)
+            except Exception:
+                continue
+
+        # 4) 最後の保険：最初に見つかった {…} または [… ] を丸ごと
+        m = re.search(r"(\[.*\]|\{.*\})", t2, flags=re.DOTALL)
+        if m:
+            try:
+                return json.loads(m.group(1))
+            except Exception:
+                pass
+
+        raise ValueError("Could not extract JSON from LLM response")
+    
+    # === 日本語検知（CJK+かな/カナ）と未翻訳判定 ===
+    def _contains_cjk(s: str) -> bool:
+        return bool(s and re.search(r"[\u3040-\u30FF\u4E00-\u9FFF\u3400-\u4DBF]", s))
+
+    def _needs_retry_untranslated(body: str) -> bool:
+        """
+        “日本語が全く含まれない”なら未翻訳と見なす（原文がビルマ語でも英語でも対象）。
+        """
+        t = (body or "").strip()
+        return bool(t) and (not _contains_cjk(t))
+
+    # === 全文翻訳プロンプトの共通ビルダー（既存prompt_partsの共通化） ===
+    def _build_fulltext_prompt(input_array: list[dict]) -> str:
+        # 文字列の隣接連結と + の混在での解析エラーを避けるため、配列で組み立て
+        prompt_parts = (
+            "次のニュース記事の【本文だけ】を**自然な日本語**に完全翻訳してください。\n"
+            "・固有名詞は一般的な日本語表記に\n"
+            "・ビルマ語/英語が混在していてもOK\n"
+            "・タイトル（見出し）は訳さない／出力しない\n"
+            "・本文は改行と段落を活かして読みやすく\n\n"
+            f"{COMMON_TRANSLATION_RULES}"
+            "【本文以外は必ず除外（この関数専用）】\n"
+            "以下は原文に含まれていても翻訳・出力しないこと（含めたら減点）。\n"
+            "- 写真キャプション／クレジット（先頭が「写真:」「ဓာတ်ပုံ」「Photo」「(写真」「(Photo」「（写真」などの行）\n"
+            "- 媒体名だけの行（例: South China Morning Post / BBC Burmese / DVB / Myanmar Now などの媒体名のみ）\n"
+            "- 出典や翻訳注記（例:「このニュースは…を翻訳したものです。」「Translated by …」「Source: …」「(China’s Ministry of Public Security)」等）\n"
+            "- 記者名や配信ラベルだけの行（例: By … / Reuters / AP / SCMP などの単独行）\n"
+            "- 発行地＋日付（Dateline）のみの行（例: "
+            "'Yangon, Sept. 30' / 'Nay Pyi Taw, 30 September' / "
+            "'ရန်ကုန်၊ စက်တင်ဘာ ၃၀' / 'နေပြည်တော်၊ ဖေဖော်ဝါရီ ၁၅' / "
+            "'ヤンゴン、9月30日' / 'ネピドー、2024年2月15日' など）。\n"
+            "  ※行頭や本文冒頭に置かれている場合も必ず除去すること。\n\n"
+            "【入力クレンジング手順】\n"
+            "1) 行単位で走査し、上記の非本文要素に一致する行をすべて削除する。\n"
+            "2) 連続する空行は1つに圧縮し、本文段落のみ残す。\n"
+            "3) 残った本文のみを翻訳対象とする（キャプション・媒体名・注記・Datelineは訳さない）。\n\n"
+            "【出力仕様】出力はJSONのみ：\n"
+            '[{"url":str, "body_ja":str}, …]\n'
+            "input = ",
+            json.dumps(input_array, ensure_ascii=False),
+        )
+        return "".join(prompt_parts)
+    
+    # === 未翻訳検知時の“単発リトライ”（同じプロンプトを単一要素配列で再利用） ===
+    def _single_fulltext_retry(url: str, raw_body: str, max_chars: int = 6000) -> str:
+        body_trim = trim_by_chars(raw_body or "", max_chars)
+        prompt = _build_fulltext_prompt([{"url": url, "body": body_trim}])
+
+        precheck_sleep(rough_token_estimate(prompt), tag="fulltext-retry")
+        try:
+            resp = call_gemini_with_retries(
+                client_fulltext,
+                prompt,
+                model="gemini-2.5-flash",
+                usage_tag="fulltext-retry",
+            )
+            text = getattr(resp, "text", None) or ""
+            arr  = _safe_json_loads_extract(text)
+            if isinstance(arr, dict):
+                arr = [arr]
+            if isinstance(arr, list):
+                for x in arr:
+                    if isinstance(x, dict) and x.get("url") == url:
+                        return (x.get("body_ja") or "").strip()
+        except Exception as e:
+            print("[warn] fulltext single retry failed:", e)
+        return ""
+
+    # --- 1) 前処理（クレンジング＋6000字上限） ---
+    prepared = []
+    for u in urls_in_order:
+        meta = (url_to_source_title_body.get(u) or {})
+        title_src = (meta.get("title") or "").strip()
+        body_src  = (meta.get("body")  or "").strip()
+        if not body_src:
+            continue
+        
+        if _pdf_needs_rescope(body_src):
+            body_rescoped = _fetch_and_scope_body_for_pdf(u)
+            if body_rescoped:
+                body_src = body_rescoped
+        
+        body_compact = trim_by_chars(compact_body(body_src), FULLTEXT_MAX_CHARS)
+        prepared.append({"url": u, "title": title_src, "body": body_compact})
+
+    # --- 2) まとめ翻訳（JSON配列で返答） ---
+    results = []
+    for i in range(0, len(prepared), BATCH):
+        batch = prepared[i:i+BATCH]
+        input_array = [{"url": b["url"], "body": b["body"]} for b in batch]
+
+        # 文字列の隣接連結と + の混在での解析エラーを避けるため、配列で組み立て        
+        prompt = _build_fulltext_prompt(input_array)
+
+        precheck_sleep(rough_token_estimate(prompt), tag="fulltext-batch")
+
+        try:
+            resp = call_gemini_with_retries(
+                client_fulltext,
+                prompt,
+                model="gemini-2.5-flash",
+                usage_tag="fulltext",
+            )
+            text = getattr(resp, "text", None) or ""
+            arr = _safe_json_loads_extract(text)
+            if isinstance(arr, dict):
+                arr = [arr]
+            url_to_res = {}
+            for x in (arr or []):
+                if isinstance(x, dict) and x.get("url"):
+                    url_to_res[str(x["url"])] = x
+            for b in batch:
+                x = url_to_res.get(b["url"]) or {}
+                body_ja = (x.get("body_ja") or b["body"]).strip()
+                results.append({"url": b["url"], "body_ja": body_ja})
+        except Exception as e:
+            print("🛑 fulltext batch failed:", e)
+            for b in batch:
+                results.append({
+                    "url": b["url"],
+                    "body_ja": (b.get("body") or "").strip(),  # 未翻訳本文をそのまま退避
+                })
+
+        # === このバッチで積んだ結果のうち「日本語が全く無い」ものだけ再翻訳 ===
+        start_idx = len(results) - len(batch)
+        end_idx   = len(results)
+        for j in range(start_idx, end_idx):
+            item = results[j]
+            url  = item["url"]
+            body = item.get("body_ja") or ""
+            if _needs_retry_untranslated(body):
+                print(f"[warn] fulltext seems untranslated (no Japanese detected): {url}")
+                # 元の生本文（整形前）を取り出す
+                raw_body = (url_to_source_title_body.get(url, {}) or {}).get("body") or body
+                fixed = _single_fulltext_retry(url, raw_body, max_chars=FULLTEXT_MAX_CHARS)
+                # 最終採用条件：日本語が含まれていればOK
+                if fixed and _contains_cjk(fixed):
+                    results[j]["body_ja"] = fixed
+                    print(f"[ok] repaired untranslated fulltext via single retry: {url}")
+                # 呼びすぎ回避の小休止（要約と同じ運用）
+                time.sleep(0.6)
+
+        time.sleep(0.6)  # バッチ内マイクロスリープ（要約と合わせる）
+        if i + BATCH < len(prepared):
+            print(f"🕒 Waiting {WAIT} seconds before next fulltext batch …")
+            time.sleep(WAIT)  # バッチ間 1 分待機（要約と合わせる）
+
+    # --- 3) 入力順で並べ直し ---
+    url_to_item = {x["url"]: x for x in results}
+    return [url_to_item[u] for u in urls_in_order if u in url_to_item]
+
+
+# 日本語日付を作る（0埋めなし）
+def _jp_date(d: date) -> str:
+    return f"{d.year}年{d.month}月{d.day}日"
+
+
+def build_combined_pdf_for_business(translated_items, out_path=None):
+    """
+    Business向け：全文翻訳PDF（本文のみ、背景#f9f9f9）を1本に結合。
+    translated_items: 各要素に "title_ja", "body_ja", "source" を含める想定。
+    ※ "summary_plain" はあっても無視します（描画しません）。
+    """
+    # ===== 依存を関数内に閉じ込める =====
+    import os, re, unicodedata
+    from fpdf import FPDF
+
+    # ===== レイアウト定数 =====
+    LEFT_RIGHT_MARGIN = 16.0
+    TOP_MARGIN        = 16.0
+    BOTTOM_MARGIN     = 16.0
+
+    TITLE_SIZE        = 15
+    META_SIZE         = 11   # メディア＋日付の1行
+    BODY_SIZE         = 11
+    URL_SIZE          = 10   # URLの文字サイズ
+    LINE_H_TITLE      = 6.5
+    LINE_H_META       = 5.5
+    LINE_H_BODY       = 5.5
+
+    BODY_BG_RGB       = (249, 249, 249)  # 本文背景 #f9f9f9
+
+    TITLE_BODY_GAP = 5.0  # タイトル→本文の余白（mm）
+    TITLE_META_GAP_H = LINE_H_BODY # ← 追加：タイトル→メタ行の余白（本文1行ぶん）
+    
+    # ===== 正規化ユーティリティ（不自然改行の抑止） =====
+    _ZW_RE = re.compile(r"[\u200b\u200c\u200d\ufeff]")
+    _SOFT_BREAK_RE = re.compile(r"(?<!\n)\n(?!\n)")
+
+    def _normalize_text_for_pdf(text: str) -> str:
+        """
+        段落の空行は残しつつ、段落内の“ソフト改行”を結合する。
+        - 空行(=改行のみ)で段落を区切り
+        - 段落内部は行末が句点類で終わらない限り、改行を削除して連結
+        """
+        import re
+        if not text:
+            return ""
+
+        # 改行正規化
+        t = text.replace("\r\n", "\n").replace("\r", "\n")
+
+        # ゼロ幅文字の除去（既存の _ZW_RE を使う）
+        t = _ZW_RE.sub("", t)
+
+        # 単発改行だけを文脈に応じて結合（段落 \n\n は対象外）
+        s = t  # 置換の基準スナップショット
+        BULLETS = "・●○■□◆◇▶▷•*-–—"
+
+        def _soft_join(m):
+            i = m.start()                     # 改行の位置
+            left  = s[i-1] if i > 0 else ""   # 左隣の1文字
+            right = s[i+1] if i+1 < len(s) else ""  # 右隣の1文字
+
+            # 箇条書きが次行先頭なら改行は保持
+            if right and right in BULLETS:
+                return "\n"
+
+            # 英数→英数はスペースで結合（"(YA)\nmember" → "(YA) member"）
+            if re.match(r"[A-Za-z0-9\)\]]", left) and re.match(r"[A-Za-z0-9\(\[]", right):
+                return " "
+
+            # それ以外（CJK含む）は無空白で結合
+            return ""
+
+        t = _SOFT_BREAK_RE.sub(_soft_join, s)
+        
+        # ===== 半角括弧を全角に統一し、括弧のまわりの“折り返し可能な空白”を除去（URLは除外） =====
+        _URL_RE = re.compile(r"https?://\S+")
+
+        def _convert_paren_outside_urls(text: str) -> str:
+            def _conv(chunk: str) -> str:
+                # 1) 半角→全角
+                chunk = chunk.replace("(", "（").replace(")", "）")
+                # 2) 「語 + 空白 + （」を「語 + （」へ（空白を削除）
+                chunk = re.sub(r"(?<=\S) （", "（", chunk)
+                # 3) 「） + 空白 + 語」を「） + 語」へ（空白を削除）
+                chunk = re.sub(r"） (?=\S)", "）", chunk)
+                return chunk
+
+            out = []
+            last = 0
+            for m in _URL_RE.finditer(text):
+                out.append(_conv(text[last:m.start()]))  # URLの手前は変換
+                out.append(m.group(0))                   # URL本体はそのまま
+                last = m.end()
+            out.append(_conv(text[last:]))               # 末尾
+            return "".join(out)
+
+        t = _convert_paren_outside_urls(t)
+        
+        # 行頭禁則（開きカッコの直前のスペースを NBSP に変換して改行禁止）
+        t = re.sub(r"(?<=\S) (?=[\(\（\[\【])", "\u00A0", t)  # \u00A0 = NBSP
+
+        # 段落で分割（連続する空行を1つの区切りとみなす）
+        paras = re.split(r"\n\s*\n", t.strip(), flags=re.MULTILINE)
+        cleaned_paras = []
+
+        # 文末とみなす文字（これで終わっていれば改行を維持）、カッコ/角カッコは“文末記号”ではないため除外
+        SENT_END = r"[。．\.！？!?…」』]"
+
+        for p in paras:
+            # 行単位に分割（空行はこの段階では存在しない前提）
+            lines = [ln.strip() for ln in p.split("\n") if ln.strip() != ""]
+            if not lines:
+                continue
+
+            buf = lines[0]
+            for ln in lines[1:]:
+                # 直前が文末記号で終わるなら改行維持（=新しい文として連結）
+                if re.search(SENT_END + r"$", buf):
+                    buf = buf + "\n" + ln
+                else:
+                    # それ以外は“ソフト改行”とみなし、改行を削除して結合
+                    # （日本語なのでスペースは挟まない）
+                    buf = buf + ln
+            cleaned_paras.append(buf)
+
+        # 段落間は空行1つ（= \n\n）で接続
+        return "\n\n".join(cleaned_paras)
+
+    # ===== 正規化ユーティリティ（不自然改行の抑止） =====
+    _ZW_RE = re.compile(r"[\u200b\u200c\u200d\ufeff]")
+    _SOFT_BREAK_RE = re.compile(r"(?<!\n)\n(?!\n)")
+
+    def _normalize_text_for_pdf(text: str) -> str:
+        """
+        段落の空行は残しつつ、段落内の“ソフト改行”を結合する。
+        - 空行(=改行のみ)で段落を区切り
+        - 段落内部は行末が句点類で終わらない限り、改行を削除して連結
+        """
+        import re
+        if not text:
+            return ""
+
+        # 改行正規化
+        t = text.replace("\r\n", "\n").replace("\r", "\n")
+        
+        # ゼロ幅文字の除去（既存の _ZW_RE を使う）
+        t = _ZW_RE.sub("", t)
+        
+        # 単発改行だけを文脈に応じて結合（段落 \n\n は対象外）
+        s = t  # 置換の基準スナップショット
+        BULLETS = "・●○■□◆◇▶▷•*-–—"
+
+        def _soft_join(m):
+            i = m.start()                     # 改行の位置
+            left  = s[i-1] if i > 0 else ""   # 左隣の1文字
+            right = s[i+1] if i+1 < len(s) else ""  # 右隣の1文字
+
+            # 箇条書きが次行先頭なら改行は保持
+            if right and right in BULLETS:
+                return "\n"
+
+            # 英数→英数はスペースで結合（"(YA)\nmember" → "(YA) member"）
+            if re.match(r"[A-Za-z0-9\)\]]", left) and re.match(r"[A-Za-z0-9\(\[]", right):
+                return " "
+
+            # それ以外（CJK含む）は無空白で結合
+            return ""
+
+        t = _SOFT_BREAK_RE.sub(_soft_join, s)
+
+        # 段落で分割（連続する空行を1つの区切りとみなす）
+        paras = re.split(r"\n\s*\n", t.strip(), flags=re.MULTILINE)
+        cleaned_paras = []
+
+        # 文末とみなす文字（これで終わっていれば改行を維持）、カッコ/角カッコは“文末記号”ではないため除外
+        SENT_END = r"[。．\.！？!?…」』]"
+
+        for p in paras:
+            # 行単位に分割（空行はこの段階では存在しない前提）
+            lines = [ln.strip() for ln in p.split("\n") if ln.strip() != ""]
+            if not lines:
+                continue
+
+            buf = lines[0]
+            for ln in lines[1:]:
+                # 直前が文末記号で終わるなら改行維持（=新しい文として連結）
+                if re.search(SENT_END + r"$", buf):
+                    buf = buf + "\n" + ln
+                else:
+                    # それ以外は“ソフト改行”とみなし、改行を削除して結合
+                    # （日本語なのでスペースは挟まない）
+                    buf = buf + ln
+            cleaned_paras.append(buf)
+
+        # 段落間は空行1つ（= \n\n）で接続
+        return "\n\n".join(cleaned_paras)
+
+    # ===== PDFユーティリティ =====
+    def _epw(pdf):  # effective page width
+        return pdf.w - pdf.l_margin - pdf.r_margin
+
+    def _register_jp_fonts(pdf):
+        font_regular = os.environ.get("PDF_FONT_PATH")
+        font_bold    = os.environ.get("PDF_FONT_BOLD_PATH") or font_regular
+        if not font_regular:
+            raise RuntimeError("PDF_FONT_PATH が未設定です（JPフォント .ttf/.otf のパスを指定）")
+        try: pdf.add_font("JP",  "", font_regular, uni=True)
+        except Exception: pass
+        try: pdf.add_font("JP-B","", font_bold,    uni=True)
+        except Exception: pass
+
+    def _format_meta_date(date_str: str) -> str:
+        import re
+        s = (date_str or "").strip()
+        # "YYYY-MM-DDThh:mm:ss" → "YYYY-MM-DD" に切り落とし
+        if "T" in s:
+            s = s.split("T", 1)[0]
+        m = re.fullmatch(r"(\d{4})-(\d{1,2})-(\d{1,2})", s)
+        if not m:
+            return s  # 既に和式/別形式ならそのまま
+        y, mo, d = map(int, m.groups())
+        return f"{y}年{mo}月{d}日"
+
+    def _write_title_with_source(pdf, title, media, date_str=""):
+        # 実効幅
+        epw = getattr(pdf, "epw", pdf.w - pdf.l_margin - pdf.r_margin)
+
+        # 1) タイトル（左揃え・太字）
+        pdf.set_x(pdf.l_margin)
+        title = (title or "").strip()
+        if title:
+            pdf.set_text_color(0, 0, 0)
+            pdf.set_font("JP-B", size=TITLE_SIZE)
+            pdf.multi_cell(w=epw, h=LINE_H_TITLE, txt=title, align="L", border=0)
+
+        # 2) タイトル→メタ行の“本文1行ぶん”の空白
+        pdf.ln(TITLE_META_GAP_H)
+
+        # 3) メタ行（メディア＋日付）… 例）"Khit Thit Media　2025年9月30日"
+        media = (media or "").strip()
+        date_txt = _format_meta_date(date_str)
+        meta_line = f"{media}　{date_txt}".strip("　 ")
+
+        if meta_line:
+            pdf.set_x(pdf.l_margin)
+            pdf.set_font("JP", size=META_SIZE)
+            pdf.multi_cell(w=epw, h=LINE_H_META, txt=meta_line, align="L", border=0)
+
+        # 4) メタ行→本文の余白（既存の設定を尊重）
+        pdf.ln(TITLE_BODY_GAP)
+
+    def _write_body_with_bg(pdf, body):
+        """本文を #f9f9f9 背景で出力（複数ページにまたがってOK）。"""
+        
+        pdf.set_x(pdf.l_margin)  # 本文前にも左マージンに揃えて開始
+        
+        txt = _normalize_text_for_pdf(body)
+        if not txt:
+            return
+        pdf.set_font("JP", size=BODY_SIZE)
+        pdf.set_fill_color(*BODY_BG_RGB)
+        # 1行ごとに塗られるため、段落全体として薄グレーになります
+        pdf.multi_cell(w=_epw(pdf), h=LINE_H_BODY, txt=txt, align="L", border=0, fill=True)
+        pdf.ln(2.0)
+        
+    def _write_url_footer(pdf, url):
+        url = (url or "").strip()
+        if not url:
+            return
+        pdf.ln(1.0)
+        pdf.set_text_color(0, 0, 200)
+        pdf.set_font("JP", size=URL_SIZE)
+        # クリック可能なリンクで書き出す
+        pdf.write(h=LINE_H_BODY, txt=url, link=url)
+        pdf.set_text_color(0, 0, 0)
+
+    # ===== PDF 本体 =====
+    pdf = FPDF(format="A4", unit="mm")
+    pdf.set_auto_page_break(auto=True, margin=BOTTOM_MARGIN)
+    pdf.set_margins(LEFT_RIGHT_MARGIN, TOP_MARGIN, LEFT_RIGHT_MARGIN)
+    _register_jp_fonts(pdf)
+
+    # 各記事は必ず「新しいページの先頭から」開始。※要約は描画しない
+    for item in translated_items or []:
+        pdf.add_page()
+        pdf.set_xy(pdf.l_margin, pdf.t_margin)
+
+        _write_title_with_source(
+            pdf,
+            title=item.get("title_ja", "") or "",
+            media=item.get("source", "") or "",
+            date_str=item.get("date", "") or "",    # ← 日付を渡す
+        )
+        _write_body_with_bg(pdf, item.get("body_ja", "") or "")
+        _write_url_footer(pdf, item.get("url", "") or "")
+
+    # ===== 出力（bytearray対策込み） =====
+    out = pdf.output(dest="S")
+    if isinstance(out, (bytes, bytearray)):
+        pdf_bytes = bytes(out)
+    else:
+        pdf_bytes = out.encode("latin1")
+
+    if out_path:
+        with open(out_path, "wb") as f:
+            f.write(pdf_bytes)
+
+    return pdf_bytes
+
+
+def send_email_digest(
+    summaries,
+    *,
+    recipients_env=None,
+    include_read_link: bool = True,
+    trial_footer_url: Optional[str] = None,
+    attachment_bytes: Optional[bytes] = None,
+    attachment_name: Optional[str] = None,
+    delivery_date_mmt: Optional[date] = None,
+):
     def _build_gmail_service():
         cid = os.getenv("GMAIL_CLIENT_ID")
         csec = os.getenv("GMAIL_CLIENT_SECRET")
@@ -3116,8 +3924,6 @@ def send_email_digest(summaries, *, recipients_env=None, subject_suffix=""):
             raise RuntimeError(
                 "Gmail API credentials (CLIENT_ID/SECRET/REFRESH_TOKEN) are missing."
             )
-
-        # リフレッシュトークンがある場合、scopes を渡さない
         creds = Credentials(
             token=None,
             refresh_token=rtok,
@@ -3126,6 +3932,52 @@ def send_email_digest(summaries, *, recipients_env=None, subject_suffix=""):
             client_secret=csec,
         )
         return build("gmail", "v1", credentials=creds, cache_discovery=False)
+    
+    # ===== メール件名 =====
+    SUBJECT_BRAND = "MNA"
+
+    def _date_str_yyyymmdd(actual_delivery_dt: datetime | None = None, tz_name: str = "Asia/Yangon") -> str:
+        """実際の配信日のローカル日付を yyyy/m/d で返す（先頭ゼロなし）"""
+        tz = zoneinfo.ZoneInfo(tz_name)
+        dt = (actual_delivery_dt or datetime.now(tz)).astimezone(tz)
+        return f"{dt.year}/{dt.month}/{dt.day}"
+
+    def _sanitize_one_line(s: str) -> str:
+        """改行・過剰空白を除去し、メール件名で崩れないように整形"""
+        if not s:
+            return ""
+        s = " ".join(str(s).split())          # 改行や連続空白を単一空白に
+        s = s.replace("】】", "】")            # 二重クローズ誤爆の保険
+        return s.strip()
+
+    def build_mail_subject(
+        headlines: list[str] | None,
+        is_ayeyarwady_only: bool,
+        actual_delivery_dt: datetime | None = None,
+        brand: str = SUBJECT_BRAND,
+        tz_name: str = "Asia/Yangon",
+    ) -> str:
+        """
+        要件:
+        1) エーヤワディのみのメール
+            → 【MNA yyyy/m/d】エーヤワディ関連記事
+        2) 上記以外
+            → 【MNA yyyy/m/d】ヘッドライン上位2本を「見出し / 見出し 他」
+            （1本しか無ければ「見出し 他」、0本なら「ヘッドライン」）
+        """
+        ds = _date_str_yyyymmdd(actual_delivery_dt, tz_name)
+        prefix = f"【{brand} {ds}】"
+
+        if is_ayeyarwady_only:
+            return f"{prefix}エーヤワディ関連記事"
+
+        titles = [ _sanitize_one_line(t) for t in (headlines or []) if _sanitize_one_line(t) ]
+        if len(titles) >= 2:
+            return f"{prefix}{titles[0]} / {titles[1]}　他"
+        elif len(titles) == 1:
+            return f"{prefix}{titles[0]}　他"
+        else:
+            return f"{prefix}ヘッドライン"
 
     sender_email = os.getenv("EMAIL_SENDER")
     env_name = recipients_env
@@ -3134,44 +3986,24 @@ def send_email_digest(summaries, *, recipients_env=None, subject_suffix=""):
     digest_date = get_today_date_mmt()
     date_str = digest_date.strftime("%Y年%-m月%-d日") + "分"
 
-    # メディアごとにまとめる
     media_grouped = defaultdict(list)
     for item in summaries:
         media_grouped[item["source"]].append(item)
 
-    subject = "ミャンマー関連ニュース【" + date_str + "】"
-    # テスト用記述
-    if subject_suffix:
-        subject += " " + subject_suffix 
-
-    # ✅ ヘッドライン部分を先に構築
-    headlines = []
-    for item in summaries:
-        headlines.append(f"✓ {item['title']}")  # ← 半角スペース追加
-
+    headlines = [f"✓ {item['title']}" for item in summaries]
     headline_html = (
         "<div style='margin-bottom:20px'>"
         f"------- ヘッドライン ({len(summaries)}本) -------<br>"
-        + "<br>".join(headlines)  # ← 各タイトルを改行で表示
+        + "<br>".join(headlines)
         + "</div><hr>"
     )
 
-    # ✅ メール本文全体のHTML
-    html_content = """
-    <html>
-    <body style="font-family: Arial, sans-serif; background-color: #ffffff; color: #333333;">
-    """
-
-    # 先頭にヘッドライン挿入
+    html_content = "<html><body style='font-family: Arial, sans-serif; background-color: #ffffff; color: #333333;'>"
     html_content += headline_html
 
-    # 記事ごとの本文
     for media, articles in media_grouped.items():
         for item in articles:
-            title_jp = item["title"]
-            url = item["url"]
-            summary_html = item["summary"]
-
+            title_jp = item["title"]; url = item["url"]; summary_html = item["summary"]
             heading_html = (
                 "<h2 style='margin-bottom:5px'>"
                 f"{title_jp}　"
@@ -3180,21 +4012,75 @@ def send_email_digest(summaries, *, recipients_env=None, subject_suffix=""):
                 "</span>"
                 "</h2>"
             )
-
             html_content += (
                 "<div style='margin-bottom:20px'>"
                 f"{heading_html}"
                 "<div style='background-color:#f9f9f9;padding:10px;border-radius:8px'>"
                 f"{summary_html}"
                 "</div>"
-                f"<p><a href='{url}' style='color:#1a0dab' target='_blank'>本文を読む</a></p>"
-                "</div><hr style='border-top: 1px solid #cccccc;'>"
             )
+            if include_read_link:
+                html_content += f"<p><a href='{url}' style='color:#1a0dab' target='_blank'>本文を読む</a></p>"
+            html_content += "</div><hr style='border-top: 1px solid #cccccc;'>"
 
+    if trial_footer_url:
+        
+        # ===== メールの見た目を記事と揃えるための定数（必要なら数値だけ変えてOK）=====
+        ARTICLE_TITLE_FONT = "Arial, sans-serif"
+        ARTICLE_TITLE_SIZE = 20  # 記事タイトル（h2相当）
+        ARTICLE_BODY_FONT  = "Arial, sans-serif"
+        ARTICLE_BODY_SIZE  = 16  # 記事本文（body相当）
+
+        # CTAの見た目
+        CTA_GAP_PX = 16            # 見出し↔本文／本文↔ボタンの上下余白を統一
+        CTA_BG     = "#0B6465"     # ボタン背景色
+        CTA_TEXT   = "#ffffff"     # ボタン文字色（白）
+        
+        CTA_PAD_Y = 10           # ← 上下の余白（高さに直結）
+        CTA_PAD_X = 28           # ← 左右の余白
+        CTA_LINE_HEIGHT = 1.0   # ← テキスト行の高さ（Outlook対策はexactly併用）
+        
+        html_content += (
+            "<div style='margin-top:24px;padding:12px;border:1px solid #eee;border-radius:8px;background-color:#fafafa'>"
+            # 見出し：記事タイトルと同じフォント＆サイズ
+            f"<p style='margin:0 0 {CTA_GAP_PX}px 0;"
+            f"font-family:{ARTICLE_TITLE_FONT};font-size:{ARTICLE_TITLE_SIZE}px;font-weight:700'>"
+            "継続をご希望の方へ</p>"
+            # 説明文：記事本文と同じフォント＆サイズ
+            f"<p style='margin:0;"
+            f"font-family:{ARTICLE_BODY_FONT};font-size:{ARTICLE_BODY_SIZE}px;line-height:1.6'>"
+            "<span style='display:block'>無料トライアルをお試しいただきありがとうございます。</span>"
+            "<span style='display:block'>継続をご希望の方は、目的に合わせて選べる有料プランをご利用ください。</span>"
+            "</p>"
+            # 本文↔ボタンも同じ余白に
+            f"<p style='margin:{CTA_GAP_PX}px 0 0 0'>"
+            f"<a href='{trial_footer_url}' target='_blank' "
+            f"style='display:inline-block;text-decoration:none;border-radius:12px;"
+            f"background-color:{CTA_BG};color:{CTA_TEXT} !important;font-weight:700;text-align:center;"
+            f"font-family:{ARTICLE_BODY_FONT};font-size:{ARTICLE_BODY_SIZE + 6}px;"
+            f"line-height:{CTA_LINE_HEIGHT};"
+            f"padding:{CTA_PAD_Y}px {CTA_PAD_X}px;min-width:220px;mso-line-height-rule:exactly;'>"
+            "プランを比較</a></p>"
+            "</div>"
+        )
     html_content += "</body></html>"
     html_content = clean_html_content(html_content)
 
-    from_display_name = "Myanmar News Digest"
+    # ===== 件名（要件準拠） =====
+    # 1) エーヤワディのみ → 【MNA yyyy/m/d】エーヤワディ関連記事
+    # 2) それ以外 → 【MNA yyyy/m/d】見出し1 / 見出し2 他（見出し数に応じて調整）
+    titles_for_subject = [it.get("title", "") for it in summaries if (it.get("title") or "").strip()]
+    is_ayeyar_only_batch = bool(summaries) and all(bool(s.get("is_ayeyar")) for s in summaries)
+    # 件名の日付は __main__ 側で決定した date_mmt を使用
+    dt_for_subject = None
+    if delivery_date_mmt is not None:
+        try:
+            tz = zoneinfo.ZoneInfo("Asia/Yangon")
+            dt_for_subject = datetime(delivery_date_mmt.year, delivery_date_mmt.month, delivery_date_mmt.day, tzinfo=tz)
+        except Exception:
+            dt_for_subject = None
+    subject = build_mail_subject(titles_for_subject, is_ayeyar_only_batch, actual_delivery_dt=dt_for_subject)
+    from_display_name = "Myanmar News Alert"
 
     subject = re.sub(r"[\r\n]+", " ", subject).strip()
     msg = EmailMessage(policy=SMTP)
@@ -3203,6 +4089,15 @@ def send_email_digest(summaries, *, recipients_env=None, subject_suffix=""):
     msg["To"] = ", ".join(recipient_emails)
     msg.set_content("HTMLメールを開ける環境でご確認ください。", charset="utf-8")
     msg.add_alternative(html_content, subtype="html", charset="utf-8")
+
+    # ===== 添付（あれば） =====
+    if attachment_bytes and attachment_name:
+        msg.add_attachment(
+            attachment_bytes,
+            maintype="application",
+            subtype="pdf",
+            filename=attachment_name,
+        )
 
     try:
         service = _build_gmail_service()
@@ -3271,7 +4166,8 @@ if __name__ == "__main__":
         pass
 
     print("=== Khit Thit Media ===")
-    articles_khit = get_khit_thit_media_articles_from_category(date_mmt, max_pages=3)
+    articles_khit = get_khit_thit_media_articles_from_category(date_mmt, max_pages=1)
+    # articles_khit = get_khit_thit_media_articles_from_category(date_mmt, max_pages=3)
     process_and_enqueue_articles(
         articles_khit, 
         "Khit Thit Media", 
@@ -3311,7 +4207,7 @@ if __name__ == "__main__":
         send_email_digest(
             summaries_ayeyar_only,
             recipients_env="INTERNAL_EMAIL_RECIPIENTS",
-            subject_suffix="/ (エーヤワディのみ)"
+            delivery_date_mmt=date_mmt,
         )
     else:
         print("エーヤワディ記事なし: エーヤワディのみメールは送信しません。")
@@ -3320,8 +4216,120 @@ if __name__ == "__main__":
     summaries_non_ayeyar = [
         s for s in all_summaries if s.get("hit_non_ayeyar") and not s.get("is_ayeyar")
     ]
+
+    # Lite向け：要約＋本文リンクのみ（添付なし）
     send_email_digest(
         summaries_non_ayeyar,
-        recipients_env="EMAIL_RECIPIENTS",
-        subject_suffix="/ (エーヤワディ以外)"
+        recipients_env="LITE_EMAIL_RECIPIENTS",
+        include_read_link=False,
+        delivery_date_mmt=date_mmt,
+    )
+    
+    # ===== Business向け：全文翻訳 → 1ファイルPDF化 → 添付送信 =====
+    # 1) Business に送る記事URLの順序（summaries_non_ayeyarに合わせる）
+    business_urls = [s["url"] for s in summaries_non_ayeyar]
+
+    # 2) URL→原題・原文本文のマップを組み立て（translation_queue を利用）
+    #    ※ translation_queue の各要素: {"url","title","body",...}
+    url_to_source_title_body = {}
+    for q in translation_queue:
+        u = _norm_id(q.get("url") or "")
+        if u and u not in url_to_source_title_body:
+            url_to_source_title_body[u] = {"title": q.get("title",""), "body": q.get("body","")}
+
+    # 3) 全文翻訳（Gemini）
+    fulltexts = translate_fulltexts_for_business(business_urls, url_to_source_title_body)
+    
+    # 4) URL→メール用タイトル（= 要約で使った最終タイトル）のマップ
+    url_to_mail_title = {}
+    for s in summaries_non_ayeyar:
+        url_to_mail_title[_norm_id(s["url"])] = s["title"]
+
+    # 5) PDFに使うタイトルをメールと完全一致に上書き
+    for it in fulltexts:
+        u = _norm_id(it.get("url",""))
+        if u in url_to_mail_title:
+            it["title_ja"] = url_to_mail_title[u]
+
+    # 5.5) PDF用メタ（source / summary_plain / date）を結合して translated_items を作る
+    import re
+
+    def html_to_plain(s: str) -> str:
+        s = s or ""
+        s = re.sub(r"(?i)<br\s*/?>", "\n", s)
+        s = re.sub(r"<[^>]+>", "", s)
+        return s.strip()
+
+    # url -> {source, summary_plain, date}
+    url_to_meta = {}
+    for s in summaries_non_ayeyar:
+        u = _norm_id(s["url"])
+        url_to_meta[u] = {
+            "source": s.get("source", "") or "",
+            "summary_plain": html_to_plain(s.get("summary", "") or ""),
+            "date": (s.get("date") or ""),   # ← 追加（"YYYY-MM-DD"想定。時間付きでもOK）
+            "url": u,                        # ← 追加（PDF末尾リンク用の保険）
+        }
+
+    # （任意）デバッグ：date欠落を検知
+    _missing = [k for k,v in url_to_meta.items() if not v.get("date")]
+    if _missing:
+        print(f"[warn] missing date for {len(_missing)} item(s), example: {_missing[:3]}")
+        
+    _ensure_meta_dates(url_to_meta, date_mmt.isoformat())
+
+    # fulltexts（translate_fulltexts_for_business の戻り）へメタをマージ
+    translated_items = []
+    for ft in fulltexts:
+        u = _norm_id(ft.get("url",""))
+        meta = url_to_meta.get(u, {})
+        translated_items.append({
+            "title_ja":      ft.get("title_ja", "") or "",
+            "body_ja":       ft.get("body_ja", "") or "",
+            "source":        meta.get("source", "") or "",
+            "date":          meta.get("date", "") or "",   # ← 追加
+            "url":           u,                            # ← 追加（PDF末尾に追記）
+        })
+
+    # 6) PDF作成（1記事=複数ページ可） — 添付ファイル名を日本語に
+    pdf_bytes = None
+    digest_d = get_today_date_mmt()
+    jp_date = _jp_date(digest_d)  # 例: 2025年9月29日
+    attachment_name = f"ミャンマーニュース全文訳【{jp_date}】.pdf"
+    try:
+        # ★ ここを fulltexts → translated_items に変更
+        pdf_bytes = build_combined_pdf_for_business(translated_items)
+        print(f"✅ PDF built in-memory: {attachment_name} ({len(pdf_bytes)} bytes)")
+    except Exception as e:
+        print("🛑 PDF build failed:", e)
+    
+    # 7) Business 配信（添付あり）
+    send_email_digest(
+        summaries_non_ayeyar,
+        recipients_env="BUSINESS_EMAIL_RECIPIENTS",
+        include_read_link=True,
+        attachment_bytes=pdf_bytes if pdf_bytes else None,
+        attachment_name=attachment_name if pdf_bytes else None,
+        delivery_date_mmt=date_mmt,
+    )
+
+    # INTERNAL にも Business と同一内容（件名・本文・添付）を送る
+    send_email_digest(
+        summaries_non_ayeyar,
+        recipients_env="INTERNAL_EMAIL_RECIPIENTS",
+        include_read_link=True,
+        attachment_bytes=pdf_bytes if pdf_bytes else None,
+        attachment_name=attachment_name if pdf_bytes else None,
+        delivery_date_mmt=date_mmt,
+    )
+    
+    # TRIAL へは Business と同一内容＋フッター（= PAID_PLAN_URL があれば）
+    send_email_digest(
+        summaries_non_ayeyar,
+        recipients_env="TRIAL_EMAIL_RECIPIENTS",
+        include_read_link=True,
+        trial_footer_url=(os.getenv("PAID_PLAN_URL", "").strip() or None),
+        attachment_bytes=pdf_bytes if pdf_bytes else None,
+        attachment_name=attachment_name if pdf_bytes else None,
+        delivery_date_mmt=date_mmt,
     )
