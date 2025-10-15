@@ -3254,7 +3254,9 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
     戻り値: [{"url","title_ja","body_ja"}, ...]
     """
     # --- ローカル定数（環境変数は増やさず定数化） ---
-    FULLTEXT_MAX_CHARS = 6000
+    # Business 向け全文翻訳では本文を途中で切らずにほぼ全量翻訳したい。
+    # Gemini Flash の安全コンテキスト上限を考慮し、上限を 100,000 文字に引き上げ。
+    FULLTEXT_MAX_CHARS = 100_000
     BATCH = TRANSLATION_BATCH_SIZE  # 既定=2（= 2件まとめ）
     WAIT  = 60                      # 要約と同じ 1 分待機
 
@@ -3512,7 +3514,8 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
             body_src = _cached.strip()
         if not body_src:
             continue
-        
+
+        # PDFの全文要約では 100,000 字までは翻訳対象に含める。
         body_compact = trim_by_chars(compact_body(body_src), FULLTEXT_MAX_CHARS)
         prepared.append({"url": u, "title": title_src, "body": body_compact})
 
