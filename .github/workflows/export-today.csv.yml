@@ -39,6 +39,7 @@ jobs:
           # ===== Gemini (production) =====
           GEMINI_API_SUMMARY_KEY: ${{ secrets.GEMINI_API_EXPORT_SUMMARY_KEY }}
           GEMINI_API_DEDUPE_KEY: ${{ secrets.GEMINI_API_EXPORT_DEDUPE_KEY }}
+          GEMINI_API_FULLTEXT_KEY: ${{ secrets.GEMINI_API_FULLTEXT_KEY }}
           GEMINI_REQS_PER_MIN: "9"
           GEMINI_MIN_INTERVAL_SEC: "2.0"
           GEMINI_JITTER_SEC: "0.3"
@@ -94,6 +95,7 @@ jobs:
           # ===== Gemini (development/test keys) =====
           GEMINI_API_SUMMARY_KEY: ${{ secrets.GEMINI_API_TEST_SUMMARY_KEY }}
           GEMINI_API_DEDUPE_KEY: ${{ secrets.GEMINI_API_TEST_DEDUPE_KEY }}
+          GEMINI_API_FULLTEXT_KEY: ${{ secrets.GEMINI_API_TEST_FULLTEXT_KEY }}
           GEMINI_REQS_PER_MIN: "9"
           GEMINI_MIN_INTERVAL_SEC: "2.0"
           GEMINI_JITTER_SEC: "0.3"
