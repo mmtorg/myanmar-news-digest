@@ -37,6 +37,10 @@ from email.header import Header
 from datetime import datetime
 from typing import List, Dict
 from datetime import date
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+
+MMT = ZoneInfo("Asia/Yangon")
 
 # ===== 既存コードから再利用 =====
 # 1) 収集・Gemini呼び出し・定数 (MMT/Irrawaddy/各種フェッチ) など
@@ -157,8 +161,8 @@ def main(argv=None) -> int:
     parser.add_argument("--batch-size", type=int, default=int(os.getenv("GEMINI_BATCH_SIZE", "100")))
     args = parser.parse_args(argv)
 
-    # 本日（MMT）
-    today_mmt = datetime.now(MMT).date()
+    # 昨日の日付（ミャンマー時間）
+    today_mmt = (datetime.now(MMT) - timedelta(days=1)).date()
     print(f"=== Collecting articles for {today_mmt.isoformat()} (MMT) ===")
 
     # 収集（“キーワード絞り込み前”）
