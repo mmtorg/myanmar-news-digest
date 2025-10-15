@@ -3982,6 +3982,10 @@ def send_email_digest(
     sender_email = os.getenv("EMAIL_SENDER")
     env_name = recipients_env
     recipient_emails = [x.strip() for x in os.getenv(env_name, "").split(",") if x.strip()]
+    # === ガード: 宛先が空なら送信スキップ（Gmail API 400: Recipient address required を防止） ===
+    if not recipient_emails:
+        print("⚠️ No recipient emails found. Skipping email send.")
+        return
 
     digest_date = get_today_date_mmt()
     date_str = digest_date.strftime("%Y年%-m月%-d日") + "分"
@@ -4087,6 +4091,10 @@ def send_email_digest(
     msg["Subject"] = subject
     msg["From"] = formataddr((str(Header(from_display_name, "utf-8")), sender_email))
     msg["To"] = ", ".join(recipient_emails)
+    # 念のための二重ガード（異常系で空文字になるのを防ぐ）
+    if not msg.get("To"):
+        print("⚠️ Computed empty 'To' header. Skipping email send.")
+        return
     msg.set_content("HTMLメールを開ける環境でご確認ください。", charset="utf-8")
     msg.add_alternative(html_content, subtype="html", charset="utf-8")
 
