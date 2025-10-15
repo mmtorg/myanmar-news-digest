@@ -395,6 +395,22 @@ BODY_MAX_CHARS = 3500
 # ミャンマー標準時 (UTC+6:30)
 MMT = timezone(timedelta(hours=6, minutes=30))
 
+# --- Unified body cache to reuse first-pass full bodies across stages ---
+BODY_CACHE = {}
+def _cache_body(url: str, body: str):
+    try:
+        if url and body:
+            BODY_CACHE[url] = body
+    except Exception:
+        pass
+
+def _get_cached_body(url: str) -> str:
+    try:
+        return BODY_CACHE.get(url) or ""
+    except Exception:
+        return ""
+# -----------------------------------------------------------------------
+
 
 # 今日の日付
 # ニュースの速報性重視で今日分のニュース配信の方針
@@ -649,38 +665,6 @@ def extract_body_mail_pdf_scoped(url: str, soup) -> str:
         if t:
             lines.append(_uni.normalize("NFC", t))
     return "\n".join(lines).strip()
-
-
-def _pdf_needs_rescope(sample: str) -> bool:
-    """PDFに回す本文が明らかにノイズ混入っぽい場合だけ True（要約には影響なし）"""
-    if not sample: return True
-    import re as _re
-    s = sample[:1200]
-    patterns = [
-        r'^(?:[#＃][^\s#]+(?:\s+|$)){3,}$',         # タグ雲
-        r"Save my name, email, and website",        # WPコメント定型
-        r"^(?:Leave a comment|Post a Comment)",     # コメント誘導
-        r"^[\s\-/–—•·|\\\(\)\[\]{}“”\"\'«»。、．…／]+$",  # 記号だけ
-        r"^\s*PDF\s*$",                             # 単独PDF
-    ]
-    for ln in s.splitlines():
-        ln = ln.strip()
-        if not ln: continue
-        if any(_re.search(p, ln, _re.IGNORECASE) for p in patterns):
-            return True
-    return False
-
-
-def _fetch_and_scope_body_for_pdf(url: str) -> str:
-    """URLを再取得して extract_body_mail_pdf_scoped で本文抽出（PDF専用）。失敗時は空"""
-    try:
-        html = fetch_once_requests(url, timeout=15)  # 既存の軽量フェッチ関数を流用
-        from bs4 import BeautifulSoup
-        soup = BeautifulSoup(html, "html.parser")
-        return extract_body_mail_pdf_scoped(url, soup)
-    except Exception as e:
-        print(f"[pdf-rescope] failed ({e}) → {url}")
-        return ""
 
 
 def _ensure_meta_dates(url_to_meta: dict, date_mmt_iso: str):
@@ -1417,6 +1401,7 @@ def get_bbc_burmese_articles_for(target_date_mmt):
             #         print(f"   kw={repr(h['kw'])} ctx=…{h['ctx']}…")
 
             print(f"✅ 抽出記事: {title_nfc} ({link})")
+            _cache_body(link, body_text_nfc)
             articles.append(
                 {
                     "title": title_nfc,
@@ -1526,6 +1511,7 @@ def get_khit_thit_media_articles_from_category(date_obj, max_pages=3):
                     "Khit Thit Media", url, title, body_text, "khitthit:category"
                 )
                 continue  # キーワード無しは除外
+            _cache_body(url, body_text)
 
             filtered_articles.append(
                 {
@@ -2027,6 +2013,7 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
             if not any_keyword_hit(title_nfc, body_nfc):
                 # ログを出してスキップ（本文抜粋は出さない共通ロガー）
                 log_no_keyword_hit("Irrawaddy", url, title_nfc, body_nfc, "irrawaddy:article")
+                _cache_body(url, body_nfc)
                 continue
 
             results.append(
@@ -2214,6 +2201,7 @@ def get_dvb_articles_for(date_obj: date, debug: bool = True) -> List[Dict]:
             title_nfc = unicodedata.normalize("NFC", title)
             body_nfc = unicodedata.normalize("NFC", body)
             if not any_keyword_hit(title_nfc, body_nfc):
+                _cache_body(url, body_nfc)
                 log_no_keyword_hit("DVB", url, title_nfc, body_nfc, "dvb:article")
                 continue
 
@@ -2425,6 +2413,7 @@ def get_myanmar_now_articles_mm(date_obj, max_pages=3):
                 continue
 
             # 4) キーワード判定
+            _cache_body(url, body)
             if not any_keyword_hit(title, body):
                 log_no_keyword_hit("Myanmar Now (mm)", url, title, body, "mnw:article")
                 continue
@@ -3265,7 +3254,9 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
     戻り値: [{"url","title_ja","body_ja"}, ...]
     """
     # --- ローカル定数（環境変数は増やさず定数化） ---
-    FULLTEXT_MAX_CHARS = 6000
+    # Business 向け全文翻訳では本文を途中で切らずにほぼ全量翻訳したい。
+    # Gemini Flash の安全コンテキスト上限を考慮し、上限を 100,000 文字に引き上げ。
+    FULLTEXT_MAX_CHARS = 100_000
     BATCH = TRANSLATION_BATCH_SIZE  # 既定=2（= 2件まとめ）
     WAIT  = 60                      # 要約と同じ 1 分待機
 
@@ -3517,14 +3508,14 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
         meta = (url_to_source_title_body.get(u) or {})
         title_src = (meta.get("title") or "").strip()
         body_src  = (meta.get("body")  or "").strip()
+        # Prefer cached full body from first pass
+        _cached = _get_cached_body(u)
+        if _cached:
+            body_src = _cached.strip()
         if not body_src:
             continue
-        
-        if _pdf_needs_rescope(body_src):
-            body_rescoped = _fetch_and_scope_body_for_pdf(u)
-            if body_rescoped:
-                body_src = body_rescoped
-        
+
+        # PDFの全文要約では 100,000 字までは翻訳対象に含める。
         body_compact = trim_by_chars(compact_body(body_src), FULLTEXT_MAX_CHARS)
         prepared.append({"url": u, "title": title_src, "body": body_compact})
 
