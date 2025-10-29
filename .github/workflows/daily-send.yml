@@ -37,6 +37,9 @@ jobs:
       GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
       # その他
       PAID_PLAN_URL: ${{ secrets.PAID_PLAN_URL }}
+      GEMINI_API_SUMMARY_KEY: ${{ secrets.GEMINI_API_SUMMARY_KEY }}
+      GEMINI_API_DEDUPE_KEY: ${{ secrets.GEMINI_API_DEDUPE_KEY }}
+      GEMINI_API_FULLTEXT_KEY: ${{ secrets.GEMINI_API_FULLTEXT_KEY }}
 
     steps:
       - uses: actions/checkout@v4
@@ -174,6 +177,9 @@ jobs:
       GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
       # その他
       PAID_PLAN_URL: ${{ secrets.PAID_PLAN_URL }}
+      GEMINI_API_SUMMARY_KEY: ${{ secrets.GEMINI_API_TEST_SUMMARY_KEY }}
+      GEMINI_API_DEDUPE_KEY: ${{ secrets.GEMINI_API_TEST_DEDUPE_KEY }}
+      GEMINI_API_FULLTEXT_KEY: ${{ secrets.GEMINI_API_TEST_FULLTEXT_KEY }}
 
     steps:
       - uses: actions/checkout@v4
