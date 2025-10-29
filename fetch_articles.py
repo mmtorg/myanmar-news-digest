@@ -4172,67 +4172,67 @@ if __name__ == "__main__":
         trust_existing_body=True
     )
 
-    # print("=== BBC Burmese ===")
-    # articles_bbc = get_bbc_burmese_articles_for(date_mmt)
-    # process_and_enqueue_articles(
-    #     articles_bbc, 
-    #     "BBC Burmese", 
-    #     seen_urls, 
-    #     trust_existing_body=True
-    # )
+    print("=== BBC Burmese ===")
+    articles_bbc = get_bbc_burmese_articles_for(date_mmt)
+    process_and_enqueue_articles(
+        articles_bbc, 
+        "BBC Burmese", 
+        seen_urls, 
+        trust_existing_body=True
+    )
 
-    # print("=== Irrawaddy ===")
-    # articles_irrawaddy = get_irrawaddy_articles_for(date_mmt)
-    # # MEMO: ログ用、デバックでログ確認
-    # # print("RESULTS:", json.dumps(articles_irrawaddy, ensure_ascii=False, indent=2))
-    # process_and_enqueue_articles(
-    #     articles_irrawaddy,
-    #     "Irrawaddy",
-    #     seen_urls,
-    #     bypass_keyword=True,  # ← Irrawaddyはキーワードで落とさない
-    #     trust_existing_body=True,  # ← さっき入れた body をそのまま使う（再フェッチしない）
-    # )
+    print("=== Irrawaddy ===")
+    articles_irrawaddy = get_irrawaddy_articles_for(date_mmt)
+    # MEMO: ログ用、デバックでログ確認
+    # print("RESULTS:", json.dumps(articles_irrawaddy, ensure_ascii=False, indent=2))
+    process_and_enqueue_articles(
+        articles_irrawaddy,
+        "Irrawaddy",
+        seen_urls,
+        bypass_keyword=True,  # ← Irrawaddyはキーワードで落とさない
+        trust_existing_body=True,  # ← さっき入れた body をそのまま使う（再フェッチしない）
+    )
     
-    # # ログ出力（件数＋先頭数件を表示）
-    # try:
-    #     print(f"[irrawaddy] collected: {len(articles_irrawaddy)} items for {date_mmt}")
-    #     for a in articles_irrawaddy[:10]:
-    #         title = (a.get("title") or "").replace("\n", " ").strip()
-    #         url = a.get("url", "")
-    #         d = a.get("date", "")
-    #         print(f"  - {d} | {title[:80]} | {url}")
-    #     if len(articles_irrawaddy) > 10:
-    #         print(f"  ... (+{len(articles_irrawaddy)-10} more)")
-    # except Exception:
-    #     pass
+    # ログ出力（件数＋先頭数件を表示）
+    try:
+        print(f"[irrawaddy] collected: {len(articles_irrawaddy)} items for {date_mmt}")
+        for a in articles_irrawaddy[:10]:
+            title = (a.get("title") or "").replace("\n", " ").strip()
+            url = a.get("url", "")
+            d = a.get("date", "")
+            print(f"  - {d} | {title[:80]} | {url}")
+        if len(articles_irrawaddy) > 10:
+            print(f"  ... (+{len(articles_irrawaddy)-10} more)")
+    except Exception:
+        pass
 
-    # print("=== Khit Thit Media ===")
-    # articles_khit = get_khit_thit_media_articles_from_category(date_mmt, max_pages=1)
-    # # articles_khit = get_khit_thit_media_articles_from_category(date_mmt, max_pages=3)
-    # process_and_enqueue_articles(
-    #     articles_khit, 
-    #     "Khit Thit Media", 
-    #     seen_urls
-    # )
+    print("=== Khit Thit Media ===")
+    articles_khit = get_khit_thit_media_articles_from_category(date_mmt, max_pages=1)
+    # articles_khit = get_khit_thit_media_articles_from_category(date_mmt, max_pages=3)
+    process_and_enqueue_articles(
+        articles_khit, 
+        "Khit Thit Media", 
+        seen_urls
+    )
 
-    # print("=== DVB ===")
-    # articles_dvb = get_dvb_articles_for(date_mmt, debug=True)
-    # process_and_enqueue_articles(
-    #     articles_dvb, 
-    #     "DVB", 
-    #     seen_urls, 
-    #     trust_existing_body=True
-    # )
+    print("=== DVB ===")
+    articles_dvb = get_dvb_articles_for(date_mmt, debug=True)
+    process_and_enqueue_articles(
+        articles_dvb, 
+        "DVB", 
+        seen_urls, 
+        trust_existing_body=True
+    )
     
-    # print("=== Myanmar Now ===")
-    # articles_mn = get_myanmar_now_articles_mm(date_mmt, max_pages=3)
-    # process_and_enqueue_articles(
-    #     articles_mn,
-    #     "Myanmar Now",
-    #     seen_urls,
-    #     bypass_keyword=False,
-    #     trust_existing_body=True,
-    # )
+    print("=== Myanmar Now ===")
+    articles_mn = get_myanmar_now_articles_mm(date_mmt, max_pages=3)
+    process_and_enqueue_articles(
+        articles_mn,
+        "Myanmar Now",
+        seen_urls,
+        bypass_keyword=False,
+        trust_existing_body=True,
+    )
 
     # URLベースの重複排除を先に行う
     print(f"⚙️ Removing URL duplicates from {len(translation_queue)} articles...")
