@@ -4056,43 +4056,75 @@ def send_email_digest(
             html_content += "</div><hr style='border-top: 1px solid #cccccc;'>"
 
     if trial_footer_url:
-        
-        # ===== メールの見た目を記事と揃えるための定数（必要なら数値だけ変えてOK）=====
-        ARTICLE_TITLE_FONT = "Arial, sans-serif"
-        ARTICLE_TITLE_SIZE = 20  # 記事タイトル（h2相当）
-        ARTICLE_BODY_FONT  = "Arial, sans-serif"
-        ARTICLE_BODY_SIZE  = 16  # 記事本文（body相当）
+        # 見た目用の定数（本文スタイルに寄せています）
+        BASE_FONT = "Arial, Helvetica, 'Hiragino Kaku Gothic ProN', 'Noto Sans JP', Meiryo, sans-serif"
+        TEXT_COLOR = "#111111"
+        MUTED = "#666666"
+        BORDER = "#E5E7EB"       # テーブル線の薄グレー
+        ACCENT = "#0057E1"       # ボタン色
+        BG = "#FFFFFF"
 
-        # CTAの見た目
-        CTA_GAP_PX = 16            # 見出し↔本文／本文↔ボタンの上下余白を統一
-        CTA_BG     = "#0B6465"     # ボタン背景色
-        CTA_TEXT   = "#ffffff"     # ボタン文字色（白）
-        
-        CTA_PAD_Y = 10           # ← 上下の余白（高さに直結）
-        CTA_PAD_X = 28           # ← 左右の余白
-        CTA_LINE_HEIGHT = 1.0   # ← テキスト行の高さ（Outlook対策はexactly併用）
-        
         html_content += (
-            "<div style='margin-top:24px;padding:12px;border:1px solid #eee;border-radius:8px;background-color:#fafafa'>"
-            # 見出し：記事タイトルと同じフォント＆サイズ
-            f"<p style='margin:0 0 {CTA_GAP_PX}px 0;"
-            f"font-family:{ARTICLE_TITLE_FONT};font-size:{ARTICLE_TITLE_SIZE}px;font-weight:700'>"
-            "継続をご希望の方へ</p>"
-            # 説明文：記事本文と同じフォント＆サイズ
-            f"<p style='margin:0;"
-            f"font-family:{ARTICLE_BODY_FONT};font-size:{ARTICLE_BODY_SIZE}px;line-height:1.6'>"
-            "<span style='display:block'>無料トライアルをお試しいただきありがとうございます。</span>"
-            "<span style='display:block'>継続をご希望の方は、目的に合わせて選べる有料プランをご利用ください。</span>"
-            "</p>"
-            # 本文↔ボタンも同じ余白に
-            f"<p style='margin:{CTA_GAP_PX}px 0 0 0'>"
+            "<div style='margin:24px 0 0 0;padding:0;background-color:" + BG + ";'>"
+
+            # 見出し
+            "<div style='text-align:center;margin:0 0 16px 0'>"
+            "<p style='margin:0 0 4px 0;font-size:18px;font-weight:700;"
+            f"font-family:{BASE_FONT};color:{TEXT_COLOR}'>ご優待のご案内</p>"
+            "<p style='margin:0;font-size:13px;font-weight:700;"
+            f"font-family:{BASE_FONT};color:{TEXT_COLOR}'>"
+            "トライアル期間中に有料プランへお申込みいただいた方、"
+            "<span style='text-decoration:underline'>全員にAmazonギフト券</span>を進呈します。</p>"
+            "</div>"
+
+            # テーブル
+            "<table role='presentation' cellpadding='0' cellspacing='0' border='0' "
+            "style='width:100%;max-width:520px;margin:0 auto;border-collapse:collapse;"
+            f"font-family:{BASE_FONT};font-size:14px;color:{TEXT_COLOR};'>"
+
+            # ヘッダ（空セル＋Lite/Business）
+            "<tr>"
+            f"<th style='padding:10px;border-bottom:1px solid {BORDER};border-top:1px solid {BORDER};"
+            "text-align:left;font-weight:500;background:#FAFAFA'></th>"
+            f"<th style='padding:10px;border-bottom:1px solid {BORDER};border-top:1px solid {BORDER};"
+            "text-align:center;font-weight:700;background:#FAFAFA'>Liteプラン</th>"
+            f"<th style='padding:10px;border-bottom:1px solid {BORDER};border-top:1px solid {BORDER};"
+            "text-align:center;font-weight:700;background:#FAFAFA'>Businessプラン</th>"
+            "</tr>"
+
+            # 行1：15日以内
+            "<tr>"
+            f"<td style='padding:10px;border-bottom:1px solid {BORDER};white-space:nowrap;'>"
+            "トライアル開始後<br>15日以内のお申込</td>"
+            f"<td style='padding:10px;border-bottom:1px solid {BORDER};text-align:center;'>3,000円分</td>"
+            f"<td style='padding:10px;border-bottom:1px solid {BORDER};text-align:center;'>8,000円分</td>"
+            "</tr>"
+
+            # 行2：16〜30日
+            "<tr>"
+            f"<td style='padding:10px;border-bottom:1px solid {BORDER};white-space:nowrap;'>"
+            "16〜30日目のお申込</td>"
+            f"<td style='padding:10px;border-bottom:1px solid {BORDER};text-align:center;'>2,000円分</td>"
+            f"<td style='padding:10px;border-bottom:1px solid {BORDER};text-align:center;'>5,000円分</td>"
+            "</tr>"
+            "</table>"
+
+            # CTAボタン
+            "<div style='text-align:center;margin:16px 0 6px 0'>"
             f"<a href='{trial_footer_url}' target='_blank' "
-            f"style='display:inline-block;text-decoration:none;border-radius:12px;"
-            f"background-color:{CTA_BG};color:{CTA_TEXT} !important;font-weight:700;text-align:center;"
-            f"font-family:{ARTICLE_BODY_FONT};font-size:{ARTICLE_BODY_SIZE + 6}px;"
-            f"line-height:{CTA_LINE_HEIGHT};"
-            f"padding:{CTA_PAD_Y}px {CTA_PAD_X}px;min-width:220px;mso-line-height-rule:exactly;'>"
-            "プランを比較</a></p>"
+            "style='display:inline-block;text-decoration:none;border-radius:12px;"
+            f"background-color:{ACCENT};color:#FFFFFF !important;font-weight:700;"
+            f"font-family:{BASE_FONT};font-size:16px;line-height:1;"
+            "padding:12px 24px;min-width:240px'>有料プランを始める</a>"
+            "</div>"
+
+            # 備考
+            "<p style='margin:6px auto 0 auto;max-width:520px;text-align:left;"
+            f"font-family:{BASE_FONT};font-size:12px;line-height:1.6;color:{MUTED};'>"
+            "※ 無料トライアルと同一メールアドレスでのお申込みに限ります。<br>"
+            "※ トライアル期間終了後の申込みは対象外となります。"
+            "</p>"
+
             "</div>"
         )
     html_content += "</body></html>"
