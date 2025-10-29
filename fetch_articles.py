@@ -4351,7 +4351,7 @@ if __name__ == "__main__":
         
     # === SEND PHASES ===
     if args.phase == "mono":
-        # 従来どおり：全セグメントへ送信
+        # 従来どおり：収集→送信をまとめて一度に実行（テスト向け）
         send_email_digest(
             summaries_non_ayeyar,
             recipients_env="BUSINESS_EMAIL_RECIPIENTS",
@@ -4378,7 +4378,7 @@ if __name__ == "__main__":
             delivery_date_mmt=date_mmt,
         )
     elif args.phase == "collect":
-        # 例外：CSV_EMAIL_RECIPIENTS だけ即時送信（指定があれば）
+        # ニュース収集＋bundle保存＋CSV_EMAIL_RECIPIENTS だけ即時送信
         if os.getenv("CSV_EMAIL_RECIPIENTS", "").strip():
             send_email_digest(
             summaries_non_ayeyar,
@@ -4392,7 +4392,7 @@ if __name__ == "__main__":
         _write_bundle(args.bundle_dir, date_mmt, summaries_non_ayeyar, pdf_bytes, attachment_name)
         print("[collect] bundle prepared.")
     elif args.phase == "send":
-        # 収集済み bundle を読み込み、指定宛先だけ送る
+        # 収集済み bundle を読み込み、対象宛先にメール送信
         if not args.recipients_env:
             raise SystemExit("[send] --recipients-env is required")
         meta, summaries_loaded, pdf_loaded, attachment_name_loaded = _load_bundle(args.bundle_dir)

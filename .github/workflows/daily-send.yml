@@ -2,19 +2,10 @@ name: Daily Myanmar News Alert Send
 
 on:
   schedule:
-    # 04:00 MMT = 21:30 UTC（前日）
-    - cron: "30 21 * * *"
+    # 03:45 MMT = 21:15 UTC（前日）
+    - cron: "15 21 * * *"
   workflow_dispatch:
     inputs:
-      target_env:
-        description: "送信対象の環境"
-        type: choice
-        required: true
-        default: both
-        options:
-          - production
-          - development
-          - both
       send_time_mmt:
         description: "送信時刻 (MMT, 例: 22:00)。空なら即送信"
         required: false
@@ -23,13 +14,9 @@ on:
 jobs:
   # =========================
   # 本番（production / main）
-  # - スケジュール時は常に実行
-  # - 手動時は target_env が production または both のとき実行
   # =========================
   send_prod:
-    if: ${{ github.event_name == 'schedule' ||
-      (github.event_name == 'workflow_dispatch' &&
-      (github.event.inputs.target_env == 'production' || github.event.inputs.target_env == 'both')) }}
+    if: ${{ github.ref_name == 'main' }}
     runs-on: ubuntu-latest
     environment: production
     permissions:
@@ -70,7 +57,7 @@ jobs:
         id: find
         run: |
           echo "Target branch: $BRANCH"
-          RUN_ID=$(gh run list \
+          RUN_ID=$(gh run list --repo "$REPO" \
             --workflow "Daily Myanmar News Alert" \
             --branch "$BRANCH" \
             --json databaseId,status,conclusion \
@@ -90,39 +77,54 @@ jobs:
       - name: Download artifact
         run: |
           mkdir -p bundle
-          gh run download ${{ steps.find.outputs.run_id }} \
+          gh run download ${{ steps.find.outputs.run_id }} --repo "$REPO" \
             --name "mna-bundle-${{ steps.find.outputs.run_id }}" \
             --dir bundle
 
-      # 手動実行時のみ：MMT時刻が入力されていれば、その時刻まで待機（最大5時間）
-      - name: Optional wait until MMT time
-        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.send_time_mmt != '' }}
+      # 待機ロジック：
+      # - 手動時: inputs.send_time_mmt を使用
+      # - スケジュール時: 環境変数 vars.FIXED_SEND_TIME_MMT を使用（environment=production のもの）
+      - name: Wait until MMT time (if specified)
         env:
-          SEND_TIME_MMT: ${{ github.event.inputs.send_time_mmt }}
+          INPUT_SEND_TIME_MMT: ${{ github.event_name == 'workflow_dispatch' && inputs.send_time_mmt || '' }}
+          FIXED_SEND_TIME_MMT: ${{ github.event_name == 'schedule' && vars.FIXED_SEND_TIME_MMT || '' }}
         run: |
           python - <<'PY'
           import os, time
           from datetime import datetime
-          try:
-              hh, mm = map(int, os.environ["SEND_TIME_MMT"].split(":"))
-          except Exception:
-              print("Invalid SEND_TIME_MMT, skip waiting.")
+
+          # 手動入力があればそれを最優先。無ければ（かつ schedule の場合のみ）固定値を使う
+          send_time = (os.environ.get("INPUT_SEND_TIME_MMT") or "").strip()
+          if not send_time:
+              send_time = (os.environ.get("FIXED_SEND_TIME_MMT") or "").strip()
+
+          if not send_time:
+              print("No send time specified. Send immediately.")
               raise SystemExit(0)
+
+          try:
+              hh, mm = map(int, send_time.split(":"))
+          except Exception:
+              print(f"Invalid send time '{send_time}', send immediately.")
+              raise SystemExit(0)
+
           try:
               import zoneinfo
               tz = zoneinfo.ZoneInfo("Asia/Yangon")
           except Exception:
               from backports import zoneinfo
               tz = zoneinfo.ZoneInfo("Asia/Yangon")
+
           now = datetime.now(tz)
           target = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
           if target <= now:
-              print("Target time already passed today (MMT). Send immediately.")
+              print(f"Target {target.isoformat()} already passed today (MMT). Send immediately.")
               raise SystemExit(0)
+
           wait = int((target - now).total_seconds())
           print(f"Waiting {wait} seconds until {target.isoformat()} MMT...")
           if wait > 5*60*60:
-              print("Wait too long; skip waiting.")
+              print("Wait too long (>5h); skip waiting.")
               raise SystemExit(0)
           time.sleep(wait)
           PY
@@ -149,12 +151,9 @@ jobs:
 
   # =========================
   # 開発（development / develop）
-  # - スケジュールでは実行しない
-  # - 手動時に target_env が development または both のとき実行
   # =========================
   send_dev:
-    if: ${{ github.event_name == 'workflow_dispatch' &&
-      (github.event.inputs.target_env == 'development' || github.event.inputs.target_env == 'both') }}
+    if: ${{ github.ref_name == 'develop' }}
     runs-on: ubuntu-latest
     environment: development
     permissions:
@@ -163,7 +162,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
-      BRANCH: main
+      BRANCH: develop
       # 受信者など環境ごとの Secrets
       LITE_EMAIL_RECIPIENTS: ${{ secrets.LITE_EMAIL_RECIPIENTS }}
       BUSINESS_EMAIL_RECIPIENTS: ${{ secrets.BUSINESS_EMAIL_RECIPIENTS }}
@@ -195,7 +194,7 @@ jobs:
         id: find
         run: |
           echo "Target branch: $BRANCH"
-          RUN_ID=$(gh run list \
+          RUN_ID=$(gh run list --repo "$REPO" \
             --workflow "Daily Myanmar News Alert" \
             --branch "$BRANCH" \
             --json databaseId,status,conclusion \
@@ -215,39 +214,53 @@ jobs:
       - name: Download artifact
         run: |
           mkdir -p bundle
-          gh run download ${{ steps.find.outputs.run_id }} \
+          gh run download ${{ steps.find.outputs.run_id }} --repo "$REPO" \
             --name "mna-bundle-${{ steps.find.outputs.run_id }}" \
             --dir bundle
 
-      # 手動実行時のみ：MMT時刻が入力されていれば、その時刻まで待機（最大5時間）
-      - name: Optional wait until MMT time
-        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.send_time_mmt != '' }}
+      # 待機ロジック（dev も同様）：
+      # - 手動時: inputs.send_time_mmt
+      # - スケジュール時: env vars の FIXED_SEND_TIME_MMT（environment=development のもの）
+      - name: Wait until MMT time (if specified)
         env:
-          SEND_TIME_MMT: ${{ github.event.inputs.send_time_mmt }}
+          INPUT_SEND_TIME_MMT: ${{ github.event_name == 'workflow_dispatch' && inputs.send_time_mmt || '' }}
+          FIXED_SEND_TIME_MMT: ${{ github.event_name == 'schedule' && vars.FIXED_SEND_TIME_MMT || '' }}
         run: |
           python - <<'PY'
           import os, time
           from datetime import datetime
-          try:
-              hh, mm = map(int, os.environ["SEND_TIME_MMT"].split(":"))
-          except Exception:
-              print("Invalid SEND_TIME_MMT, skip waiting.")
+
+          send_time = (os.environ.get("INPUT_SEND_TIME_MMT") or "").strip()
+          if not send_time:
+              send_time = (os.environ.get("FIXED_SEND_TIME_MMT") or "").strip()
+
+          if not send_time:
+              print("No send time specified. Send immediately.")
               raise SystemExit(0)
+
+          try:
+              hh, mm = map(int, send_time.split(":"))
+          except Exception:
+              print(f"Invalid send time '{send_time}', send immediately.")
+              raise SystemExit(0)
+
           try:
               import zoneinfo
               tz = zoneinfo.ZoneInfo("Asia/Yangon")
           except Exception:
               from backports import zoneinfo
               tz = zoneinfo.ZoneInfo("Asia/Yangon")
+
           now = datetime.now(tz)
           target = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
           if target <= now:
-              print("Target time already passed today (MMT). Send immediately.")
+              print(f"Target {target.isoformat()} already passed today (MMT). Send immediately.")
               raise SystemExit(0)
+
           wait = int((target - now).total_seconds())
           print(f"Waiting {wait} seconds until {target.isoformat()} MMT...")
           if wait > 5*60*60:
-              print("Wait too long; skip waiting.")
+              print("Wait too long (>5h); skip waiting.")
               raise SystemExit(0)
           time.sleep(wait)
           PY
