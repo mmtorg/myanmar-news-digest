@@ -87,7 +87,7 @@ jobs:
       - name: Wait until MMT time (if specified)
         env:
           INPUT_SEND_TIME_MMT: ${{ github.event_name == 'workflow_dispatch' && inputs.send_time_mmt || '' }}
-          FIXED_SEND_TIME_MMT: ${{ github.event_name == 'schedule' && vars.FIXED_SEND_TIME_MMT || '' }}
+          FIXED_SEND_TIME_MMT: ${{ github.event_name == 'schedule' && secrets.FIXED_SEND_TIME_MMT || '' }}
         run: |
           python - <<'PY'
           import os, time
@@ -224,7 +224,7 @@ jobs:
       - name: Wait until MMT time (if specified)
         env:
           INPUT_SEND_TIME_MMT: ${{ github.event_name == 'workflow_dispatch' && inputs.send_time_mmt || '' }}
-          FIXED_SEND_TIME_MMT: ${{ github.event_name == 'schedule' && vars.FIXED_SEND_TIME_MMT || '' }}
+          FIXED_SEND_TIME_MMT: ${{ github.event_name == 'schedule' && secrets.FIXED_SEND_TIME_MMT || '' }}
         run: |
           python - <<'PY'
           import os, time
