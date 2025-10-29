@@ -4243,15 +4243,17 @@ if __name__ == "__main__":
 
     # 仕様変更: 2通送信に分離
     # 1) エーヤワディのみ（存在する場合のみ送信、内部向け）
-    summaries_ayeyar_only = [s for s in all_summaries if s.get("is_ayeyar")]
-    if summaries_ayeyar_only:
-        send_email_digest(
-            summaries_ayeyar_only,
-            recipients_env="INTERNAL_EMAIL_RECIPIENTS",
-            delivery_date_mmt=date_mmt,
-        )
-    else:
-        print("エーヤワディ記事なし: エーヤワディのみメールは送信しません。")
+    # collect では送らない
+    if args.phase != "collect":
+        summaries_ayeyar_only = [s for s in all_summaries if s.get("is_ayeyar")]
+        if summaries_ayeyar_only:
+            send_email_digest(
+                summaries_ayeyar_only,
+                recipients_env="INTERNAL_EMAIL_RECIPIENTS",
+                delivery_date_mmt=date_mmt,
+            )
+        else:
+            print("エーヤワディ記事なし: エーヤワディのみメールは送信しません。")
 
     # 2) エーヤワディ以外のキーワードヒット（エーヤワディに該当しないものだけ）
     summaries_non_ayeyar = [
@@ -4259,11 +4261,14 @@ if __name__ == "__main__":
     ]
 
     # Lite向け：要約＋本文リンクのみ（添付なし）
-    send_email_digest(
-        summaries_non_ayeyar,
-        recipients_env="LITE_EMAIL_RECIPIENTS",
-        include_read_link=False,
-        delivery_date_mmt=date_mmt,
+    # collect では送らない
+    if args.phase != "collect":
+        # Lite向け：要約＋本文リンクのみ（添付なし）
+        send_email_digest(
+            summaries_non_ayeyar,
+            recipients_env="LITE_EMAIL_RECIPIENTS",
+            include_read_link=False,
+            delivery_date_mmt=date_mmt,
     )
     
     # ===== Business向け：全文翻訳 → 1ファイルPDF化 → 添付送信 =====
