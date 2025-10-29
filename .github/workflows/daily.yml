@@ -2,7 +2,8 @@ name: Daily Myanmar News Alert
 
 on:
   schedule:
-    - cron: "0 15 * * *" # ミャンマー時間 21:30（UTC+6:30）
+    # 22:00 MMT = 15:30 UTC
+    - cron: "30 15 * * *"
   workflow_dispatch: # 手動＝開発で実行
     inputs:
       date_mmt:
@@ -67,7 +68,7 @@ jobs:
         env:
           TZ: Asia/Yangon
           EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
-          EMAIL_RECIPIENTS: ${{ secrets.EMAIL_RECIPIENTS }}
+          CSV_EMAIL_RECIPIENTS: ${{ secrets.CSV_EMAIL_RECIPIENTS }}
           INTERNAL_EMAIL_RECIPIENTS: ${{ secrets.INTERNAL_EMAIL_RECIPIENTS }}
           LITE_EMAIL_RECIPIENTS: ${{ secrets.LITE_EMAIL_RECIPIENTS }}
           BUSINESS_EMAIL_RECIPIENTS: ${{ secrets.BUSINESS_EMAIL_RECIPIENTS }}
@@ -82,7 +83,14 @@ jobs:
           PAID_PLAN_URL: ${{ secrets.PAID_PLAN_URL }}
           GEMINI_API_FULLTEXT_KEY: ${{ secrets.GEMINI_API_FULLTEXT_KEY }}
 
-        run: /usr/bin/time -v python fetch_articles.py 2> time.txt
+        run: /usr/bin/time -v python fetch_articles.py --phase collect --bundle-dir bundle 2> time.txt
+      - name: Upload bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mna-bundle-${{ github.run_id }}
+          path: bundle
+          retention-days: 3
+          if-no-files-found: error
 
       - name: Memory summary (prod)
         if: always()
@@ -162,7 +170,7 @@ jobs:
         env:
           TZ: Asia/Yangon
           EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
-          EMAIL_RECIPIENTS: ${{ secrets.EMAIL_RECIPIENTS }}
+          CSV_EMAIL_RECIPIENTS: ${{ secrets.CSV_EMAIL_RECIPIENTS }}
           INTERNAL_EMAIL_RECIPIENTS: ${{ secrets.INTERNAL_EMAIL_RECIPIENTS }}
           LITE_EMAIL_RECIPIENTS: ${{ secrets.LITE_EMAIL_RECIPIENTS }}
           BUSINESS_EMAIL_RECIPIENTS: ${{ secrets.BUSINESS_EMAIL_RECIPIENTS }}
@@ -177,7 +185,14 @@ jobs:
           PAID_PLAN_URL: ${{ secrets.PAID_PLAN_URL }}
           GEMINI_API_FULLTEXT_KEY: ${{ secrets.GEMINI_API_TEST_FULLTEXT_KEY }}
 
-        run: /usr/bin/time -v python fetch_articles.py 2> time.txt
+        run: /usr/bin/time -v python fetch_articles.py --phase collect --bundle-dir bundle 2> time.txt
+      - name: Upload bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mna-bundle-${{ github.run_id }}
+          path: bundle
+          retention-days: 3
+          if-no-files-found: error
 
       - name: Memory summary (dev)
         if: always()
