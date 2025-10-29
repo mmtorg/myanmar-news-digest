@@ -14,6 +14,8 @@ from collections import defaultdict
 import time
 import json
 import pprint as _pprint
+import argparse
+import pathlib
 import random
 from typing import List, Dict, Optional
 from urllib.parse import urlparse  # 追加
@@ -52,6 +54,33 @@ try:
     import zoneinfo  # 3.9+
 except ImportError:
     from backports import zoneinfo  # 3.8系なら
+    
+# === Bundle I/O helpers for two-phase workflow ===
+def _write_bundle(bundle_dir, date_mmt, summaries_non_ayeyar, pdf_bytes, attachment_name, subject="Daily Myanmar News Alert"):
+    import json, pathlib
+    b = pathlib.Path(bundle_dir)
+    b.mkdir(parents=True, exist_ok=True)
+    meta = {
+        "subject": subject,
+        "date_mmt": date_mmt.isoformat()
+    }
+    (b/"meta.json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+    (b/"summaries.json").write_text(json.dumps(summaries_non_ayeyar, ensure_ascii=False), encoding="utf-8")
+    if pdf_bytes:
+        (b/"digest.pdf").write_bytes(pdf_bytes)
+    if attachment_name:
+        (b/"attachment_name.txt").write_text(attachment_name, encoding="utf-8")
+    print(f"[bundle] wrote to {b.resolve()}")
+
+def _load_bundle(bundle_dir):
+    import json, pathlib
+    b = pathlib.Path(bundle_dir)
+    meta = json.loads((b/"meta.json").read_text(encoding="utf-8"))
+    summaries = json.loads((b/"summaries.json").read_text(encoding="utf-8"))
+    pdf_path = b/"digest.pdf"
+    pdf_bytes = pdf_path.read_bytes() if pdf_path.exists() else None
+    attachment_name = (b/"attachment_name.txt").read_text(encoding="utf-8") if (b/"attachment_name.txt").exists() else None
+    return meta, summaries, pdf_bytes, attachment_name
 
 # ========= Gemini リトライ調整用の定数 =========
 GEMINI_MAX_RETRIES = 7          # 既定 5 → 7
@@ -4117,7 +4146,13 @@ def send_email_digest(
 
 
 if __name__ == "__main__":
-    
+    parser = argparse.ArgumentParser(description="Daily Myanmar News Alert runner (mono / two-phase)")
+    parser.add_argument("--phase", choices=["mono", "collect", "send"], default="mono",
+                        help="mono=従来どおり（収集+送信）。collect=収集のみ（CSV_EMAIL_RECIPIENTSだけ即時送信可）。send=束ねデータから送信。")
+    parser.add_argument("--bundle-dir", default="bundle", help="二段構成での保存/読込ディレクトリ")
+    parser.add_argument("--recipients-env", default=None, help="--phase send 時に送る宛先の環境変数名（例: LITE_EMAIL_RECIPIENTS）")
+    args, unknown = parser.parse_known_args()
+
     # 今日の日付をミャンマー時間で取得
     date_mmt = get_today_date_mmt()
     seen_urls = set()
@@ -4208,15 +4243,17 @@ if __name__ == "__main__":
 
     # 仕様変更: 2通送信に分離
     # 1) エーヤワディのみ（存在する場合のみ送信、内部向け）
-    summaries_ayeyar_only = [s for s in all_summaries if s.get("is_ayeyar")]
-    if summaries_ayeyar_only:
-        send_email_digest(
-            summaries_ayeyar_only,
-            recipients_env="INTERNAL_EMAIL_RECIPIENTS",
-            delivery_date_mmt=date_mmt,
-        )
-    else:
-        print("エーヤワディ記事なし: エーヤワディのみメールは送信しません。")
+    # collect では送らない
+    if args.phase != "collect":
+        summaries_ayeyar_only = [s for s in all_summaries if s.get("is_ayeyar")]
+        if summaries_ayeyar_only:
+            send_email_digest(
+                summaries_ayeyar_only,
+                recipients_env="INTERNAL_EMAIL_RECIPIENTS",
+                delivery_date_mmt=date_mmt,
+            )
+        else:
+            print("エーヤワディ記事なし: エーヤワディのみメールは送信しません。")
 
     # 2) エーヤワディ以外のキーワードヒット（エーヤワディに該当しないものだけ）
     summaries_non_ayeyar = [
@@ -4224,11 +4261,14 @@ if __name__ == "__main__":
     ]
 
     # Lite向け：要約＋本文リンクのみ（添付なし）
-    send_email_digest(
-        summaries_non_ayeyar,
-        recipients_env="LITE_EMAIL_RECIPIENTS",
-        include_read_link=False,
-        delivery_date_mmt=date_mmt,
+    # collect では送らない
+    if args.phase != "collect":
+        # Lite向け：要約＋本文リンクのみ（添付なし）
+        send_email_digest(
+            summaries_non_ayeyar,
+            recipients_env="LITE_EMAIL_RECIPIENTS",
+            include_read_link=False,
+            delivery_date_mmt=date_mmt,
     )
     
     # ===== Business向け：全文翻訳 → 1ファイルPDF化 → 添付送信 =====
@@ -4308,34 +4348,60 @@ if __name__ == "__main__":
         print(f"✅ PDF built in-memory: {attachment_name} ({len(pdf_bytes)} bytes)")
     except Exception as e:
         print("🛑 PDF build failed:", e)
-    
-    # 7) Business 配信（添付あり）
-    send_email_digest(
-        summaries_non_ayeyar,
-        recipients_env="BUSINESS_EMAIL_RECIPIENTS",
-        include_read_link=True,
-        attachment_bytes=pdf_bytes if pdf_bytes else None,
-        attachment_name=attachment_name if pdf_bytes else None,
-        delivery_date_mmt=date_mmt,
-    )
-
-    # INTERNAL にも Business と同一内容（件名・本文・添付）を送る
-    send_email_digest(
-        summaries_non_ayeyar,
-        recipients_env="INTERNAL_EMAIL_RECIPIENTS",
-        include_read_link=True,
-        attachment_bytes=pdf_bytes if pdf_bytes else None,
-        attachment_name=attachment_name if pdf_bytes else None,
-        delivery_date_mmt=date_mmt,
-    )
-    
-    # TRIAL へは Business と同一内容＋フッター（= PAID_PLAN_URL があれば）
-    send_email_digest(
-        summaries_non_ayeyar,
-        recipients_env="TRIAL_EMAIL_RECIPIENTS",
-        include_read_link=True,
-        trial_footer_url=(os.getenv("PAID_PLAN_URL", "").strip() or None),
-        attachment_bytes=pdf_bytes if pdf_bytes else None,
-        attachment_name=attachment_name if pdf_bytes else None,
-        delivery_date_mmt=date_mmt,
-    )
+        
+    # === SEND PHASES ===
+    if args.phase == "mono":
+        # 従来どおり：全セグメントへ送信
+        send_email_digest(
+            summaries_non_ayeyar,
+            recipients_env="BUSINESS_EMAIL_RECIPIENTS",
+            include_read_link=True,
+            attachment_bytes=pdf_bytes if pdf_bytes else None,
+            attachment_name=attachment_name if pdf_bytes else None,
+            delivery_date_mmt=date_mmt,
+        )
+        send_email_digest(
+            summaries_non_ayeyar,
+            recipients_env="INTERNAL_EMAIL_RECIPIENTS", 
+            include_read_link=True,
+            attachment_bytes=pdf_bytes if pdf_bytes else None,
+            attachment_name=attachment_name if pdf_bytes else None,
+            delivery_date_mmt=date_mmt,
+        )
+        send_email_digest(
+            summaries_non_ayeyar,
+            recipients_env="TRIAL_EMAIL_RECIPIENTS",
+            include_read_link=True,
+            trial_footer_url=(os.getenv("PAID_PLAN_URL", "").strip() or None),
+            attachment_bytes=pdf_bytes if pdf_bytes else None,
+            attachment_name=attachment_name if pdf_bytes else None,
+            delivery_date_mmt=date_mmt,
+        )
+    elif args.phase == "collect":
+        # 例外：CSV_EMAIL_RECIPIENTS だけ即時送信（指定があれば）
+        if os.getenv("CSV_EMAIL_RECIPIENTS", "").strip():
+            send_email_digest(
+            summaries_non_ayeyar,
+            recipients_env="CSV_EMAIL_RECIPIENTS",
+            include_read_link=True,
+            attachment_bytes=pdf_bytes if pdf_bytes else None,
+            attachment_name=attachment_name if pdf_bytes else None,
+            delivery_date_mmt=date_mmt,
+            )
+        # 後段送信用に束ねデータを保存
+        _write_bundle(args.bundle_dir, date_mmt, summaries_non_ayeyar, pdf_bytes, attachment_name)
+        print("[collect] bundle prepared.")
+    elif args.phase == "send":
+        # 収集済み bundle を読み込み、指定宛先だけ送る
+        if not args.recipients_env:
+            raise SystemExit("[send] --recipients-env is required")
+        meta, summaries_loaded, pdf_loaded, attachment_name_loaded = _load_bundle(args.bundle_dir)
+        send_email_digest(
+            summaries_loaded,
+            recipients_env=args.recipients_env,
+            include_read_link=True,
+            trial_footer_url=(os.getenv("PAID_PLAN_URL", "").strip() or None) if args.recipients_env == "TRIAL_EMAIL_RECIPIENTS" else None,
+            attachment_bytes=pdf_loaded if pdf_loaded else None,
+            attachment_name=attachment_name_loaded if attachment_name_loaded else None,
+            delivery_date_mmt=date_mmt,
+        )

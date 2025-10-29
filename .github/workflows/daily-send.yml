@@ -1,0 +1,273 @@
+name: Daily Myanmar News Alert Send
+
+on:
+  schedule:
+    # 04:00 MMT = 21:30 UTC（前日）
+    - cron: "30 21 * * *"
+  workflow_dispatch:
+    inputs:
+      target_env:
+        description: "送信対象の環境"
+        type: choice
+        required: true
+        default: both
+        options:
+          - production
+          - development
+          - both
+      send_time_mmt:
+        description: "送信時刻 (MMT, 例: 22:00)。空なら即送信"
+        required: false
+        type: string
+
+jobs:
+  # =========================
+  # 本番（production / main）
+  # - スケジュール時は常に実行
+  # - 手動時は target_env が production または both のとき実行
+  # =========================
+  send_prod:
+    if: ${{ github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' &&
+      (github.event.inputs.target_env == 'production' || github.event.inputs.target_env == 'both')) }}
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      actions: read
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      BRANCH: main
+      # 受信者など環境ごとの Secrets
+      LITE_EMAIL_RECIPIENTS: ${{ secrets.LITE_EMAIL_RECIPIENTS }}
+      BUSINESS_EMAIL_RECIPIENTS: ${{ secrets.BUSINESS_EMAIL_RECIPIENTS }}
+      TRIAL_EMAIL_RECIPIENTS: ${{ secrets.TRIAL_EMAIL_RECIPIENTS }}
+      INTERNAL_EMAIL_RECIPIENTS: ${{ secrets.INTERNAL_EMAIL_RECIPIENTS }}
+      # Gmail OAuth（既存変数を利用）
+      GMAIL_CLIENT_ID: ${{ secrets.GMAIL_CLIENT_ID }}
+      GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
+      GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
+      # その他
+      PAID_PLAN_URL: ${{ secrets.PAID_PLAN_URL }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      - name: Check gh (preinstalled)
+        run: gh --version
+
+      # 直近の main で成功した "Daily Myanmar News Alert" を取得
+      - name: Find latest artifact from Collect
+        id: find
+        run: |
+          echo "Target branch: $BRANCH"
+          RUN_ID=$(gh run list \
+            --workflow "Daily Myanmar News Alert" \
+            --branch "$BRANCH" \
+            --json databaseId,status,conclusion \
+            --jq '[.[] | select(.status=="completed" and .conclusion=="success")][0].databaseId')
+          if [ -z "$RUN_ID" ]; then
+            echo "No successful collect run on $BRANCH, skipping."
+            echo "run_id=" >> $GITHUB_OUTPUT
+          else
+            echo "RUN_ID=$RUN_ID"
+            echo "run_id=$RUN_ID" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Skip if no run found
+        if: ${{ steps.find.outputs.run_id == '' }}
+        run: echo "No collect artifact. Exit." && exit 0
+
+      - name: Download artifact
+        run: |
+          mkdir -p bundle
+          gh run download ${{ steps.find.outputs.run_id }} \
+            --name "mna-bundle-${{ steps.find.outputs.run_id }}" \
+            --dir bundle
+
+      # 手動実行時のみ：MMT時刻が入力されていれば、その時刻まで待機（最大5時間）
+      - name: Optional wait until MMT time
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.send_time_mmt != '' }}
+        env:
+          SEND_TIME_MMT: ${{ github.event.inputs.send_time_mmt }}
+        run: |
+          python - <<'PY'
+          import os, time
+          from datetime import datetime
+          try:
+              hh, mm = map(int, os.environ["SEND_TIME_MMT"].split(":"))
+          except Exception:
+              print("Invalid SEND_TIME_MMT, skip waiting.")
+              raise SystemExit(0)
+          try:
+              import zoneinfo
+              tz = zoneinfo.ZoneInfo("Asia/Yangon")
+          except Exception:
+              from backports import zoneinfo
+              tz = zoneinfo.ZoneInfo("Asia/Yangon")
+          now = datetime.now(tz)
+          target = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+          if target <= now:
+              print("Target time already passed today (MMT). Send immediately.")
+              raise SystemExit(0)
+          wait = int((target - now).total_seconds())
+          print(f"Waiting {wait} seconds until {target.isoformat()} MMT...")
+          if wait > 5*60*60:
+              print("Wait too long; skip waiting.")
+              raise SystemExit(0)
+          time.sleep(wait)
+          PY
+
+      - name: Send LITE
+        if: ${{ env.LITE_EMAIL_RECIPIENTS != '' }}
+        run: |
+          python fetch_articles.py --phase send --bundle-dir bundle --recipients-env LITE_EMAIL_RECIPIENTS
+
+      - name: Send BUSINESS
+        if: ${{ env.BUSINESS_EMAIL_RECIPIENTS != '' }}
+        run: |
+          python fetch_articles.py --phase send --bundle-dir bundle --recipients-env BUSINESS_EMAIL_RECIPIENTS
+
+      - name: Send TRIAL
+        if: ${{ env.TRIAL_EMAIL_RECIPIENTS != '' }}
+        run: |
+          python fetch_articles.py --phase send --bundle-dir bundle --recipients-env TRIAL_EMAIL_RECIPIENTS
+
+      - name: Send INTERNAL
+        if: ${{ env.INTERNAL_EMAIL_RECIPIENTS != '' }}
+        run: |
+          python fetch_articles.py --phase send --bundle-dir bundle --recipients-env INTERNAL_EMAIL_RECIPIENTS
+
+  # =========================
+  # 開発（development / develop）
+  # - スケジュールでは実行しない
+  # - 手動時に target_env が development または both のとき実行
+  # =========================
+  send_dev:
+    if: ${{ github.event_name == 'workflow_dispatch' &&
+      (github.event.inputs.target_env == 'development' || github.event.inputs.target_env == 'both') }}
+    runs-on: ubuntu-latest
+    environment: development
+    permissions:
+      actions: read
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      BRANCH: main
+      # 受信者など環境ごとの Secrets
+      LITE_EMAIL_RECIPIENTS: ${{ secrets.LITE_EMAIL_RECIPIENTS }}
+      BUSINESS_EMAIL_RECIPIENTS: ${{ secrets.BUSINESS_EMAIL_RECIPIENTS }}
+      TRIAL_EMAIL_RECIPIENTS: ${{ secrets.TRIAL_EMAIL_RECIPIENTS }}
+      INTERNAL_EMAIL_RECIPIENTS: ${{ secrets.INTERNAL_EMAIL_RECIPIENTS }}
+      # Gmail OAuth（既存変数を利用）
+      GMAIL_CLIENT_ID: ${{ secrets.GMAIL_CLIENT_ID }}
+      GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
+      GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
+      # その他
+      PAID_PLAN_URL: ${{ secrets.PAID_PLAN_URL }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      - name: Check gh (preinstalled)
+        run: gh --version
+
+      # 直近の develop で成功した "Daily Myanmar News Alert" を取得
+      - name: Find latest artifact from Collect
+        id: find
+        run: |
+          echo "Target branch: $BRANCH"
+          RUN_ID=$(gh run list \
+            --workflow "Daily Myanmar News Alert" \
+            --branch "$BRANCH" \
+            --json databaseId,status,conclusion \
+            --jq '[.[] | select(.status=="completed" and .conclusion=="success")][0].databaseId')
+          if [ -z "$RUN_ID" ]; then
+            echo "No successful collect run on $BRANCH, skipping."
+            echo "run_id=" >> $GITHUB_OUTPUT
+          else
+            echo "RUN_ID=$RUN_ID"
+            echo "run_id=$RUN_ID" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Skip if no run found
+        if: ${{ steps.find.outputs.run_id == '' }}
+        run: echo "No collect artifact. Exit." && exit 0
+
+      - name: Download artifact
+        run: |
+          mkdir -p bundle
+          gh run download ${{ steps.find.outputs.run_id }} \
+            --name "mna-bundle-${{ steps.find.outputs.run_id }}" \
+            --dir bundle
+
+      # 手動実行時のみ：MMT時刻が入力されていれば、その時刻まで待機（最大5時間）
+      - name: Optional wait until MMT time
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.send_time_mmt != '' }}
+        env:
+          SEND_TIME_MMT: ${{ github.event.inputs.send_time_mmt }}
+        run: |
+          python - <<'PY'
+          import os, time
+          from datetime import datetime
+          try:
+              hh, mm = map(int, os.environ["SEND_TIME_MMT"].split(":"))
+          except Exception:
+              print("Invalid SEND_TIME_MMT, skip waiting.")
+              raise SystemExit(0)
+          try:
+              import zoneinfo
+              tz = zoneinfo.ZoneInfo("Asia/Yangon")
+          except Exception:
+              from backports import zoneinfo
+              tz = zoneinfo.ZoneInfo("Asia/Yangon")
+          now = datetime.now(tz)
+          target = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+          if target <= now:
+              print("Target time already passed today (MMT). Send immediately.")
+              raise SystemExit(0)
+          wait = int((target - now).total_seconds())
+          print(f"Waiting {wait} seconds until {target.isoformat()} MMT...")
+          if wait > 5*60*60:
+              print("Wait too long; skip waiting.")
+              raise SystemExit(0)
+          time.sleep(wait)
+          PY
+
+      - name: Send LITE
+        if: ${{ env.LITE_EMAIL_RECIPIENTS != '' }}
+        run: |
+          python fetch_articles.py --phase send --bundle-dir bundle --recipients-env LITE_EMAIL_RECIPIENTS
+
+      - name: Send BUSINESS
+        if: ${{ env.BUSINESS_EMAIL_RECIPIENTS != '' }}
+        run: |
+          python fetch_articles.py --phase send --bundle-dir bundle --recipients-env BUSINESS_EMAIL_RECIPIENTS
+
+      - name: Send TRIAL
+        if: ${{ env.TRIAL_EMAIL_RECIPIENTS != '' }}
+        run: |
+          python fetch_articles.py --phase send --bundle-dir bundle --recipients-env TRIAL_EMAIL_RECIPIENTS
+
+      - name: Send INTERNAL
+        if: ${{ env.INTERNAL_EMAIL_RECIPIENTS != '' }}
+        run: |
+          python fetch_articles.py --phase send --bundle-dir bundle --recipients-env INTERNAL_EMAIL_RECIPIENTS
