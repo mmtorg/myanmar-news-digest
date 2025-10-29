@@ -4155,6 +4155,47 @@ if __name__ == "__main__":
 
     # 今日の日付をミャンマー時間で取得
     date_mmt = get_today_date_mmt()
+    
+    # ------------------------------
+    # SEND 専用ショートサーキット
+    # 収集済み bundle を読み込み、対象宛先にメール送信
+    # ------------------------------
+    if args.phase == "send":
+        if not args.recipients_env:
+            raise SystemExit("[send] --recipients-env is required")
+
+        # bundle 読み込み（存在しない/壊れている場合の親切メッセージ）
+        try:
+            meta, summaries_loaded, pdf_loaded, attachment_name_loaded = _load_bundle(args.bundle_dir)
+        except FileNotFoundError as e:
+            raise SystemExit(f"[send] bundle not found under: {os.path.abspath(args.bundle_dir)} : {e}")
+
+        # 件名日付の一貫性維持：bundle 側の日付があればそれを採用
+        try:
+            delivery_date_mmt = date.fromisoformat(meta.get("date_mmt", ""))  # "YYYY-MM-DD"
+        except Exception:
+            delivery_date_mmt = date_mmt
+
+        # プラン別の出し分け（必要に応じて調整）
+        env = args.recipients_env
+        is_trial = (env == "TRIAL_EMAIL_RECIPIENTS")
+        is_lite  = (env == "LITE_EMAIL_RECIPIENTS")
+
+        # Lite に PDF を付けない運用の場合はここで外す（不要ならこの1行は削除）
+        attachment_bytes = None if is_lite else (pdf_loaded if pdf_loaded else None)
+        attachment_name  = None if is_lite else (attachment_name_loaded if attachment_name_loaded else None)
+
+        send_email_digest(
+            summaries_loaded,
+            recipients_env=env,                    # ← ワークフローの各 step の env がそのまま効きます
+            include_read_link=True,
+            trial_footer_url=(os.getenv("PAID_PLAN_URL", "").strip() or None) if is_trial else None,
+            attachment_bytes=attachment_bytes,
+            attachment_name=attachment_name,
+            delivery_date_mmt=delivery_date_mmt,
+        )
+        raise SystemExit(0)
+    
     seen_urls = set()
 
     print("=== Mizzima (Burmese) ===")
@@ -4391,17 +4432,3 @@ if __name__ == "__main__":
         # 後段送信用に束ねデータを保存
         _write_bundle(args.bundle_dir, date_mmt, summaries_non_ayeyar, pdf_bytes, attachment_name)
         print("[collect] bundle prepared.")
-    elif args.phase == "send":
-        # 収集済み bundle を読み込み、対象宛先にメール送信
-        if not args.recipients_env:
-            raise SystemExit("[send] --recipients-env is required")
-        meta, summaries_loaded, pdf_loaded, attachment_name_loaded = _load_bundle(args.bundle_dir)
-        send_email_digest(
-            summaries_loaded,
-            recipients_env=args.recipients_env,
-            include_read_link=True,
-            trial_footer_url=(os.getenv("PAID_PLAN_URL", "").strip() or None) if args.recipients_env == "TRIAL_EMAIL_RECIPIENTS" else None,
-            attachment_bytes=pdf_loaded if pdf_loaded else None,
-            attachment_name=attachment_name_loaded if attachment_name_loaded else None,
-            delivery_date_mmt=date_mmt,
-        )

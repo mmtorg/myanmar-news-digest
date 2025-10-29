@@ -25,6 +25,8 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
+      # 発信者
+      EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
       BRANCH: main
       # 受信者など環境ごとの Secrets
       LITE_EMAIL_RECIPIENTS: ${{ secrets.LITE_EMAIL_RECIPIENTS }}
@@ -166,6 +168,8 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
       BRANCH: develop
+      # 発信者
+      EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
       # 受信者など環境ごとの Secrets
       LITE_EMAIL_RECIPIENTS: ${{ secrets.LITE_EMAIL_RECIPIENTS }}
       BUSINESS_EMAIL_RECIPIENTS: ${{ secrets.BUSINESS_EMAIL_RECIPIENTS }}
