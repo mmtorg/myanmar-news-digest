@@ -4467,14 +4467,6 @@ if __name__ == "__main__":
         )
         send_email_digest(
             summaries_non_ayeyar,
-            recipients_env="INTERNAL_EMAIL_RECIPIENTS", 
-            include_read_link=True,
-            attachment_bytes=pdf_bytes if pdf_bytes else None,
-            attachment_name=attachment_name if pdf_bytes else None,
-            delivery_date_mmt=date_mmt,
-        )
-        send_email_digest(
-            summaries_non_ayeyar,
             recipients_env="TRIAL_EMAIL_RECIPIENTS",
             include_read_link=True,
             trial_footer_url=(os.getenv("PAID_PLAN_URL", "").strip() or None),
