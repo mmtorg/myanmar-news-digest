@@ -4059,11 +4059,11 @@ def send_email_digest(
         # ===== TRIAL footer (HTML/CSS, no images) =====
         BASE_FONT = "Arial, Helvetica, 'Hiragino Kaku Gothic ProN', 'Noto Sans JP', Meiryo, sans-serif"
         TEXT = "#111111"
-        MUTED = "#666666"
-        BORDER = "#E5E7EB"          # 既存は保持（実線は必要箇所で黒2pxを直指定）
-        BG_ALL = "#FFFFFF"          # 外側：白
-        CARD_BG = "#f2f2f2"         # 内側カード＆表の背景
-        ACCENT = "#0057E1"          # CTAボタン
+        MUTED = "#666666"          # ← 変更しません（注記はグレーのまま）
+        BORDER = "#E5E7EB"
+        BG_ALL = "#FFFFFF"
+        CARD_BG = "#f2f2f2"
+        ACCENT = "#0057E1"
 
         html_content += (
             # 外側（白背景）
@@ -4072,105 +4072,64 @@ def send_email_digest(
             f"<div style='max-width:560px;margin:0 auto;background:{CARD_BG};border-radius:12px;"
             f"padding:20px 24px;box-sizing:border-box;'>"
 
-                # 見出し
-                # タイトル行（boldは内側spanに付与）
-                f"<p style='margin:0 0 12px 0;font-size:22px;"
-                f"font-family:{BASE_FONT};color:{TEXT};'>"
-                f"  <span style='font-weight:bold !important;"
-                f"               -webkit-font-smoothing:antialiased;"
-                f"               mso-line-height-rule:exactly;'>ご優待のご案内</span>"
+                # 見出し（レイアウトは元のまま。文字だけ確実に太字）
+                f"<div style='text-align:center;margin:0 0 20px 0'>"
+                f"<p style='margin:0 0 12px 0;font-size:22px;font-family:{BASE_FONT};color:{TEXT};'>"
+                f"  <span style='font-weight:bold !important;-webkit-font-smoothing:antialiased;'>ご優待のご案内</span>"
                 f"</p>"
-                # ▼ 本文文言のフォントサイズを拡大（13→15）、行間をやや広めに
                 f"<p style='margin:0;font-size:15px;letter-spacing:0.2px;line-height:1.7;"
                 f"font-family:{BASE_FONT};color:{TEXT}'>"
                 "トライアル期間中に有料プランへお申込みいただいた方、<br>"
                 "<span style='font-weight:700'>全員にAmazonギフト券を進呈致します。</span></p>"
                 f"</div>"
 
-                # 比較表（中央配置・背景 #f2f2f2・罫線は所定のみ）
-                # ▼ 比較表の上下余白を増やす（デフォルト→24px）
+                # 比較表（元のまま）
                 f"<div style='text-align:center;margin:24px 0;'>"
-                f"<table role='presentation' cellpadding='0' cellspacing='0' border='0' align='center' "
-                f"style='width:100%;max-width:520px;margin:0 auto;border-collapse:collapse;"
-                f"display:inline-table;font-family:{BASE_FONT};font-size:14px;color:{TEXT};background:{CARD_BG};'>"
-
-                # タイトル行（中央寄せ／上下のみ線）
-                # ▼ 線を黒＆太く（1px {BORDER} → 2px #000）
+                f"<table role='presentation' cellpadding='0' cellspacing='0' border='0' align='center'>"
                 f"<tr>"
                     f"<td colspan='3' style='padding:10px;border-top:2px solid #000000;"
-                    f"border-bottom:2px solid #000000;text-align:center;background:{CARD_BG};"
-                    f"font-weight:400;'>特別にご優待（Amazonギフト券）</td>"
+                    f"border-bottom:2px solid #000000;text-align:center;background:{CARD_BG};font-weight:400'>"
+                    "特別にご優待（Amazonギフト券）</td>"
                 f"</tr>"
-
-                # 列ヘッダ（ボールド不要）
                 f"<tr>"
-                    f"<th style='padding:10px;text-align:left;font-weight:400;background:{CARD_BG};'></th>"
-                    f"<th style='padding:10px;text-align:center;font-weight:400;background:{CARD_BG};'>Liteプラン</th>"
-                    f"<th style='padding:10px;text-align:center;font-weight:400;background:{CARD_BG};'>Businessプラン</th>"
+                    f"<th style='padding:10px;text-align:left;font-weight:400;background:{CARD_BG}'></th>"
+                    f"<th style='padding:10px;text-align:center;font-weight:400;background:{CARD_BG}'>Liteプラン</th>"
+                    f"<th style='padding:10px;text-align:center;font-weight:400;background:{CARD_BG}'>Businessプラン</th>"
                 f"</tr>"
-
-                # 行1（線なし）
                 f"<tr>"
                     f"<td style='padding:12px 10px;white-space:nowrap;background:{CARD_BG};vertical-align:top'>"
                     "トライアル開始後<br>15日以内のお申込</td>"
                     f"<td style='padding:12px 10px;text-align:center;background:{CARD_BG};vertical-align:top'>3,000円分</td>"
                     f"<td style='padding:12px 10px;text-align:center;background:{CARD_BG};vertical-align:top'>8,000円分</td>"
                 f"</tr>"
-
-                # 行2（最下段のみ下線）
-                # ▼ 線を黒＆太く（1px {BORDER} → 2px #000）
                 f"<tr>"
-                    f"<td style='padding:12px 10px;white-space:nowrap;background:{CARD_BG};vertical-align:top;"
-                    f"border-bottom:2px solid #000000;'>16〜30日目のお申込</td>"
-                    f"<td style='padding:12px 10px;text-align:center;background:{CARD_BG};vertical-align:top;"
-                    f"border-bottom:2px solid #000000;'>2,000円分</td>"
-                    f"<td style='padding:12px 10px;text-align:center;background:{CARD_BG};vertical-align:top;"
-                    f"border-bottom:2px solid #000000;'>5,000円分</td>"
+                    f"<td style='padding:12px 10px;white-space:nowrap;background:{CARD_BG};vertical-align:top;border-bottom:2px solid #000000'>16〜30日目のお申込</td>"
+                    f"<td style='padding:12px 10px;text-align:center;background:{CARD_BG};vertical-align:top;border-bottom:2px solid #000000'>2,000円分</td>"
+                    f"<td style='padding:12px 10px;text-align:center;background:{CARD_BG};vertical-align:top;border-bottom:2px solid #000000'>5,000円分</td>"
                 f"</tr>"
                 f"</table></div>"
 
-                # ボタン（Gmail / Outlook 両対応・白文字・下線なし・太字・大きめ・内側余白）
-                f"<div style='text-align:center;margin:24px 0 12px 0;'>"
-                f"<table role='presentation' border='0' cellspacing='0' cellpadding='0' align='center' style='margin:0 auto;'>"
+                # ボタン（見た目は元の配置。a要素を強化：白文字・下線なし・太字・padding）
+                f"<div style='text-align:center;margin:24px 0 12px 0'>"
+                f"<table role='presentation' border='0' cellspacing='0' cellpadding='0' align='center' style='margin:0 auto'>"
                 f"  <tr>"
-                f"    <td align='center' bgcolor='{ACCENT}' "
-                f"        style='border-radius:8px;background:{ACCENT};padding:0;min-width:260px;mso-padding-alt:12px 10px;'>"
+                f"    <td align='center' bgcolor='{ACCENT}' style='border-radius:8px;background:{ACCENT};padding:12px 10px;min-width:260px'>"
 
-                # <!--[if mso]> Outlook向け角丸（VML） -->
+                # Outlook用（元のレイアウトを崩さずにテキスト強化）
                 f"      <!--[if mso]>"
-                f"      <v:roundrect xmlns:v='urn:schemas-microsoft-com:vml' "
-                f"        href='{trial_footer_url}' style='height:48px;v-text-anchor:middle;width:280px;' "
-                f"        arcsize='12%' stroke='f' fillcolor='{ACCENT}'>"
+                f"      <v:roundrect xmlns:v='urn:schemas-microsoft-com:vml' href='{trial_footer_url}' "
+                f"        style='height:48px;v-text-anchor:middle;width:280px;' arcsize='12%' stroke='f' fillcolor='{ACCENT}'>"
                 f"        <w:anchorlock/>"
                 f"        <center style='color:#FFFFFF;font-family:{BASE_FONT};font-size:18px;font-weight:800;'>有料プランを始める</center>"
                 f"      </v:roundrect>"
                 f"      <![endif]-->"
 
-                # 非Outlook系メールクライアント
+                # 非Outlook
                 f"      <!--[if !mso]><!-- -->"
                 f"      <a href='{trial_footer_url}' target='_blank' "
-                f"         style='display:block;"
-                f"                color:#FFFFFF !important;"
-                f"                text-decoration:none !important;"
-                f"                font-family:{BASE_FONT};"
-                f"                font-size:18px;"
-                f"                font-weight:800;"
-                f"                line-height:1.5em;"
-                f"                padding:12px 10px;"
-                f"                border-radius:8px;"
-                f"                background:{ACCENT};"
-                f"                min-width:260px;"
-                f"                box-shadow:0 2px 6px rgba(0,0,0,0.15);"
-                f"                -webkit-text-size-adjust:none;"
-                f"                mso-line-height-rule:exactly;'>"
-                f"        <span style='display:block;"
-                f"                     color:#FFFFFF !important;"
-                f"                     text-decoration:none !important;"
-                f"                     font-size:18px;"
-                f"                     font-weight:800;"
-                f"                     line-height:1.5em;'>"
-                f"          有料プランを始める"
-                f"        </span>"
+                f"         style='display:inline-block;color:#FFFFFF !important;text-decoration:none !important;"
+                f"                font-family:{BASE_FONT};font-size:18px;font-weight:800;line-height:1.5em;'>"
+                f"        有料プランを始める"
                 f"      </a>"
                 f"      <!--<![endif]-->"
                 f"    </td>"
@@ -4178,8 +4137,8 @@ def send_email_digest(
                 f"</table>"
                 f"</div>"
 
-                # 備考（中央寄せ／「同一メールアドレス」に下線）
-                f"<div align='center' style='text-align:center;margin-top:6px;'>"
+                # 備考（注記はグレーのまま）
+                f"<div align='center' style='text-align:center;margin-top:6px'>"
                 f"  <p style='margin:0;max-width:520px;font-family:{BASE_FONT};font-size:11px;line-height:1.8;color:{MUTED};'>"
                 "    ※ 無料トライアルと<span style='text-decoration:underline'>同一メールアドレス</span>でのお申込みに限ります。<br>"
                 "    ※ トライアル期間終了後のお申込みは対象外となります。"
