@@ -4059,7 +4059,7 @@ def send_email_digest(
         # ===== TRIAL footer (HTML/CSS, no images) =====
         BASE_FONT = "Arial, Helvetica, 'Hiragino Kaku Gothic ProN', 'Noto Sans JP', Meiryo, sans-serif"
         TEXT = "#111111"
-        MUTED = "#666666"          # ← 変更しません（注記はグレーのまま）
+        MUTED = "#666666"
         BORDER = "#E5E7EB"
         BG_ALL = "#FFFFFF"
         CARD_BG = "#f2f2f2"
@@ -4068,18 +4068,18 @@ def send_email_digest(
         html_content += (
             # 外側（白背景）
             f"<div style='background:{BG_ALL};padding:24px 0;margin:24px -8px 0 -8px;'>"
-            # 内側（#f2f2f2 のカード）
-            f"<div style='max-width:680px; margin:0 auto; background:{CARD_BG}; "
-            f"border-radius:12px; padding:20px 24px; box-sizing:border-box;'>"
-            
-                # 見出し
-                f"<p style='margin:0 0 12px 0;text-align:center;'>"
-                f"  <span style='font-size:24px !important; font-weight:700 !important; "
-                f"               font-family:{BASE_FONT}; color:{TEXT}; "
-                f"               -webkit-text-size-adjust:none;'>ご優待のご案内</span>"
+            # 内側カード：改行しないため max-width を拡張（例：700px）
+            f"<div style='max-width:700px;margin:0 auto;background:{CARD_BG};border-radius:12px;"
+            f"padding:20px 24px;box-sizing:border-box;'>"
+
+                # 見出し（font-size は span に移して !important）
+                f"<div style='text-align:center;margin:0 0 20px 0'>"
+                f"<p style='margin:0 0 12px 0;font-family:{BASE_FONT};color:{TEXT};'>"
+                f"  <span style='font-size:24px !important;font-weight:700 !important;-webkit-font-smoothing:antialiased;'>ご優待のご案内</span>"
                 f"</p>"
-                f"<p style='margin:0; font-size:15px; letter-spacing:0.2px; line-height:1.7; "
-                f"font-family:{BASE_FONT}; color:{TEXT};'>"
+                # 本文：改行させないなら white-space:nowrap; を付与（必要なければ次行の nowrap を削除）
+                f"<p style='margin:0;font-size:15px;letter-spacing:0.2px;line-height:1.7;"
+                f"font-family:{BASE_FONT};color:{TEXT};white-space:nowrap;'>"
                 "トライアル期間中に有料プランへお申込みいただいた方、"
                 "<span style='font-weight:700'>全員にAmazonギフト券を進呈致します。</span></p>"
                 f"</div>"
@@ -4110,16 +4110,14 @@ def send_email_digest(
                 f"</tr>"
                 f"</table></div>"
 
-                # === ボタン（Gmail / Outlook 両対応） ===
+                # === ボタン（padding は TD、文字装飾は SPAN に） ===
                 f"<div style='text-align:center;margin:24px 0 12px 0;'>"
                 f"<table role='presentation' border='0' cellspacing='0' cellpadding='0' align='center' style='margin:0 auto;'>"
                 f"  <tr>"
                 f"    <td align='center' bgcolor='{ACCENT}' "
-                f"        style='border-radius:8px;background:{ACCENT};"
-                f"               padding:18px 24px; min-width:260px;"
-                f"               mso-padding-alt:18px 24px;'>"
+                f"        style='border-radius:8px;background:{ACCENT};padding:18px 24px;min-width:260px;mso-padding-alt:18px 24px;'>"
 
-                # Outlook用
+                # Outlook（そのまま）
                 f"      <!--[if mso]>"
                 f"      <v:roundrect xmlns:v='urn:schemas-microsoft-com:vml' href='{trial_footer_url}' "
                 f"        style='height:48px;v-text-anchor:middle;width:280px;' arcsize='12%' stroke='f' fillcolor='{ACCENT}'>"
@@ -4128,17 +4126,14 @@ def send_email_digest(
                 f"      </v:roundrect>"
                 f"      <![endif]-->"
 
-                # 非Outlook (Gmail含む)
+                # 非Outlook：a は最小、装飾は span に
                 f"      <!--[if !mso]><!-- -->"
-                f"      <a href='{trial_footer_url}' target='_blank' "
-                f"         style='display:inline-block;"
-                f"                color:#FFFFFF !important;"
-                f"                text-decoration:none !important;"
-                f"                font-family:{BASE_FONT};"
-                f"                font-size:18px;"
-                f"                font-weight:800;"
-                f"                line-height:1.4em;'>"
-                f"        有料プランを始める"
+                f"      <a href='{trial_footer_url}' target='_blank' style='text-decoration:none !important;'>"
+                f"        <span style='display:block !important;color:#FFFFFF !important;"
+                f"                     font-family:{BASE_FONT} !important;font-size:18px !important;"
+                f"                     font-weight:800 !important;line-height:1.4em !important;text-decoration:none !important;'>"
+                f"          有料プランを始める"
+                f"        </span>"
                 f"      </a>"
                 f"      <!--<![endif]-->"
                 f"    </td>"
@@ -4146,9 +4141,9 @@ def send_email_digest(
                 f"</table>"
                 f"</div>"
 
-                # 備考（注記はグレーのまま）
-                f"<div align='center' style='text-align:center;margin-top:6px'>"
-                f"  <p style='margin:0;max-width:520px;font-family:{BASE_FONT};font-size:11px;line-height:1.8;color:{MUTED};'>"
+                # 備考（変更なし）
+                f"<div align='center' style='text-align:center;margin-top:6px;'>"
+                f"  <p style='margin:0;max-width:700px;font-family:{BASE_FONT};font-size:11px;line-height:1.8;color:{MUTED};'>"
                 "    ※ 無料トライアルと<span style='text-decoration:underline'>同一メールアドレス</span>でのお申込みに限ります。<br>"
                 "    ※ トライアル期間終了後のお申込みは対象外となります。"
                 f"  </p>"
