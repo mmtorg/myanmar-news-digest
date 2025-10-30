@@ -4063,7 +4063,7 @@ def send_email_digest(
         BORDER = "#E5E7EB"          # 既存は保持（実線は必要箇所で黒2pxを直指定）
         BG_ALL = "#FFFFFF"          # 外側：白
         CARD_BG = "#f2f2f2"         # 内側カード＆表の背景
-        ACCENT = "#0057E1"    # CTAボタン
+        ACCENT = "#0057E1"          # CTAボタン
 
         html_content += (
             # 外側（白背景）
@@ -4073,11 +4073,13 @@ def send_email_digest(
             f"padding:20px 24px;box-sizing:border-box;'>"
 
                 # 見出し
-                # ▼ 見出しブロック下の余白を少し増やす（12→20）
-                f"<div style='text-align:center;margin:0 0 20px 0'>"
-                # ▼ タイトル直下の余白を増やす（6→12）
-                f"<p style='margin:0 0 12px 0;font-size:20px;font-weight:700;"
-                f"font-family:{BASE_FONT};color:{TEXT}'>ご優待のご案内</p>"
+                # タイトル行（boldは内側spanに付与）
+                f"<p style='margin:0 0 12px 0;font-size:22px;"
+                f"font-family:{BASE_FONT};color:{TEXT};'>"
+                f"  <span style='font-weight:bold !important;"
+                f"               -webkit-font-smoothing:antialiased;"
+                f"               mso-line-height-rule:exactly;'>ご優待のご案内</span>"
+                f"</p>"
                 # ▼ 本文文言のフォントサイズを拡大（13→15）、行間をやや広めに
                 f"<p style='margin:0;font-size:15px;letter-spacing:0.2px;line-height:1.7;"
                 f"font-family:{BASE_FONT};color:{TEXT}'>"
@@ -4127,19 +4129,18 @@ def send_email_digest(
                 f"</tr>"
                 f"</table></div>"
 
-                # ボタン（Gmail / Outlook 両対応・テキスト白＋太字＋余白）
+                # ボタン（Gmail / Outlook 両対応・白文字・下線なし・太字・大きめ・内側余白）
                 f"<div style='text-align:center;margin:24px 0 12px 0;'>"
                 f"<table role='presentation' border='0' cellspacing='0' cellpadding='0' align='center' style='margin:0 auto;'>"
                 f"  <tr>"
-                f"    <td align='center' bgcolor='#0057E1' "
-                f"        style='border-radius:8px;background:#0057E1;"
-                f"               padding:12px 10px;min-width:260px;'>"
+                f"    <td align='center' bgcolor='{ACCENT}' "
+                f"        style='border-radius:8px;background:{ACCENT};padding:0;min-width:260px;mso-padding-alt:12px 10px;'>"
 
-                # <!--[if mso]> Outlook向け角丸 -->
+                # <!--[if mso]> Outlook向け角丸（VML） -->
                 f"      <!--[if mso]>"
                 f"      <v:roundrect xmlns:v='urn:schemas-microsoft-com:vml' "
                 f"        href='{trial_footer_url}' style='height:48px;v-text-anchor:middle;width:280px;' "
-                f"        arcsize='12%' stroke='f' fillcolor='#0057E1'>"
+                f"        arcsize='12%' stroke='f' fillcolor='{ACCENT}'>"
                 f"        <w:anchorlock/>"
                 f"        <center style='color:#FFFFFF;font-family:{BASE_FONT};font-size:18px;font-weight:800;'>有料プランを始める</center>"
                 f"      </v:roundrect>"
@@ -4148,7 +4149,7 @@ def send_email_digest(
                 # 非Outlook系メールクライアント
                 f"      <!--[if !mso]><!-- -->"
                 f"      <a href='{trial_footer_url}' target='_blank' "
-                f"         style='display:inline-block;"
+                f"         style='display:block;"
                 f"                color:#FFFFFF !important;"
                 f"                text-decoration:none !important;"
                 f"                font-family:{BASE_FONT};"
@@ -4157,11 +4158,19 @@ def send_email_digest(
                 f"                line-height:1.5em;"
                 f"                padding:12px 10px;"
                 f"                border-radius:8px;"
-                f"                background:#0057E1;"
+                f"                background:{ACCENT};"
                 f"                min-width:260px;"
                 f"                box-shadow:0 2px 6px rgba(0,0,0,0.15);"
-                f"                transition:all 0.2s ease-in-out;'>"
-                f"        有料プランを始める"
+                f"                -webkit-text-size-adjust:none;"
+                f"                mso-line-height-rule:exactly;'>"
+                f"        <span style='display:block;"
+                f"                     color:#FFFFFF !important;"
+                f"                     text-decoration:none !important;"
+                f"                     font-size:18px;"
+                f"                     font-weight:800;"
+                f"                     line-height:1.5em;'>"
+                f"          有料プランを始める"
+                f"        </span>"
                 f"      </a>"
                 f"      <!--<![endif]-->"
                 f"    </td>"
