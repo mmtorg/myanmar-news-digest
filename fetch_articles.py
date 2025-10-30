@@ -4060,85 +4060,100 @@ def send_email_digest(
         BASE_FONT = "Arial, Helvetica, 'Hiragino Kaku Gothic ProN', 'Noto Sans JP', Meiryo, sans-serif"
         TEXT = "#111111"
         MUTED = "#666666"
-        BORDER = "#E5E7EB"
-        HEADER_BG = "#FAFAFA"
-        BG_ALL = "#f2f2f2"
-        ACCENT = "#0057E1"  # CTAボタン色
+        BORDER = "#E5E7EB"          # 既存は保持（実線は必要箇所で黒2pxを直指定）
+        BG_ALL = "#FFFFFF"          # 外側：白
+        CARD_BG = "#f2f2f2"         # 内側カード＆表の背景
+        ACCENT = "#0057E1"    # CTAボタン
 
         html_content += (
-            # 外側の背景（#f2f2f2）
+            # 外側（白背景）
             f"<div style='background:{BG_ALL};padding:24px 0;margin:24px -8px 0 -8px;'>"
-            # 白いカード
-            f"<div style='max-width:560px;margin:0 auto;background:#FFFFFF;border-radius:12px;"
+            # 内側（#f2f2f2 のカード）
+            f"<div style='max-width:560px;margin:0 auto;background:{CARD_BG};border-radius:12px;"
             f"padding:20px 24px;box-sizing:border-box;'>"
 
                 # 見出し
-                f"<div style='text-align:center;margin:0 0 12px 0'>"
-                f"<p style='margin:0 0 6px 0;font-size:18px;font-weight:700;"
+                # ▼ 見出しブロック下の余白を少し増やす（12→20）
+                f"<div style='text-align:center;margin:0 0 20px 0'>"
+                # ▼ タイトル直下の余白を増やす（6→12）
+                f"<p style='margin:0 0 12px 0;font-size:20px;font-weight:700;"
                 f"font-family:{BASE_FONT};color:{TEXT}'>ご優待のご案内</p>"
-                f"<p style='margin:0;font-size:13px;font-weight:700;letter-spacing:0.2px;"
+                # ▼ 本文文言のフォントサイズを拡大（13→15）、行間をやや広めに
+                f"<p style='margin:0;font-size:15px;letter-spacing:0.2px;line-height:1.7;"
                 f"font-family:{BASE_FONT};color:{TEXT}'>"
-                "トライアル期間中に有料プランへお申込みいただいた方、"
-                "<span style='text-decoration:underline'>全員にAmazonギフト券</span>を進呈致します。</p>"
+                "トライアル期間中に有料プランへお申込みいただいた方、<br>"
+                "<span style='font-weight:700'>全員にAmazonギフト券を進呈致します。</span></p>"
                 f"</div>"
 
-                # 比較表（タイトル行の上下に罫線）
-                f"<div style='text-align:center;'>"
+                # 比較表（中央配置・背景 #f2f2f2・罫線は所定のみ）
+                # ▼ 比較表の上下余白を増やす（デフォルト→24px）
+                f"<div style='text-align:center;margin:24px 0;'>"
                 f"<table role='presentation' cellpadding='0' cellspacing='0' border='0' align='center' "
                 f"style='width:100%;max-width:520px;margin:0 auto;border-collapse:collapse;"
-                f"display:inline-table;font-family:{BASE_FONT};font-size:14px;color:{TEXT};'>"
+                f"display:inline-table;font-family:{BASE_FONT};font-size:14px;color:{TEXT};background:{CARD_BG};'>"
 
-                # 上線＋タイトル
+                # タイトル行（中央寄せ／上下のみ線）
+                # ▼ 線を黒＆太く（1px {BORDER} → 2px #000）
                 f"<tr>"
-                    f"<td colspan='3' style='padding:8px 10px;border-top:1px solid {BORDER};"
-                    f"border-bottom:1px solid {BORDER};text-align:left;background:{HEADER_BG};"
-                    f"font-weight:700;'>特別にご優待（Amazonギフト券）</td>"
+                    f"<td colspan='3' style='padding:10px;border-top:2px solid #000000;"
+                    f"border-bottom:2px solid #000000;text-align:center;background:{CARD_BG};"
+                    f"font-weight:400;'>特別にご優待（Amazonギフト券）</td>"
                 f"</tr>"
 
-                # 列ヘッダ
+                # 列ヘッダ（ボールド不要）
                 f"<tr>"
-                    f"<th style='padding:10px;border-bottom:1px solid {BORDER};text-align:left;"
-                    f"font-weight:500;background:{HEADER_BG}'></th>"
-                    f"<th style='padding:10px;border-bottom:1px solid {BORDER};text-align:center;"
-                    f"font-weight:700;background:{HEADER_BG}'>Liteプラン</th>"
-                    f"<th style='padding:10px;border-bottom:1px solid {BORDER};text-align:center;"
-                    f"font-weight:700;background:{HEADER_BG}'>Businessプラン</th>"
+                    f"<th style='padding:10px;text-align:left;font-weight:400;background:{CARD_BG};'></th>"
+                    f"<th style='padding:10px;text-align:center;font-weight:400;background:{CARD_BG};'>Liteプラン</th>"
+                    f"<th style='padding:10px;text-align:center;font-weight:400;background:{CARD_BG};'>Businessプラン</th>"
                 f"</tr>"
 
-                # 行1：15日以内
+                # 行1（線なし）
                 f"<tr>"
-                    f"<td style='padding:10px;border-bottom:1px solid {BORDER};white-space:nowrap;"
-                    f"vertical-align:top'>トライアル開始後<br>15日以内のお申込</td>"
-                    f"<td style='padding:10px;border-bottom:1px solid {BORDER};text-align:center;"
-                    f"vertical-align:top'>3,000円分</td>"
-                    f"<td style='padding:10px;border-bottom:1px solid {BORDER};text-align:center;"
-                    f"vertical-align:top'>8,000円分</td>"
+                    f"<td style='padding:12px 10px;white-space:nowrap;background:{CARD_BG};vertical-align:top'>"
+                    "トライアル開始後<br>15日以内のお申込</td>"
+                    f"<td style='padding:12px 10px;text-align:center;background:{CARD_BG};vertical-align:top'>3,000円分</td>"
+                    f"<td style='padding:12px 10px;text-align:center;background:{CARD_BG};vertical-align:top'>8,000円分</td>"
                 f"</tr>"
 
-                # 行2：16〜30日
+                # 行2（最下段のみ下線）
+                # ▼ 線を黒＆太く（1px {BORDER} → 2px #000）
                 f"<tr>"
-                    f"<td style='padding:10px;border-bottom:1px solid {BORDER};white-space:nowrap;"
-                    f"vertical-align:top'>16〜30日目のお申込</td>"
-                    f"<td style='padding:10px;border-bottom:1px solid {BORDER};text-align:center;"
-                    f"vertical-align:top'>2,000円分</td>"
-                    f"<td style='padding:10px;border-bottom:1px solid {BORDER};text-align:center;"
-                    f"vertical-align:top'>5,000円分</td>"
+                    f"<td style='padding:12px 10px;white-space:nowrap;background:{CARD_BG};vertical-align:top;"
+                    f"border-bottom:2px solid #000000;'>16〜30日目のお申込</td>"
+                    f"<td style='padding:12px 10px;text-align:center;background:{CARD_BG};vertical-align:top;"
+                    f"border-bottom:2px solid #000000;'>2,000円分</td>"
+                    f"<td style='padding:12px 10px;text-align:center;background:{CARD_BG};vertical-align:top;"
+                    f"border-bottom:2px solid #000000;'>5,000円分</td>"
                 f"</tr>"
                 f"</table></div>"
 
-                # CTAボタン
-                f"<div style='text-align:center;margin:16px 0 8px 0'>"
+                # ボタン（フォント強調＋余白あり）
+                f"<div style='text-align:center;margin:24px 0 12px 0;'>"
                 f"<a href='{trial_footer_url}' target='_blank' "
-                f"style='display:inline-block;text-decoration:none;border-radius:12px;"
-                f"background:{ACCENT};color:#FFFFFF !important;font-weight:700;"
-                f"font-family:{BASE_FONT};font-size:16px;line-height:1;"
-                f"padding:12px 24px;min-width:240px'>有料プランを始める</a>"
+                f"style='display:inline-block;"
+                f"text-decoration:none;"
+                f"border-radius:8px;"
+                f"background:#0057E1;"
+                f"color:#FFFFFF !important;"
+                f"font-family:{BASE_FONT};"
+                f"font-weight:800;"             # ← 太字をより強調
+                f"font-size:18px;"              # ← フォントサイズを1段階拡大
+                f"line-height:1.5em;"
+                f"padding:12px 10px;"
+                f"min-width:260px;"
+                f"text-align:center;"
+                f"margin:12px 16px;"            # ← 上下左右の外側余白
+                f"box-shadow:0 2px 6px rgba(0,0,0,0.15);"
+                f"transition:all 0.2s ease-in-out;'>"
+                f"有料プランを始める"
+                f"</a>"
                 f"</div>"
 
-                # 備考
-                f"<p style='margin:6px auto 0 auto;max-width:520px;text-align:left;"
-                f"font-family:{BASE_FONT};font-size:12px;line-height:1.6;color:{MUTED};'>"
-                "※ 無料トライアルと同一メールアドレスでのお申込みに限ります。<br>"
+                # 備考（中央寄せ／「同一メールアドレス」に下線）
+                # ▼ 備考のフォントサイズを少し小さく（12→11）
+                f"<p style='margin:6px auto 0 auto;max-width:520px;text-align:center;"
+                f"font-family:{BASE_FONT};font-size:11px;line-height:1.8;color:{MUTED};'>"
+                "※ 無料トライアルと<span style='text-decoration:underline'>同一メールアドレス</span>でのお申込みに限ります。<br>"
                 "※ トライアル期間終了後のお申込みは対象外となります。"
                 f"</p>"
 
