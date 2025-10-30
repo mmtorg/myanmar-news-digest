@@ -4188,7 +4188,7 @@ if __name__ == "__main__":
         send_email_digest(
             summaries_loaded,
             recipients_env=env,                    # ← ワークフローの各 step の env がそのまま効きます
-            include_read_link=True,
+            include_read_link=(not is_lite),  # ← Lite はリンクなし、他はあり
             trial_footer_url=(os.getenv("PAID_PLAN_URL", "").strip() or None) if is_trial else None,
             attachment_bytes=attachment_bytes,
             attachment_name=attachment_name,
