@@ -4129,33 +4129,43 @@ def send_email_digest(
 
                 # ボタン（フォント強調＋余白あり）
                 f"<div style='text-align:center;margin:24px 0 12px 0;'>"
-                f"<a href='{trial_footer_url}' target='_blank' "
-                f"style='display:inline-block;"
-                f"text-decoration:none;"
-                f"border-radius:8px;"
-                f"background:#0057E1;"
-                f"color:#FFFFFF !important;"
-                f"font-family:{BASE_FONT};"
-                f"font-weight:800;"             # ← 太字をより強調
-                f"font-size:18px;"              # ← フォントサイズを1段階拡大
-                f"line-height:1.5em;"
-                f"padding:12px 10px;"
-                f"min-width:260px;"
-                f"text-align:center;"
-                f"margin:12px 16px;"            # ← 上下左右の外側余白
-                f"box-shadow:0 2px 6px rgba(0,0,0,0.15);"
-                f"transition:all 0.2s ease-in-out;'>"
-                f"有料プランを始める"
-                f"</a>"
+                f"<table role='presentation' border='0' cellspacing='0' cellpadding='0' align='center' style='margin:0 auto;'>"
+                f"  <tr>"
+                f"    <td align='center' bgcolor='#0057E1' style='border-radius:8px;'>"
+
+                # <!--[if mso]> VML: Outlookで角丸を出す -->
+                f"      <!--[if mso]>"
+                f"      <v:roundrect xmlns:v='urn:schemas-microsoft-com:vml' xmlns:w='urn:schemas-microsoft-com:office:word'"
+                f"        href='{trial_footer_url}' style='height:44px;v-text-anchor:middle;width:260px;' arcsize='12%' stroke='f' fillcolor='#0057E1'>"
+                f"        <w:anchorlock/>"
+                f"        <center style='color:#FFFFFF;font-family:{BASE_FONT};font-size:18px;font-weight:800;'>有料プランを始める</center>"
+                f"      </v:roundrect>"
+                f"      <![endif]-->"
+
+                # 非Outlook（通常）
+                f"      <!--[if !mso]><!-- -->"
+                f"      <a href='{trial_footer_url}' target='_blank'"
+                f"         style='display:inline-block;text-decoration:none;border-radius:8px;"
+                f"                background:#0057E1;color:#FFFFFF !important;"
+                f"                font-family:{BASE_FONT};font-weight:800;font-size:18px;line-height:1.5em;"
+                f"                padding:12px 10px;min-width:260px;text-align:center;"
+                f"                margin:12px 16px;box-shadow:0 2px 6px rgba(0,0,0,0.15);transition:all 0.2s ease-in-out;'>"
+                f"        有料プランを始める"
+                f"      </a>"
+                f"      <!--<![endif]-->"
+
+                f"    </td>"
+                f"  </tr>"
+                f"</table>"
                 f"</div>"
 
                 # 備考（中央寄せ／「同一メールアドレス」に下線）
-                # ▼ 備考のフォントサイズを少し小さく（12→11）
-                f"<p style='margin:6px auto 0 auto;max-width:520px;text-align:center;"
-                f"font-family:{BASE_FONT};font-size:11px;line-height:1.8;color:{MUTED};'>"
-                "※ 無料トライアルと<span style='text-decoration:underline'>同一メールアドレス</span>でのお申込みに限ります。<br>"
-                "※ トライアル期間終了後のお申込みは対象外となります。"
-                f"</p>"
+                f"<div align='center' style='text-align:center;margin-top:6px;'>"
+                f"  <p style='margin:0;max-width:520px;font-family:{BASE_FONT};font-size:11px;line-height:1.8;color:{MUTED};'>"
+                "    ※ 無料トライアルと<span style='text-decoration:underline'>同一メールアドレス</span>でのお申込みに限ります。<br>"
+                "    ※ トライアル期間終了後のお申込みは対象外となります。"
+                f"  </p>"
+                f"</div>"
 
             f"</div>"
             f"</div>"
