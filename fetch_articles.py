@@ -4109,13 +4109,14 @@ def send_email_digest(
                 f"</tr>"
                 f"</table></div>"
 
-                # ボタン（見た目は元の配置。a要素を強化：白文字・下線なし・太字・padding）
-                f"<div style='text-align:center;margin:24px 0 12px 0'>"
-                f"<table role='presentation' border='0' cellspacing='0' cellpadding='0' align='center' style='margin:0 auto'>"
+                # === ボタン（Gmail / Outlook 両対応） ===
+                f"<div style='text-align:center;margin:24px 0 12px 0;'>"
+                f"<table role='presentation' border='0' cellspacing='0' cellpadding='0' align='center' style='margin:0 auto;'>"
                 f"  <tr>"
-                f"    <td align='center' bgcolor='{ACCENT}' style='border-radius:8px;background:{ACCENT};padding:12px 10px;min-width:260px'>"
+                f"    <td align='center' bgcolor='{ACCENT}' "
+                f"        style='border-radius:8px;background:{ACCENT};padding:0;min-width:260px;mso-padding-alt:12px 10px;'>"
 
-                # Outlook用（元のレイアウトを崩さずにテキスト強化）
+                # Outlook用
                 f"      <!--[if mso]>"
                 f"      <v:roundrect xmlns:v='urn:schemas-microsoft-com:vml' href='{trial_footer_url}' "
                 f"        style='height:48px;v-text-anchor:middle;width:280px;' arcsize='12%' stroke='f' fillcolor='{ACCENT}'>"
@@ -4124,12 +4125,27 @@ def send_email_digest(
                 f"      </v:roundrect>"
                 f"      <![endif]-->"
 
-                # 非Outlook
+                # 非Outlook (Gmail含む)
                 f"      <!--[if !mso]><!-- -->"
                 f"      <a href='{trial_footer_url}' target='_blank' "
-                f"         style='display:inline-block;color:#FFFFFF !important;text-decoration:none !important;"
-                f"                font-family:{BASE_FONT};font-size:18px;font-weight:800;line-height:1.5em;'>"
-                f"        有料プランを始める"
+                f"         style='display:inline-block !important;"
+                f"                background:{ACCENT} !important;"
+                f"                border-radius:8px !important;"
+                f"                padding:14px 24px !important;"
+                f"                text-decoration:none !important;"
+                f"                font-family:{BASE_FONT} !important;"
+                f"                font-size:18px !important;"
+                f"                font-weight:800 !important;"
+                f"                color:#FFFFFF !important;"
+                f"                line-height:1.4em !important;"
+                f"                box-shadow:0 2px 6px rgba(0,0,0,0.15) !important;'>"
+                f"          <span style='color:#FFFFFF !important;"
+                f"                       font-weight:800 !important;"
+                f"                       font-size:18px !important;"
+                f"                       text-decoration:none !important;"
+                f"                       display:block !important;'>"
+                f"            有料プランを始める"
+                f"          </span>"
                 f"      </a>"
                 f"      <!--<![endif]-->"
                 f"    </td>"
