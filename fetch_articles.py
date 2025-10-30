@@ -4131,7 +4131,7 @@ def send_email_digest(
                 f"         style='display:inline-block !important;"
                 f"                background:{ACCENT} !important;"
                 f"                border-radius:8px !important;"
-                f"                padding:14px 24px !important;"
+                f"                padding:18px 24px !important;"
                 f"                text-decoration:none !important;"
                 f"                font-family:{BASE_FONT} !important;"
                 f"                font-size:18px !important;"
