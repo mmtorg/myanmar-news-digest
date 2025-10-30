@@ -4179,34 +4179,81 @@ def send_email_digest(
     from_display_name = "Myanmar News Alert"
 
     subject = re.sub(r"[\r\n]+", " ", subject).strip()
-    msg = EmailMessage(policy=SMTP)
-    msg["Subject"] = subject
-    msg["From"] = formataddr((str(Header(from_display_name, "utf-8")), sender_email))
-    msg["To"] = ", ".join(recipient_emails)
-    if not msg.get("To"):
-        print(f"⚠️ Computed empty 'To' header for {env_name}. Skipping email send.")
-        return
-    msg.set_content("HTMLメールを開ける環境でご確認ください。", charset="utf-8")
-    msg.add_alternative(html_content, subtype="html", charset="utf-8")
+    
+    # ---- 個別送信（プライバシー重視）＋簡易バックオフ ----
+    from googleapiclient.errors import HttpError
+    import json, random, time, base64
 
-    # ===== 添付（あれば） =====
-    if attachment_bytes and attachment_name:
-        msg.add_attachment(
-            attachment_bytes,
-            maintype="application",
-            subtype="pdf",
-            filename=attachment_name,
-        )
+    def _parse_reason_from_http_error(err: HttpError) -> str:
+        try:
+            data = json.loads(err.content.decode("utf-8"))
+            if "error" in data:
+                if "errors" in data["error"] and data["error"]["errors"]:
+                    return data["error"]["errors"][0].get("reason", "")
+                if "status" in data["error"]:
+                    return data["error"]["status"]
+        except Exception:
+            pass
+        return ""
 
-    try:
-        service = _build_gmail_service()
-        raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
-        body = {"raw": raw}
-        sent = service.users().messages().send(userId="me", body=body).execute()
-        print("✅ Gmail API 送信完了 messageId:", sent.get("id"))
-    except HttpError as e:
-        print(f"❌ Gmail API エラー: {e}")
-        sys.exit(1)
+    def _send_gmail_with_retry(service, raw_b64: str, to_addr: str, *, retry_max: int = 5, backoff_base: float = 1.0, backoff_max: float = 60.0):
+        attempt = 0
+        while True:
+            try:
+                body = {"raw": raw_b64}
+                return service.users().messages().send(userId="me", body=body).execute()
+            except HttpError as e:
+                status = getattr(e, "status_code", None) or getattr(e.resp, "status", None)
+                reason = _parse_reason_from_http_error(e)
+                if reason in {"dailyLimitExceeded", "quotaExceeded"}:
+                    print(f"❌ Gmail API: 日次/総量上限に達しました (status={status}, reason={reason}). 中断します。")
+                    raise
+                if status in (403, 429) or reason in {"rateLimitExceeded", "userRateLimitExceeded"}:
+                    if attempt >= retry_max:
+                        print(f"❌ Gmail API: レート制限により送信断念 (to={to_addr}).")
+                        return None
+                    delay = min(backoff_max, backoff_base * (2 ** attempt))
+                    delay *= (1.0 + random.uniform(0.0, 0.3))
+                    print(f"⏳ レート制限 (status={status}, reason={reason}) → {delay:.1f}s 待機して再試行 ({attempt+1}/{retry_max})")
+                    time.sleep(delay)
+                    attempt += 1
+                    continue
+                print(f"⚠️ Gmail API: 恒久エラーのためスキップ (to={to_addr}, status={status}, reason={reason})")
+                return None
+            except Exception as e:
+                print(f"⚠️ 予期せぬエラーのためスキップ (to={to_addr}): {e}")
+                return None
+
+    service = _build_gmail_service()
+
+    sent_count = 0
+    for rcpt in recipient_emails:
+        # 各受信者ごとに新しいメッセージを作成
+        msg = EmailMessage(policy=SMTP)
+        msg["Subject"] = subject
+        msg["From"] = formataddr((str(Header(from_display_name, "utf-8")), sender_email))
+        msg["To"] = rcpt
+        msg.set_content("HTMLメールを開ける環境でご確認ください。", charset="utf-8")
+        msg.add_alternative(html_content, subtype="html", charset="utf-8")
+
+        if attachment_bytes and attachment_name:
+            msg.add_attachment(
+                attachment_bytes,
+                maintype="application",
+                subtype="pdf",
+                filename=attachment_name,
+            )
+
+        raw_b64 = base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
+        sent = _send_gmail_with_retry(service, raw_b64, rcpt)
+        if sent and isinstance(sent, dict):
+            sent_count += 1
+            print("✅ Gmail API 送信完了 messageId:", sent.get("id"), "to:", rcpt)
+
+        # 軽いスロットリング（バースト抑制）
+        time.sleep(0.5)
+
+    print(f"📬 個別送信 完了: {sent_count}/{len(recipient_emails)} 件")
 
 
 if __name__ == "__main__":
