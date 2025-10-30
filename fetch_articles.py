@@ -4075,7 +4075,7 @@ def send_email_digest(
                 # 見出し（font-size は span に移して !important）
                 f"<div style='text-align:center;margin:0 0 20px 0'>"
                 f"<p style='margin:0 0 12px 0;font-family:{BASE_FONT};color:{TEXT};'>"
-                f"  <span style='font-size:24px !important;font-weight:700 !important;-webkit-font-smoothing:antialiased;'>ご優待のご案内</span>"
+                f"  <span style='font-size:22px !important;font-weight:700 !important;-webkit-font-smoothing:antialiased;'>ご優待のご案内</span>"
                 f"</p>"
                 # 本文：改行させないなら white-space:nowrap; を付与（必要なければ次行の nowrap を削除）
                 f"<p style='margin:0;font-size:15px;letter-spacing:0.2px;line-height:1.7;"
@@ -4088,8 +4088,9 @@ def send_email_digest(
                 f"<div style='text-align:center;margin:24px 0;'>"
                 f"<table role='presentation' cellpadding='0' cellspacing='0' border='0' align='center'>"
                 f"<tr>"
-                    f"<td colspan='3' style='padding:10px;border-top:2px solid #000000;"
-                    f"border-bottom:2px solid #000000;text-align:center;background:{CARD_BG};font-weight:400'>"
+                    # タイトル行（上下線）
+                    f"<td colspan='3' style='padding:10px;border-top:1px solid #9CA3AF;"
+                    f"border-bottom:1px solid #9CA3AF;text-align:center;background:{CARD_BG};font-weight:400'>"
                     "特別にご優待（Amazonギフト券）</td>"
                 f"</tr>"
                 f"<tr>"
@@ -4104,31 +4105,32 @@ def send_email_digest(
                     f"<td style='padding:12px 10px;text-align:center;background:{CARD_BG};vertical-align:top'>8,000円分</td>"
                 f"</tr>"
                 f"<tr>"
-                    f"<td style='padding:12px 10px;white-space:nowrap;background:{CARD_BG};vertical-align:top;border-bottom:2px solid #000000'>16〜30日目のお申込</td>"
-                    f"<td style='padding:12px 10px;text-align:center;background:{CARD_BG};vertical-align:top;border-bottom:2px solid #000000'>2,000円分</td>"
-                    f"<td style='padding:12px 10px;text-align:center;background:{CARD_BG};vertical-align:top;border-bottom:2px solid #000000'>5,000円分</td>"
+                    # 最終行の下線
+                    f"<td style='padding:12px 10px;white-space:nowrap;background:{CARD_BG};vertical-align:top;border-bottom:1px solid #9CA3AF'>16〜30日目のお申込</td>"
+                    f"<td style='padding:12px 10px;text-align:center;background:{CARD_BG};vertical-align:top;border-bottom:1px solid #9CA3AF'>2,000円分</td>"
+                    f"<td style='padding:12px 10px;text-align:center;background:{CARD_BG};vertical-align:top;border-bottom:1px solid #9CA3AF'>5,000円分</td>"
                 f"</tr>"
                 f"</table></div>"
 
-                # === ボタン（冗長指定で堅牢化） ===
+                # === ボタン（コンパクト版・冗長指定で堅牢化） ===
                 f"<div style='text-align:center;margin:24px 0 12px 0;'>"
                 f"<table role='presentation' border='0' cellspacing='0' cellpadding='0' align='center' style='margin:0 auto;'>"
                 f"  <tr>"
                 f"    <td align='center' bgcolor='{ACCENT}' "
                 f"        style='border-radius:8px;background:{ACCENT};"
-                f"               padding:18px 24px;min-width:260px;mso-padding-alt:18px 24px;"
+                f"               padding:14px 20px;min-width:240px;mso-padding-alt:14px 20px;"
                 f"               font-size:18px !important;font-weight:800 !important;color:#FFFFFF !important;'>"
 
-                # Outlook (そのまま)
+                # === Outlook用 ===
                 f"      <!--[if mso]>"
                 f"      <v:roundrect xmlns:v='urn:schemas-microsoft-com:vml' href='{trial_footer_url}' "
-                f"        style='height:48px;v-text-anchor:middle;width:280px;' arcsize='12%' stroke='f' fillcolor='{ACCENT}'>"
+                f"        style='height:44px;v-text-anchor:middle;width:260px;' arcsize='12%' stroke='f' fillcolor='{ACCENT}'>"
                 f"        <w:anchorlock/>"
                 f"        <center style='color:#FFFFFF;font-family:{BASE_FONT};font-size:18px;font-weight:800;'>有料プランを始める</center>"
                 f"      </v:roundrect>"
                 f"      <![endif]-->"
 
-                # 非Outlook（Gmail等）
+                # === 非Outlook（Gmail等） ===
                 f"      <!--[if !mso]><!-- -->"
                 f"      <a href='{trial_footer_url}' target='_blank' "
                 f"         style='display:block !important;text-decoration:none !important;"
