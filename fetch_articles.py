@@ -4110,14 +4110,16 @@ def send_email_digest(
                 f"</tr>"
                 f"</table></div>"
 
-                # === ボタン（padding は TD、文字装飾は SPAN に） ===
+                # === ボタン（冗長指定で堅牢化） ===
                 f"<div style='text-align:center;margin:24px 0 12px 0;'>"
                 f"<table role='presentation' border='0' cellspacing='0' cellpadding='0' align='center' style='margin:0 auto;'>"
                 f"  <tr>"
                 f"    <td align='center' bgcolor='{ACCENT}' "
-                f"        style='border-radius:8px;background:{ACCENT};padding:18px 24px;min-width:260px;mso-padding-alt:18px 24px;'>"
+                f"        style='border-radius:8px;background:{ACCENT};"
+                f"               padding:18px 24px;min-width:260px;mso-padding-alt:18px 24px;"
+                f"               font-size:18px !important;font-weight:800 !important;color:#FFFFFF !important;'>"
 
-                # Outlook
+                # Outlook (そのまま)
                 f"      <!--[if mso]>"
                 f"      <v:roundrect xmlns:v='urn:schemas-microsoft-com:vml' href='{trial_footer_url}' "
                 f"        style='height:48px;v-text-anchor:middle;width:280px;' arcsize='12%' stroke='f' fillcolor='{ACCENT}'>"
@@ -4129,14 +4131,12 @@ def send_email_digest(
                 # 非Outlook（Gmail等）
                 f"      <!--[if !mso]><!-- -->"
                 f"      <a href='{trial_footer_url}' target='_blank' "
-                f"         style='display:block !important;text-decoration:none !important;color:#FFFFFF !important;'>"
-                f"        <span style='display:block !important;"
-                f"                     color:#FFFFFF !important;"
+                f"         style='display:block !important;text-decoration:none !important;"
+                f"                color:#FFFFFF !important;font-size:18px !important;font-weight:800 !important;'>"
+                f"        <span style='display:block !important;color:#FFFFFF !important;"
                 f"                     font-family:{BASE_FONT} !important;"
-                f"                     font-size:18px !important;"
-                f"                     font-weight:800 !important;"
-                f"                     line-height:1.4em !important;"
-                f"                     text-decoration:none !important;'>"
+                f"                     font-size:18px !important;font-weight:800 !important;"
+                f"                     line-height:1.4em !important;text-decoration:none !important;'>"
                 f"          有料プランを始める"
                 f"        </span>"
                 f"      </a>"
