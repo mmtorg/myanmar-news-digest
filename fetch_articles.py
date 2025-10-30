@@ -4102,7 +4102,7 @@ def send_email_digest(
                     f"<td style='padding:12px 10px;white-space:nowrap;background:{CARD_BG};vertical-align:top'>"
                     "トライアル開始後<br>15日以内のお申込</td>"
                     f"<td style='padding:12px 10px;text-align:center;background:{CARD_BG};vertical-align:top'>3,000円分</td>"
-                    f"<td style='padding:12px 10px;text-align:center;background:{CARD_BG};vertical-align:top'>8,000円分</td>"
+                    f"<td style='padding:12px 10px;text-align:center;background:{CARD_BG};vertical-align:top'>6,000円分</td>"
                 f"</tr>"
                 f"<tr>"
                     # 最終行の下線
@@ -4150,7 +4150,7 @@ def send_email_digest(
 
                 # 備考（変更なし）
                 f"<div align='center' style='text-align:center;margin-top:6px;'>"
-                f"  <p style='margin:0;max-width:700px;font-family:{BASE_FONT};font-size:11px;line-height:1.8;color:{MUTED};'>"
+                f"  <p style='margin:0;max-width:700px;font-family:{BASE_FONT};line-height:1.8;color:{MUTED};'>"
                 "    ※ 無料トライアルと<span style='text-decoration:underline'>同一メールアドレス</span>でのお申込みに限ります。<br>"
                 "    ※ トライアル期間終了後のお申込みは対象外となります。"
                 f"  </p>"
