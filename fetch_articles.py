@@ -4089,8 +4089,8 @@ def send_email_digest(
                 f"<table role='presentation' cellpadding='0' cellspacing='0' border='0' align='center'>"
                 f"<tr>"
                     # タイトル行（上下線）
-                    f"<td colspan='3' style='padding:10px;border-top:1px solid #9CA3AF;"
-                    f"border-bottom:1px solid #9CA3AF;text-align:center;background:{CARD_BG};font-weight:400'>"
+                    f"<td colspan='3' style='padding:10px;border-top:2px solid #9CA3AF;"
+                    f"border-bottom:2px solid #9CA3AF;text-align:center;background:{CARD_BG};font-weight:400'>"
                     "特別にご優待（Amazonギフト券）</td>"
                 f"</tr>"
                 f"<tr>"
@@ -4106,9 +4106,9 @@ def send_email_digest(
                 f"</tr>"
                 f"<tr>"
                     # 最終行の下線
-                    f"<td style='padding:12px 10px;white-space:nowrap;background:{CARD_BG};vertical-align:top;border-bottom:1px solid #9CA3AF'>16〜30日目のお申込</td>"
-                    f"<td style='padding:12px 10px;text-align:center;background:{CARD_BG};vertical-align:top;border-bottom:1px solid #9CA3AF'>2,000円分</td>"
-                    f"<td style='padding:12px 10px;text-align:center;background:{CARD_BG};vertical-align:top;border-bottom:1px solid #9CA3AF'>5,000円分</td>"
+                    f"<td style='padding:12px 10px;white-space:nowrap;background:{CARD_BG};vertical-align:top;border-bottom:2px solid #9CA3AF'>16〜30日目のお申込</td>"
+                    f"<td style='padding:12px 10px;text-align:center;background:{CARD_BG};vertical-align:top;border-bottom:2px solid #9CA3AF'>2,000円分</td>"
+                    f"<td style='padding:12px 10px;text-align:center;background:{CARD_BG};vertical-align:top;border-bottom:2px solid #9CA3AF'>5,000円分</td>"
                 f"</tr>"
                 f"</table></div>"
 
