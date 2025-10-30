@@ -4117,7 +4117,7 @@ def send_email_digest(
                 f"    <td align='center' bgcolor='{ACCENT}' "
                 f"        style='border-radius:8px;background:{ACCENT};padding:18px 24px;min-width:260px;mso-padding-alt:18px 24px;'>"
 
-                # Outlook（そのまま）
+                # Outlook
                 f"      <!--[if mso]>"
                 f"      <v:roundrect xmlns:v='urn:schemas-microsoft-com:vml' href='{trial_footer_url}' "
                 f"        style='height:48px;v-text-anchor:middle;width:280px;' arcsize='12%' stroke='f' fillcolor='{ACCENT}'>"
@@ -4126,12 +4126,17 @@ def send_email_digest(
                 f"      </v:roundrect>"
                 f"      <![endif]-->"
 
-                # 非Outlook：a は最小、装飾は span に
+                # 非Outlook（Gmail等）
                 f"      <!--[if !mso]><!-- -->"
-                f"      <a href='{trial_footer_url}' target='_blank' style='text-decoration:none !important;'>"
-                f"        <span style='display:block !important;color:#FFFFFF !important;"
-                f"                     font-family:{BASE_FONT} !important;font-size:18px !important;"
-                f"                     font-weight:800 !important;line-height:1.4em !important;text-decoration:none !important;'>"
+                f"      <a href='{trial_footer_url}' target='_blank' "
+                f"         style='display:block !important;text-decoration:none !important;color:#FFFFFF !important;'>"
+                f"        <span style='display:block !important;"
+                f"                     color:#FFFFFF !important;"
+                f"                     font-family:{BASE_FONT} !important;"
+                f"                     font-size:18px !important;"
+                f"                     font-weight:800 !important;"
+                f"                     line-height:1.4em !important;"
+                f"                     text-decoration:none !important;'>"
                 f"          有料プランを始める"
                 f"        </span>"
                 f"      </a>"
