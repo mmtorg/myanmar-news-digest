@@ -4056,44 +4056,108 @@ def send_email_digest(
             html_content += "</div><hr style='border-top: 1px solid #cccccc;'>"
 
     if trial_footer_url:
-        
-        # ===== メールの見た目を記事と揃えるための定数（必要なら数値だけ変えてOK）=====
-        ARTICLE_TITLE_FONT = "Arial, sans-serif"
-        ARTICLE_TITLE_SIZE = 20  # 記事タイトル（h2相当）
-        ARTICLE_BODY_FONT  = "Arial, sans-serif"
-        ARTICLE_BODY_SIZE  = 16  # 記事本文（body相当）
+        # ===== TRIAL footer (HTML/CSS, no images) =====
+        BASE_FONT = "Arial, Helvetica, 'Hiragino Kaku Gothic ProN', 'Noto Sans JP', Meiryo, sans-serif"
+        TEXT = "#111111"
+        MUTED = "#666666"
+        BORDER = "#E5E7EB"
+        BG_ALL = "#FFFFFF"
+        CARD_BG = "#f2f2f2"
+        ACCENT = "#0057E1"
 
-        # CTAの見た目
-        CTA_GAP_PX = 16            # 見出し↔本文／本文↔ボタンの上下余白を統一
-        CTA_BG     = "#0B6465"     # ボタン背景色
-        CTA_TEXT   = "#ffffff"     # ボタン文字色（白）
-        
-        CTA_PAD_Y = 10           # ← 上下の余白（高さに直結）
-        CTA_PAD_X = 28           # ← 左右の余白
-        CTA_LINE_HEIGHT = 1.0   # ← テキスト行の高さ（Outlook対策はexactly併用）
-        
         html_content += (
-            "<div style='margin-top:24px;padding:12px;border:1px solid #eee;border-radius:8px;background-color:#fafafa'>"
-            # 見出し：記事タイトルと同じフォント＆サイズ
-            f"<p style='margin:0 0 {CTA_GAP_PX}px 0;"
-            f"font-family:{ARTICLE_TITLE_FONT};font-size:{ARTICLE_TITLE_SIZE}px;font-weight:700'>"
-            "継続をご希望の方へ</p>"
-            # 説明文：記事本文と同じフォント＆サイズ
-            f"<p style='margin:0;"
-            f"font-family:{ARTICLE_BODY_FONT};font-size:{ARTICLE_BODY_SIZE}px;line-height:1.6'>"
-            "<span style='display:block'>無料トライアルをお試しいただきありがとうございます。</span>"
-            "<span style='display:block'>継続をご希望の方は、目的に合わせて選べる有料プランをご利用ください。</span>"
-            "</p>"
-            # 本文↔ボタンも同じ余白に
-            f"<p style='margin:{CTA_GAP_PX}px 0 0 0'>"
-            f"<a href='{trial_footer_url}' target='_blank' "
-            f"style='display:inline-block;text-decoration:none;border-radius:12px;"
-            f"background-color:{CTA_BG};color:{CTA_TEXT} !important;font-weight:700;text-align:center;"
-            f"font-family:{ARTICLE_BODY_FONT};font-size:{ARTICLE_BODY_SIZE + 6}px;"
-            f"line-height:{CTA_LINE_HEIGHT};"
-            f"padding:{CTA_PAD_Y}px {CTA_PAD_X}px;min-width:220px;mso-line-height-rule:exactly;'>"
-            "プランを比較</a></p>"
-            "</div>"
+            # 外側（白背景）
+            f"<div style='background:{BG_ALL};padding:24px 0;margin:24px -8px 0 -8px;'>"
+            # 内側カード：改行しないため max-width を拡張（例：700px）
+            f"<div style='max-width:700px;margin:0 auto;background:{CARD_BG};border-radius:12px;"
+            f"padding:20px 24px;box-sizing:border-box;'>"
+
+                # 見出し（font-size は span に移して !important）
+                f"<div style='text-align:center;margin:0 0 20px 0'>"
+                f"<p style='margin:0 0 12px 0;font-family:{BASE_FONT};color:{TEXT};'>"
+                f"  <span style='font-size:22px !important;font-weight:700 !important;-webkit-font-smoothing:antialiased;'>ご優待のご案内</span>"
+                f"</p>"
+                # 本文：改行させないなら white-space:nowrap; を付与（必要なければ次行の nowrap を削除）
+                f"<p style='margin:0;font-size:15px;letter-spacing:0.2px;line-height:1.7;"
+                f"font-family:{BASE_FONT};color:{TEXT};white-space:nowrap;'>"
+                "トライアル期間中に有料プランへお申込みいただいた方、"
+                "<span style='font-weight:700'>全員にAmazonギフト券を進呈致します。</span></p>"
+                f"</div>"
+
+                # 比較表（元のまま）
+                f"<div style='text-align:center;margin:24px 0;'>"
+                f"<table role='presentation' cellpadding='0' cellspacing='0' border='0' align='center'>"
+                f"<tr>"
+                    # タイトル行（上下線）
+                    f"<td colspan='3' style='padding:10px;border-top:2px solid #9CA3AF;"
+                    f"border-bottom:2px solid #9CA3AF;text-align:center;background:{CARD_BG};font-weight:400'>"
+                    "特別にご優待（Amazonギフト券）</td>"
+                f"</tr>"
+                f"<tr>"
+                    f"<th style='padding:10px;text-align:left;font-weight:400;background:{CARD_BG}'></th>"
+                    f"<th style='padding:10px;text-align:center;font-weight:400;background:{CARD_BG}'>Liteプラン</th>"
+                    f"<th style='padding:10px;text-align:center;font-weight:400;background:{CARD_BG}'>Businessプラン</th>"
+                f"</tr>"
+                f"<tr>"
+                    f"<td style='padding:12px 10px;white-space:nowrap;background:{CARD_BG};vertical-align:top'>"
+                    "トライアル開始後<br>15日以内のお申込</td>"
+                    f"<td style='padding:12px 10px;text-align:center;background:{CARD_BG};vertical-align:top'>3,000円分</td>"
+                    f"<td style='padding:12px 10px;text-align:center;background:{CARD_BG};vertical-align:top'>6,000円分</td>"
+                f"</tr>"
+                f"<tr>"
+                    # 最終行の下線
+                    f"<td style='padding:12px 10px;white-space:nowrap;background:{CARD_BG};vertical-align:top;border-bottom:2px solid #9CA3AF'>16〜30日目のお申込</td>"
+                    f"<td style='padding:12px 10px;text-align:center;background:{CARD_BG};vertical-align:top;border-bottom:2px solid #9CA3AF'>2,000円分</td>"
+                    f"<td style='padding:12px 10px;text-align:center;background:{CARD_BG};vertical-align:top;border-bottom:2px solid #9CA3AF'>5,000円分</td>"
+                f"</tr>"
+                f"</table></div>"
+
+                # === ボタン（コンパクト版・冗長指定で堅牢化） ===
+                f"<div style='text-align:center;margin:24px 0 12px 0;'>"
+                f"<table role='presentation' border='0' cellspacing='0' cellpadding='0' align='center' style='margin:0 auto;'>"
+                f"  <tr>"
+                f"    <td align='center' bgcolor='{ACCENT}' "
+                f"        style='border-radius:8px;background:{ACCENT};"
+                f"               padding:14px 20px;min-width:240px;mso-padding-alt:14px 20px;"
+                f"               font-size:18px !important;font-weight:800 !important;color:#FFFFFF !important;'>"
+
+                # === Outlook用 ===
+                f"      <!--[if mso]>"
+                f"      <v:roundrect xmlns:v='urn:schemas-microsoft-com:vml' href='{trial_footer_url}' "
+                f"        style='height:44px;v-text-anchor:middle;width:260px;' arcsize='12%' stroke='f' fillcolor='{ACCENT}'>"
+                f"        <w:anchorlock/>"
+                f"        <center style='color:#FFFFFF;font-family:{BASE_FONT};font-size:18px;font-weight:800;'>有料プランを始める</center>"
+                f"      </v:roundrect>"
+                f"      <![endif]-->"
+
+                # === 非Outlook（Gmail等） ===
+                f"      <!--[if !mso]><!-- -->"
+                f"      <a href='{trial_footer_url}' target='_blank' "
+                f"         style='display:block !important;text-decoration:none !important;"
+                f"                color:#FFFFFF !important;font-size:18px !important;font-weight:800 !important;'>"
+                f"        <span style='display:block !important;color:#FFFFFF !important;"
+                f"                     font-family:{BASE_FONT} !important;"
+                f"                     font-size:18px !important;font-weight:800 !important;"
+                f"                     line-height:1.4em !important;text-decoration:none !important;'>"
+                f"          有料プランを始める"
+                f"        </span>"
+                f"      </a>"
+                f"      <!--<![endif]-->"
+                f"    </td>"
+                f"  </tr>"
+                f"</table>"
+                f"</div>"
+
+                # 備考（変更なし）
+                f"<div align='center' style='text-align:center;margin-top:6px;'>"
+                f"  <p style='margin:0;max-width:700px;font-family:{BASE_FONT};font-size:14px;line-height:1.8;color:{MUTED};'>"
+                "    ※ 無料トライアルと<span style='text-decoration:underline'>同一メールアドレス</span>でのお申込みに限ります。<br>"
+                "    ※ トライアル期間終了後のお申込みは対象外となります。"
+                f"  </p>"
+                f"</div>"
+
+            f"</div>"
+            f"</div>"
         )
     html_content += "</body></html>"
     html_content = clean_html_content(html_content)
@@ -4115,34 +4179,81 @@ def send_email_digest(
     from_display_name = "Myanmar News Alert"
 
     subject = re.sub(r"[\r\n]+", " ", subject).strip()
-    msg = EmailMessage(policy=SMTP)
-    msg["Subject"] = subject
-    msg["From"] = formataddr((str(Header(from_display_name, "utf-8")), sender_email))
-    msg["To"] = ", ".join(recipient_emails)
-    if not msg.get("To"):
-        print(f"⚠️ Computed empty 'To' header for {env_name}. Skipping email send.")
-        return
-    msg.set_content("HTMLメールを開ける環境でご確認ください。", charset="utf-8")
-    msg.add_alternative(html_content, subtype="html", charset="utf-8")
+    
+    # ---- 個別送信（プライバシー重視）＋簡易バックオフ ----
+    from googleapiclient.errors import HttpError
+    import json, random, time, base64
 
-    # ===== 添付（あれば） =====
-    if attachment_bytes and attachment_name:
-        msg.add_attachment(
-            attachment_bytes,
-            maintype="application",
-            subtype="pdf",
-            filename=attachment_name,
-        )
+    def _parse_reason_from_http_error(err: HttpError) -> str:
+        try:
+            data = json.loads(err.content.decode("utf-8"))
+            if "error" in data:
+                if "errors" in data["error"] and data["error"]["errors"]:
+                    return data["error"]["errors"][0].get("reason", "")
+                if "status" in data["error"]:
+                    return data["error"]["status"]
+        except Exception:
+            pass
+        return ""
 
-    try:
-        service = _build_gmail_service()
-        raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
-        body = {"raw": raw}
-        sent = service.users().messages().send(userId="me", body=body).execute()
-        print("✅ Gmail API 送信完了 messageId:", sent.get("id"))
-    except HttpError as e:
-        print(f"❌ Gmail API エラー: {e}")
-        sys.exit(1)
+    def _send_gmail_with_retry(service, raw_b64: str, to_addr: str, *, retry_max: int = 5, backoff_base: float = 1.0, backoff_max: float = 60.0):
+        attempt = 0
+        while True:
+            try:
+                body = {"raw": raw_b64}
+                return service.users().messages().send(userId="me", body=body).execute()
+            except HttpError as e:
+                status = getattr(e, "status_code", None) or getattr(e.resp, "status", None)
+                reason = _parse_reason_from_http_error(e)
+                if reason in {"dailyLimitExceeded", "quotaExceeded"}:
+                    print(f"❌ Gmail API: 日次/総量上限に達しました (status={status}, reason={reason}). 中断します。")
+                    raise
+                if status in (403, 429) or reason in {"rateLimitExceeded", "userRateLimitExceeded"}:
+                    if attempt >= retry_max:
+                        print(f"❌ Gmail API: レート制限により送信断念 (to={to_addr}).")
+                        return None
+                    delay = min(backoff_max, backoff_base * (2 ** attempt))
+                    delay *= (1.0 + random.uniform(0.0, 0.3))
+                    print(f"⏳ レート制限 (status={status}, reason={reason}) → {delay:.1f}s 待機して再試行 ({attempt+1}/{retry_max})")
+                    time.sleep(delay)
+                    attempt += 1
+                    continue
+                print(f"⚠️ Gmail API: 恒久エラーのためスキップ (to={to_addr}, status={status}, reason={reason})")
+                return None
+            except Exception as e:
+                print(f"⚠️ 予期せぬエラーのためスキップ (to={to_addr}): {e}")
+                return None
+
+    service = _build_gmail_service()
+
+    sent_count = 0
+    for rcpt in recipient_emails:
+        # 各受信者ごとに新しいメッセージを作成
+        msg = EmailMessage(policy=SMTP)
+        msg["Subject"] = subject
+        msg["From"] = formataddr((str(Header(from_display_name, "utf-8")), sender_email))
+        msg["To"] = rcpt
+        msg.set_content("HTMLメールを開ける環境でご確認ください。", charset="utf-8")
+        msg.add_alternative(html_content, subtype="html", charset="utf-8")
+
+        if attachment_bytes and attachment_name:
+            msg.add_attachment(
+                attachment_bytes,
+                maintype="application",
+                subtype="pdf",
+                filename=attachment_name,
+            )
+
+        raw_b64 = base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
+        sent = _send_gmail_with_retry(service, raw_b64, rcpt)
+        if sent and isinstance(sent, dict):
+            sent_count += 1
+            print("✅ Gmail API 送信完了 messageId:", sent.get("id"), "to:", rcpt)
+
+        # 軽いスロットリング（バースト抑制）
+        time.sleep(0.5)
+
+    print(f"📬 個別送信 完了: {sent_count}/{len(recipient_emails)} 件")
 
 
 if __name__ == "__main__":
@@ -4396,14 +4507,6 @@ if __name__ == "__main__":
         send_email_digest(
             summaries_non_ayeyar,
             recipients_env="BUSINESS_EMAIL_RECIPIENTS",
-            include_read_link=True,
-            attachment_bytes=pdf_bytes if pdf_bytes else None,
-            attachment_name=attachment_name if pdf_bytes else None,
-            delivery_date_mmt=date_mmt,
-        )
-        send_email_digest(
-            summaries_non_ayeyar,
-            recipients_env="INTERNAL_EMAIL_RECIPIENTS", 
             include_read_link=True,
             attachment_bytes=pdf_bytes if pdf_bytes else None,
             attachment_name=attachment_name if pdf_bytes else None,

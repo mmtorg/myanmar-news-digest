@@ -149,11 +149,6 @@ jobs:
         run: |
           python fetch_articles.py --phase send --bundle-dir bundle --recipients-env TRIAL_EMAIL_RECIPIENTS
 
-      - name: Send INTERNAL
-        if: ${{ env.INTERNAL_EMAIL_RECIPIENTS != '' }}
-        run: |
-          python fetch_articles.py --phase send --bundle-dir bundle --recipients-env INTERNAL_EMAIL_RECIPIENTS
-
   # =========================
   # 開発（development / develop）
   # =========================
@@ -289,8 +284,3 @@ jobs:
         if: ${{ env.TRIAL_EMAIL_RECIPIENTS != '' }}
         run: |
           python fetch_articles.py --phase send --bundle-dir bundle --recipients-env TRIAL_EMAIL_RECIPIENTS
-
-      - name: Send INTERNAL
-        if: ${{ env.INTERNAL_EMAIL_RECIPIENTS != '' }}
-        run: |
-          python fetch_articles.py --phase send --bundle-dir bundle --recipients-env INTERNAL_EMAIL_RECIPIENTS
