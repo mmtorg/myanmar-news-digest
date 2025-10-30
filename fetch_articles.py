@@ -4074,12 +4074,12 @@ def send_email_digest(
 
                 # 見出し（レイアウトは元のまま。文字だけ確実に太字）
                 f"<div style='text-align:center;margin:0 0 20px 0'>"
-                f"<p style='margin:0 0 12px 0;font-size:22px;font-family:{BASE_FONT};color:{TEXT};'>"
-                f"  <span style='font-weight:bold !important;-webkit-font-smoothing:antialiased;'>ご優待のご案内</span>"
+                f"<p style='margin:0 0 12px 0;font-size:26px;font-family:{BASE_FONT};color:{TEXT};'>"
+                f"  <span style='font-weight:700 !important;-webkit-font-smoothing:antialiased;'>ご優待のご案内</span>"
                 f"</p>"
                 f"<p style='margin:0;font-size:15px;letter-spacing:0.2px;line-height:1.7;"
                 f"font-family:{BASE_FONT};color:{TEXT}'>"
-                "トライアル期間中に有料プランへお申込みいただいた方、<br>"
+                "トライアル期間中に有料プランへお申込みいただいた方、"
                 "<span style='font-weight:700'>全員にAmazonギフト券を進呈致します。</span></p>"
                 f"</div>"
 
