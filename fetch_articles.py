@@ -4091,7 +4091,7 @@ def send_email_digest(
                     # タイトル行（上下線）
                     f"<td colspan='3' style='padding:10px;border-top:2px solid #9CA3AF;"
                     f"border-bottom:2px solid #9CA3AF;text-align:center;background:{CARD_BG};font-weight:400'>"
-                    "特別にご優待（Amazonギフト券）</td>"
+                    "特別ご優待（Amazonギフト券）</td>"
                 f"</tr>"
                 f"<tr>"
                     f"<th style='padding:10px;text-align:left;font-weight:400;background:{CARD_BG}'></th>"
