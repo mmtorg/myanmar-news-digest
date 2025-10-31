@@ -4025,7 +4025,7 @@ def send_email_digest(
     headlines = [f"✓ {item['title']}" for item in summaries]
     headline_html = (
         "<div style='margin-bottom:20px'>"
-        f"------- ヘッドライン ({len(summaries)}本) -------<br>"
+        f"<strong>本日のヘッドライン</strong><br>"
         + "<br>".join(headlines)
         + "</div><hr>"
     )
@@ -4281,11 +4281,9 @@ if __name__ == "__main__":
         except FileNotFoundError as e:
             raise SystemExit(f"[send] bundle not found under: {os.path.abspath(args.bundle_dir)} : {e}")
 
-        # 件名日付の一貫性維持：bundle 側の日付があればそれを採用
-        try:
-            delivery_date_mmt = date.fromisoformat(meta.get("date_mmt", ""))  # "YYYY-MM-DD"
-        except Exception:
-            delivery_date_mmt = date_mmt
+        # ✅ 実際の配信日（MMT）を優先：手動上書き（DATE_MMT）があればそれを採用
+        #    → 「件名」と「PDFファイル名」の両方を“配信日”で揃える
+        delivery_date_mmt = get_today_date_mmt()
 
         # プラン別の出し分け（必要に応じて調整）
         env = args.recipients_env
@@ -4294,7 +4292,16 @@ if __name__ == "__main__":
 
         # Lite に PDF を付けない運用の場合はここで外す（不要ならこの1行は削除）
         attachment_bytes = None if is_lite else (pdf_loaded if pdf_loaded else None)
-        attachment_name  = None if is_lite else (attachment_name_loaded if attachment_name_loaded else None)
+        # ✅ PDF名を“配信日（MMT）”に差し替え（本文は bundle のPDFをそのまま添付）
+        if is_lite:
+            attachment_name = None
+        else:
+            try:
+                jp = _jp_date(delivery_date_mmt)  # 例: 2025年10月30日（ゼロ詰めなし仕様は現行踏襲）
+                attachment_name = f"ミャンマーニュース全文訳【{jp}】.pdf"
+            except Exception:
+                # フォールバック：bundle 保存名（従来どおり）
+                attachment_name = attachment_name_loaded if attachment_name_loaded else None
 
         send_email_digest(
             summaries_loaded,
