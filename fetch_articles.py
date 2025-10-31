@@ -4025,7 +4025,7 @@ def send_email_digest(
     headlines = [f"✓ {item['title']}" for item in summaries]
     headline_html = (
         "<div style='margin-bottom:20px'>"
-        f"------- ヘッドライン ({len(summaries)}本) -------<br>"
+        f"<strong>本日のヘッドライン</strong><br>"
         + "<br>".join(headlines)
         + "</div><hr>"
     )
