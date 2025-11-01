@@ -1,284 +1,284 @@
-name: MNA Sheet Pipeline
+name: Daily Myanmar News Alert Sheet Pipeline
 
 on:
-    # スケジュールは「デフォルトブランチ」でのみ動作します（通常は main）。
-    # => 本番のみスケジュール実行したい要件を満たします。
-    schedule:
-        # 16:00 MMT（= 09:30 UTC）: 前日クリア → 追記
-        - cron: "30 9 * * *"
-        # 18:00 / 20:00 / 22:00 MMT（= 11:30 / 13:30 / 15:30 UTC）: 追記のみ
-        - cron: "30 11 * * *"
-        - cron: "30 13 * * *"
-        - cron: "30 15 * * *"
-        # 02:30 MMT（= 20:00 UTC 前日）: bundle生成
-        - cron: "0 20 * * *"
+  # スケジュールは「デフォルトブランチ」でのみ動作します（通常は main）。
+  # => 本番のみスケジュール実行したい要件を満たします。
+  schedule:
+    # 16:00 MMT（= 09:30 UTC）: 前日クリア → 追記
+    - cron: "30 9 * * *"
+    # 18:00 / 20:00 / 22:00 MMT（= 11:30 / 13:30 / 15:30 UTC）: 追記のみ
+    - cron: "30 11 * * *"
+    - cron: "30 13 * * *"
+    - cron: "30 15 * * *"
+    # 02:30 MMT（= 20:00 UTC 前日）: bundle生成
+    - cron: "0 20 * * *"
 
-    workflow_dispatch:
-        inputs:
-            target:
-                description: "実行先の環境（production / development）"
-                type: choice
-                required: true
-                default: production
-                options:
-                    - production
-                    - development
-            mode:
-                description: "collect16（16時回） / collect（18/20/22時回） / build-bundle（02:30）"
-                type: choice
-                required: true
-                default: collect
-                options:
-                    - collect16
-                    - collect
-                    - build-bundle
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "実行先の環境（production / development）"
+        type: choice
+        required: true
+        default: production
+        options:
+          - production
+          - development
+      mode:
+        description: "collect16（16時回） / collect（18/20/22時回） / build-bundle（02:30）"
+        type: choice
+        required: true
+        default: collect
+        options:
+          - collect16
+          - collect
+          - build-bundle
 
 # どのイベントでも 1 workflow につき環境ごとに直列化
 concurrency:
-    group: mna-sheet-pipeline-${{ github.event_name == 'workflow_dispatch' && inputs.target || 'production' }}
-    cancel-in-progress: false
+  group: mna-sheet-pipeline-${{ github.event_name == 'workflow_dispatch' && inputs.target || 'production' }}
+  cancel-in-progress: false
 
 permissions:
-    contents: read
+  contents: read
 
 defaults:
-    run:
-        shell: bash
+  run:
+    shell: bash
 
 jobs:
-    # === スケジュール（本番のみ / mainブランチ運用前提） ===
-    schedule-collect16:
-        if: github.event_name == 'schedule' && github.event.schedule == '30 9 * * *'
-        runs-on: ubuntu-latest
-        # 環境別シークレット（Environments）の切替：本番固定
-        environment: production
-        # ▼ 環境変数（prod用）のみ追加
-        env:
-            # ===== Gemini（production）=====
-            GEMINI_API_KEY_MIZZIMA: ${{ secrets.GEMINI_API_KEY_MIZZIMA }}
-            GEMINI_API_KEY_BBC: ${{ secrets.GEMINI_API_KEY_BBC }}
-            GEMINI_API_KEY_IRRAWADDY: ${{ secrets.GEMINI_API_KEY_IRRAWADDY }}
-            GEMINI_API_KEY_KHITTHIT: ${{ secrets.GEMINI_API_KEY_KHITTHIT }}
-            GEMINI_API_KEY_MYANMARNOW: ${{ secrets.GEMINI_API_KEY_MYANMARNOW }}
-            GEMINI_API_KEY_DVB: ${{ secrets.GEMINI_API_KEY_DVB }}
-            GEMINI_REQS_PER_MIN: 9
-            GEMINI_MIN_INTERVAL_SEC: 2.0
-            GEMINI_JITTER_SEC: 0.3
-            # ===== Google Sheets（production）=====
-            GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-            MNA_SHEET_ID: ${{ secrets.MNA_SHEET_ID }}
-            MNA_SHEET_NAME: "prod"
-        steps:
-            - name: Checkout (main)
-              uses: actions/checkout@v4
-              with:
-                  ref: main
+  # === スケジュール（本番のみ / mainブランチ運用前提） ===
+  schedule-collect16:
+    if: github.event_name == 'schedule' && github.event.schedule == '30 9 * * *'
+    runs-on: ubuntu-latest
+    # 環境別シークレット（Environments）の切替：本番固定
+    environment: production
+    # ▼ 環境変数（prod用）のみ追加
+    env:
+      # ===== Gemini（production）=====
+      GEMINI_API_KEY_MIZZIMA: ${{ secrets.GEMINI_API_KEY_MIZZIMA }}
+      GEMINI_API_KEY_BBC: ${{ secrets.GEMINI_API_KEY_BBC }}
+      GEMINI_API_KEY_IRRAWADDY: ${{ secrets.GEMINI_API_KEY_IRRAWADDY }}
+      GEMINI_API_KEY_KHITTHIT: ${{ secrets.GEMINI_API_KEY_KHITTHIT }}
+      GEMINI_API_KEY_MYANMARNOW: ${{ secrets.GEMINI_API_KEY_MYANMARNOW }}
+      GEMINI_API_KEY_DVB: ${{ secrets.GEMINI_API_KEY_DVB }}
+      GEMINI_REQS_PER_MIN: 9
+      GEMINI_MIN_INTERVAL_SEC: 2.0
+      GEMINI_JITTER_SEC: 0.3
+      # ===== Google Sheets（production）=====
+      GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+      MNA_SHEET_ID: ${{ secrets.MNA_SHEET_ID }}
+      MNA_SHEET_NAME: "prod"
+    steps:
+      - name: Checkout (main)
+        uses: actions/checkout@v4
+        with:
+          ref: main
 
-            - name: Set up Python
-              uses: actions/setup-python@v5
-              with:
-                  python-version: "3.11"
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
-            - name: Install dependencies
-              run: |
-                  python -m pip install --upgrade pip
-                  pip install gspread google-auth requests beautifulsoup4 python-dateutil
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install gspread google-auth requests beautifulsoup4 python-dateutil
 
-            - name: Write GOOGLE_APPLICATION_CREDENTIALS
-              if: env.GOOGLE_SERVICE_ACCOUNT_JSON != ''
-              run: |
-                  echo "${GOOGLE_SERVICE_ACCOUNT_JSON}" > $RUNNER_TEMP/sa.json
-                  echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/sa.json" >> $GITHUB_ENV
+      - name: Write GOOGLE_APPLICATION_CREDENTIALS
+        if: env.GOOGLE_SERVICE_ACCOUNT_JSON != ''
+        run: |
+          echo "${GOOGLE_SERVICE_ACCOUNT_JSON}" > $RUNNER_TEMP/sa.json
+          echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/sa.json" >> $GITHUB_ENV
 
-            - name: Collect → write to sheet (16:00 run, clear yesterday once)
-              run: |
-                  python scripts/mna_sheet_pipeline.py collect-to-sheet --clear-yesterday
+      - name: Collect → write to sheet (16:00 run, clear yesterday once)
+        run: |
+          python scripts/mna_sheet_pipeline.py collect-to-sheet --clear-yesterday
 
-    schedule-collect:
-        if: github.event_name == 'schedule' && contains(fromJson('["30 11 * * *","30 13 * * *","30 15 * * *"]'), github.event.schedule)
-        runs-on: ubuntu-latest
-        environment: production
-        env:
-            # ===== Gemini（production）=====
-            GEMINI_API_KEY_MIZZIMA: ${{ secrets.GEMINI_API_KEY_MIZZIMA }}
-            GEMINI_API_KEY_BBC: ${{ secrets.GEMINI_API_KEY_BBC }}
-            GEMINI_API_KEY_IRRAWADDY: ${{ secrets.GEMINI_API_KEY_IRRAWADDY }}
-            GEMINI_API_KEY_KHITTHIT: ${{ secrets.GEMINI_API_KEY_KHITTHIT }}
-            GEMINI_API_KEY_MYANMARNOW: ${{ secrets.GEMINI_API_KEY_MYANMARNOW }}
-            GEMINI_API_KEY_DVB: ${{ secrets.GEMINI_API_KEY_DVB }}
-            GEMINI_REQS_PER_MIN: 9
-            GEMINI_MIN_INTERVAL_SEC: 2.0
-            GEMINI_JITTER_SEC: 0.3
-            # ===== Google Sheets（production）=====
-            GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-            MNA_SHEET_ID: ${{ secrets.MNA_SHEET_ID }}
-            MNA_SHEET_NAME: "prod"
-        steps:
-            - name: Checkout (main)
-              uses: actions/checkout@v4
-              with:
-                  ref: main
-            - name: Set up Python
-              uses: actions/setup-python@v5
-              with:
-                  python-version: "3.11"
-            - name: Install dependencies
-              run: |
-                  python -m pip install --upgrade pip
-                  pip install gspread google-auth requests beautifulsoup4 python-dateutil
+  schedule-collect:
+    if: github.event_name == 'schedule' && contains(fromJson('["30 11 * * *","30 13 * * *","30 15 * * *"]'), github.event.schedule)
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      # ===== Gemini（production）=====
+      GEMINI_API_KEY_MIZZIMA: ${{ secrets.GEMINI_API_KEY_MIZZIMA }}
+      GEMINI_API_KEY_BBC: ${{ secrets.GEMINI_API_KEY_BBC }}
+      GEMINI_API_KEY_IRRAWADDY: ${{ secrets.GEMINI_API_KEY_IRRAWADDY }}
+      GEMINI_API_KEY_KHITTHIT: ${{ secrets.GEMINI_API_KEY_KHITTHIT }}
+      GEMINI_API_KEY_MYANMARNOW: ${{ secrets.GEMINI_API_KEY_MYANMARNOW }}
+      GEMINI_API_KEY_DVB: ${{ secrets.GEMINI_API_KEY_DVB }}
+      GEMINI_REQS_PER_MIN: 9
+      GEMINI_MIN_INTERVAL_SEC: 2.0
+      GEMINI_JITTER_SEC: 0.3
+      # ===== Google Sheets（production）=====
+      GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+      MNA_SHEET_ID: ${{ secrets.MNA_SHEET_ID }}
+      MNA_SHEET_NAME: "prod"
+    steps:
+      - name: Checkout (main)
+        uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install gspread google-auth requests beautifulsoup4 python-dateutil
 
-            - name: Write GOOGLE_APPLICATION_CREDENTIALS
-              if: env.GOOGLE_SERVICE_ACCOUNT_JSON != ''
-              run: |
-                  echo "${GOOGLE_SERVICE_ACCOUNT_JSON}" > $RUNNER_TEMP/sa.json
-                  echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/sa.json" >> $GITHUB_ENV
+      - name: Write GOOGLE_APPLICATION_CREDENTIALS
+        if: env.GOOGLE_SERVICE_ACCOUNT_JSON != ''
+        run: |
+          echo "${GOOGLE_SERVICE_ACCOUNT_JSON}" > $RUNNER_TEMP/sa.json
+          echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/sa.json" >> $GITHUB_ENV
 
-            - name: Collect → append to sheet (18/20/22:00 runs)
-              run: |
-                  python scripts/mna_sheet_pipeline.py collect-to-sheet
+      - name: Collect → append to sheet (18/20/22:00 runs)
+        run: |
+          python scripts/mna_sheet_pipeline.py collect-to-sheet
 
-    schedule-build-bundle:
-        if: github.event_name == 'schedule' && github.event.schedule == '0 20 * * *'
-        runs-on: ubuntu-latest
-        environment: production
-        env:
-            # ===== Gemini（production）=====
-            GEMINI_API_KEY_MIZZIMA: ${{ secrets.GEMINI_API_KEY_MIZZIMA }}
-            GEMINI_API_KEY_BBC: ${{ secrets.GEMINI_API_KEY_BBC }}
-            GEMINI_API_KEY_IRRAWADDY: ${{ secrets.GEMINI_API_KEY_IRRAWADDY }}
-            GEMINI_API_KEY_KHITTHIT: ${{ secrets.GEMINI_API_KEY_KHITTHIT }}
-            GEMINI_API_KEY_MYANMARNOW: ${{ secrets.GEMINI_API_KEY_MYANMARNOW }}
-            GEMINI_API_KEY_DVB: ${{ secrets.GEMINI_API_KEY_DVB }}
-            GEMINI_REQS_PER_MIN: 9
-            GEMINI_MIN_INTERVAL_SEC: 2.0
-            GEMINI_JITTER_SEC: 0.3
-            # ===== Google Sheets（production）=====
-            GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-            MNA_SHEET_ID: ${{ secrets.MNA_SHEET_ID }}
-            MNA_SHEET_NAME: "prod"
-        steps:
-            - name: Checkout (main)
-              uses: actions/checkout@v4
-              with:
-                  ref: main
-            - name: Set up Python
-              uses: actions/setup-python@v5
-              with:
-                  python-version: "3.11"
-            - name: Install dependencies
-              run: |
-                  python -m pip install --upgrade pip
-                  pip install gspread google-auth requests beautifulsoup4 python-dateutil
+  schedule-build-bundle:
+    if: github.event_name == 'schedule' && github.event.schedule == '0 20 * * *'
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      # ===== Gemini（production）=====
+      GEMINI_API_KEY_MIZZIMA: ${{ secrets.GEMINI_API_KEY_MIZZIMA }}
+      GEMINI_API_KEY_BBC: ${{ secrets.GEMINI_API_KEY_BBC }}
+      GEMINI_API_KEY_IRRAWADDY: ${{ secrets.GEMINI_API_KEY_IRRAWADDY }}
+      GEMINI_API_KEY_KHITTHIT: ${{ secrets.GEMINI_API_KEY_KHITTHIT }}
+      GEMINI_API_KEY_MYANMARNOW: ${{ secrets.GEMINI_API_KEY_MYANMARNOW }}
+      GEMINI_API_KEY_DVB: ${{ secrets.GEMINI_API_KEY_DVB }}
+      GEMINI_REQS_PER_MIN: 9
+      GEMINI_MIN_INTERVAL_SEC: 2.0
+      GEMINI_JITTER_SEC: 0.3
+      # ===== Google Sheets（production）=====
+      GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+      MNA_SHEET_ID: ${{ secrets.MNA_SHEET_ID }}
+      MNA_SHEET_NAME: "prod"
+    steps:
+      - name: Checkout (main)
+        uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install gspread google-auth requests beautifulsoup4 python-dateutil
 
-            - name: Write GOOGLE_APPLICATION_CREDENTIALS
-              if: env.GOOGLE_SERVICE_ACCOUNT_JSON != ''
-              run: |
-                  echo "${GOOGLE_SERVICE_ACCOUNT_JSON}" > $RUNNER_TEMP/sa.json
-                  echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/sa.json" >> $GITHUB_ENV
+      - name: Write GOOGLE_APPLICATION_CREDENTIALS
+        if: env.GOOGLE_SERVICE_ACCOUNT_JSON != ''
+        run: |
+          echo "${GOOGLE_SERVICE_ACCOUNT_JSON}" > $RUNNER_TEMP/sa.json
+          echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/sa.json" >> $GITHUB_ENV
 
-            - name: Build bundle from sheet
-              run: |
-                  python scripts/mna_sheet_pipeline.py build-bundle --bundle-dir bundle
+      - name: Build bundle from sheet
+        run: |
+          python scripts/mna_sheet_pipeline.py build-bundle --bundle-dir bundle
 
-            - name: Upload bundle artifact
-              uses: actions/upload-artifact@v4
-              with:
-                  name: mna-bundle
-                  path: bundle/**
-                  if-no-files-found: error
+      - name: Upload bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mna-bundle
+          path: bundle/**
+          if-no-files-found: error
 
-    # === 手動実行（本番 / 開発のどちらも UI から選択） ===
-    manual-run:
-        if: github.event_name == 'workflow_dispatch'
-        runs-on: ubuntu-latest
-        # GitHub Environments 切替：UIで選んだ target をそのまま利用
-        environment: ${{ inputs.target }}
-        steps:
-            - name: Resolve ref based on target
-              id: ref
-              run: |
-                  # 手動実行時は target によりチェックアウトするブランチを切替
-                  if [ "${{ inputs.target }}" = "development" ]; then
-                    echo "ref=develop" >> "$GITHUB_OUTPUT"
-                  else
-                    echo "ref=main" >> "$GITHUB_OUTPUT"
-                  fi
+  # === 手動実行（本番 / 開発のどちらも UI から選択） ===
+  manual-run:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    # GitHub Environments 切替：UIで選んだ target をそのまま利用
+    environment: ${{ inputs.target }}
+    steps:
+      - name: Resolve ref based on target
+        id: ref
+        run: |
+          # 手動実行時は target によりチェックアウトするブランチを切替
+          if [ "${{ inputs.target }}" = "development" ]; then
+            echo "ref=develop" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=main" >> "$GITHUB_OUTPUT"
+          fi
 
-            - name: Checkout (${{ steps.ref.outputs.ref }})
-              uses: actions/checkout@v4
-              with:
-                  ref: ${{ steps.ref.outputs.ref }}
+      - name: Checkout (${{ steps.ref.outputs.ref }})
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.ref.outputs.ref }}
 
-            - name: Set up Python
-              uses: actions/setup-python@v5
-              with:
-                  python-version: "3.11"
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
-            - name: Install dependencies
-              run: |
-                  python -m pip install --upgrade pip
-                  pip install gspread google-auth requests beautifulsoup4 python-dateutil
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install gspread google-auth requests beautifulsoup4 python-dateutil
 
-            # ▼ prod/dev で環境変数だけを切り替え（処理は変更しない）
-            - name: Export env (prod/dev switch)
-              run: |
-                  if [ "${{ inputs.target }}" = "development" ]; then
-                    {
-                      echo "GEMINI_API_KEY_MIZZIMA=${{ secrets.GEMINI_API_TEST_KEY_MIZZIMA }}";
-                      echo "GEMINI_API_KEY_BBC=${{ secrets.GEMINI_API_TEST_KEY_BBC }}";
-                      echo "GEMINI_API_KEY_IRRAWADDY=${{ secrets.GEMINI_API_TEST_KEY_IRRAWADDY }}";
-                      echo "GEMINI_API_KEY_KHITTHIT=${{ secrets.GEMINI_API_TEST_KEY_KHITTHIT }}";
-                      echo "GEMINI_API_KEY_MYANMARNOW=${{ secrets.GEMINI_API_TEST_KEY_MYANMARNOW }}";
-                      echo "GEMINI_API_KEY_DVB=${{ secrets.GEMINI_API_TEST_KEY_DVB }}";
-                      echo "MNA_SHEET_NAME=dev";
-                    } >> "$GITHUB_ENV"
-                  else
-                    {
-                      echo "GEMINI_API_KEY_MIZZIMA=${{ secrets.GEMINI_API_KEY_MIZZIMA }}";
-                      echo "GEMINI_API_KEY_BBC=${{ secrets.GEMINI_API_KEY_BBC }}";
-                      echo "GEMINI_API_KEY_IRRAWADDY=${{ secrets.GEMINI_API_KEY_IRRAWADDY }}";
-                      echo "GEMINI_API_KEY_KHITTHIT=${{ secrets.GEMINI_API_KEY_KHITTHIT }}";
-                      echo "GEMINI_API_KEY_MYANMARNOW=${{ secrets.GEMINI_API_KEY_MYANMARNOW }}";
-                      echo "GEMINI_API_KEY_DVB=${{ secrets.GEMINI_API_KEY_DVB }}";
-                      echo "MNA_SHEET_NAME=prod";
-                    } >> "$GITHUB_ENV"
-                  fi
-                  {
-                    echo "GEMINI_REQS_PER_MIN=9";
-                    echo "GEMINI_MIN_INTERVAL_SEC=2.0";
-                    echo "GEMINI_JITTER_SEC=0.3";
-                    echo "MNA_SHEET_ID=${{ secrets.MNA_SHEET_ID }}";
-                    echo "GOOGLE_SERVICE_ACCOUNT_JSON=${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}";
-                  } >> "$GITHUB_ENV"
+      # ▼ prod/dev で環境変数だけを切り替え（処理は変更しない）
+      - name: Export env (prod/dev switch)
+        run: |
+          if [ "${{ inputs.target }}" = "development" ]; then
+            {
+              echo "GEMINI_API_KEY_MIZZIMA=${{ secrets.GEMINI_API_TEST_KEY_MIZZIMA }}";
+              echo "GEMINI_API_KEY_BBC=${{ secrets.GEMINI_API_TEST_KEY_BBC }}";
+              echo "GEMINI_API_KEY_IRRAWADDY=${{ secrets.GEMINI_API_TEST_KEY_IRRAWADDY }}";
+              echo "GEMINI_API_KEY_KHITTHIT=${{ secrets.GEMINI_API_TEST_KEY_KHITTHIT }}";
+              echo "GEMINI_API_KEY_MYANMARNOW=${{ secrets.GEMINI_API_TEST_KEY_MYANMARNOW }}";
+              echo "GEMINI_API_KEY_DVB=${{ secrets.GEMINI_API_TEST_KEY_DVB }}";
+              echo "MNA_SHEET_NAME=dev";
+            } >> "$GITHUB_ENV"
+          else
+            {
+              echo "GEMINI_API_KEY_MIZZIMA=${{ secrets.GEMINI_API_KEY_MIZZIMA }}";
+              echo "GEMINI_API_KEY_BBC=${{ secrets.GEMINI_API_KEY_BBC }}";
+              echo "GEMINI_API_KEY_IRRAWADDY=${{ secrets.GEMINI_API_KEY_IRRAWADDY }}";
+              echo "GEMINI_API_KEY_KHITTHIT=${{ secrets.GEMINI_API_KEY_KHITTHIT }}";
+              echo "GEMINI_API_KEY_MYANMARNOW=${{ secrets.GEMINI_API_KEY_MYANMARNOW }}";
+              echo "GEMINI_API_KEY_DVB=${{ secrets.GEMINI_API_KEY_DVB }}";
+              echo "MNA_SHEET_NAME=prod";
+            } >> "$GITHUB_ENV"
+          fi
+          {
+            echo "GEMINI_REQS_PER_MIN=9";
+            echo "GEMINI_MIN_INTERVAL_SEC=2.0";
+            echo "GEMINI_JITTER_SEC=0.3";
+            echo "MNA_SHEET_ID=${{ secrets.MNA_SHEET_ID }}";
+            echo "GOOGLE_SERVICE_ACCOUNT_JSON=${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}";
+          } >> "$GITHUB_ENV"
 
-            - name: Write GOOGLE_APPLICATION_CREDENTIALS
-              run: |
-                  if [ -n "${GOOGLE_SERVICE_ACCOUNT_JSON}" ]; then
-                      echo "${GOOGLE_SERVICE_ACCOUNT_JSON}" > $RUNNER_TEMP/sa.json
-                      echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/sa.json" >> $GITHUB_ENV
-                  fi
+      - name: Write GOOGLE_APPLICATION_CREDENTIALS
+        run: |
+          if [ -n "${GOOGLE_SERVICE_ACCOUNT_JSON}" ]; then
+              echo "${GOOGLE_SERVICE_ACCOUNT_JSON}" > $RUNNER_TEMP/sa.json
+              echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/sa.json" >> $GITHUB_ENV
+          fi
 
-            - name: Run selected mode
-              run: |
-                  case "${{ inputs.mode }}" in
-                    collect16)
-                      python scripts/mna_sheet_pipeline.py collect-to-sheet --clear-yesterday
-                      ;;
-                    collect)
-                      python scripts/mna_sheet_pipeline.py collect-to-sheet
-                      ;;
-                    build-bundle)
-                      python scripts/mna_sheet_pipeline.py build-bundle --bundle-dir bundle
-                      ;;
-                    *)
-                      echo "unknown mode: ${{ inputs.mode }}" ; exit 1
-                      ;;
-                  esac
+      - name: Run selected mode
+        run: |
+          case "${{ inputs.mode }}" in
+            collect16)
+              python scripts/mna_sheet_pipeline.py collect-to-sheet --clear-yesterday
+              ;;
+            collect)
+              python scripts/mna_sheet_pipeline.py collect-to-sheet
+              ;;
+            build-bundle)
+              python scripts/mna_sheet_pipeline.py build-bundle --bundle-dir bundle
+              ;;
+            *)
+              echo "unknown mode: ${{ inputs.mode }}" ; exit 1
+              ;;
+          esac
 
-            - name: Upload bundle (only when built)
-              if: inputs.mode == 'build-bundle'
-              uses: actions/upload-artifact@v4
-              with:
-                  name: mna-bundle
-                  path: bundle/**
-                  if-no-files-found: ignore
+      - name: Upload bundle (only when built)
+        if: inputs.mode == 'build-bundle'
+        uses: actions/upload-artifact@v4
+        with:
+          name: mna-bundle
+          path: bundle/**
+          if-no-files-found: ignore
