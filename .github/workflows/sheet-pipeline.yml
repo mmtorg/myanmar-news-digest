@@ -85,7 +85,7 @@ jobs:
 
       - name: Collect → write to sheet (16:00 run, clear yesterday once)
         run: |
-          python scripts/mna_sheet_pipeline.py collect-to-sheet --clear-yesterday
+          python mna_sheet_pipeline.py collect-to-sheet --clear-yesterday
 
   schedule-collect:
     if: github.event_name == 'schedule' && contains(fromJson('["30 11 * * *","30 13 * * *","30 15 * * *"]'), github.event.schedule)
@@ -128,7 +128,7 @@ jobs:
 
       - name: Collect → append to sheet (18/20/22:00 runs)
         run: |
-          python scripts/mna_sheet_pipeline.py collect-to-sheet
+          python mna_sheet_pipeline.py collect-to-sheet
 
   schedule-build-bundle:
     if: github.event_name == 'schedule' && github.event.schedule == '0 20 * * *'
@@ -171,7 +171,7 @@ jobs:
 
       - name: Build bundle from sheet
         run: |
-          python scripts/mna_sheet_pipeline.py build-bundle --bundle-dir bundle
+          python mna_sheet_pipeline.py build-bundle --bundle-dir bundle
 
       - name: Upload bundle artifact
         uses: actions/upload-artifact@v4
@@ -245,13 +245,13 @@ jobs:
         run: |
           case "${{ inputs.mode }}" in
             collect16)
-              python scripts/mna_sheet_pipeline.py collect-to-sheet --clear-yesterday
+              python mna_sheet_pipeline.py collect-to-sheet --clear-yesterday
               ;;
             collect)
-              python scripts/mna_sheet_pipeline.py collect-to-sheet
+              python mna_sheet_pipeline.py collect-to-sheet
               ;;
             build-bundle)
-              python scripts/mna_sheet_pipeline.py build-bundle --bundle-dir bundle
+              python mna_sheet_pipeline.py build-bundle --bundle-dir bundle
               ;;
             *)
               echo "unknown mode: ${{ inputs.mode }}" ; exit 1
