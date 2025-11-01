@@ -374,21 +374,50 @@ def _is_ayeyarwady(title_ja: str, summary_ja: str) -> bool:
     return False
 
 def _collect_all_for(target_date_mmt: date) -> List[Dict]:
+    # ===== テスト短縮モード（環境変数は使わない） =====
+    # テストが終わったら False に戻すだけで元の挙動に戻ります。
+    TEST_MODE = True            # ← テスト時だけ True
+    TEST_SOURCES = ("khitthit", "dvb")  # 対象メディアを限定
+    TEST_MAX_PER_SOURCE = 3     # 各メディアの最大件数（0/Noneで無制限）
+    TEST_STOP_AFTER = 8         # 全体の最大件数（0/Noneで無制限）
+    # ================================================
+
     if not collectors_loaded:
         raise SystemExit("収集関数の読み込み失敗。export_all_articles_to_csv.py を配置してください。")
+
+    # 既存と同じ順序を保持
+    collectors = [
+        ("mizzima",        collect_mizzima_all_for_date),
+        ("bbc",            collect_bbc_all_for_date),
+        ("irrawaddy",      collect_irrawaddy_all_for_date),
+        ("khitthit",       collect_khitthit_all_for_date),
+        ("myanmarnow",     collect_myanmar_now_mm_all_for_date),
+        ("dvb",            collect_dvb_all_for_date),
+    ]
+
+    if TEST_MODE:
+        name_set = set(s.lower().strip() for s in TEST_SOURCES)
+        collectors = [c for c in collectors if c[0] in name_set]
+
     items: List[Dict] = []
-    for fn in (
-        collect_mizzima_all_for_date,
-        collect_bbc_all_for_date,
-        collect_irrawaddy_all_for_date,
-        collect_khitthit_all_for_date,
-        collect_myanmar_now_mm_all_for_date,
-        collect_dvb_all_for_date,
-    ):
+    total = 0
+
+    for name, fn in collectors:
         try:
-            items.extend(fn(target_date_mmt))
+            src_items = fn(target_date_mmt)  # 各コレクタは当日分を返す前提
         except Exception as e:
             print(f"[warn] collector failed: {fn.__name__}: {e}")
+            continue
+
+        if TEST_MODE and TEST_MAX_PER_SOURCE:
+            src_items = src_items[:TEST_MAX_PER_SOURCE]
+
+        items.extend(src_items)
+        total += len(src_items)
+
+        if TEST_MODE and TEST_STOP_AFTER and total >= TEST_STOP_AFTER:
+            break
+
     return deduplicate_by_url(items)
 
 # ===== Sheets I/O =====
