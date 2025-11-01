@@ -27,7 +27,7 @@ on:
 
 # どのイベントでも 1 workflow につき環境ごとに直列化
 concurrency:
-  # 手動実行: main→production / develop→development / その他→development
+  # 手動実行: main→production / develop→development / その他→production（元の式を踏襲）
   group: mna-sheet-pipeline-${{ github.event_name == 'workflow_dispatch' && (github.ref_name == 'main' && 'production' || 'development') || 'production' }}
   cancel-in-progress: false
 
@@ -45,7 +45,7 @@ jobs:
     runs-on: ubuntu-latest
     # 環境別シークレット（Environments）の切替：本番固定
     environment: production
-    # ▼ 環境変数（prod用）のみ追加
+    # ▼ 環境変数（prod用）のみ追加（ここでのmulti-lineはOK：$GITHUB_ENV経由ではない）
     env:
       # ===== Gemini（production）=====
       GEMINI_API_KEY_MIZZIMA: ${{ secrets.GEMINI_API_KEY_MIZZIMA }}
@@ -80,8 +80,10 @@ jobs:
       - name: Write GOOGLE_APPLICATION_CREDENTIALS
         if: env.GOOGLE_SERVICE_ACCOUNT_JSON != ''
         run: |
-          echo "${GOOGLE_SERVICE_ACCOUNT_JSON}" > $RUNNER_TEMP/sa.json
-          echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/sa.json" >> $GITHUB_ENV
+          SA_FILE="$RUNNER_TEMP/sa.json"
+          printf '%s' "${GOOGLE_SERVICE_ACCOUNT_JSON}" > "$SA_FILE"
+          echo "GOOGLE_APPLICATION_CREDENTIALS=$SA_FILE" >> "$GITHUB_ENV"
+          echo "GOOGLE_SERVICE_ACCOUNT_FILE=$SA_FILE" >> "$GITHUB_ENV"
 
       - name: Collect → write to sheet (16:00 run, clear yesterday once)
         run: |
@@ -111,10 +113,12 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: main
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
@@ -123,8 +127,10 @@ jobs:
       - name: Write GOOGLE_APPLICATION_CREDENTIALS
         if: env.GOOGLE_SERVICE_ACCOUNT_JSON != ''
         run: |
-          echo "${GOOGLE_SERVICE_ACCOUNT_JSON}" > $RUNNER_TEMP/sa.json
-          echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/sa.json" >> $GITHUB_ENV
+          SA_FILE="$RUNNER_TEMP/sa.json"
+          printf '%s' "${GOOGLE_SERVICE_ACCOUNT_JSON}" > "$SA_FILE"
+          echo "GOOGLE_APPLICATION_CREDENTIALS=$SA_FILE" >> "$GITHUB_ENV"
+          echo "GOOGLE_SERVICE_ACCOUNT_FILE=$SA_FILE" >> "$GITHUB_ENV"
 
       - name: Collect → append to sheet (18/20/22:00 runs)
         run: |
@@ -154,10 +160,12 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: main
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
@@ -166,8 +174,10 @@ jobs:
       - name: Write GOOGLE_APPLICATION_CREDENTIALS
         if: env.GOOGLE_SERVICE_ACCOUNT_JSON != ''
         run: |
-          echo "${GOOGLE_SERVICE_ACCOUNT_JSON}" > $RUNNER_TEMP/sa.json
-          echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/sa.json" >> $GITHUB_ENV
+          SA_FILE="$RUNNER_TEMP/sa.json"
+          printf '%s' "${GOOGLE_SERVICE_ACCOUNT_JSON}" > "$SA_FILE"
+          echo "GOOGLE_APPLICATION_CREDENTIALS=$SA_FILE" >> "$GITHUB_ENV"
+          echo "GOOGLE_SERVICE_ACCOUNT_FILE=$SA_FILE" >> "$GITHUB_ENV"
 
       - name: Build bundle from sheet
         run: |
@@ -231,26 +241,13 @@ jobs:
             echo "GEMINI_MIN_INTERVAL_SEC=2.0";
             echo "GEMINI_JITTER_SEC=0.3";
             echo "MNA_SHEET_ID=${{ secrets.MNA_SHEET_ID }}";
-            echo "GOOGLE_SERVICE_ACCOUNT_JSON=${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}";
           } >> "$GITHUB_ENV"
 
-
-          # ===== multi-line secret → ファイルに保存 =====
+          # ===== multi-line secret → ファイルに保存（$GITHUB_ENV には書かない）=====
           SA_FILE="$RUNNER_TEMP/sa.json"
           printf '%s' '${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}' > "$SA_FILE"
-
-          # Google系SDK/ライブラリはこの環境変数にファイルパスがあると自動検出します
           echo "GOOGLE_APPLICATION_CREDENTIALS=$SA_FILE" >> "$GITHUB_ENV"
-
-          # もしあなたのPythonが独自に参照するなら、併せてこれも書いておくと安心
           echo "GOOGLE_SERVICE_ACCOUNT_FILE=$SA_FILE" >> "$GITHUB_ENV"
-
-      - name: Write GOOGLE_APPLICATION_CREDENTIALS
-        run: |
-          if [ -n "${GOOGLE_SERVICE_ACCOUNT_JSON}" ]; then
-              echo "${GOOGLE_SERVICE_ACCOUNT_JSON}" > $RUNNER_TEMP/sa.json
-              echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/sa.json" >> $GITHUB_ENV
-          fi
 
       - name: Run selected mode
         run: |
