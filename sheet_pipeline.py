@@ -163,8 +163,9 @@ try:
         collect_dvb_all_for_date,
     )
     collectors_loaded = True
-except Exception:
+except Exception as e:
     collectors_loaded = False
+    print(f"[error] collectors import failed: {e}", file=sys.stderr)
 
 # ===== レートリミッタ（export_all_articles_to_csv.py の実装を再利用） =====
 try:
