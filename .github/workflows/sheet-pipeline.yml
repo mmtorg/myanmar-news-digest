@@ -15,14 +15,6 @@ on:
 
   workflow_dispatch:
     inputs:
-      target:
-        description: "実行先の環境（production / development）"
-        type: choice
-        required: true
-        default: production
-        options:
-          - production
-          - development
       mode:
         description: "collect16（16時回） / collect（18/20/22時回） / build-bundle（02:30）"
         type: choice
@@ -35,7 +27,8 @@ on:
 
 # どのイベントでも 1 workflow につき環境ごとに直列化
 concurrency:
-  group: mna-sheet-pipeline-${{ github.event_name == 'workflow_dispatch' && inputs.target || 'production' }}
+  # 手動実行: main→production / develop→development / その他→development
+  group: mna-sheet-pipeline-${{ github.event_name == 'workflow_dispatch' && (github.ref_name == 'main' && 'production' || 'development') || 'production' }}
   cancel-in-progress: false
 
 permissions:
@@ -190,24 +183,14 @@ jobs:
   # === 手動実行（本番 / 開発のどちらも UI から選択） ===
   manual-run:
     if: github.event_name == 'workflow_dispatch'
+    # main を選べば production / develop を選べば development
+    environment: ${{ github.ref_name == 'main' && 'production' || 'development' }}
     runs-on: ubuntu-latest
-    # GitHub Environments 切替：UIで選んだ target をそのまま利用
-    environment: ${{ inputs.target }}
     steps:
-      - name: Resolve ref based on target
-        id: ref
-        run: |
-          # 手動実行時は target によりチェックアウトするブランチを切替
-          if [ "${{ inputs.target }}" = "development" ]; then
-            echo "ref=develop" >> "$GITHUB_OUTPUT"
-          else
-            echo "ref=main" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Checkout (${{ steps.ref.outputs.ref }})
+      - name: Checkout (手動で選んだブランチ)
         uses: actions/checkout@v4
         with:
-          ref: ${{ steps.ref.outputs.ref }}
+          ref: ${{ github.ref }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -220,9 +203,9 @@ jobs:
           pip install gspread google-auth requests beautifulsoup4 python-dateutil
 
       # ▼ prod/dev で環境変数だけを切り替え（処理は変更しない）
-      - name: Export env (prod/dev switch)
+      - name: Export env (prod/dev switch by branch)
         run: |
-          if [ "${{ inputs.target }}" = "development" ]; then
+          if [ "${GITHUB_REF_NAME}" = "develop" ]; then
             {
               echo "GEMINI_API_KEY_MIZZIMA=${{ secrets.GEMINI_API_TEST_KEY_MIZZIMA }}";
               echo "GEMINI_API_KEY_BBC=${{ secrets.GEMINI_API_TEST_KEY_BBC }}";
