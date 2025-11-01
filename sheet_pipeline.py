@@ -187,8 +187,8 @@ _LIMITER: Optional[_RateLimiterProto] = None
 # ===== Google Sheets 認証（Service Account） ====
 import gspread
 from google.oauth2.service_account import Credentials
-SHEET_ID = "1Pe9ZQu7eJykQxZmwo8-RJHmYYTVYBLNAUTpQwQGMOa"
-SHEET_NAME = "index"
+SHEET_ID = os.getenv("MNA_SHEET_ID")
+SHEET_NAME = os.getenv("MNA_SHEET_NAME")
 
 def _gc_client():
     """
@@ -559,7 +559,7 @@ def main():
     p = argparse.ArgumentParser(description="MNA sheet pipeline")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    p1 = sub.add_parser("collect-to-sheet", help="収集→要約→index追記（16/18/20/22）")
+    p1 = sub.add_parser("collect-to-sheet", help="収集→要約→sheet追記（16/18/20/22）")
     p1.add_argument("--clear-yesterday", action="store_true", help="前日分だけA2:Jから除去（16:00用）")
     # === Gemini free tier を想定したレート設定（CLI指定 > 環境変数 > 既定）===
     p1.add_argument("--rpm", type=int, default=int(os.getenv("GEMINI_REQS_PER_MIN", "9")))
@@ -567,7 +567,7 @@ def main():
     p1.add_argument("--jitter", type=float, default=float(os.getenv("GEMINI_JITTER_SEC", "0.3")))
     p1.set_defaults(func=cmd_collect_to_sheet)
 
-    p2 = sub.add_parser("build-bundle", help="indexシートからbundle生成（02:30）")
+    p2 = sub.add_parser("build-bundle", help="sheetからbundle生成（02:30）")
     p2.add_argument("--bundle-dir", default="bundle", help="bundle出力先")
     p2.set_defaults(func=cmd_build_bundle_from_sheet)
 
