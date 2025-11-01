@@ -190,22 +190,37 @@ SHEET_ID = "1Pe9ZQu7eJykQxZmwo8-RJHmYYTVYBLNAUTpQwQGMOa"
 SHEET_NAME = "index"
 
 def _gc_client():
-    info = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
-    file = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE", "").strip()
-    if info:
-        creds = Credentials.from_service_account_info(
-            json.loads(info),
-            scopes=["https://www.googleapis.com/auth/spreadsheets"],
-        )
-    elif file:
-        creds = Credentials.from_service_account_file(
-            file,
-            scopes=["https://www.googleapis.com/auth/spreadsheets"],
-        )
-    else:
-        raise SystemExit("Google SA credential not found (set GOOGLE_SERVICE_ACCOUNT_JSON or GOOGLE_SERVICE_ACCOUNT_FILE)")
-    return gspread.authorize(creds)
+    """
+    認証の優先順:
+      1) GOOGLE_SERVICE_ACCOUNT_FILE（今回のワークフローで出力する一時ファイル）
+      2) GOOGLE_APPLICATION_CREDENTIALS（GCP標準）
+      3) GOOGLE_SERVICE_ACCOUNT_JSON（JSON文字列）
+    """
+    scopes = ["https://www.googleapis.com/auth/spreadsheets"]
 
+    file = (os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE") or "").strip()
+    if file:
+        creds = Credentials.from_service_account_file(file, scopes=scopes)
+        return gspread.authorize(creds)
+
+    app_cred = (os.getenv("GOOGLE_APPLICATION_CREDENTIALS") or "").strip()
+    if app_cred:
+        creds = Credentials.from_service_account_file(app_cred, scopes=scopes)
+        return gspread.authorize(creds)
+
+    info = (os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON") or "").strip()
+    if info:
+        try:
+            creds = Credentials.from_service_account_info(json.loads(info), scopes=scopes)
+            return gspread.authorize(creds)
+        except Exception as e:
+            raise SystemExit(f"Invalid GOOGLE_SERVICE_ACCOUNT_JSON (JSON parse failed): {e}") from e
+
+    raise SystemExit(
+        "Google SA credential not found. "
+        "Set one of: GOOGLE_SERVICE_ACCOUNT_FILE / GOOGLE_APPLICATION_CREDENTIALS / GOOGLE_SERVICE_ACCOUNT_JSON"
+    )
+    
 # =========================
 # 媒体→APIキー環境変数マップ
 # =========================
