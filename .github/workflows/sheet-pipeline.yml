@@ -28,7 +28,7 @@ on:
 # どのイベントでも 1 workflow につき環境ごとに直列化
 concurrency:
   # 手動実行: main→production / develop→development / その他→development
-  group: mna-sheet-pipeline-${{ github.event_name == 'workflow_dispatch' && (github.ref == 'refs/heads/main' && 'production' || 'development') || 'production' }}
+  group: mna-sheet-pipeline-${{ github.event_name == 'workflow_dispatch' && (github.ref_name == 'main' && 'production' || 'development') || 'production' }}
   cancel-in-progress: false
 
 permissions:
@@ -184,7 +184,7 @@ jobs:
   manual-run:
     if: github.event_name == 'workflow_dispatch'
     # main を選べば production / develop を選べば development
-    environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'development' }}
+    environment: ${{ github.ref_name == 'main' && 'production' || 'development' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout (手動で選んだブランチ)
