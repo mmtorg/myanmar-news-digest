@@ -4334,46 +4334,73 @@ if __name__ == "__main__":
     # 収集済み bundle を読み込み、対象宛先にメール送信
     # ------------------------------
     if args.phase == "send":
-        if not args.recipients_env:
-            raise SystemExit("[send] --recipients-env is required")
-
-        # bundle 読み込み（存在しない/壊れている場合の親切メッセージ）
+        # bundle 読み込み
         try:
             meta, summaries_loaded, pdf_loaded, attachment_name_loaded = _load_bundle(args.bundle_dir)
         except FileNotFoundError as e:
             raise SystemExit(f"[send] bundle not found under: {os.path.abspath(args.bundle_dir)} : {e}")
 
-        # ✅ 実際の配信日（MMT）を優先：手動上書き（DATE_MMT）があればそれを採用
-        #    → 「件名」と「PDFファイル名」の両方を“配信日”で揃える
+        # エーヤワディ専用サマリ（オプション）
+        try:
+            import json, pathlib
+            b = pathlib.Path(args.bundle_dir)
+            summaries_ayeyar_loaded = json.loads((b / "summaries_ayeyar.json").read_text(encoding="utf-8"))
+        except Exception:
+            summaries_ayeyar_loaded = []
+
+        # 実際の配信日（MMT）で統一
         delivery_date_mmt = get_today_date_mmt()
 
-        # プラン別の出し分け（必要に応じて調整）
-        env = args.recipients_env
-        is_trial = (env == "TRIAL_EMAIL_RECIPIENTS")
-        is_lite  = (env == "LITE_EMAIL_RECIPIENTS")
+        def _send_one(env_name: str):
+            """単一宛先へ送信（INTERNAL はエーヤワディ専用サマリ、それ以外は bundle の summaries を使用）"""
+            if not (os.getenv(env_name, "").strip()):
+                return  # 宛先未設定はスキップ
 
-        # Lite に PDF を付けない運用の場合はここで外す（不要ならこの1行は削除）
-        attachment_bytes = None if is_lite else (pdf_loaded if pdf_loaded else None)
-        # ✅ PDF名を“配信日（MMT）”に差し替え（本文は bundle のPDFをそのまま添付）
-        if is_lite:
-            attachment_name = None
+            is_trial = (env_name == "TRIAL_EMAIL_RECIPIENTS")
+            is_lite  = (env_name == "LITE_EMAIL_RECIPIENTS")
+            is_internal = (env_name == "INTERNAL_EMAIL_RECIPIENTS")
+
+            # 添付の扱い：Liteはなし／他は bundle のPDF（従来仕様踏襲）
+            attachment_bytes = None if is_lite else (pdf_loaded if pdf_loaded else None)
+            # PDF名は「配信日MMT」に差し替え（添付がある場合のみ）
+            if attachment_bytes:
+                try:
+                    jp = _jp_date(delivery_date_mmt)
+                    attachment_name = f"ミャンマーニュース全文訳【{jp}】.pdf"
+                except Exception:
+                    attachment_name = attachment_name_loaded if attachment_name_loaded else None
+            else:
+                attachment_name = None
+
+            # 本文データの選択
+            summaries_for_mail = summaries_ayeyar_loaded if is_internal else summaries_loaded
+            if not summaries_for_mail:
+                print(f"[send] {env_name}: 対象記事なしのためスキップ")
+                return
+
+            send_email_digest(
+                summaries_for_mail,
+                recipients_env=env_name,
+                include_read_link=(not is_lite),
+                trial_footer_url=(os.getenv("PAID_PLAN_URL", "").strip() or None) if is_trial else None,
+                attachment_bytes=attachment_bytes,
+                attachment_name=attachment_name,
+                delivery_date_mmt=delivery_date_mmt,
+            )
+
+        if args.recipients_env:
+            # 従来どおり単体送信（INTERNAL もサポート）
+            _send_one(args.recipients_env)
         else:
-            try:
-                jp = _jp_date(delivery_date_mmt)  # 例: 2025年10月30日（ゼロ詰めなし仕様は現行踏襲）
-                attachment_name = f"ミャンマーニュース全文訳【{jp}】.pdf"
-            except Exception:
-                # フォールバック：bundle 保存名（従来どおり）
-                attachment_name = attachment_name_loaded if attachment_name_loaded else None
+            # まとめ送信（存在する宛先のみ）
+            for env_name in (
+                "LITE_EMAIL_RECIPIENTS",
+                "BUSINESS_EMAIL_RECIPIENTS",
+                "TRIAL_EMAIL_RECIPIENTS",
+                "INTERNAL_EMAIL_RECIPIENTS",  # ← エーヤワディ専用
+            ):
+                _send_one(env_name)
 
-        send_email_digest(
-            summaries_loaded,
-            recipients_env=env,                    # ← ワークフローの各 step の env がそのまま効きます
-            include_read_link=(not is_lite),  # ← Lite はリンクなし、他はあり
-            trial_footer_url=(os.getenv("PAID_PLAN_URL", "").strip() or None) if is_trial else None,
-            attachment_bytes=attachment_bytes,
-            attachment_name=attachment_name,
-            delivery_date_mmt=delivery_date_mmt,
-        )
         raise SystemExit(0)
     
     seen_urls = set()
@@ -4462,35 +4489,10 @@ if __name__ == "__main__":
     # バッチ翻訳実行 (5件ごとに1分待機)
     all_summaries = process_translation_batches(batch_size=TRANSLATION_BATCH_SIZE, wait_seconds=60)
 
-    # 仕様変更: 2通送信に分離
-    # 1) エーヤワディのみ（存在する場合のみ送信、内部向け）
-    # collect では送らない
-    if args.phase != "collect":
-        summaries_ayeyar_only = [s for s in all_summaries if s.get("is_ayeyar")]
-        if summaries_ayeyar_only:
-            send_email_digest(
-                summaries_ayeyar_only,
-                recipients_env="INTERNAL_EMAIL_RECIPIENTS",
-                delivery_date_mmt=date_mmt,
-            )
-        else:
-            print("エーヤワディ記事なし: エーヤワディのみメールは送信しません。")
-
     # 2) エーヤワディ以外のキーワードヒット（エーヤワディに該当しないものだけ）
     summaries_non_ayeyar = [
         s for s in all_summaries if s.get("hit_non_ayeyar") and not s.get("is_ayeyar")
     ]
-
-    # Lite向け：要約＋本文リンクのみ（添付なし）
-    # collect では送らない
-    if args.phase != "collect":
-        # Lite向け：要約＋本文リンクのみ（添付なし）
-        send_email_digest(
-            summaries_non_ayeyar,
-            recipients_env="LITE_EMAIL_RECIPIENTS",
-            include_read_link=False,
-            delivery_date_mmt=date_mmt,
-    )
     
     # ===== Business向け：全文翻訳 → 1ファイルPDF化 → 添付送信 =====
     # 1) Business に送る記事URLの順序（summaries_non_ayeyarに合わせる）
@@ -4604,3 +4606,12 @@ if __name__ == "__main__":
         # 後段送信用に束ねデータを保存
         _write_bundle(args.bundle_dir, date_mmt, summaries_non_ayeyar, pdf_bytes, attachment_name)
         print("[collect] bundle prepared.")
+        
+        from pathlib import Path
+        import json
+        b = Path(args.bundle_dir)
+        summaries_ayeyar_only = [s for s in all_summaries if s.get("is_ayeyar")]
+        (b / "summaries_ayeyar.json").write_text(
+            json.dumps(summaries_ayeyar_only, ensure_ascii=False),
+            encoding="utf-8"
+        )

@@ -134,20 +134,9 @@ jobs:
           time.sleep(wait)
           PY
 
-      - name: Send LITE
-        if: ${{ env.LITE_EMAIL_RECIPIENTS != '' }}
+      - name: Send ALL
         run: |
-          python fetch_articles.py --phase send --bundle-dir bundle --recipients-env LITE_EMAIL_RECIPIENTS
-
-      - name: Send BUSINESS
-        if: ${{ env.BUSINESS_EMAIL_RECIPIENTS != '' }}
-        run: |
-          python fetch_articles.py --phase send --bundle-dir bundle --recipients-env BUSINESS_EMAIL_RECIPIENTS
-
-      - name: Send TRIAL
-        if: ${{ env.TRIAL_EMAIL_RECIPIENTS != '' }}
-        run: |
-          python fetch_articles.py --phase send --bundle-dir bundle --recipients-env TRIAL_EMAIL_RECIPIENTS
+          python fetch_articles.py --phase send --bundle-dir bundle
 
   # =========================
   # 開発（development / develop）
@@ -270,17 +259,6 @@ jobs:
           time.sleep(wait)
           PY
 
-      - name: Send LITE
-        if: ${{ env.LITE_EMAIL_RECIPIENTS != '' }}
+      - name: Send ALL
         run: |
-          python fetch_articles.py --phase send --bundle-dir bundle --recipients-env LITE_EMAIL_RECIPIENTS
-
-      - name: Send BUSINESS
-        if: ${{ env.BUSINESS_EMAIL_RECIPIENTS != '' }}
-        run: |
-          python fetch_articles.py --phase send --bundle-dir bundle --recipients-env BUSINESS_EMAIL_RECIPIENTS
-
-      - name: Send TRIAL
-        if: ${{ env.TRIAL_EMAIL_RECIPIENTS != '' }}
-        run: |
-          python fetch_articles.py --phase send --bundle-dir bundle --recipients-env TRIAL_EMAIL_RECIPIENTS
+          python fetch_articles.py --phase send --bundle-dir bundle
