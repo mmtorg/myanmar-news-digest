@@ -133,7 +133,7 @@ STEP3_TASK = (
     "- 空行は作らないでください。\n"
     "- 特殊記号は使わないでください（全体をHTMLとして送信するわけではないため）。\n"
     "- 箇条書きは`・`を使ってください。\n"
-    "- `【要約】`が現れるのは1回のみです。\n"
+    "- 「【要約】」は1回だけ書き、途中や本文の末尾には繰り返さないでください。\n"
     "- 思考用の手順（Step 1/2/3、Q1/Q2、→ など）は出力に含めないこと。\n"
     "- 本文要約の合計は最大500文字以内に収めてください。\n\n"
 )
@@ -431,6 +431,12 @@ def cmd_collect_to_sheet(args):
 
         f, g, h = _headline_variants_ja(title, source, url)
         summ    = _summary_ja(source, title, body, url)
+        # 異常時のみ “最後の【要約】抽出＋手順行除去” を適用（存在すれば）
+        try:
+            from fetch_articles import normalize_summary_text
+            summ = normalize_summary_text(summ)
+        except Exception:
+            pass
         is_ay   = _is_ayeyarwady(f, summ)
 
         rows_to_append.append([

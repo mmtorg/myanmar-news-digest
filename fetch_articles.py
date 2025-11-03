@@ -2668,7 +2668,23 @@ def _safe_json_loads_maybe_extract(text: str):
         if m:
             return json.loads(m.group(0))
         raise
-
+    
+# 公開ヘルパ
+def normalize_summary_text(output_text: str) -> str:
+    """
+    既存出力（output_text）を“基本そのまま”返すが、
+    ・「【要約】」が2回以上
+    ・Step/Q/→ の手順系が混入
+    のときのみ、最後の【要約】ブロックに補正して返す。
+    先頭行に「【要約】」が無ければ付与する。
+    """
+    original_lines = [(output_text or "").strip()]  # 既定は丸ごと1行扱い
+    try:
+        lines = build_summary_lines(output_text, original_lines)
+        return "\n".join(lines).strip()
+    except Exception:
+        # 何かあっても壊さない
+        return (output_text or "").strip()
 
 # 重複判定のログ出力
 def log_dedupe_report(
