@@ -29,127 +29,129 @@ except Exception:
                 out.append(it); seen.add(u)
         return out
 
-    # ===== 翻訳プロンプト：共通ルール（fetch_articles.py と同一） =====
-    PROMPT_TERMINOLOGY_RULES = (
-        "【翻訳時の用語統一ルール（必ず従うこと）】\n"
-        "このルールは記事タイトルと本文の翻訳に必ず適用してください。\n"
-        "クーデター指導者⇒総司令官\n"
-        "テロリスト指導者ミン・アウン・フライン⇒ミン・アウン・フライン\n"
-        "テロリストのミン・アウン・フライン⇒ミン・アウン・フライン\n"
-        "テロリスト軍事指導者⇒総司令官\n"
-        "テロリスト軍事政権⇒軍事政権\n"
-        "テロリスト軍事評議会⇒軍事政権\n"
-        "テロリスト軍⇒国軍\n"
-        "軍事評議会⇒軍事政権\n"
-        "軍事委員会⇒軍事政権\n"
-        "徴用⇒徴兵\n"
-        "軍事評議会軍⇒国軍\n"
-        "アジア道路⇒アジアハイウェイ\n"
-        "来客登録⇒宿泊登録\n"
-        "来客登録者⇒宿泊登録者\n"
-        "タウンシップ⇒郡区\n"
-        "北オークカラパ⇒北オカラッパ\n"
-        "北オカラパ⇒北オカラッパ\n"
-        "サリンギ郡区⇒タンリン郡区\n"
-        "ネーピードー⇒ネピドー\n"
-        "ファシスト国軍⇒国軍\n"
-        "クーデター軍⇒国軍\n"
-        "ミャンマー国民⇒ミャンマー人\n"
-        "タディンユット⇒ダディンジュ\n"
-        "ティティンジュット⇒ダディンジュ\n"
-    )
-    PROMPT_SPECIAL_RULES = (
-        "【翻訳時の特別ルール】\n"
-        "このルールも記事タイトルと本文の翻訳に必ず適用してください。\n"
-        "「ဖမ်းဆီး」の訳語は文脈によって使い分けること。\n"
-        "- 犯罪容疑や法律違反に対する文脈の場合は「逮捕」とする。\n"
-        "- 犯罪容疑や法律違反に基づかない文脈の場合は「拘束」とする。\n"
-    )
-    PROMPT_CURRENCY_RULES = (
-        "【通貨換算ルール】\n"
-        "このルールも記事タイトルと本文の翻訳に必ず適用してください。\n"
-        "ミャンマー通貨「チャット（Kyat、ကျပ်）」が出てきた場合は、日本円に換算して併記してください。\n"
-        "- 換算レートは 1チャット = 0.037円 を必ず使用すること。\n"
-        "- 記事中にチャットが出た場合は必ず「◯チャット（約◯円）」の形式に翻訳してください。\n"
-        "- 日本円の表記は小数点以下は四捨五入してください（例: 16,500円）。\n"
-        "- 他のレートは使用禁止。\n"
-        "- チャット以外の通貨（例：タイの「バーツ」や米ドルなど）には適用しない。換算は行わないこと。\n"
-    )
-    COMMON_TRANSLATION_RULES = (
-        PROMPT_TERMINOLOGY_RULES + "\n" +
-        PROMPT_SPECIAL_RULES + "\n" +
-        PROMPT_CURRENCY_RULES + "\n"
-    )
-    
-    # ===== ▼ プロンプト管理（見出し翻訳 / 本文要約）================================
-    # 見出し翻訳（見出し3案）※共通ルールを含む
-    HEADLINE_PROMPT_1 = (
-        f"{COMMON_TRANSLATION_RULES}"
-        "以下のニュース見出しを、日本語で簡潔に自然な『新聞見出し』にしてください。\n"
-        "固有名詞は一般的な日本語表記を優先し、句読点は最小限にしてください。\n"
-    )
-    HEADLINE_PROMPT_2 = (
-        f"{COMMON_TRANSLATION_RULES}"
-        "同じニュース見出しについて、語順や言い回しを変えた日本語見出しの別案を作成してください。\n"
-        "要点は同じ、トーンは中立、簡潔にしてください。\n"
-    )
-    HEADLINE_PROMPT_3 = (
-        f"{COMMON_TRANSLATION_RULES}"
-        "同じ内容で三つ目の日本語見出し案を作成してください。\n"
-        "冗長さを避け、読み手に要点がすぐ伝わる表現にしてください。\n"
-    )
+# ===== 翻訳プロンプト：共通ルール（fetch_articles.py と同一） =====
+PROMPT_TERMINOLOGY_RULES = (
+    "【翻訳時の用語統一ルール（必ず従うこと）】\n"
+    "このルールは記事タイトルと本文の翻訳に必ず適用してください。\n"
+    "クーデター指導者⇒総司令官\n"
+    "テロリスト指導者ミン・アウン・フライン⇒ミン・アウン・フライン\n"
+    "テロリストのミン・アウン・フライン⇒ミン・アウン・フライン\n"
+    "テロリスト軍事指導者⇒総司令官\n"
+    "テロリスト軍事政権⇒軍事政権\n"
+    "テロリスト軍事評議会⇒軍事政権\n"
+    "テロリスト軍⇒国軍\n"
+    "軍事評議会⇒軍事政権\n"
+    "軍事委員会⇒軍事政権\n"
+    "徴用⇒徴兵\n"
+    "軍事評議会軍⇒国軍\n"
+    "アジア道路⇒アジアハイウェイ\n"
+    "来客登録⇒宿泊登録\n"
+    "来客登録者⇒宿泊登録者\n"
+    "タウンシップ⇒郡区\n"
+    "北オークカラパ⇒北オカラッパ\n"
+    "北オカラパ⇒北オカラッパ\n"
+    "サリンギ郡区⇒タンリン郡区\n"
+    "ネーピードー⇒ネピドー\n"
+    "ファシスト国軍⇒国軍\n"
+    "クーデター軍⇒国軍\n"
+    "ミャンマー国民⇒ミャンマー人\n"
+    "タディンユット⇒ダディンジュ\n"
+    "ティティンジュット⇒ダディンジュ\n"
+)
+PROMPT_SPECIAL_RULES = (
+    "【翻訳時の特別ルール】\n"
+    "このルールも記事タイトルと本文の翻訳に必ず適用してください。\n"
+    "「ဖမ်းဆီး」の訳語は文脈によって使い分けること。\n"
+    "- 犯罪容疑や法律違反に対する文脈の場合は「逮捕」とする。\n"
+    "- 犯罪容疑や法律違反に基づかない文脈の場合は「拘束」とする。\n"
+)
+PROMPT_CURRENCY_RULES = (
+    "【通貨換算ルール】\n"
+    "このルールも記事タイトルと本文の翻訳に必ず適用してください。\n"
+    "ミャンマー通貨「チャット（Kyat、ကျပ်）」が出てきた場合は、日本円に換算して併記してください。\n"
+    "- 換算レートは 1チャット = 0.037円 を必ず使用すること。\n"
+    "- 記事中にチャットが出た場合は必ず「◯チャット（約◯円）」の形式に翻訳してください。\n"
+    "- 日本円の表記は小数点以下は四捨五入してください（例: 16,500円）。\n"
+    "- 他のレートは使用禁止。\n"
+    "- チャット以外の通貨（例：タイの「バーツ」や米ドルなど）には適用しない。換算は行わないこと。\n"
+)
+COMMON_TRANSLATION_RULES = (
+    PROMPT_TERMINOLOGY_RULES + "\n" +
+    PROMPT_SPECIAL_RULES + "\n" +
+    PROMPT_CURRENCY_RULES + "\n"
+)
 
-    # ===== クリーニング手順（必要に応じて適用） =====
-    STEP12_FILTERS = (
-        "Step 1: 例外チェック（最優先）\n"
-        "Q1. タイトルや本文が“写真キャプション/クレジットのみ”“媒体名のみ”“出典/翻訳注記のみ”“記者名/配信ラベルのみ”“Datelineのみ”など、"
-        "本文に相当しない要素だけの場合は本文扱いから除外する。\n\n"
-        "Step 2: 入力クレンジング（本文抽出）\n"
-        "- 写真キャプション/クレジット行（例:『写真:』『ဓာတ်ပုံ』『Photo』『(写真』『(Photo』『（写真』等で始まる）を除外\n"
-        "- 媒体名だけの行（例: BBC Burmese / DVB / Myanmar Now 等）を除外\n"
-        "- 出典や翻訳注記（例:『Source: …』『Translated by …』等）を除外\n"
-        "- 記者名や配信ラベルだけの行（例: By … / Reuters / AP / SCMP 等）を除外\n"
-        "- 発行地＋日付（Dateline）のみの行（例: 'Yangon, Sept. 30' / 'ネピドー、2024年2月15日' 等）を除外\n"
-        "  ※行頭や本文冒頭のこれらも必ず除去する。\n"
-        "- 連続する空行は1つに圧縮し、本文段落のみ残す。\n"
-    )
+# ===== ▼ プロンプト管理（見出し翻訳 / 本文要約）================================
+# 見出し翻訳（見出し3案）※共通ルールを含む
+HEADLINE_PROMPT_1 = (
+    f"{COMMON_TRANSLATION_RULES}"
+    "以下のニュース見出しを、日本語で簡潔に自然な『新聞見出し』にしてください。\n"
+    "固有名詞は一般的な日本語表記を優先し、句読点は最小限にしてください。\n"
+)
+HEADLINE_PROMPT_2 = (
+    f"{COMMON_TRANSLATION_RULES}"
+    "同じニュース見出しについて、語順や言い回しを変えた日本語見出しの別案を作成してください。\n"
+    "要点は同じ、トーンは中立、簡潔にしてください。\n"
+)
+HEADLINE_PROMPT_3 = (
+    f"{COMMON_TRANSLATION_RULES}"
+    "同じ内容で三つ目の日本語見出し案を作成してください。\n"
+    "冗長さを避け、読み手に要点がすぐ伝わる表現にしてください。\n"
+)
 
-    # ===== 統合タスク（本文要約） =====
-    STEP3_TASK = (
-        "Step 3: 翻訳と要約処理\n"
-        "以下のルールに従って、本文を要約してください。\n\n"
-        f"{COMMON_TRANSLATION_RULES}"
-        "本文要約：\n"
-        "- 以下の記事本文について重要なポイントをまとめ、500字以内で具体的に要約してください。\n"
-        "- 自然な日本語に翻訳してください。\n"
-        "- 個別記事の本文のみを対象とし、メディア説明やページ全体の解説は不要です。\n"
-        "- レスポンスでは要約のみを返してください、それ以外の文言は不要です。\n\n"
-        "本文要約の出力条件：\n"
-        "- 1行目は`【要約】`とだけしてください。\n"
-        "- 2行目以降が全て空行になってはいけません。\n"
-        "- 見出しや箇条書きを適切に使って整理してください。\n"
-        "- 見出しや箇条書きにはマークダウン記号（#, *, - など）を使わず、単純なテキストとして出力してください。\n"
-        "- 見出しは `[ ]` で囲んでください。\n"
-        "- 空行は作らないでください。\n"
-        "- 特殊記号は使わないでください（全体をHTMLとして送信するわけではないため）。\n"
-        "- 箇条書きは`・`を使ってください。\n"
-        "- 本文要約の合計は最大500文字以内に収めてください。\n\n"
-    )
+# ===== クリーニング手順（必要に応じて適用） =====
+STEP12_FILTERS = (
+    "Step 1: 例外チェック（最優先）\n"
+    "Q1. タイトルや本文が“写真キャプション/クレジットのみ”“媒体名のみ”“出典/翻訳注記のみ”“記者名/配信ラベルのみ”“Datelineのみ”など、"
+    "本文に相当しない要素だけの場合は本文扱いから除外する。\n\n"
+    "Step 2: 入力クレンジング（本文抽出）\n"
+    "- 写真キャプション/クレジット行（例:『写真:』『ဓာတ်ပုံ』『Photo』『(写真』『(Photo』『（写真』等で始まる）を除外\n"
+    "- 媒体名だけの行（例: BBC Burmese / DVB / Myanmar Now 等）を除外\n"
+    "- 出典や翻訳注記（例:『Source: …』『Translated by …』等）を除外\n"
+    "- 記者名や配信ラベルだけの行（例: By … / Reuters / AP / SCMP 等）を除外\n"
+    "- 発行地＋日付（Dateline）のみの行（例: 'Yangon, Sept. 30' / 'ネピドー、2024年2月15日' 等）を除外\n"
+    "  ※行頭や本文冒頭のこれらも必ず除去する。\n"
+    "- 連続する空行は1つに圧縮し、本文段落のみ残す。\n"
+)
 
-    def _build_summary_prompt(item: dict, *, body_max: int) -> str:
-        """Gemini用の要約プロンプトを生成（Irrawaddy特例なし、超要約も削除済み）"""
-        header = "次の手順で記事を判定・処理してください。\n\n"
-        pre = STEP12_FILTERS + "\n\n"
-        body = (item.get("body") or "")[:max(body_max, 0)]
-        input_block = (
-            "入力データ：\n"
-            "###\n[記事タイトル]\n###\n"
-            f"{item.get('title') or ''}\n\n"
-            "[記事本文]\n###\n"
-            f"{body}\n"
-            "###\n"
-        )
-        return header + pre + STEP3_TASK + "\n" + input_block
+# ===== 統合タスク（本文要約） =====
+STEP3_TASK = (
+    "Step 3: 翻訳と要約処理\n"
+    "以下のルールに従って、本文を要約してください。\n\n"
+    f"{COMMON_TRANSLATION_RULES}"
+    "本文要約：\n"
+    "- 以下の記事本文について重要なポイントをまとめ、500字以内で具体的に要約してください。\n"
+    "- 自然な日本語に翻訳してください。\n"
+    "- 個別記事の本文のみを対象とし、メディア説明やページ全体の解説は不要です。\n"
+    "- レスポンスでは要約のみを返してください、それ以外の文言は不要です。\n\n"
+    "本文要約の出力条件：\n"
+    "- 1行目は`【要約】`とだけしてください。\n"
+    "- 2行目以降が全て空行になってはいけません。\n"
+    "- 見出しや箇条書きを適切に使って整理してください。\n"
+    "- 見出しや箇条書きにはマークダウン記号（#, *, - など）を使わず、単純なテキストとして出力してください。\n"
+    "- 見出しは `[ ]` で囲んでください。\n"
+    "- 空行は作らないでください。\n"
+    "- 特殊記号は使わないでください（全体をHTMLとして送信するわけではないため）。\n"
+    "- 箇条書きは`・`を使ってください。\n"
+    "- `【要約】`が現れるのは1回のみです。\n"
+    "- 思考用の手順（Step 1/2/3、Q1/Q2、→ など）は出力に含めないこと。\n"
+    "- 本文要約の合計は最大500文字以内に収めてください。\n\n"
+)
+
+def _build_summary_prompt(item: dict, *, body_max: int) -> str:
+    """Gemini用の要約プロンプトを生成（Irrawaddy特例なし、超要約も削除済み）"""
+    header = "次の手順で記事を判定・処理してください。\n\n"
+    pre = STEP12_FILTERS + "\n\n"
+    body = (item.get("body") or "")[:max(body_max, 0)]
+    input_block = (
+        "入力データ：\n"
+        "###\n[記事タイトル]\n###\n"
+        f"{item.get('title') or ''}\n\n"
+        "[記事本文]\n###\n"
+        f"{body}\n"
+        "###\n"
+    )
+    return header + pre + STEP3_TASK + "\n" + input_block
 
 # ===== 収集器：export_all_articles_to_csv.py から日付別収集関数を利用 =====
 collectors_loaded = False
@@ -310,83 +312,48 @@ def _summary_ja(source: str, title: str, body: str, url: str) -> str:
         return unicodedata.normalize("NFC", (resp.text or "").strip())
     except Exception:
         return unicodedata.normalize("NFC", (body or "").strip())[:400]
-    
-# ===== タイトル＋本文要約を一括生成（必要に応じて利用） =====
-def _parse_title_and_summaries(text: str) -> tuple[str | None, str | None]:
-    """モデル出力から【タイトル】/【要約】を抽出して返す。"""
-    t = (text or "").strip()
-    title_ja = None
-    summary = None
-    for line in t.splitlines():
-        line = line.strip()
-        if line.startswith("【タイトル】") and title_ja is None:
-            title_ja = line.replace("【タイトル】", "", 1).strip()
-        elif line.startswith("【要約】") and summary is None:
-            summary = ""
-            found = True
-            continue
-        elif found:
-            summary += line
-    return title_ja, summary or None
-
-def translate_title_and_summarize(source: str, title: str, body: str, url: str):
-    """
-    fetch_articles.py と同等ポリシーで、【タイトル】/【要約】を一括生成。
-    返り値: dict(title_ja, summary_ja)
-    """
-    key = _gemini_key_for_source(source)
-    if not (call_gemini_with_retries and client_summary and key):
-        return {
-            "title_ja": (title or "").strip(),
-            "summary_ja": (body or "").strip()[:400],
-        }
-
-    os.environ["GEMINI_API_KEY"] = key
-    payload = {"source": source, "title": title, "url": url, "body": body}
-    prompt = _build_summary_prompt(payload, skip_filters=False, body_max=1800)
-    try:
-        if _LIMITER:
-            _LIMITER.wait()
-        resp = call_gemini_with_retries(
-            client_summary, prompt, model=os.getenv("GEMINI_SUMMARY_MODEL", "gemini-2.5-flash")
-        )
-        text = (resp.text or "").strip()
-        t, s = _parse_title_and_summaries(text)
-        return {
-            "title_ja": t or (title or "").strip(),
-            "summary_ja": s or (body or "").strip()[:400],
-        }
-    except Exception:
-        return {
-            "title_ja": (title or "").strip(),
-            "summary_ja": (body or "").strip()[:400],
-        }
 
 def _is_ayeyarwady(title_ja: str, summary_ja: str) -> bool:
+    """
+    fetch_articles.py と同一の Ayeyarwady 判定ロジック（is_ayeyarwady_hit）を利用する。
+    取りこぼしやバージョン差異を避けるため、まずは関数を import。
+    もし import に失敗した場合のみ、fetch_articles 側のキーワードにフォールバック。
+    """
+    from unicodedata import normalize
+
+    t = normalize("NFC", (title_ja or "").strip())
+    b = normalize("NFC", (summary_ja or "").strip())
+
     try:
-        from fetch_articles import is_ayeyarwady_article
-        return bool(is_ayeyarwady_article(title_ja, summary_ja))
+        # fetch_articles.py の本家ロジックを直接利用
+        from fetch_articles import is_ayeyarwady_hit
+        return bool(is_ayeyarwady_hit(t, b))
     except Exception:
-        pass
-    hay = (title_ja + " " + summary_ja).lower()
-    for k in ["ayeyarwady", "irrawaddy", "pathein", "エーヤワディ", "イラワジ", "パテイン"]:
-        if k.lower() in hay: return True
-    return False
+        # フォールバック：fetch_articles.py と同じキーワード集合で判定
+        try:
+            from fetch_articles import AYEYARWADY_KEYWORDS
+            kws = AYEYARWADY_KEYWORDS
+        except Exception:
+            # どうしても import できない環境用の最小セット（fetch_articles.py と同値ではないが安全側）
+            kws = ["ဧရာဝတီတိုင်း", "Ayeyarwady Region", "Ayeyarwady region", "ayeyarwady region"]
+
+        hay = f"{t} {b}"
+        return any(kw in hay for kw in kws)
 
 def _collect_all_for(target_date_mmt: date) -> List[Dict]:
     if not collectors_loaded:
         raise SystemExit("収集関数の読み込み失敗。export_all_articles_to_csv.py を配置してください。")
     items: List[Dict] = []
-    for fn in (
-        collect_mizzima_all_for_date,
-        collect_bbc_all_for_date,
-        collect_irrawaddy_all_for_date,
-        collect_khitthit_all_for_date,
-        collect_myanmar_now_mm_all_for_date,
-        collect_dvb_all_for_date,
-    ):
+    for fn, kwargs in [
+        (collect_irrawaddy_all_for_date, {}),
+        (collect_bbc_all_for_date, {}),
+        (collect_khitthit_all_for_date, {"max_pages": 5}),
+        (collect_dvb_all_for_date, {}),
+        (collect_mizzima_all_for_date, {"max_pages": 3}),
+        (collect_myanmar_now_mm_all_for_date, {"max_pages": 3}),
+    ]:
         try:
-            items.extend(fn(target_date_mmt))
+            items.extend(fn(target_date_mmt, **kwargs))
         except Exception as e:
             print(f"[warn] collector failed: {fn.__name__}: {e}")
     return deduplicate_by_url(items)
@@ -418,24 +385,6 @@ def _append_rows(rows_to_append: List[List[str]]):
     header, rows, ws = _read_all_rows()
     start_row = 2 + len(rows)
     ws.update(f"A{start_row}", rows_to_append, value_input_option="RAW")
-
-def _remove_rows_of_date(date_str: str) -> int:
-    """A列が date_str(YYYY-MM-DD) の行のみ除去して A2:J を再構成。戻り値=削除行数"""
-    header, rows, ws = _read_all_rows()
-    if not rows: return 0
-    name_to_idx = {n:i for i,n in enumerate(header)}
-    idx_B = name_to_idx.get("日付", 1)
-    kept = []
-    for r in rows:
-        try:
-            if (r[idx_B] or "").strip() != date_str:
-                kept.append(r[:10])
-        except Exception:
-            kept.append(r[:10])
-    ws.batch_clear(["A2:J"])
-    if kept:
-        ws.update("A2", kept, value_input_option="RAW")
-    return len(rows) - len(kept)
 
 def _keep_only_rows_of_date(date_str: str) -> int:
     """A列が date_str(YYYY-MM-DD) の行だけ残す (= 今日以外を全削除)。戻り値=削除行数"""
@@ -508,7 +457,7 @@ def cmd_build_bundle_from_sheet(args):
 
     MEDIA_ORDER = [
         "Mizzima (Burmese)", "BBC Burmese", "Irrawaddy",
-        "Khit Thit Media", "Myanmar Now (mm)", "DVB",
+        "Khit Thit Media", "Myanmar Now", "DVB",
     ]
     order = {m:i for i,m in enumerate(MEDIA_ORDER)}
 
