@@ -345,12 +345,12 @@ def _collect_all_for(target_date_mmt: date) -> List[Dict]:
         raise SystemExit("収集関数の読み込み失敗。export_all_articles_to_csv.py を配置してください。")
     items: List[Dict] = []
     for fn, kwargs in [
-        (collect_irrawaddy_all_for_date, {}),
-        (collect_bbc_all_for_date, {}),
+        # (collect_irrawaddy_all_for_date, {}),
+        # (collect_bbc_all_for_date, {}),
         (collect_khitthit_all_for_date, {"max_pages": 5}),
         (collect_dvb_all_for_date, {}),
-        (collect_mizzima_all_for_date, {"max_pages": 3}),
-        (collect_myanmar_now_mm_all_for_date, {"max_pages": 3}),
+        # (collect_mizzima_all_for_date, {"max_pages": 3}),
+        # (collect_myanmar_now_mm_all_for_date, {"max_pages": 3}),
     ]:
         try:
             items.extend(fn(target_date_mmt, **kwargs))
