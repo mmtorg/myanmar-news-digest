@@ -445,9 +445,10 @@ def _existing_urls_set() -> set:
     return urls
 
 def _append_rows(rows_to_append: List[List[str]]):
-    if not rows_to_append: return
+    if not rows_to_append:
+        return
     header, rows, ws = _read_all_rows()
-    start_row = 2 + len(rows)
+    start_row = 2 + len([r for r in rows if any(c.strip() for c in r)])  # 実際にデータがある行だけ数える
     ws.update(f"A{start_row}", rows_to_append, value_input_option="RAW")
 
 def _keep_only_rows_of_date(date_str: str) -> int:
