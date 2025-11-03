@@ -594,8 +594,9 @@ def cmd_build_bundle_from_sheet(args):
         print("no rows"); return
     logging.info(f"[bundle] rows_total={len(rows)} (採用フラグ=TRUEのみ抽出)")
 
-    col = {n: i for i, n in enumerate(header)}
-    get = lambda r, name, default="": (r[col.get(name, -1)] if col.get(name, -1) >= 0 else default).strip()
+    # 列名に依存しないよう、列記号(A..K)を固定でインデックス化して参照する
+    col = {chr(ord('A')+i): i for i in range(len(header))}  # A:0, B:1, ... K:10
+    get = lambda r, key, default="": (r[col.get(key, -1)] if col.get(key, -1) >= 0 else default).strip()
 
     MEDIA_ORDER = [
         "Mizzima (Burmese)", "BBC Burmese", "Irrawaddy",
@@ -609,9 +610,9 @@ def cmd_build_bundle_from_sheet(args):
         selected = []
         media_counts = defaultdict(int)
         for r in rows:
-            if get(r, "採用フラグ").upper() != "TRUE":
+            if get(r, "K").upper() != "TRUE":  # 採用フラグ(K)
                 continue
-            media = get(r, "メディア")
+            media = get(r, "C")  # メディア(C)
             selected.append((order.get(media, 999), r))
             media_counts[media] += 1
         selected.sort(key=lambda x: x[0])
@@ -629,12 +630,12 @@ def cmd_build_bundle_from_sheet(args):
     with _timeit("build-bundle:construct", selected=total_selected):
         summaries = []
         for _, r in selected:
-            delivery    = get(r, "日付")
-            media       = get(r, "メディア")
-            title_final = get(r, "確定見出し日本語訳")
-            body_sum    = get(r, "本文要約")
-            url         = get(r, "URL")
-            is_ay       = (get(r, "エーヤワディー").upper() == "TRUE")
+            delivery    = get(r, "A")                        # 日付(A)
+            media       = get(r, "C")                        # メディア(C)
+            title_final = get(r, "H")                        # 確定見出し日本語訳(H)
+            body_sum    = get(r, "I")                        # 本文要約(I)
+            url         = get(r, "J")                        # URL(J)
+            is_ay       = (get(r, "D").upper() == "TRUE")    # エーヤワディー(D)
             summaries.append({
                 "source": media,
                 "url": url,
