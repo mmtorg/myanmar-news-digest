@@ -639,7 +639,7 @@ def cmd_build_bundle_from_sheet(args):
             summaries.append({
                 "source": media,
                 "url": url,
-                "title_ja": unicodedata.normalize("NFC", title_final),
+                "title": unicodedata.normalize("NFC", title_final),
                 "summary_ja": unicodedata.normalize("NFC", body_sum),
                 "is_ayeyarwady": is_ay,
                 "date_mmt": delivery,
