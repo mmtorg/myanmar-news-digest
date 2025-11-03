@@ -448,26 +448,39 @@ def _append_rows(rows_to_append: List[List[str]]):
     if not rows_to_append:
         return
     header, rows, ws = _read_all_rows()
-    start_row = 2 + len([r for r in rows if any(c.strip() for c in r)])  # 実際にデータがある行だけ数える
-    ws.update(f"A{start_row}", rows_to_append, value_input_option="RAW")
+    name_to_idx = {n:i for i,n in enumerate(header)}
+    idx_A = name_to_idx.get("日付", 0)  # A列（見出し "日付"）
+    filled = sum(1 for r in rows if (r[idx_A] or "").strip())  # A列のみで判定
+    start_row = 2 + filled
+    ws.update(f"A{start_row}", rows_to_append, value_input_option="USER_ENTERED")
 
 def _keep_only_rows_of_date(date_str: str) -> int:
-    """A列が date_str(YYYY-MM-DD) の行だけ残す (= 今日以外を全削除)。戻り値=削除行数"""
+    """A列が date_str(YYYY-MM-DD) の行だけ残す (= 今日以外は A:J クリア & K=FALSE)。戻り値=削除行数"""
     header, rows, ws = _read_all_rows()
     if not rows: return 0
     name_to_idx = {n:i for i,n in enumerate(header)}
-    idx_B = name_to_idx.get("日付", 1)
+    idx_A = name_to_idx.get("日付", 1)  # A列（見出し "日付"）
     kept = []
     for r in rows:
         try:
-            if (r[idx_B] or "").strip() == date_str:
-                kept.append(r[:10])
+            if (r[idx_A] or "").strip() == date_str:
+                kept.append(r[:10])  # A..J を保持
         except Exception:
-            # 形式不正な行は削除対象（= keptに入れない）
             pass
+
+    total = len(rows)
+
+    # A:J は一旦全クリア
     ws.batch_clear(["A2:J"])
+
+    # 今日の行だけ A2 から詰め直す（A..J）
     if kept:
-        ws.update("A2", kept, value_input_option="RAW")
+        ws.update("A2", kept, value_input_option="USER_ENTERED")
+
+    # K列（採用フラグなど）は全行 FALSE にリセット（A..J が空の行も含む）
+    if total > 0:
+        ws.update(f"K2:K{total+1}", [["FALSE"]]*total, value_input_option="USER_ENTERED")
+
     return len(rows) - len(kept)
 
 # ===== コマンド：収集→追記（16/18/20/22） =====
@@ -543,7 +556,7 @@ def cmd_build_bundle_from_sheet(args):
     for _, r in selected:
         delivery   = get(r, "日付")
         media      = get(r, "メディア")
-        title_final= get(r, "確定見出し日本語訳") or get(r, "見出し日本語訳①")
+        title_final= get(r, "確定見出し日本語訳")
         body_sum   = get(r, "本文要約")
         url        = get(r, "URL")
         is_ay      = (get(r, "エーヤワディー").upper() == "TRUE")
