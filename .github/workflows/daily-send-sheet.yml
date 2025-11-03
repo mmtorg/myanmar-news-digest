@@ -1,0 +1,264 @@
+name: Daily Myanmar News Alert Sheet Pipeline — Send
+
+on:
+    # schedule:
+    #     # 03:45 MMT = 21:15 UTC（前日）
+    #     - cron: "15 21 * * *"
+    workflow_dispatch:
+        inputs:
+            send_time_mmt:
+                description: "送信時刻 (MMT, 例: 22:00)。空なら即送信"
+                required: false
+                type: string
+
+jobs:
+    # =========================
+    # 本番（production / main）
+    # =========================
+    send_prod:
+        if: ${{ github.ref_name == 'main' }}
+        runs-on: ubuntu-latest
+        environment: production
+        permissions:
+            actions: read
+            contents: read
+        env:
+            GH_TOKEN: ${{ github.token }}
+            REPO: ${{ github.repository }}
+            # 発信者
+            EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
+            BRANCH: main
+            # 受信者など環境ごとの Secrets
+            LITE_EMAIL_RECIPIENTS: ${{ secrets.LITE_EMAIL_RECIPIENTS }}
+            BUSINESS_EMAIL_RECIPIENTS: ${{ secrets.BUSINESS_EMAIL_RECIPIENTS }}
+            TRIAL_EMAIL_RECIPIENTS: ${{ secrets.TRIAL_EMAIL_RECIPIENTS }}
+            INTERNAL_EMAIL_RECIPIENTS: ${{ secrets.INTERNAL_EMAIL_RECIPIENTS }}
+            # Gmail OAuth（既存変数を利用）
+            GMAIL_CLIENT_ID: ${{ secrets.GMAIL_CLIENT_ID }}
+            GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
+            GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
+            # その他
+            PAID_PLAN_URL: ${{ secrets.PAID_PLAN_URL }}
+            GEMINI_API_SUMMARY_KEY: ${{ secrets.GEMINI_API_SUMMARY_KEY }}
+            GEMINI_API_DEDUPE_KEY: ${{ secrets.GEMINI_API_DEDUPE_KEY }}
+            GEMINI_API_FULLTEXT_KEY: ${{ secrets.GEMINI_API_FULLTEXT_KEY }}
+
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Setup Python
+              uses: actions/setup-python@v5
+              with:
+                  python-version: "3.11"
+
+            - name: Install deps
+              run: pip install -r requirements.txt
+
+            - name: Check gh (preinstalled)
+              run: gh --version
+
+            # 直近の main で成功した "Daily Myanmar News Alert Sheet Pipeline" を取得
+            - name: Find latest artifact from Sheet Pipeline
+              id: find
+              run: |
+                  echo "Target branch: $BRANCH"
+                  RUN_ID=$(gh run list --repo "$REPO" \
+                    --workflow "Daily Myanmar News Alert Sheet Pipeline" \
+                    --branch "$BRANCH" \
+                    --json databaseId,status,conclusion \
+                    --jq '[.[] | select(.status=="completed" and .conclusion=="success")][0].databaseId')
+                  if [ -z "$RUN_ID" ]; then
+                    echo "No successful Sheet Pipeline run on $BRANCH, skipping."
+                    echo "run_id=" >> $GITHUB_OUTPUT
+                  else
+                    echo "RUN_ID=$RUN_ID"
+                    echo "run_id=$RUN_ID" >> $GITHUB_OUTPUT
+                  fi
+
+            - name: Skip if no run found
+              if: ${{ steps.find.outputs.run_id == '' }}
+              run: echo "No collect artifact. Exit." && exit 0
+
+            - name: Download artifact (sheet)
+              run: |
+                  mkdir -p bundle
+                  gh run download ${{ steps.find.outputs.run_id }} --repo "$REPO" \
+                    --name "mna-bundle-sheet-${{ steps.find.outputs.run_id }}" \
+                    --dir bundle
+
+            # 待機ロジック：
+            # - 手動時: inputs.send_time_mmt を使用
+            # - スケジュール時: 環境変数 secrets.FIXED_SEND_TIME_MMT を使用（environment=production のもの）
+            - name: Wait until MMT time (if specified)
+              env:
+                  INPUT_SEND_TIME_MMT: ${{ github.event_name == 'workflow_dispatch' && inputs.send_time_mmt || '' }}
+                  FIXED_SEND_TIME_MMT: ${{ github.event_name == 'schedule' && secrets.FIXED_SEND_TIME_MMT || '' }}
+              run: |
+                  python - <<'PY'
+                  import os, time
+                  from datetime import datetime
+
+                  # 手動入力があればそれを最優先。無ければ（かつ schedule の場合のみ）固定値を使う
+                  send_time = (os.environ.get("INPUT_SEND_TIME_MMT") or "").strip()
+                  if not send_time:
+                      send_time = (os.environ.get("FIXED_SEND_TIME_MMT") or "").strip()
+
+                  if not send_time:
+                      print("No send time specified. Send immediately.")
+                      raise SystemExit(0)
+
+                  try:
+                      hh, mm = map(int, send_time.split(":"))
+                  except Exception:
+                      print(f"Invalid send time '{send_time}', send immediately.")
+                      raise SystemExit(0)
+
+                  try:
+                      import zoneinfo
+                      tz = zoneinfo.ZoneInfo("Asia/Yangon")
+                  except Exception:
+                      from backports import zoneinfo
+                      tz = zoneinfo.ZoneInfo("Asia/Yangon")
+
+                  now = datetime.now(tz)
+                  target = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+                  if target <= now:
+                      print(f"Target {target.isoformat()} already passed today (MMT). Send immediately.")
+                      raise SystemExit(0)
+
+                  wait = int((target - now).total_seconds())
+                  print(f"Waiting {wait} seconds until {target.isoformat()} MMT...")
+                  if wait > 5*60*60:
+                      print("Wait too long (>5h); skip waiting.")
+                      raise SystemExit(0)
+                  time.sleep(wait)
+                  PY
+
+            - name: Send ALL
+              run: |
+                  python fetch_articles.py --phase send --bundle-dir bundle
+
+    # =========================
+    # 開発（development / develop）
+    # =========================
+    send_dev:
+        if: ${{ github.ref_name == 'develop' }}
+        runs-on: ubuntu-latest
+        environment: development
+        permissions:
+            actions: read
+            contents: read
+        env:
+            GH_TOKEN: ${{ github.token }}
+            REPO: ${{ github.repository }}
+            BRANCH: develop
+            # 発信者
+            EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
+            # 受信者など環境ごとの Secrets
+            LITE_EMAIL_RECIPIENTS: ${{ secrets.LITE_EMAIL_RECIPIENTS }}
+            BUSINESS_EMAIL_RECIPIENTS: ${{ secrets.BUSINESS_EMAIL_RECIPIENTS }}
+            TRIAL_EMAIL_RECIPIENTS: ${{ secrets.TRIAL_EMAIL_RECIPIENTS }}
+            INTERNAL_EMAIL_RECIPIENTS: ${{ secrets.INTERNAL_EMAIL_RECIPIENTS }}
+            # Gmail OAuth（既存変数を利用）
+            GMAIL_CLIENT_ID: ${{ secrets.GMAIL_CLIENT_ID }}
+            GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
+            GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
+            # その他
+            PAID_PLAN_URL: ${{ secrets.PAID_PLAN_URL }}
+            GEMINI_API_SUMMARY_KEY: ${{ secrets.GEMINI_API_TEST_SUMMARY_KEY }}
+            GEMINI_API_DEDUPE_KEY: ${{ secrets.GEMINI_API_TEST_DEDUPE_KEY }}
+            GEMINI_API_FULLTEXT_KEY: ${{ secrets.GEMINI_API_TEST_FULLTEXT_KEY }}
+
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Setup Python
+              uses: actions/setup-python@v5
+              with:
+                  python-version: "3.11"
+
+            - name: Install deps
+              run: pip install -r requirements.txt
+
+            - name: Check gh (preinstalled)
+              run: gh --version
+
+            # 直近の develop で成功した "Daily Myanmar News Alert Sheet Pipeline" を取得
+            - name: Find latest artifact from Sheet Pipeline
+              id: find
+              run: |
+                  echo "Target branch: $BRANCH"
+                  RUN_ID=$(gh run list --repo "$REPO" \
+                    --workflow "Daily Myanmar News Alert Sheet Pipeline" \
+                    --branch "$BRANCH" \
+                    --json databaseId,status,conclusion \
+                    --jq '[.[] | select(.status=="completed" and .conclusion=="success")][0].databaseId')
+                  if [ -z "$RUN_ID" ]; then
+                    echo "No successful Sheet Pipeline run on $BRANCH, skipping."
+                    echo "run_id=" >> $GITHUB_OUTPUT
+                  else
+                    echo "RUN_ID=$RUN_ID"
+                    echo "run_id=$RUN_ID" >> $GITHUB_OUTPUT
+                  fi
+
+            - name: Skip if no run found
+              if: ${{ steps.find.outputs.run_id == '' }}
+              run: echo "No collect artifact. Exit." && exit 0
+
+            - name: Download artifact (sheet)
+              run: |
+                  mkdir -p bundle
+                  gh run download ${{ steps.find.outputs.run_id }} --repo "$REPO" \
+                    --name "mna-bundle-sheet-${{ steps.find.outputs.run_id }}" \
+                    --dir bundle
+
+            # 待機ロジック（dev も同様）：
+            # - 手動時: inputs.send_time_mmt
+            # - スケジュール時: env vars の FIXED_SEND_TIME_MMT（environment=development のもの）
+            - name: Wait until MMT time (if specified)
+              env:
+                  INPUT_SEND_TIME_MMT: ${{ github.event_name == 'workflow_dispatch' && inputs.send_time_mmt || '' }}
+                  FIXED_SEND_TIME_MMT: ${{ github.event_name == 'schedule' && secrets.FIXED_SEND_TIME_MMT || '' }}
+              run: |
+                  python - <<'PY'
+                  import os, time
+                  from datetime import datetime
+
+                  send_time = (os.environ.get("INPUT_SEND_TIME_MMT") or "").strip()
+                  if not send_time:
+                      send_time = (os.environ.get("FIXED_SEND_TIME_MMT") or "").strip()
+
+                  if not send_time:
+                      print("No send time specified. Send immediately.")
+                      raise SystemExit(0)
+
+                  try:
+                      hh, mm = map(int, send_time.split(":"))
+                  except Exception:
+                      print(f"Invalid send time '{send_time}', send immediately.")
+                      raise SystemExit(0)
+
+                  try:
+                      import zoneinfo
+                      tz = zoneinfo.ZoneInfo("Asia/Yangon")
+                  except Exception:
+                      from backports import zoneinfo
+                      tz = zoneinfo.ZoneInfo("Asia/Yangon")
+
+                  now = datetime.now(tz)
+                  target = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+                  if target <= now:
+                      print(f"Target {target.isoformat()} already passed today (MMT). Send immediately.")
+                      raise SystemExit(0)
+
+                  wait = int((target - now).total_seconds())
+                  print(f"Waiting {wait} seconds until {target.isoformat()} MMT...")
+                  if wait > 5*60*60:
+                      print("Wait too long (>5h); skip waiting.")
+                      raise SystemExit(0)
+                  time.sleep(wait)
+                  PY
+
+            - name: Send ALL
+              run: |
+                  python fetch_articles.py --phase send --bundle-dir bundle
