@@ -9,6 +9,33 @@ import time
 import os
 import re
 
+import logging, contextlib, time
+
+def _setup_logger():
+    level = (os.getenv("MNA_LOG_LEVEL") or "INFO").upper()
+    try:
+        level_val = getattr(logging, level)
+    except Exception:
+        level_val = logging.INFO
+    logging.basicConfig(
+        level=level_val,
+        format="%(asctime)s %(levelname)s %(message)s",
+    )
+_setup_logger()
+
+@contextlib.contextmanager
+def _timeit(section: str, **fields):
+    meta = " ".join(f"{k}={v}" for k, v in fields.items() if v is not None)
+    logging.info(f"▶ {section}... {meta}".rstrip())
+    t0 = time.time()
+    try:
+        yield
+        dt = time.time() - t0
+        logging.info(f"✔ {section} done ({dt:.2f}s)")
+    except Exception:
+        logging.exception(f"✖ {section} failed")
+        raise
+
 # ===== 既存の fetch_articles.py から再利用できるものを拝借（※プロンプトは本ファイルで管理） =====
 try:
     from fetch_articles import (
@@ -416,11 +443,22 @@ def _collect_all_for(target_date_mmt: date) -> List[Dict]:
         (collect_mizzima_all_for_date, {"max_pages": 3}),
         # (collect_myanmar_now_mm_all_for_date, {"max_pages": 3}),
     ]:
+        name = fn.__name__.replace("_all_for_date", "")
         try:
-            items.extend(fn(target_date_mmt, **kwargs))
+            with _timeit(f"collector:{name}", date=target_date_mmt.isoformat(), kwargs=kwargs or None):
+                before = len(items)
+                fetched = fn(target_date_mmt, **kwargs)
+                items.extend(fetched)
+                logging.info(f"[collect:{name}] fetched={len(fetched)} total={len(items)}")
         except Exception as e:
-            print(f"[warn] collector failed: {fn.__name__}: {e}")
-    return deduplicate_by_url(items)
+            logging.exception(f"[warn] collector failed: {fn.__name__}: {e}")
+    dedup_before = len(items)
+    items = deduplicate_by_url(items)
+    if dedup_before != len(items):
+        logging.info(f"[collect] dedup {dedup_before} -> {len(items)} (-{dedup_before - len(items)})")
+    else:
+        logging.info(f"[collect] total={len(items)} (no dup)")
+    return items
 
 # ===== Sheets I/O =====
 def _ws():
@@ -452,7 +490,9 @@ def _append_rows(rows_to_append: List[List[str]]):
     idx_A = name_to_idx.get("日付", 0)  # A列（見出し "日付"）
     filled = sum(1 for r in rows if (r[idx_A] or "").strip())  # A列のみで判定
     start_row = 2 + filled
-    ws.update(f"A{start_row}", rows_to_append, value_input_option="USER_ENTERED")
+    logging.info(f"[sheet] append start_row=A{start_row} rows={len(rows_to_append)}")
+    with _timeit("sheet.append", rows=len(rows_to_append), start_row=start_row):
+        ws.update(f"A{start_row}", rows_to_append, value_input_option="USER_ENTERED")
 
 def _keep_only_rows_of_date(date_str: str) -> int:
     """A列が date_str(YYYY-MM-DD) の行だけ残す (= 今日以外は A:J クリア & K=FALSE)。戻り値=削除行数"""
@@ -487,29 +527,39 @@ def _keep_only_rows_of_date(date_str: str) -> int:
 def cmd_collect_to_sheet(args):
     now_mmt = datetime.now(MMT)
     target = now_mmt.date()
+    
+    logging.info(f"[collect] start target_date_mmt={target.isoformat()} clear_yesterday={getattr(args,'clear_yesterday',False)}")
 
     if getattr(args, "clear_yesterday", False):
         today = now_mmt.date().isoformat()
         removed = _keep_only_rows_of_date(today)
-        print(f"[clean] kept only {today} (removed {removed} rows)")
+        with _timeit("clear-yesterday", date=today):
+            removed = _keep_only_rows_of_date(today)
+        logging.info(f"[clean] kept only {today} (removed {removed} rows)")
 
     items = _collect_all_for(target)
     if not items:
+        logging.warning("[collect] no items to write")
         print("no items to write"); return
 
     existing = _existing_urls_set()
+    logging.info(f"[sheet] existing_urls={len(existing)}")
     ts = datetime.now(MMT).strftime("%Y-%m-%d %H:%M:%S")
     rows_to_append = []
     for it in items:
         source = it.get("source") or ""
         title  = it.get("title") or ""
         url    = (it.get("url") or "").strip()
-        if not url or url in existing: continue
+        if not url or url in existing:
+            logging.debug(f"[skip] url empty or duplicated url={url!r}")
+            continue
         body   = it.get("body") or ""
 
-        f, g, h = _headline_variants_ja(title, source, url, body)
-        # summ    = _summary_ja(source, title, body, url)
-        summ = ""
+        with _timeit("headline-variants", source=source):
+            f, g, h = _headline_variants_ja(title, source, url, body)
+        with _timeit("summary", source=source):
+            # summ    = _summary_ja(source, title, body, url)
+            summ = ""
         # 異常時のみ “最後の【要約】抽出＋手順行除去” を適用（存在すれば）
         try:
             from fetch_articles import normalize_summary_text
@@ -517,6 +567,7 @@ def cmd_collect_to_sheet(args):
         except Exception:
             pass
         is_ay   = _is_ayeyarwady(f, summ)
+        logging.info(f"[row] source={source} ayeyarwady={is_ay} url={url}")
 
         rows_to_append.append([
             target.isoformat(),          # A 日付(配信日)
@@ -535,56 +586,83 @@ def cmd_collect_to_sheet(args):
 
 # ===== コマンド：シート→bundle再生成（02:30） =====
 def cmd_build_bundle_from_sheet(args):
-    header, rows, _ = _read_all_rows()
-    if not rows: print("no rows"); return
-    col = {n:i for i,n in enumerate(header)}
+    # ① 読み込み
+    with _timeit("build-bundle:read"):
+        header, rows, _ = _read_all_rows()
+    if not rows:
+        logging.warning("[bundle] no rows")
+        print("no rows"); return
+    logging.info(f"[bundle] rows_total={len(rows)} (採用フラグ=TRUEのみ抽出)")
+
+    col = {n: i for i, n in enumerate(header)}
     get = lambda r, name, default="": (r[col.get(name, -1)] if col.get(name, -1) >= 0 else default).strip()
 
     MEDIA_ORDER = [
         "Mizzima (Burmese)", "BBC Burmese", "Irrawaddy",
         "Khit Thit Media", "Myanmar Now", "DVB",
     ]
-    order = {m:i for i,m in enumerate(MEDIA_ORDER)}
+    order = {m: i for i, m in enumerate(MEDIA_ORDER)}
 
-    selected = []
-    for r in rows:
-        if (get(r, "採用フラグ").upper() != "TRUE"): continue
-        media = get(r, "メディア")
-        selected.append((order.get(media, 999), r))
-    selected.sort(key=lambda x: x[0])
+    # ② 採用フラグで選別（件数・媒体内訳をログ）
+    from collections import defaultdict
+    with _timeit("build-bundle:select"):
+        selected = []
+        media_counts = defaultdict(int)
+        for r in rows:
+            if get(r, "採用フラグ").upper() != "TRUE":
+                continue
+            media = get(r, "メディア")
+            selected.append((order.get(media, 999), r))
+            media_counts[media] += 1
+        selected.sort(key=lambda x: x[0])
 
-    summaries = []
-    for _, r in selected:
-        delivery   = get(r, "日付")
-        media      = get(r, "メディア")
-        title_final= get(r, "確定見出し日本語訳")
-        body_sum   = get(r, "本文要約")
-        url        = get(r, "URL")
-        is_ay      = (get(r, "エーヤワディー").upper() == "TRUE")
-        summaries.append({
-            "source": media,
-            "url": url,
-            "title_ja": unicodedata.normalize("NFC", title_final),
-            "summary_ja": unicodedata.normalize("NFC", body_sum),
-            "is_ayeyarwady": is_ay,
-            "date_mmt": delivery,
-        })
-    if not summaries:
+    total_selected = len(selected)
+    if total_selected == 0:
+        logging.info("[bundle] no summaries selected (L=TRUE)")
         print("no summaries selected (L=TRUE)"); return
 
-    out_dir = os.path.abspath(args.bundle_dir)
-    if os.path.isdir(out_dir): shutil.rmtree(out_dir)
-    os.makedirs(out_dir, exist_ok=True)
+    # 媒体別内訳（INFO）
+    breakdown = ", ".join(f"{k}:{v}" for k, v in sorted(media_counts.items(), key=lambda x: order.get(x[0], 999)))
+    logging.info(f"[bundle] selected={total_selected} by_media=({breakdown})")
 
-    meta = {
-        "date_mmt": summaries[0]["date_mmt"],
-        "generated_from": "sheet",
-        "generated_at_mmt": datetime.now(MMT).strftime("%Y-%m-%d %H:%M:%S"),
-    }
-    with open(os.path.join(out_dir, "meta.json"), "w", encoding="utf-8") as f:
-        json.dump(meta, f, ensure_ascii=False, indent=2)
-    with open(os.path.join(out_dir, "summaries.json"), "w", encoding="utf-8") as f:
-        json.dump(summaries, f, ensure_ascii=False, indent=2)
+    # ③ summaries 構築
+    with _timeit("build-bundle:construct", selected=total_selected):
+        summaries = []
+        for _, r in selected:
+            delivery    = get(r, "日付")
+            media       = get(r, "メディア")
+            title_final = get(r, "確定見出し日本語訳")
+            body_sum    = get(r, "本文要約")
+            url         = get(r, "URL")
+            is_ay       = (get(r, "エーヤワディー").upper() == "TRUE")
+            summaries.append({
+                "source": media,
+                "url": url,
+                "title_ja": unicodedata.normalize("NFC", title_final),
+                "summary_ja": unicodedata.normalize("NFC", body_sum),
+                "is_ayeyarwady": is_ay,
+                "date_mmt": delivery,
+            })
+
+    out_dir = os.path.abspath(args.bundle_dir)
+
+    # ④ 書き出し（既存ディレクトリの再作成も含めて計測）
+    with _timeit("build-bundle:write", out_dir=out_dir, items=len(summaries)):
+        if os.path.isdir(out_dir):
+            shutil.rmtree(out_dir)
+        os.makedirs(out_dir, exist_ok=True)
+
+        meta = {
+            "date_mmt": summaries[0]["date_mmt"],
+            "generated_from": "sheet",
+            "generated_at_mmt": datetime.now(MMT).strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        with open(os.path.join(out_dir, "meta.json"), "w", encoding="utf-8") as f:
+            json.dump(meta, f, ensure_ascii=False, indent=2)
+        with open(os.path.join(out_dir, "summaries.json"), "w", encoding="utf-8") as f:
+            json.dump(summaries, f, ensure_ascii=False, indent=2)
+
+    logging.info(f"[bundle] rebuilt dir={out_dir} items={len(summaries)} date_mmt={summaries[0]['date_mmt']}")
     print(f"bundle rebuilt: {out_dir} (items={len(summaries)})")
 
 # ===== CLI =====
@@ -614,7 +692,9 @@ def main():
             getattr(args, "min_interval", float(os.getenv("GEMINI_MIN_INTERVAL_SEC", "2.0"))),
             getattr(args, "jitter", float(os.getenv("GEMINI_JITTER_SEC", "0.3"))),
         ))
-        print(f"[rate] rpm={_LIMITER.rpm}, min_interval={_LIMITER.min_interval}s, jitter<= {_LIMITER.jitter}s")
+        msg = f"[rate] rpm={_LIMITER.rpm}, min_interval={_LIMITER.min_interval}s, jitter<= {_LIMITER.jitter}s"
+        print(msg)
+        logging.info(msg)
     else:
         _LIMITER = None
     args.func(args)
