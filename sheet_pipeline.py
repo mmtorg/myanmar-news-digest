@@ -81,22 +81,51 @@ COMMON_TRANSLATION_RULES = (
     PROMPT_CURRENCY_RULES + "\n"
 )
 
+TITLE_OUTPUT_RULES = (
+    "出力は見出し文だけを1行で返してください。\n"
+    "【翻訳】や【日本語見出し案】、## 翻訳 などのラベル・注釈タグ・見出しは出力しないでください。\n"
+)
+
 # ===== ▼ プロンプト管理（見出し翻訳 / 本文要約）================================
 # 見出し翻訳（見出し3案）※共通ルールを含む
 HEADLINE_PROMPT_1 = (
     f"{COMMON_TRANSLATION_RULES}"
-    "以下のニュース見出しを、日本語で簡潔に自然な『新聞見出し』にしてください。\n"
-    "固有名詞は一般的な日本語表記を優先し、句読点は最小限にしてください。\n"
+    f"{TITLE_OUTPUT_RULES}"
+    "あなたは報道見出しの専門翻訳者です。以下の英語/ビルマ語のニュース見出しタイトルを、"
+    "自然で簡潔な日本語見出しに翻訳してください。固有名詞は一般的な日本語表記を優先し、"
+    "意訳しすぎず要点を保ち、記号の乱用は避けます。\n"
 )
-HEADLINE_PROMPT_2 = (
-    f"{COMMON_TRANSLATION_RULES}"
-    "同じニュース見出しについて、語順や言い回しを変えた日本語見出しの別案を作成してください。\n"
-    "要点は同じ、トーンは中立、簡潔にしてください。\n"
-)
+
+def make_headline_prompt_2_from(variant1_ja: str) -> str:
+    """
+    案1（日本語見出し）をインプットにして、要件に沿った案2を生成する。
+    """
+    return (
+        f"{COMMON_TRANSLATION_RULES}"
+        f"{TITLE_OUTPUT_RULES}"
+        "以下は先に作成した日本語見出し（案1）です。\n"
+        f"【案1】{variant1_ja}\n\n"
+        "この案1を素材に、次の要件で新しい別案（案2）を1行で出力してください。\n"
+        "・直訳ではなく、ニュース見出しとして自然な日本語にする\n"
+        "・30文字以内で要点を端的に\n"
+        "・主語・動作を明確に\n"
+        "・重複語を避ける\n"
+        "・報道機関の見出し調を模倣する（主語と動作を明確に／冗長や過剰な修飾を削る）\n"
+        "・「〜と述べた」「〜が行われた」などの曖昧・婉曲表現は避ける\n"
+    )
+
+# 本文から要素抽出して新聞見出しを作る（日本語1行）
 HEADLINE_PROMPT_3 = (
     f"{COMMON_TRANSLATION_RULES}"
-    "同じ内容で三つ目の日本語見出し案を作成してください。\n"
-    "冗長さを避け、読み手に要点がすぐ伝わる表現にしてください。\n"
+    f"{TITLE_OUTPUT_RULES}"
+    "あなたは新聞社の見出しデスクです。以下の本文（原文／機械翻訳含む可能性あり）を読み、"
+    "記事の要点（誰／どこ／何が起きた／規模・数値／結果／時点）を抽出し、"
+    "自然で簡潔な**日本語の報道見出し**を1行で作成してください。\n"
+    "ルール：\n"
+    "- 主語と動作を明確に（曖昧表現や冗長な修飾は削除）\n"
+    "- 重要な固有名詞・数値は優先して残す\n"
+    "- 「〜と述べた」「〜が行われた」等の婉曲は避ける\n"
+    "- 事実関係が曖昧な断定は避ける（推定語を最小限に）\n"
 )
 
 # ===== クリーニング手順（必要に応じて適用） =====
@@ -266,28 +295,63 @@ def _gemini_key_for_source(source: str) -> str | None:
     key = (os.getenv(env_name) or "").strip()
     return key or None
 
-def _headline_variants_ja(title: str, source: str, url: str) -> List[str]:
+def _clip_body_for_headline(body: str, max_chars: int = 1200) -> str:
+    """見出し生成用に本文を安全に切り詰める。段落の途中切りも許容。"""
+    b = (body or "").strip()
+    if len(b) <= max_chars:
+        return b
+    return b[:max_chars].rstrip()
+
+# 既存定義を差し替え
+def _headline_variants_ja(title: str, source: str, url: str, body: str = "") -> List[str]:
     key = _gemini_key_for_source(source)
     if not (call_gemini_with_retries and client_summary and key):
         t = unicodedata.normalize("NFC", title or "").strip()
         return [t, t, t]
+
     os.environ["GEMINI_API_KEY"] = key
-    out = []
-    for prompt in (HEADLINE_PROMPT_1, HEADLINE_PROMPT_2, HEADLINE_PROMPT_3):
-        try:
-            # free tier での瞬間上限を避けるため、呼び出し直前で待機
-            if _LIMITER:
-                _LIMITER.wait()
-            resp = call_gemini_with_retries(
-                client_summary,
-                f"{prompt}\n\n原題: {title}\nsource:{source}\nurl:{url}",
-                model=os.getenv("GEMINI_HEADLINE_MODEL", "gemini-2.5-flash"),
+    model = os.getenv("GEMINI_HEADLINE_MODEL", "gemini-2.5-flash")
+
+    # ---- 案1：原題ベース（変更なし）----
+    try:
+        if _LIMITER: _LIMITER.wait()
+        resp1 = call_gemini_with_retries(
+            client_summary,
+            f"{HEADLINE_PROMPT_1}\n\n原題: {title}\nsource:{source}\nurl:{url}",
+            model=model,
+        )
+        v1 = unicodedata.normalize("NFC", (resp1.text or "").strip())
+    except Exception:
+        v1 = unicodedata.normalize("NFC", (title or "").strip())
+
+    # ---- 案2：案1を素材に再生成（変更なし／前回方針のまま）----
+    try:
+        if _LIMITER: _LIMITER.wait()
+        prompt2 = make_headline_prompt_2_from(v1)
+        resp2 = call_gemini_with_retries(client_summary, prompt2, model=model)
+        v2 = unicodedata.normalize("NFC", (resp2.text or "").strip())
+    except Exception:
+        v2 = v1
+
+    # ---- 案3：本文から要素抽出して新聞見出し化（今回の修正）----
+    try:
+        if _LIMITER: _LIMITER.wait()
+        body_for_prompt = _clip_body_for_headline(body, max_chars=1200)
+        if not body_for_prompt:
+            # 本文が無いときは案1でフォールバック
+            v3 = v1
+        else:
+            prompt3 = (
+                f"{HEADLINE_PROMPT_3}\n\n"
+                "【本文】\n" + body_for_prompt + "\n\n"
+                f"（参考）原題: {title}\nsource:{source}\nurl:{url}\n"
             )
-            txt = (resp.text or "").strip()
-        except Exception:
-            txt = title
-        out.append(unicodedata.normalize("NFC", txt))
-    return out
+            resp3 = call_gemini_with_retries(client_summary, prompt3, model=model)
+            v3 = unicodedata.normalize("NFC", (resp3.text or "").strip())
+    except Exception:
+        v3 = v1
+
+    return [v1, v2, v3]
 
 def _summary_ja(source: str, title: str, body: str, url: str) -> str:
     key = _gemini_key_for_source(source)
@@ -429,7 +493,7 @@ def cmd_collect_to_sheet(args):
         if not url or url in existing: continue
         body   = it.get("body") or ""
 
-        f, g, h = _headline_variants_ja(title, source, url)
+        f, g, h = _headline_variants_ja(title, source, url, body)
         summ    = _summary_ja(source, title, body, url)
         # 異常時のみ “最後の【要約】抽出＋手順行除去” を適用（存在すれば）
         try:
