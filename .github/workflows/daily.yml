@@ -89,7 +89,7 @@ jobs:
         with:
           name: mna-bundle-${{ github.run_id }}
           path: bundle
-          retention-days: 3
+          retention-days: 2
           if-no-files-found: error
 
       - name: Memory summary (prod)
@@ -191,7 +191,7 @@ jobs:
         with:
           name: mna-bundle-${{ github.run_id }}
           path: bundle
-          retention-days: 3
+          retention-days: 2
           if-no-files-found: error
 
       - name: Memory summary (dev)

@@ -195,11 +195,13 @@ jobs:
         run: |
           python sheet_pipeline.py build-bundle --bundle-dir bundle
 
-      - name: Upload bundle artifact
+      - name: Upload bundle artifact (sheet)
         uses: actions/upload-artifact@v4
         with:
-          name: mna-bundle
-          path: bundle/**
+          name: mna-bundle-sheet-${{ github.run_id }}
+          # 送信用WF側で bundle/ をそのまま --bundle-dir に渡すため **ディレクトリ** を指す
+          path: bundle
+          retention-days: 2
           if-no-files-found: error
 
   # === 手動実行（本番 / 開発のどちらも UI から選択） ===
@@ -284,10 +286,11 @@ jobs:
               ;;
           esac
 
-      - name: Upload bundle (only when built)
+      - name: Upload bundle (only when built) (sheet)
         if: inputs.mode == 'build-bundle'
         uses: actions/upload-artifact@v4
         with:
-          name: mna-bundle
-          path: bundle/**
+          name: mna-bundle-sheet-${{ github.run_id }}
+          path: bundle
+          retention-days: 2
           if-no-files-found: ignore
