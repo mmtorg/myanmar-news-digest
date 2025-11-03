@@ -302,7 +302,7 @@ def _summary_ja(source: str, title: str, body: str, url: str) -> str:
         return unicodedata.normalize("NFC", (body or "").strip())[:400]
     os.environ["GEMINI_API_KEY"] = key
     payload = {"source": source, "title": title, "url": url, "body": body}
-    prompt = _build_summary_prompt(payload, skip_filters=False, body_max=1800)
+    prompt = _build_summary_prompt(payload, body_max=1800)
     try:
         if _LIMITER:
             _LIMITER.wait()
@@ -347,9 +347,9 @@ def _collect_all_for(target_date_mmt: date) -> List[Dict]:
     for fn, kwargs in [
         # (collect_irrawaddy_all_for_date, {}),
         # (collect_bbc_all_for_date, {}),
-        (collect_khitthit_all_for_date, {"max_pages": 5}),
+        # (collect_khitthit_all_for_date, {"max_pages": 5}),
         (collect_dvb_all_for_date, {}),
-        # (collect_mizzima_all_for_date, {"max_pages": 3}),
+        (collect_mizzima_all_for_date, {"max_pages": 3}),
         # (collect_myanmar_now_mm_all_for_date, {"max_pages": 3}),
     ]:
         try:
