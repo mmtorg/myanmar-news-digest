@@ -2596,6 +2596,65 @@ def _strip_tags(text: str) -> str:
     text = text.replace("<br>", "\n")
     return re.sub(r"<[^>]+>", "", text)
 
+def _has_procedure_lines(s: str) -> bool:
+    # 思考用の行（Step/Q/→）が混ざっているかをざっくり検知
+    if not s:
+        return False
+    for ln in s.splitlines():
+        ln = ln.strip()
+        if re.match(r'^(Step\s*\d+|Q\d+\.|→)', ln):
+            return True
+    return False
+
+def _count_summary_markers(s: str) -> int:
+    if not s:
+        return 0
+    return len(re.findall(r'^【\s*要約\s*】\s*$', s, flags=re.M))
+
+def extract_final_summary(generated: str) -> str:
+    """
+    “最後の【要約】ブロック”だけ抜き出し、Step/Q/→ を除去。
+    見出し「【要約】」は含めず本文のみ返す。
+    """
+    text = (generated or "").strip()
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+
+    idxs = [i for i, ln in enumerate(lines) if re.match(r'^【\s*要約\s*】\s*$', ln)]
+    start = idxs[-1] + 1 if idxs else 0
+    block = lines[start:]
+
+    # 終了マーカー（必要に応じて）
+    stop_markers = [r'^本文を読む', r'^【\s*タイトル\s*】']
+    for i, ln in enumerate(block):
+        if any(re.match(p, ln) for p in stop_markers):
+            block = block[:i]
+            break
+
+    block = [ln for ln in block if not re.match(r'^(Step\s*\d+|Q\d+\.|→)', ln)]
+    return "\n".join(block).strip()
+
+def build_summary_lines(output_text: str, original_lines: list[str]) -> list[str]:
+    """
+    既存の summary 行（original_lines）を“基本そのまま”返す。
+    ただし以下のときのみ、最後の【要約】抽出に切り替える：
+      - 「【要約】」が 2 回以上
+      - Step/Q/→ の手順系が混入
+    """
+    multi = _count_summary_markers(output_text) >= 2
+    polluted = _has_procedure_lines(output_text)
+
+    if not multi and not polluted:
+        # いつも通りの挙動（既存処理）を維持
+        return original_lines
+
+    # 異常時だけ補正
+    summary_only = extract_final_summary(output_text)
+    fixed = [ln.strip() for ln in summary_only.splitlines() if ln.strip()]
+
+    # 先頭に見出しが無ければ付与（従来の体裁を維持）
+    if not fixed or not re.match(r'^【\s*要約\s*】\s*$', fixed[0]):
+        fixed.insert(0, "【要約】")
+    return fixed
 
 def _safe_json_loads_maybe_extract(text: str):
     """
@@ -3031,6 +3090,8 @@ STEP3_TASK = (
     "- 空行は作らないでください。\n"
     "- 特殊記号は使わないでください（全体をHTMLとして送信するわけではないため）。\n"
     "- 箇条書きは`・`を使ってください。\n"
+"- 「【要約】」は1回だけ書き、途中や本文の末尾には繰り返さないでください。\n"
+    "- 思考用の手順（Step 1/2/3、Q1/Q2、→ など）は出力に含めないこと。\n"
     "- 本文要約の合計は最大500文字以内に収めてください。\n\n"
     "本文超要約：\n"
     "- 以下の記事本文について重要なポイント・ユニークなキーワードをまとめ、200字以内で要約してください。\n"
@@ -3213,8 +3274,9 @@ def process_translation_batches(batch_size=TRANSLATION_BATCH_SIZE, wait_seconds=
                 if not lines or not re.match(r"^【\s*要約\s*】\s*$", lines[0]):
                     lines.insert(0, "【要約】")
 
-                summary_text = "\n".join(lines).strip()
-                summary_html = summary_text.replace("\n", "<br>")
+                lines_summary = build_summary_lines(output_text, lines)
+                summary_text = "\n".join(lines_summary).strip()
+                summary_html  = summary_text.replace("\n", "<br>")
 
                 norm_url = _norm_id(item.get("url") or "")
 
