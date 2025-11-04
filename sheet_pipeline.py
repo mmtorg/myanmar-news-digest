@@ -87,6 +87,7 @@ try:
         fetch_once_irrawaddy,
         extract_body_irrawaddy,
         extract_body_generic_from_soup,
+        extract_body_mail_pdf_scoped,  # ★追加：より堅牢な抽出器
         translate_fulltexts_for_business,
         build_combined_pdf_for_business,
         _jp_date,
@@ -132,7 +133,8 @@ def _get_body_once(url: str, source: str, out_dir: str, title: str = "") -> str:
                 extractor    = extract_body_irrawaddy
             else:
                 html_fetcher = _simple_fetch
-                extractor    = extract_body_generic_from_soup
+                # ★DVB などで落ちにくい “メール/PDF 用の強化抽出器” を優先
+                extractor    = extract_body_mail_pdf_scoped if 'extract_body_mail_pdf_scoped' in globals() else extract_body_generic_from_soup
             body = get_body_with_refetch(url, html_fetcher, extractor, retries=2, wait_seconds=2, quiet=True) or ""
         except Exception:
             body = ""
@@ -754,6 +756,16 @@ def cmd_build_bundle_from_sheet(args):
 
     logging.info(f"[bundle] rebuilt dir={out_dir} items={len(summaries)} date_mmt={summaries[0]['date_mmt']}")
     print(f"bundle rebuilt: {out_dir} (items={len(summaries)})")
+
+    # ★ここで全文翻訳PDFを生成（BUSINESS/TRIAL 添付用）
+    try:
+        _make_business_pdf_from_summaries(
+            summaries=summaries,
+            date_iso=summaries[0]["date_mmt"],
+            out_dir=out_dir,
+        )
+    except Exception as e:
+        logging.warning(f"[bundle] business PDF generation skipped: {e}")
 
     # キャッシュ済み本文を使って全文翻訳PDFを生成（BUSINESS/TRIAL 添付用）
     def _make_business_pdf_from_summaries(summaries: list[dict], date_iso: str, out_dir: str):
