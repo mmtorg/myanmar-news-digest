@@ -647,8 +647,8 @@ def cmd_collect_to_sheet(args):
         with _timeit("headline-variants", source=source):
             f, g, h = _headline_variants_ja(title, source, url, body)
         with _timeit("summary", source=source):
-            # summ    = _summary_ja(source, title, body, url)
-            summ = ""
+            summ    = _summary_ja(source, title, body, url)
+            # summ = ""
         # 異常時のみ “最後の【要約】抽出＋手順行除去” を適用（存在すれば）
         try:
             from fetch_articles import normalize_summary_text
