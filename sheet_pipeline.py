@@ -128,12 +128,14 @@ def _get_body_once(url: str, source: str, out_dir: str, title: str = "") -> str:
             body = ""
     else:
         try:
-            if "irrawaddy" in url.lower() or (source or "").lower() == "irrawaddy":
+            src_l = (source or "").lower()
+            url_l = url.lower()
+            if "irrawaddy" in url_l or "irrawaddy" in src_l:
                 html_fetcher = fetch_once_irrawaddy
                 extractor    = extract_body_irrawaddy
             else:
                 html_fetcher = _simple_fetch
-                # ★DVB などで落ちにくい “メール/PDF 用の強化抽出器” を優先
+                # ★DVB/Mizzima/BBC/MyanmarNow/KhitThit は強化抽出器を既定に
                 extractor    = extract_body_mail_pdf_scoped if 'extract_body_mail_pdf_scoped' in globals() else extract_body_generic_from_soup
             body = get_body_with_refetch(url, html_fetcher, extractor, retries=2, wait_seconds=2, quiet=True) or ""
         except Exception:
@@ -378,6 +380,7 @@ SOURCE_KEY_ENV_MAP: dict[str, str] = {
     "bbc": "GEMINI_API_KEY_BBC",
     "bbc burmese": "GEMINI_API_KEY_BBC",
     "mizzima": "GEMINI_API_KEY_MIZZIMA",
+    "mizzima burmese": "GEMINI_API_KEY_MIZZIMA",  # ★追加
     "khit thit": "GEMINI_API_KEY_KHITTHIT",
     "myanmar now": "GEMINI_API_KEY_MYANMARNOW",
     "dvb": "GEMINI_API_KEY_DVB",
@@ -525,11 +528,11 @@ def _collect_all_for(target_date_mmt: date) -> List[Dict]:
         raise SystemExit("収集関数の読み込み失敗。export_all_articles_to_csv.py を配置してください。")
     items: List[Dict] = []
     for fn, kwargs in [
-        # (collect_irrawaddy_all_for_date, {}),
+        (collect_mizzima_all_for_date, {"max_pages": 3}),
         # (collect_bbc_all_for_date, {}),
+        # (collect_irrawaddy_all_for_date, {}),
         # (collect_khitthit_all_for_date, {"max_pages": 5}),
         (collect_dvb_all_for_date, {}),
-        (collect_mizzima_all_for_date, {"max_pages": 3}),
         # (collect_myanmar_now_mm_all_for_date, {"max_pages": 3}),
     ]:
         name = fn.__name__.replace("_all_for_date", "")
@@ -643,8 +646,16 @@ def cmd_collect_to_sheet(args):
         if not url or url in existing:
             logging.debug(f"[skip] url empty or duplicated url={url!r}")
             continue
-        # 本文はここで1回取得してキャッシュへ保存 → 以後の処理（要約/見出し/全文PDF）で共用
-        body   = _get_body_once(url, source, out_dir=bundle_dir, title=title)
+        # collector が本文を持っていればそれを最優先（再取得しない）
+        body = (it.get("body") or "").strip()
+        if body:
+            with _BODIES_LOCK:
+                cache = _load_bodies_cache(bundle_dir)
+                cache[url] = {"source": source, "title": title, "body": body}
+                _save_bodies_cache(bundle_dir, cache)
+        else:
+            # なければ堅牢抽出器で1回だけ取得→キャッシュ
+            body = _get_body_once(url, source, out_dir=bundle_dir, title=title)
 
         with _timeit("headline-variants", source=source):
             f, g, h = _headline_variants_ja(title, source, url, body)
@@ -658,7 +669,7 @@ def cmd_collect_to_sheet(args):
         except Exception:
             pass
         is_ay   = _is_ayeyarwady(f, summ)
-        logging.info(f"[row] source={source} ayeyarwady={is_ay} url={url}")
+        logging.info(f"[row] source={source} body_len={len(body)} ayeyarwady={is_ay} url={url}")
 
         rows_to_append.append([
             target.isoformat(),          # A 日付(配信日)
@@ -691,7 +702,7 @@ def cmd_build_bundle_from_sheet(args):
 
     MEDIA_ORDER = [
         "Mizzima (Burmese)", "BBC Burmese", "Irrawaddy",
-        "Khit Thit Media", "Myanmar Now", "DVB",
+        "Khit Thit Media", "DVB", "Myanmar Now",
     ]
     order = {m: i for i, m in enumerate(MEDIA_ORDER)}
 
