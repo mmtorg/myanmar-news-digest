@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 import os, sys, json, unicodedata, shutil
+import threading
 from datetime import datetime, timedelta, timezone, date
 from typing import Optional, Protocol, runtime_checkable, cast
 from typing import List, Dict
@@ -55,6 +56,92 @@ except Exception:
             if u and u not in seen:
                 out.append(it); seen.add(u)
         return out
+
+# ===== 本文キャッシュ（bundle/bodies.json） & 本文取得  =====
+_BODIES_LOCK = threading.Lock()
+
+def _bodies_cache_path(out_dir: str) -> str:
+    return os.path.join(out_dir, "bodies.json")
+
+def _load_bodies_cache(out_dir: str) -> dict[str, dict]:
+    p = _bodies_cache_path(out_dir)
+    if not os.path.exists(p):
+        return {}
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def _save_bodies_cache(out_dir: str, cache: dict[str, dict]) -> None:
+    os.makedirs(out_dir, exist_ok=True)
+    with open(_bodies_cache_path(out_dir), "w", encoding="utf-8") as f:
+        json.dump(cache, f, ensure_ascii=False, indent=2)
+
+import requests
+from bs4 import BeautifulSoup
+try:
+    # fetch_articles.py の実装を再利用
+    from fetch_articles import (
+        get_body_with_refetch,
+        fetch_once_irrawaddy,
+        extract_body_irrawaddy,
+        extract_body_generic_from_soup,
+        translate_fulltexts_for_business,
+        build_combined_pdf_for_business,
+        _jp_date,
+    )
+except Exception:
+    get_body_with_refetch = None
+    fetch_once_irrawaddy = None
+    extract_body_irrawaddy = None
+    extract_body_generic_from_soup = None
+    translate_fulltexts_for_business = None
+    build_combined_pdf_for_business = None
+    _jp_date = None
+
+def _simple_fetch(url: str) -> str:
+    r = requests.get(url, timeout=25, headers={"User-Agent":"Mozilla/5.0"})
+    r.raise_for_status()
+    return r.text
+
+def _get_body_once(url: str, source: str, out_dir: str, title: str = "") -> str:
+    """
+    1) bundle/bodies.json を見てあれば返す
+    2) なければ取得→保存→返す
+    """
+    cache = _load_bodies_cache(out_dir)
+    cached = cache.get(url)
+    if cached and (cached.get("body") or "").strip():
+        return cached["body"]
+
+    # 取得（Irrawaddy は専用、それ以外は generic）
+    if get_body_with_refetch is None:
+        # フォールバック（極力通らない想定）
+        body = ""
+        try:
+            html = _simple_fetch(url)
+            soup = BeautifulSoup(html, "html.parser")
+            body = " ".join(s.get_text(" ", strip=True) for s in soup.select("article, .content, .entry-content, .post-content")[:1])[:20000]
+        except Exception:
+            body = ""
+    else:
+        try:
+            if "irrawaddy" in url.lower() or (source or "").lower() == "irrawaddy":
+                html_fetcher = fetch_once_irrawaddy
+                extractor    = extract_body_irrawaddy
+            else:
+                html_fetcher = _simple_fetch
+                extractor    = extract_body_generic_from_soup
+            body = get_body_with_refetch(url, html_fetcher, extractor, retries=2, wait_seconds=2, quiet=True) or ""
+        except Exception:
+            body = ""
+
+    with _BODIES_LOCK:
+        cache = _load_bodies_cache(out_dir)  # 競合対策で再読込
+        cache[url] = {"source": source, "title": title, "body": body}
+        _save_bodies_cache(out_dir, cache)
+    return body
 
 # ===== 翻訳プロンプト：共通ルール（fetch_articles.py と同一） =====
 PROMPT_TERMINOLOGY_RULES = (
@@ -546,6 +633,7 @@ def cmd_collect_to_sheet(args):
     logging.info(f"[sheet] existing_urls={len(existing)}")
     ts = datetime.now(MMT).strftime("%Y-%m-%d %H:%M:%S")
     rows_to_append = []
+    bundle_dir = getattr(args, "bundle_dir", "bundle")
     for it in items:
         source = it.get("source") or ""
         title  = it.get("title") or ""
@@ -553,7 +641,8 @@ def cmd_collect_to_sheet(args):
         if not url or url in existing:
             logging.debug(f"[skip] url empty or duplicated url={url!r}")
             continue
-        body   = it.get("body") or ""
+        # 本文はここで1回取得してキャッシュへ保存 → 以後の処理（要約/見出し/全文PDF）で共用
+        body   = _get_body_once(url, source, out_dir=bundle_dir, title=title)
 
         with _timeit("headline-variants", source=source):
             f, g, h = _headline_variants_ja(title, source, url, body)
@@ -666,6 +755,51 @@ def cmd_build_bundle_from_sheet(args):
     logging.info(f"[bundle] rebuilt dir={out_dir} items={len(summaries)} date_mmt={summaries[0]['date_mmt']}")
     print(f"bundle rebuilt: {out_dir} (items={len(summaries)})")
 
+    # キャッシュ済み本文を使って全文翻訳PDFを生成（BUSINESS/TRIAL 添付用）
+    def _make_business_pdf_from_summaries(summaries: list[dict], date_iso: str, out_dir: str):
+        if not (translate_fulltexts_for_business and build_combined_pdf_for_business):
+            logging.warning("[bundle] PDF helpers unavailable; skip business PDF")
+            return
+        cache = _load_bodies_cache(out_dir)
+        urls_in_order: list[str] = []
+        url_to_source_title_body: dict[str, dict] = {}
+        for s in summaries:
+            url = (s.get("url") or "").strip()
+            if not url:
+                continue
+            source = s.get("source") or ""
+            title  = s.get("title") or ""
+            urls_in_order.append(url)
+            body = (cache.get(url) or {}).get("body", "")
+            if not body:
+                body = _get_body_once(url, source, out_dir=out_dir, title=title)
+            url_to_source_title_body[url] = {"source": source, "title": title, "body": body}
+        if not urls_in_order:
+            logging.info("[bundle] no urls for PDF")
+            return
+        translated = translate_fulltexts_for_business(urls_in_order, url_to_source_title_body)
+        if not translated:
+            logging.warning("[bundle] translation returned empty; skip PDF")
+            return
+        pdf_bytes = build_combined_pdf_for_business(translated)
+        # 添付ファイル名（日本語日付）
+        try:
+            y, m, d = map(int, (date_iso or "").split("-"))
+            jp = _jp_date(date(y, m, d)) if _jp_date else date_iso
+        except Exception:
+            jp = date_iso
+        attachment_name = f"ミャンマーニュース全文訳【{jp}】.pdf"
+        with open(os.path.join(out_dir, "digest.pdf"), "wb") as f:
+            f.write(pdf_bytes)
+        with open(os.path.join(out_dir, "attachment_name.txt"), "w", encoding="utf-8") as f:
+            f.write(attachment_name)
+        logging.info(f"[bundle] wrote business PDF: {attachment_name} ({len(pdf_bytes)} bytes)")
+
+    try:
+        _make_business_pdf_from_summaries(summaries, meta["date_mmt"], out_dir)
+    except Exception as e:
+        logging.warning(f"[bundle] failed to build business pdf: {e}")
+
 # ===== CLI =====
 import argparse
 def main():
@@ -674,6 +808,7 @@ def main():
 
     p1 = sub.add_parser("collect-to-sheet", help="収集→要約→sheet追記（16/18/20/22）")
     p1.add_argument("--clear-yesterday", action="store_true", help="前日分だけA2:Jから除去（16:00用）")
+    p1.add_argument("--bundle-dir", default="bundle", help="本文キャッシュ/成果物の保存先（既定: bundle）")
     # === Gemini free tier を想定したレート設定（CLI指定 > 環境変数 > 既定）===
     p1.add_argument("--rpm", type=int, default=int(os.getenv("GEMINI_REQS_PER_MIN", "9")))
     p1.add_argument("--min-interval", type=float, default=float(os.getenv("GEMINI_MIN_INTERVAL_SEC", "2.0")))

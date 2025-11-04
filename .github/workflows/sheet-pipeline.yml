@@ -91,7 +91,7 @@ jobs:
 
       - name: Collect → write to sheet (16:00 run, clear yesterday once)
         run: |
-          python sheet_pipeline.py collect-to-sheet --clear-yesterday
+          python sheet_pipeline.py collect-to-sheet --clear-yesterday --bundle-dir bundle
 
   schedule-collect:
     if: github.event_name == 'schedule' && contains(fromJson('["30 11 * * *","30 13 * * *","30 15 * * *"]'), github.event.schedule)
@@ -142,7 +142,7 @@ jobs:
 
       - name: Collect → append to sheet (18/20/22:00 runs)
         run: |
-          python sheet_pipeline.py collect-to-sheet
+          python sheet_pipeline.py collect-to-sheet --bundle-dir bundle
 
   schedule-build-bundle:
     if: github.event_name == 'schedule' && github.event.schedule == '0 20 * * *'
