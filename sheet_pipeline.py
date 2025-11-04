@@ -380,7 +380,8 @@ SOURCE_KEY_ENV_MAP: dict[str, str] = {
     "bbc": "GEMINI_API_KEY_BBC",
     "bbc burmese": "GEMINI_API_KEY_BBC",
     "mizzima": "GEMINI_API_KEY_MIZZIMA",
-    "mizzima burmese": "GEMINI_API_KEY_MIZZIMA",  # ★追加
+    "mizzima burmese": "GEMINI_API_KEY_MIZZIMA",
+    "mizzima (burmese)": "GEMINI_API_KEY_MIZZIMA",
     "khit thit": "GEMINI_API_KEY_KHITTHIT",
     "myanmar now": "GEMINI_API_KEY_MYANMARNOW",
     "dvb": "GEMINI_API_KEY_DVB",
