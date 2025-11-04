@@ -12,6 +12,11 @@ import re
 
 import logging, contextlib, time
 
+# --- ensure we can import helpers living next to this file ---
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+if BASE_DIR not in sys.path:
+    sys.path.insert(0, BASE_DIR)
+
 def _setup_logger():
     level = (os.getenv("MNA_LOG_LEVEL") or "INFO").upper()
     try:
@@ -123,7 +128,9 @@ def _get_body_once(url: str, source: str, out_dir: str, title: str = "") -> str:
         try:
             html = _simple_fetch(url)
             soup = BeautifulSoup(html, "html.parser")
-            body = " ".join(s.get_text(" ", strip=True) for s in soup.select("article, .content, .entry-content, .post-content")[:1])[:20000]
+            # 簡易の汎用抽出
+            ps = soup.find_all("p")
+            body = "\n".join(p.get_text(strip=True) for p in ps if p.get_text(strip=True))[:20000]
         except Exception:
             body = ""
     else:
@@ -136,15 +143,24 @@ def _get_body_once(url: str, source: str, out_dir: str, title: str = "") -> str:
             else:
                 html_fetcher = _simple_fetch
                 # ★DVB/Mizzima/BBC/MyanmarNow/KhitThit は強化抽出器を既定に
-                extractor    = extract_body_mail_pdf_scoped if 'extract_body_mail_pdf_scoped' in globals() else extract_body_generic_from_soup
+                if (globals().get("extract_body_mail_pdf_scoped") is not None):
+                    # URL を束縛したアダプタ： get_body_with_refetch は extractor(soup) を呼ぶため
+                    def _scoped(soup, _u=url):
+                        return extract_body_mail_pdf_scoped(_u, soup)
+                    extractor = _scoped
+                else:
+                    extractor = extract_body_generic_from_soup
+
             body = get_body_with_refetch(url, html_fetcher, extractor, retries=2, wait_seconds=2, quiet=True) or ""
         except Exception:
             body = ""
 
-    with _BODIES_LOCK:
-        cache = _load_bodies_cache(out_dir)  # 競合対策で再読込
-        cache[url] = {"source": source, "title": title, "body": body}
-        _save_bodies_cache(out_dir, cache)
+    # 空本文はキャッシュしない（将来の再取得の余地を残す）
+    if body.strip():
+        with _BODIES_LOCK:
+            cache = _load_bodies_cache(out_dir)  # 競合対策で再読込
+            cache[url] = {"source": source, "title": title, "body": body}
+            _save_bodies_cache(out_dir, cache)
     return body
 
 # ===== 翻訳プロンプト：共通ルール（fetch_articles.py と同一） =====
@@ -768,16 +784,6 @@ def cmd_build_bundle_from_sheet(args):
 
     logging.info(f"[bundle] rebuilt dir={out_dir} items={len(summaries)} date_mmt={summaries[0]['date_mmt']}")
     print(f"bundle rebuilt: {out_dir} (items={len(summaries)})")
-
-    # ★ここで全文翻訳PDFを生成（BUSINESS/TRIAL 添付用）
-    try:
-        _make_business_pdf_from_summaries(
-            summaries=summaries,
-            date_iso=summaries[0]["date_mmt"],
-            out_dir=out_dir,
-        )
-    except Exception as e:
-        logging.warning(f"[bundle] business PDF generation skipped: {e}")
 
     # キャッシュ済み本文を使って全文翻訳PDFを生成（BUSINESS/TRIAL 添付用）
     def _make_business_pdf_from_summaries(summaries: list[dict], date_iso: str, out_dir: str):
