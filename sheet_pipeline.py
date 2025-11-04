@@ -640,7 +640,7 @@ def cmd_build_bundle_from_sheet(args):
                 "source": media,
                 "url": url,
                 "title": unicodedata.normalize("NFC", title_final),
-                "summary_ja": unicodedata.normalize("NFC", body_sum),
+                "summary": unicodedata.normalize("NFC", body_sum),
                 "is_ayeyarwady": is_ay,
                 "date_mmt": delivery,
             })
