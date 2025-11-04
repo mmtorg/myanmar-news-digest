@@ -3729,6 +3729,21 @@ def build_combined_pdf_for_business(translated_items, out_path=None):
     # ===== 正規化ユーティリティ（不自然改行の抑止） =====
     _ZW_RE = re.compile(r"[\u200b\u200c\u200d\ufeff]")
     _SOFT_BREAK_RE = re.compile(r"(?<!\n)\n(?!\n)")
+    
+    # --- PDF中だけで使う「英字 + 半角スペース + CJK」境界のノーブレーク化 ---
+    NBSP = "\u00A0"  # non-breaking space
+    _CJK_RANGE = r"\u3040-\u30FF\u4E00-\u9FFF"  # ひらがな/カタカナ/漢字
+
+    def _protect_latin_cjk_boundaries(s: str) -> str:
+        """
+        英数字の直後に半角スペースがあり、その次がCJK（和文）のときだけ、
+        そのスペースを NBSP に置換して、PDF内の行頭分割を抑制する（PDF専用）。
+        例: 'Ooredoo Myanmar社' → 'Ooredoo\\u00A0Myanmar社'
+        """
+        import re
+        if not s:
+            return s
+        return re.sub(rf"([A-Za-z0-9]) ([{_CJK_RANGE}])", rf"\1{NBSP}\2", s)
 
     def _normalize_text_for_pdf(text: str) -> str:
         """
@@ -3953,6 +3968,10 @@ def build_combined_pdf_for_business(translated_items, out_path=None):
         txt = _normalize_text_for_pdf(body)
         if not txt:
             return
+        
+        # ★ 追加：英字→和文の境界だけノーブレーク化（PDF出力専用）
+        txt = _protect_latin_cjk_boundaries(txt)
+        
         pdf.set_font("JP", size=BODY_SIZE)
         pdf.set_fill_color(*BODY_BG_RGB)
         # 1行ごとに塗られるため、段落全体として薄グレーになります
