@@ -212,9 +212,78 @@ jobs:
           echo "PDF_FONT_BOLD_PATH=$GITHUB_WORKSPACE/fonts/NotoSansJP-Bold.ttf" >> "$GITHUB_ENV"
           echo "PDF_FONT_PATH=${PDF_FONT_PATH:-<not-set>}"
 
-      - name: Build bundle from sheet
+      # === Diagnostics: ランナー環境と bundle の状況を確認（読み取りのみ） ===
+      - name: Diagnostics | env + tree
         run: |
+          set -euxo pipefail
+          echo "PWD=$(pwd)"
+          python --version
+          echo "--- repo tree (top 2 levels) ---"
+          find . -maxdepth 2 -type d -print | sort
+          echo "--- bundle dir ---"
+          ls -al bundle || true
+
+      - name: Diagnostics | can import helpers?
+        run: |
+          python - <<'PY'
+          from importlib import import_module
+          m = import_module("fetch_articles")
+          req = ["translate_fulltexts_for_business", "build_combined_pdf_for_business", "_jp_date"]
+          ok = all(hasattr(m, x) for x in req)
+          print("helpers_importable:", ok)
+          print("module_file:", getattr(m, "__file__", None))
+          PY
+
+      - name: Diagnostics | gemini keys present? (masked)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          keys = sorted(k for k in os.environ if k.startswith("GEMINI"))
+          print("gemini_key_names:", keys)
+          # 値は True/False のみ表示（中身は GitHub が自動マスク）
+          print("gemini_keys_nonempty:", {k: bool(os.environ.get(k)) for k in keys})
+          PY
+
+      - name: Diagnostics | summaries/bodies coverage
+        run: |
+          python - <<'PY'
+          import os, json, sys
+          b = "bundle"
+          s = os.path.join(b, "summaries.json")
+          if not os.path.exists(s):
+              print("[X] bundle/summaries.json not found"); sys.exit(2)
+          summaries = json.load(open(s, encoding="utf-8"))
+          print("selected_count:", len(summaries))
+          bp = os.path.join(b, "bodies.json")
+          cache = {}
+          if os.path.exists(bp):
+              cache = json.load(open(bp, encoding="utf-8"))
+          missing = []
+          short = []
+          for it in summaries:
+              u = it.get("url","")
+              if not u: continue
+              body = (cache.get(u) or {}).get("body","")
+              if not body:
+                  missing.append(u)
+              elif len(body.strip()) < 80:
+                  short.append(u)
+          print("in_cache:", len(cache), "missing_bodies:", len(missing), "short_bodies:", len(short))
+          if missing[:5]:
+              print("first_missing_examples:", missing[:5])
+          PY
+
+      # === 送信直前の build-bundle（PDF & 添付名を確実に生成） ===
+      - name: Build bundle (PDF & attachment name)
+        env:
+          MNA_LOG_LEVEL: INFO # 必要に応じて DEBUG に
+        run: |
+          set -euxo pipefail
           python sheet_pipeline.py build-bundle --bundle-dir bundle
+          echo "--- bundle after build-bundle ---"
+          ls -al bundle
 
       - name: Upload bundle artifact (sheet)
         uses: actions/upload-artifact@v4
@@ -316,12 +385,94 @@ jobs:
               python sheet_pipeline.py collect-to-sheet
               ;;
             build-bundle)
-              python sheet_pipeline.py build-bundle --bundle-dir bundle
               ;;
             *)
               echo "unknown mode: ${{ inputs.mode }}" ; exit 1
               ;;
           esac
+
+      # === Diagnostics: ランナー環境と bundle の状況を確認（読み取りのみ） ===
+      - name: Diagnostics | env + tree
+        run: |
+          set -euxo pipefail
+          echo "PWD=$(pwd)"
+          python --version
+          find . -maxdepth 2 -type d -print | sort
+          ls -al bundle || true
+
+      - name: Diagnostics | Python helpers importable?
+        run: |
+          python - <<'PY'
+          from importlib import import_module
+          m = import_module("fetch_articles")
+          req = ["translate_fulltexts_for_business", "build_combined_pdf_for_business", "_jp_date"]
+          ok = all(hasattr(m, x) for x in req)
+          print("helpers_importable:", ok)
+          print("module_file:", getattr(m, "__file__", None))
+          PY
+
+      - name: Diagnostics | gemini keys present? (masked)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          keys = sorted(k for k in os.environ if k.startswith("GEMINI"))
+          print("gemini_key_names:", keys)
+          # 値は True/False のみ表示（中身は GitHub が自動マスク）
+          print("gemini_keys_nonempty:", {k: bool(os.environ.get(k)) for k in keys})
+          PY
+
+      # ←← 先に build-bundle を実行して bundle を生成
+      - name: Build bundle (PDF & attachment name)
+        env:
+          PYTHONPATH: .
+          MNA_LOG_LEVEL: INFO
+        run: |
+          set -euxo pipefail
+          python sheet_pipeline.py build-bundle --bundle-dir bundle
+          echo "--- bundle after build-bundle ---"
+          ls -al bundle
+
+      # ←← ここで初めて coverage を見る
+      - name: Diagnostics | summaries/bodies coverage
+        run: |
+          python - <<'PY'
+          import os, json, sys
+          b = "bundle"
+          s = os.path.join(b, "summaries.json")
+          if not os.path.exists(s):
+              print("[!] bundle/summaries.json not found (skipping coverage)"); sys.exit(0)
+          summaries = json.load(open(s, encoding="utf-8"))
+          print("selected_count:", len(summaries))
+          bp = os.path.join(b, "bodies.json")
+          cache = {}
+          if os.path.exists(bp):
+              cache = json.load(open(bp, encoding="utf-8"))
+          missing = []
+          short = []
+          for it in summaries:
+              u = it.get("url","")
+              if not u: continue
+              body = (cache.get(u) or {}).get("body","")
+              if not body:
+                  missing.append(u)
+              elif len(body.strip()) < 80:
+                  short.append(u)
+          print("in_cache:", len(cache), "missing_bodies:", len(missing), "short_bodies:", len(short))
+          if missing[:5]:
+              print("first_missing_examples:", missing[:5])
+          PY
+
+      # === 送信直前の build-bundle（PDF & 添付名を確実に生成） ===
+      - name: Build bundle (PDF & attachment name)
+        env:
+          MNA_LOG_LEVEL: INFO # 必要に応じて DEBUG に
+        run: |
+          set -euxo pipefail
+          python sheet_pipeline.py build-bundle --bundle-dir bundle
+          echo "--- bundle after build-bundle ---"
+          ls -al bundle
 
       - name: Upload bundle (only when built) (sheet)
         if: inputs.mode == 'build-bundle'
