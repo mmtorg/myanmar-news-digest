@@ -202,11 +202,15 @@ jobs:
           echo "GOOGLE_APPLICATION_CREDENTIALS=$SA_FILE" >> "$GITHUB_ENV"
           echo "GOOGLE_SERVICE_ACCOUNT_FILE=$SA_FILE" >> "$GITHUB_ENV"
 
-      - name: Use vendored JP fonts (fixed)
+      - name: Assert vendored fonts & export PDF_FONT_PATH
         run: |
-          set -eux
+          set -euxo pipefail
+          ls -al "$GITHUB_WORKSPACE/fonts"
+          test -f "$GITHUB_WORKSPACE/fonts/NotoSansJP-Regular.ttf"
+          test -f "$GITHUB_WORKSPACE/fonts/NotoSansJP-Bold.ttf"
           echo "PDF_FONT_PATH=$GITHUB_WORKSPACE/fonts/NotoSansJP-Regular.ttf" >> "$GITHUB_ENV"
           echo "PDF_FONT_BOLD_PATH=$GITHUB_WORKSPACE/fonts/NotoSansJP-Bold.ttf" >> "$GITHUB_ENV"
+          echo "PDF_FONT_PATH=${PDF_FONT_PATH:-<not-set>}"
 
       - name: Build bundle from sheet
         run: |
@@ -290,6 +294,17 @@ jobs:
           printf '%s' '${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}' > "$SA_FILE"
           echo "GOOGLE_APPLICATION_CREDENTIALS=$SA_FILE" >> "$GITHUB_ENV"
           echo "GOOGLE_SERVICE_ACCOUNT_FILE=$SA_FILE" >> "$GITHUB_ENV"
+
+      - name: Assert vendored fonts & export PDF_FONT_PATH (only for build-bundle)
+        if: ${{ inputs.mode == 'build-bundle' }}
+        run: |
+          set -euxo pipefail
+          ls -al "$GITHUB_WORKSPACE/fonts" || true
+          test -f "$GITHUB_WORKSPACE/fonts/NotoSansJP-Regular.ttf"
+          test -f "$GITHUB_WORKSPACE/fonts/NotoSansJP-Bold.ttf"
+          echo "PDF_FONT_PATH=$GITHUB_WORKSPACE/fonts/NotoSansJP-Regular.ttf" >> "$GITHUB_ENV"
+          echo "PDF_FONT_BOLD_PATH=$GITHUB_WORKSPACE/fonts/NotoSansJP-Bold.ttf" >> "$GITHUB_ENV"
+          echo "PDF_FONT_PATH=${PDF_FONT_PATH:-<not-set>}"
 
       - name: Run selected mode
         run: |
