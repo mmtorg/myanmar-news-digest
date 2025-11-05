@@ -608,6 +608,8 @@ def extract_paragraphs_with_wait(soup_article, retries=2, wait_seconds=2):
             paragraphs = soup_article.select("article p")
         if not paragraphs:
             paragraphs = soup_article.find_all("p")
+        if not paragraphs:
+            paragraphs = soup_article.find_all("div.td-post-content p")
 
         if paragraphs:
             return paragraphs
@@ -619,7 +621,7 @@ def extract_paragraphs_with_wait(soup_article, retries=2, wait_seconds=2):
 
 # === 汎用の <p> 抽出器（サイト共通） ===
 def extract_body_generic_from_soup(soup):
-    for sel in ["div.entry-content p", "div.node-content p", "article p"]:
+    for sel in ["div.entry-content p", "div.node-content p", "article p", "div.td-post-content p"]:
         ps = soup.select(sel)
         if ps:
             break
