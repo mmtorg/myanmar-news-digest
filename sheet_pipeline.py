@@ -88,15 +88,16 @@ from bs4 import BeautifulSoup
 try:
     # fetch_articles.py の実装を再利用
     from fetch_articles import (
-        get_body_with_refetch,
-        fetch_once_irrawaddy,
-        extract_body_irrawaddy,
-        extract_body_generic_from_soup,
-        extract_body_mail_pdf_scoped,  # ★追加：より堅牢な抽出器
-        translate_fulltexts_for_business,
-        build_combined_pdf_for_business,
-        _jp_date,
+    get_body_with_refetch,
+    fetch_once_irrawaddy,
+    extract_body_irrawaddy,
+    extract_body_generic_from_soup,
+    extract_body_mail_pdf_scoped,
+    translate_fulltexts_for_business,
+    build_combined_pdf_for_business,
+    _jp_date,
     )
+    from fetch_articles import fetch_with_retry_dvb  # ★DVB専用フェッチャ（既存を呼ぶだけ）
 except Exception:
     get_body_with_refetch = None
     fetch_once_irrawaddy = None
@@ -111,6 +112,42 @@ def _simple_fetch(url: str) -> str:
     r.raise_for_status()
     return r.text
 
+def _fetch_once_dvb(url: str, session: Optional[requests.Session] = None) -> bytes:
+    """
+    DVB 用：fetch_articles.py の fetch_with_retry_dvb を “1回だけ”呼ぶラッパ。
+    """
+    try:
+        r = fetch_with_retry_dvb(url, retries=1, wait_seconds=0, session=session)
+        if hasattr(r, "content") and r.content:
+            return r.content
+        t = getattr(r, "text", "") or ""
+        return t.encode("utf-8", "ignore")
+    except Exception:
+        try:
+            rr = requests.get(url, timeout=25, headers={"User-Agent":"Mozilla/5.0"})
+            rr.raise_for_status()
+            return rr.content
+        except Exception:
+            return b""
+
+def _extract_body_dvb_first_then_scoped(url: str, soup: "BeautifulSoup") -> str:
+    """
+    DVB は本文が .full_content に入っていることが多い。
+    まず .full_content p を試し、ダメなら extract_body_mail_pdf_scoped にフォールバック。
+    """
+    host = soup.select_one(".full_content")
+    if host:
+        parts = []
+        for p in host.select("p"):
+            txt = p.get_text(" ", strip=True)
+            txt = re.sub(r"\s+", " ", txt)
+            if txt:
+                parts.append(txt)
+        body = "\n".join(parts).strip()
+        if body:
+            return body
+    return extract_body_mail_pdf_scoped(url, soup)
+
 def _get_body_once(url: str, source: str, out_dir: str, title: str = "") -> str:
     """
     1) bundle/bodies.json を見てあれば返す
@@ -121,7 +158,7 @@ def _get_body_once(url: str, source: str, out_dir: str, title: str = "") -> str:
     if cached and (cached.get("body") or "").strip():
         return cached["body"]
 
-    # 取得（Irrawaddy は専用、それ以外は generic）
+    # 取得（Irrawaddy / DVB は“専用フェッチャ”を使用。その他は既存どおり）
     if get_body_with_refetch is None:
         # フォールバック（極力通らない想定）
         body = ""
@@ -140,9 +177,13 @@ def _get_body_once(url: str, source: str, out_dir: str, title: str = "") -> str:
             if "irrawaddy" in url_l or "irrawaddy" in src_l:
                 html_fetcher = fetch_once_irrawaddy
                 extractor    = extract_body_irrawaddy
+            elif "dvb" in url_l or "burmese.dvb.no" in url_l or "dvb" in src_l:
+                # ★DVB: 専用フェッチャ + DVB向け抽出（失敗時は強化抽出器にフォールバック）
+                html_fetcher = lambda u: _fetch_once_dvb(u, session=requests.Session())
+                extractor    = lambda soup, _u=url: _extract_body_dvb_first_then_scoped(_u, soup)
             else:
                 html_fetcher = _simple_fetch
-                # ★DVB/Mizzima/BBC/MyanmarNow/KhitThit は強化抽出器を既定に
+                # ★Mizzima / BBC / MyanmarNow / KhitThit などは強化抽出器を既定に
                 if (globals().get("extract_body_mail_pdf_scoped") is not None):
                     # URL を束縛したアダプタ： get_body_with_refetch は extractor(soup) を呼ぶため
                     def _scoped(soup, _u=url):
