@@ -852,7 +852,41 @@ def cmd_build_bundle_from_sheet(args):
         if not translated:
             logging.warning("[bundle] translation returned empty; skip PDF")
             return
-        pdf_bytes = build_combined_pdf_for_business(translated)
+
+        # ---- PDFビルダーが期待するメタ（title_ja / source / date / url）を付与する ----
+        # sheet_pipeline の summaries には、すでに確定見出しやメディア、配信日が入っている
+        #   - s["title"]      : 確定見出し（日本語）
+        #   - s["source"]     : メディア名
+        #   - s["date_mmt"]   : 日付（YYYY-MM-DD）
+        #   - s["url"]        : 記事URL
+        def _norm(u: str) -> str:
+            return (u or "").rstrip("/")
+        url_to_meta = {}
+        for s in summaries:
+            u = _norm(s.get("url", ""))
+            if not u:
+                continue
+            url_to_meta[u] = {
+                "title_ja": s.get("title", "") or "",
+                "source":   s.get("source", "") or "",
+                "date":     s.get("date_mmt", "") or (date_iso or ""),
+                "url":      u,
+            }
+
+        translated_items = []
+        for it in translated:
+            u = _norm(it.get("url", ""))
+            meta = url_to_meta.get(u, {})
+            translated_items.append({
+                "url":      u,
+                "title_ja": meta.get("title_ja", ""),
+                "body_ja":  it.get("body_ja", "") or "",
+                "source":   meta.get("source", ""),
+                "date":     meta.get("date", ""),
+            })
+
+        pdf_bytes = build_combined_pdf_for_business(translated_items)
+
         # 添付ファイル名（日本語日付）
         try:
             y, m, d = map(int, (date_iso or "").split("-"))
