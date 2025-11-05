@@ -74,6 +74,28 @@ except Exception:
             if u and u not in seen:
                 out.append(it); seen.add(u)
         return out
+    
+# === fetch_articles.py の文字数制御に揃える（import できなければフォールバック） ===
+try:
+    from fetch_articles import trim_by_chars as _trim_by_chars_impl
+except Exception:
+    _trim_by_chars_impl = None
+
+# 明示的な上限（fetch_articles.py の FULLTEXT_MAX_CHARS=100_000 に合わせる）
+FULLTEXT_MAX_CHARS = int(os.getenv("FULLTEXT_MAX_CHARS", "100000"))
+
+def trim_by_chars(s: str, max_chars: int) -> str:
+    """
+    fetch_articles.py の trim_by_chars 相当。
+    import に成功していればそちらを使い、失敗時のみ簡易版で代替。
+    """
+    if _trim_by_chars_impl:
+        return _trim_by_chars_impl(s, max_chars)
+    s = (s or "")
+    if max_chars <= 0 or len(s) <= max_chars:
+        return s
+    suffix = "…（本文が長いためここまでを翻訳）"
+    return s[: max(0, max_chars - len(suffix))] + suffix
 
 # ===== 本文キャッシュ（bundle/bodies.json） & 本文取得  =====
 _BODIES_LOCK = threading.Lock()
@@ -178,9 +200,10 @@ def _get_body_once(url: str, source: str, out_dir: str, title: str = "") -> str:
         try:
             html = _simple_fetch(url)
             soup = BeautifulSoup(html, "html.parser")
-            # 簡易の汎用抽出
+            # 簡易の汎用抽出（固定2万字カットを廃止し、10万字上限へ）
             ps = soup.find_all("p")
-            body = "\n".join(p.get_text(strip=True) for p in ps if p.get_text(strip=True))[:20000]
+            raw = "\n".join(p.get_text(strip=True) for p in ps if p.get_text(strip=True))
+            body = trim_by_chars(raw, FULLTEXT_MAX_CHARS)
         except Exception:
             body = ""
     else:
@@ -556,8 +579,14 @@ def _summary_ja(source: str, title: str, body: str, url: str) -> str:
             pass
         return unicodedata.normalize("NFC", (body or "").strip())[:400]
     os.environ["GEMINI_API_KEY"] = key
+    # fetch_articles.py に定義があればそれを採用、無ければ 1800 に固定
+    try:
+        from fetch_articles import BODY_MAX_CHARS as _FA_BODY_MAX
+        body_max = int(_FA_BODY_MAX)
+    except Exception:
+        body_max = 1800
     payload = {"source": source, "title": title, "url": url, "body": body}
-    prompt = _build_summary_prompt(payload, body_max=1800)
+    prompt = _build_summary_prompt(payload, body_max=body_max)
     try:
         if _LIMITER:
             _LIMITER.wait()
