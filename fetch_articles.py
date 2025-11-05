@@ -608,6 +608,8 @@ def extract_paragraphs_with_wait(soup_article, retries=2, wait_seconds=2):
             paragraphs = soup_article.select("article p")
         if not paragraphs:
             paragraphs = soup_article.find_all("p")
+        if not paragraphs:
+            paragraphs = soup_article.find_all("div.td-post-content p")
 
         if paragraphs:
             return paragraphs
@@ -619,7 +621,7 @@ def extract_paragraphs_with_wait(soup_article, retries=2, wait_seconds=2):
 
 # === 汎用の <p> 抽出器（サイト共通） ===
 def extract_body_generic_from_soup(soup):
-    for sel in ["div.entry-content p", "div.node-content p", "article p"]:
+    for sel in ["div.entry-content p", "div.node-content p", "article p", "div.td-post-content p"]:
         ps = soup.select(sel)
         if ps:
             break
@@ -3997,6 +3999,7 @@ def send_email_digest(
     attachment_bytes: Optional[bytes] = None,
     attachment_name: Optional[str] = None,
     delivery_date_mmt: Optional[date] = None,
+    attach_pdf: bool = True,
 ):
     def _build_gmail_service():
         cid = os.getenv("GMAIL_CLIENT_ID")
@@ -4298,7 +4301,8 @@ def send_email_digest(
         msg.set_content("HTMLメールを開ける環境でご確認ください。", charset="utf-8")
         msg.add_alternative(html_content, subtype="html", charset="utf-8")
 
-        if attachment_bytes and attachment_name:
+        # PDF 添付はフラグで制御（デフォルトは従来通り True）
+        if attach_pdf and attachment_bytes and attachment_name:
             msg.add_attachment(
                 attachment_bytes,
                 maintype="application",
@@ -4386,6 +4390,7 @@ if __name__ == "__main__":
                 attachment_bytes=attachment_bytes,
                 attachment_name=attachment_name,
                 delivery_date_mmt=delivery_date_mmt,
+                attach_pdf=(not is_internal),   # ← INTERNAL（エーヤワディ専用）は PDF 無し
             )
 
         if args.recipients_env:
