@@ -55,6 +55,20 @@ def _jp_date(s: str) -> str:
     # だめならそのまま返す（念のため）
     return s
 
+def _coerce_date(d) -> date | None:
+    """YYYY-MM-DD / YYYY/MM/DD / datetime/ date を date に正規化。失敗時は None。"""
+    if isinstance(d, date):
+        return d
+    if isinstance(d, datetime):
+        return d.date()
+    s = (d or "").strip()
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(s, fmt).date()
+        except Exception:
+            pass
+    return None
+
 # ===== 既存の fetch_articles.py から再利用できるものを拝借（※プロンプトは本ファイルで管理） =====
 try:
     from fetch_articles import (
@@ -909,11 +923,16 @@ def cmd_build_bundle_from_sheet(args):
             u = _norm(s.get("url", ""))
             if not u:
                 continue
+        # PDFビルダーは date.year を参照するため、必ず date 型に正規化して渡す
         date_raw = s.get("date_mmt", "") or (date_iso or "")
+        date_obj = _coerce_date(date_raw)
+        if date_obj is None:
+            # 最後の保険：date_iso を使って正規化
+            date_obj = _coerce_date(date_iso)
         url_to_meta[u] = {
             "title_ja": s.get("title", "") or "",
             "source":   s.get("source", "") or "",
-            "date":     _jp_date(date_raw),  # ← ここで和暦表記に整形
+            "date":     date_obj,  # ← 文字列ではなく date 型を渡す
             "url":      u,
         }
 
