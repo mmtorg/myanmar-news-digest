@@ -2265,16 +2265,16 @@ def get_dvb_articles_for(date_obj: date, debug: bool = True) -> List[Dict]:
 
     return results
 
-# Myanmar Now (mm) 
+# Myanmar Now 
 def get_myanmar_now_articles_mm(date_obj, max_pages=3):
     """
-    Myanmar Now (mm) の各カテゴリから対象日の記事を取得して返す。
+    Myanmar Now の各カテゴリから対象日の記事を取得して返す。
     - カテゴリ一覧を最大 max_pages ページ巡回
     - 一覧では <span class="date meta-item tie-icon">Month D, YYYY</span> を見て今日だけ抽出
     - 個別記事では <meta property="article:published_time" content="..."> をUTC→MMT変換して最終確認
     - タイトル末尾の " - Myanmar Now" を除去
     - 本文は div.entry-content.entry.clearfix 内の <p> だけ（画像等は含めない）
-    返り値: list[dict] {url, title, date(ISO str, MMT), body, source="Myanmar Now (mm)"}
+    返り値: list[dict] {url, title, date(ISO str, MMT), body, source="Myanmar Now"}
     """
 
     BASE_CATEGORIES = [
@@ -2446,7 +2446,7 @@ def get_myanmar_now_articles_mm(date_obj, max_pages=3):
             # 4) キーワード判定
             _cache_body(url, body)
             if not any_keyword_hit(title, body):
-                log_no_keyword_hit("Myanmar Now (mm)", url, title, body, "mnw:article")
+                log_no_keyword_hit("Myanmar Now", url, title, body, "mnw:article")
                 continue
 
             results.append({
@@ -2454,7 +2454,7 @@ def get_myanmar_now_articles_mm(date_obj, max_pages=3):
                 "title": title,
                 "date": (dt_mmt.isoformat() if meta_ok else date_obj.isoformat()),
                 "body": body,
-                "source": "Myanmar Now (mm)",
+                "source": "Myanmar Now",
             })
         except Exception as e:
             print(f"[warn] Myanmar Now article fetch failed: {url} ({e})")
