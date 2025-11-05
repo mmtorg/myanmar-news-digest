@@ -923,18 +923,17 @@ def cmd_build_bundle_from_sheet(args):
             u = _norm(s.get("url", ""))
             if not u:
                 continue
-        # PDFビルダーは date.year を参照するため、必ず date 型に正規化して渡す
-        date_raw = s.get("date_mmt", "") or (date_iso or "")
-        date_obj = _coerce_date(date_raw)
-        if date_obj is None:
-            # 最後の保険：date_iso を使って正規化
-            date_obj = _coerce_date(date_iso)
-        url_to_meta[u] = {
-            "title_ja": s.get("title", "") or "",
-            "source":   s.get("source", "") or "",
-            "date":     date_obj,  # ← 文字列ではなく date 型を渡す
-            "url":      u,
-        }
+            # PDFビルダーは “文字列” を想定。シートは既に YYYY-MM-DD なのでそのまま使う
+            date_raw = s.get("date_mmt", "") or (date_iso or "")
+            # 念のため正規化（YYYY-MM-DD 以外が来たら date に直してから isoformat）
+            d_obj = _coerce_date(date_raw)
+            date_str = (d_obj.isoformat() if d_obj else (date_iso or ""))
+            url_to_meta[u] = {
+                "title_ja": s.get("title", "") or "",
+                "source":   s.get("source", "") or "",
+                "date":     date_str,   # ← 文字列で保持
+                "url":      u,
+            }
 
         translated_items = []
         for it in translated:
