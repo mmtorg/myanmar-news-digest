@@ -634,7 +634,7 @@ def _collect_all_for(target_date_mmt: date) -> List[Dict]:
         # (collect_irrawaddy_all_for_date, {}),
         (collect_khitthit_all_for_date, {"max_pages": 1}),
         # (collect_dvb_all_for_date, {}),
-        # (collect_myanmar_now_mm_all_for_date, {"max_pages": 3}),
+        (collect_myanmar_now_mm_all_for_date, {"max_pages": 1}),
     ]:
         name = fn.__name__.replace("_all_for_date", "")
         try:
