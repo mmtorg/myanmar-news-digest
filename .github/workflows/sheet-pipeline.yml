@@ -89,6 +89,11 @@ jobs:
           echo "GOOGLE_APPLICATION_CREDENTIALS=$SA_FILE" >> "$GITHUB_ENV"
           echo "GOOGLE_SERVICE_ACCOUNT_FILE=$SA_FILE" >> "$GITHUB_ENV"
 
+      - name: Use vendored JP fonts (fixed)
+        run: |
+          set -eux
+          echo "PDF_FONT_PATH=$GITHUB_WORKSPACE/fonts/NotoSansJP-Regular.ttf" >> "$GITHUB_ENV"
+          echo "PDF_FONT_BOLD_PATH=$GITHUB_WORKSPACE/fonts/NotoSansJP-Bold.ttf" >> "$GITHUB_ENV"
       - name: Collect → write to sheet (16:00 run, clear yesterday once)
         run: |
           python sheet_pipeline.py collect-to-sheet --clear-yesterday --bundle-dir bundle
@@ -140,6 +145,12 @@ jobs:
           echo "GOOGLE_APPLICATION_CREDENTIALS=$SA_FILE" >> "$GITHUB_ENV"
           echo "GOOGLE_SERVICE_ACCOUNT_FILE=$SA_FILE" >> "$GITHUB_ENV"
 
+      - name: Use vendored JP fonts (fixed)
+        run: |
+          set -eux
+          echo "PDF_FONT_PATH=$GITHUB_WORKSPACE/fonts/NotoSansJP-Regular.ttf" >> "$GITHUB_ENV"
+          echo "PDF_FONT_BOLD_PATH=$GITHUB_WORKSPACE/fonts/NotoSansJP-Bold.ttf" >> "$GITHUB_ENV"
+
       - name: Collect → append to sheet (18/20/22:00 runs)
         run: |
           python sheet_pipeline.py collect-to-sheet --bundle-dir bundle
@@ -190,6 +201,12 @@ jobs:
           printf '%s' "${GOOGLE_SERVICE_ACCOUNT_JSON}" > "$SA_FILE"
           echo "GOOGLE_APPLICATION_CREDENTIALS=$SA_FILE" >> "$GITHUB_ENV"
           echo "GOOGLE_SERVICE_ACCOUNT_FILE=$SA_FILE" >> "$GITHUB_ENV"
+
+      - name: Use vendored JP fonts (fixed)
+        run: |
+          set -eux
+          echo "PDF_FONT_PATH=$GITHUB_WORKSPACE/fonts/NotoSansJP-Regular.ttf" >> "$GITHUB_ENV"
+          echo "PDF_FONT_BOLD_PATH=$GITHUB_WORKSPACE/fonts/NotoSansJP-Bold.ttf" >> "$GITHUB_ENV"
 
       - name: Build bundle from sheet
         run: |
