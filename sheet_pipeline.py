@@ -41,6 +41,19 @@ def _timeit(section: str, **fields):
     except Exception:
         logging.exception(f"✖ {section} failed")
         raise
+    
+def _jp_date(s: str) -> str:
+    if not s:
+        return ""
+    # 代表的な2形式を許容
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d"):
+        try:
+            dt = datetime.strptime(s, fmt)
+            return f"{dt.year}年{dt.month}月{dt.day}日"
+        except Exception:
+            pass
+    # だめならそのまま返す（念のため）
+    return s
 
 # ===== 既存の fetch_articles.py から再利用できるものを拝借（※プロンプトは本ファイルで管理） =====
 try:
@@ -866,12 +879,13 @@ def cmd_build_bundle_from_sheet(args):
             u = _norm(s.get("url", ""))
             if not u:
                 continue
-            url_to_meta[u] = {
-                "title_ja": s.get("title", "") or "",
-                "source":   s.get("source", "") or "",
-                "date":     s.get("date_mmt", "") or (date_iso or ""),
-                "url":      u,
-            }
+        date_raw = s.get("date_mmt", "") or (date_iso or "")
+        url_to_meta[u] = {
+            "title_ja": s.get("title", "") or "",
+            "source":   s.get("source", "") or "",
+            "date":     _jp_date(date_raw),  # ← ここで和暦表記に整形
+            "url":      u,
+        }
 
         translated_items = []
         for it in translated:
