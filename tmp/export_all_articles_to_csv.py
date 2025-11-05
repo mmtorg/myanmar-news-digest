@@ -569,7 +569,7 @@ def collect_myanmar_now_mm_all_for_date(target_date_mmt: date, max_pages: int = 
                 continue
 
             items.append({
-                "source": "Myanmar Now (mm)",
+                "source": "Myanmar Now",
                 "title": title,
                 "url": url,
                 # 直接HTMLでmeta日付確認できた場合はその日付、
@@ -578,7 +578,7 @@ def collect_myanmar_now_mm_all_for_date(target_date_mmt: date, max_pages: int = 
                 "body": body,
             })
         except Exception as e:
-            print(f"[warn] Myanmar Now (mm) article fetch failed: {url} ({e})")
+            print(f"[warn] Myanmar Now article fetch failed: {url} ({e})")
             continue
 
     return items
