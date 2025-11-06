@@ -116,8 +116,6 @@ try:
     from fetch_articles import (
         fetch_with_retry_irrawaddy,
         extract_body_irrawaddy,
-        _fetch_text_default,
-        _extract_body_generic,
     )
 except Exception:
     fetch_with_retry_irrawaddy = None
@@ -289,14 +287,17 @@ def _get_body_once(url: str, source: str, out_dir: str, title: str = "") -> str:
                 extractor    = lambda soup, _u=url: _extract_body_dvb_first_then_scoped(_u, soup)
 
             else:
-                # ★ その他: fetch_articles.py 側の共通フェッチャ＆汎用抽出器を使う
-                html_fetcher = _fetch_text_default
-                if (globals().get("extract_body_mail_pdf_scoped") is not None):
+                # ★ その他: fetch_articles.py 側の“実在する”共通フェッチャ＆抽出器を使う
+                #   - フェッチャ: fetch_once_requests
+                #   - 抽出器: extract_body_mail_pdf_scoped があればそれ、無ければ extract_body_generic_from_soup
+                from fetch_articles import fetch_once_requests, extract_body_generic_from_soup
+                html_fetcher = fetch_once_requests
+                if globals().get("extract_body_mail_pdf_scoped") is not None:
                     def _scoped(soup, _u=url):
                         return extract_body_mail_pdf_scoped(_u, soup)
                     extractor = _scoped
                 else:
-                    extractor = _extract_body_generic  # ← ここを使う
+                    extractor = extract_body_generic_from_soup
 
             body = get_body_with_refetch(
                 url,
