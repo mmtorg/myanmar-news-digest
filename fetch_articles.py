@@ -3569,7 +3569,8 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
             "・固有名詞は一般的な日本語表記に\n"
             "・ビルマ語/英語が混在していてもOK\n"
             "・タイトル（見出し）は訳さない／出力しない\n"
-            "・本文は改行と段落を活かして読みやすく\n\n"
+            "・本文は改行と段落を活かして読みやすく\n"
+            "・半角の()括弧はすべて全角の（ ）に統一すること\n\n"
             f"{COMMON_TRANSLATION_RULES}"
             "【本文以外は必ず除外（この関数専用）】\n"
             "以下は原文に含まれていても翻訳・出力しないこと（含めたら減点）。\n"
@@ -3818,6 +3819,21 @@ def build_combined_pdf_for_business(translated_items, out_path=None):
         
         # 行頭禁則（開きカッコの直前のスペースを NBSP に変換して改行禁止）
         t = re.sub(r"(?<=\S) (?=[\(\（\[\【])", "\u00A0", t)  # \u00A0 = NBSP
+        
+        # 英語の大文字始まり 2〜3語は語間を NBSP にして分断を防止（URLは対象外）
+        _PROPER_RE = re.compile(
+            r'\b([A-Z][A-Za-z0-9&\.\-]{1,20})\s+([A-Z][A-Za-z0-9&\.\-]{1,20})(?:\s+([A-Z][A-Za-z0-9&\.\-]{1,20}))?\b'
+        )
+        _place = {}
+        def _stash(m):
+            k = f"__URL{len(_place)}__"
+            _place[k] = m.group(0)
+            return k
+        _work = _URL_RE.sub(_stash, t)  # URLは退避して対象外に
+        _work = _PROPER_RE.sub(lambda m: "\u00A0".join([w for w in m.group(0).split(' ') if w]), _work)
+        for k, v in _place.items():
+            _work = _work.replace(k, v)
+        t = _work
 
         # 段落で分割（連続する空行を1つの区切りとみなす）
         paras = re.split(r"\n\s*\n", t.strip(), flags=re.MULTILINE)
