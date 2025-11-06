@@ -3820,6 +3820,18 @@ def build_combined_pdf_for_business(translated_items, out_path=None):
         # 行頭禁則（開きカッコの直前のスペースを NBSP に変換して改行禁止）
         t = re.sub(r"(?<=\S) (?=[\(\（\[\【])", "\u00A0", t)  # \u00A0 = NBSP
         
+        # --- ① 英数字同士の単発改行を NBSP でブリッジ（段落改行は温存）---
+        # 例: "Finance\nUncovered" / "No\n Vote" / "Paka\nPha"
+        t = re.sub(r"(?<=[A-Za-z0-9])\n\s*(?=[A-Za-z0-9])", "\u00A0", t)
+
+        # --- ② スペースで挟まれたハイフンを改行禁止に ---
+        # 例: "Zero - Column - 5 -)" → "Zero - Column - 5 -)"
+        t = t.replace(" - ", "\u00A0-\u00A0")
+
+        # --- ③ 数字の直後に来る '‐-)' を改行不可ハイフンに置換 ---
+        # 例: "5-)" の '-' を U+2011 (NON-BREAKING HYPHEN) に
+        t = re.sub(r"(?<=\d)-(?=\))", "\u2011", t)
+        
         # 英語の大文字始まり 2〜3語は語間を NBSP にして分断を防止（URLは対象外）
         _PROPER_RE = re.compile(
             r'\b([A-Z][A-Za-z0-9&\.\-]{1,20})\s+([A-Z][A-Za-z0-9&\.\-]{1,20})(?:\s+([A-Z][A-Za-z0-9&\.\-]{1,20}))?\b'
