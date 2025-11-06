@@ -82,6 +82,13 @@ def _load_bundle(bundle_dir):
     attachment_name = (b/"attachment_name.txt").read_text(encoding="utf-8") if (b/"attachment_name.txt").exists() else None
     return meta, summaries, pdf_bytes, attachment_name
 
+# --- helper: preserve newlines for Sheet Pipeline Send only ---
+def _nl2br(s: str) -> str:
+    if not s:
+        return ""
+    s = s.replace("\r\n", "\n").replace("\r", "\n")
+    return s.replace("\n", "<br>")
+
 # ========= Gemini リトライ調整用の定数 =========
 GEMINI_MAX_RETRIES = 7          # 既定 5 → 7
 GEMINI_BASE_DELAY = 10.0        # 既定 2.0 → 10.0
@@ -4035,6 +4042,7 @@ def send_email_digest(
     attachment_name: Optional[str] = None,
     delivery_date_mmt: Optional[date] = None,
     attach_pdf: bool = True,
+    preserve_newlines: bool = False,
 ):
     def _build_gmail_service():
         cid = os.getenv("GMAIL_CLIENT_ID")
@@ -4135,7 +4143,9 @@ def send_email_digest(
 
     for media, articles in media_grouped.items():
         for item in articles:
-            title_jp = item["title"]; url = item["url"]; summary_html = item["summary"]
+            title_jp = item["title"]; url = item["url"]
+            summary_raw = item["summary"]
+            summary_html = _nl2br(summary_raw) if preserve_newlines else summary_raw
             heading_html = (
                 "<h2 style='margin-bottom:5px'>"
                 f"{title_jp}　"
@@ -4363,6 +4373,11 @@ if __name__ == "__main__":
                         help="mono=従来どおり（収集+送信）。collect=収集のみ（CSV_EMAIL_RECIPIENTSだけ即時送信可）。send=束ねデータから送信。")
     parser.add_argument("--bundle-dir", default="bundle", help="二段構成での保存/読込ディレクトリ")
     parser.add_argument("--recipients-env", default=None, help="--phase send 時に送る宛先の環境変数名（例: LITE_EMAIL_RECIPIENTS）")
+    parser.add_argument(
+        "--sheet-mail-preserve-newlines",
+        action="store_true",
+        help="（Sheet Pipeline — Send専用）本文要約の改行をメールHTMLで保持"
+    )
     args, unknown = parser.parse_known_args()
 
     # 今日の日付をミャンマー時間で取得
@@ -4426,6 +4441,7 @@ if __name__ == "__main__":
                 attachment_name=attachment_name,
                 delivery_date_mmt=delivery_date_mmt,
                 attach_pdf=(not is_internal),   # ← INTERNAL（エーヤワディ専用）は PDF 無し
+                preserve_newlines=args.sheet_mail_preserve_newlines,
             )
 
         if args.recipients_env:
