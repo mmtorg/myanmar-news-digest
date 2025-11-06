@@ -111,6 +111,18 @@ def trim_by_chars(s: str, max_chars: int) -> str:
     suffix = "…（本文が長いためここまでを翻訳）"
     return s[: max(0, max_chars - len(suffix))] + suffix
 
+try:
+    # Irrawaddy 専用の取得/抽出を使い回す
+    from fetch_articles import (
+        fetch_with_retry_irrawaddy,
+        extract_body_irrawaddy,
+        _fetch_text_default,
+        _extract_body_generic,
+    )
+except Exception:
+    fetch_with_retry_irrawaddy = None
+    extract_body_irrawaddy = None
+
 # ===== 本文キャッシュ（bundle/bodies.json） & 本文取得  =====
 _BODIES_LOCK = threading.Lock()
 
@@ -201,57 +213,132 @@ def _get_body_once(url: str, source: str, out_dir: str, title: str = "") -> str:
     """
     1) bundle/bodies.json を見てあれば返す
     2) なければ取得→保存→返す
+    - Irrawaddy は本文抽出失敗時に r.jina.ai → AMP (/amp, ?output=amp) の順でフォールバック
+    - Google News (news.google.com/rss/articles/...) は最終到達URLを解決してから試行
     """
+    from urllib.parse import urlparse
+    import requests
+    from bs4 import BeautifulSoup
+
+    def _resolve_news_google_redirect(u: str, timeout: int = 20) -> str:
+        """news.google.com/rss/articles/... を publisher の最終URLへ解決（成功時のみ差し替え）"""
+        try:
+            r = requests.get(u, headers={"User-Agent": "Mozilla/5.0"}, timeout=timeout, allow_redirects=True)
+            final_url = getattr(r, "url", "") or u
+            return final_url
+        except Exception:
+            return u
+
+    def _fetch_text_via_jina(u: str, timeout: int = 25) -> str:
+        """r.jina.ai 経由でプレーンテキストを取得（本文がHTMLで取れなかった時の救済）"""
+        try:
+            alt = f"https://r.jina.ai/http://{u.lstrip('/')}"
+            r = requests.get(alt, headers={"User-Agent": "Mozilla/5.0"}, timeout=timeout)
+            if r.status_code == 200:
+                txt = (r.text or "").strip()
+                if txt:
+                    return txt
+        except Exception:
+            pass
+        return ""
+
+    # --- 1) キャッシュ命中なら即返す ---
     cache = _load_bodies_cache(out_dir)
     cached = cache.get(url)
     if cached and (cached.get("body") or "").strip():
         return cached["body"]
 
-    # 取得（Irrawaddy / DVB は“専用フェッチャ”を使用。その他は既存どおり）
+    # --- 事前正規化：Google News の場合は最終到達URLを一度解決 ---
+    try:
+        host = urlparse(url).netloc.lower()
+    except Exception:
+        host = ""
+    if "news.google.com" in host:
+        url = _resolve_news_google_redirect(url)
+
+    # --- 2) 本文取得（Irrawaddy / DVB は専用フェッチャ。その他は共通フェッチャ＆抽出器）---
+    body = ""
     if get_body_with_refetch is None:
-        # フォールバック（極力通らない想定）
-        body = ""
+        # フォールバック（極力通らない想定）: 既存の共通フェッチャ＆抽出器で最低限動かす
         try:
-            html = _simple_fetch(url)
+            html = _fetch_text_default(url)
             soup = BeautifulSoup(html, "html.parser")
-            # 簡易の汎用抽出（固定2万字カットを廃止し、10万字上限へ）
-            ps = soup.find_all("p")
-            raw = "\n".join(p.get_text(strip=True) for p in ps if p.get_text(strip=True))
+            raw = _extract_body_generic(soup) or ""
             body = trim_by_chars(raw, FULLTEXT_MAX_CHARS)
         except Exception:
             body = ""
     else:
         try:
             src_l = (source or "").lower()
-            url_l = url.lower()
+            url_l = (url or "").lower()
+
             if "irrawaddy" in url_l or "irrawaddy" in src_l:
-                html_fetcher = fetch_once_irrawaddy
+                # ★ Irrawaddy: 専用フェッチャ + 専用抽出器
+                def _irw_fetch(u: str) -> str:
+                    try:
+                        res = fetch_with_retry_irrawaddy(u)  # fetch_articles.py 側の関数
+                        return getattr(res, "text", "") or getattr(res, "content", b"").decode("utf-8", "ignore")
+                    except Exception:
+                        return ""
+                html_fetcher = _irw_fetch
                 extractor    = extract_body_irrawaddy
+
             elif "dvb" in url_l or "burmese.dvb.no" in url_l or "dvb" in src_l:
-                # ★DVB: 専用フェッチャ + DVB向け抽出（失敗時は強化抽出器にフォールバック）
+                # ★ DVB: 専用フェッチャ + DVB向け抽出（失敗時は強化抽出器にフォールバック）
                 html_fetcher = lambda u: _fetch_once_dvb(u, session=requests.Session())
                 extractor    = lambda soup, _u=url: _extract_body_dvb_first_then_scoped(_u, soup)
+
             else:
-                html_fetcher = _simple_fetch
-                # ★Mizzima / BBC / MyanmarNow / KhitThit などは強化抽出器を既定に
+                # ★ その他: fetch_articles.py 側の共通フェッチャ＆汎用抽出器を使う
+                html_fetcher = _fetch_text_default
                 if (globals().get("extract_body_mail_pdf_scoped") is not None):
-                    # URL を束縛したアダプタ： get_body_with_refetch は extractor(soup) を呼ぶため
                     def _scoped(soup, _u=url):
                         return extract_body_mail_pdf_scoped(_u, soup)
                     extractor = _scoped
                 else:
-                    extractor = extract_body_generic_from_soup
+                    extractor = _extract_body_generic  # ← ここを使う
 
-            body = get_body_with_refetch(url, html_fetcher, extractor, retries=2, wait_seconds=2, quiet=True) or ""
+            body = get_body_with_refetch(
+                url,
+                html_fetcher,
+                extractor,
+                retries=2,
+                wait_seconds=2,
+                quiet=True
+            ) or ""
         except Exception:
             body = ""
 
-    # 空本文はキャッシュしない（将来の再取得の余地を残す）
+    # --- 3) Irrawaddy に限り：本文が空なら Jina → AMP で救済（CSVパイプライン相当のBを移植）---
+    if not (body or "").strip():
+        src_l = (source or "").lower()
+        url_l = (url or "").lower()
+        if "irrawaddy" in url_l or "irrawaddy" in src_l:
+            # 3-1) まず元URLで r.jina.ai
+            txt = _fetch_text_via_jina(url, timeout=25)
+            # 3-2) /news/ を含む場合は AMP も試す（/amp, ?output=amp）
+            if not txt:
+                try:
+                    p = urlparse(url)
+                    if "/news/" in p.path:
+                        amp1 = url.rstrip("/") + "/amp"
+                        q = "&" if "?" in url else "?"
+                        amp2 = url + f"{q}output=amp"
+                        for amp in (amp1, amp2):
+                            txt = _fetch_text_via_jina(amp, timeout=25)
+                            if txt:
+                                break
+                except Exception:
+                    pass
+            body = (txt or "").strip()
+
+    # --- 4) 空本文はキャッシュしない（将来の再取得の余地を残す）---
     if body.strip():
         with _BODIES_LOCK:
             cache = _load_bodies_cache(out_dir)  # 競合対策で再読込
             cache[url] = {"source": source, "title": title, "body": body}
             _save_bodies_cache(out_dir, cache)
+
     return body
 
 # ===== 翻訳プロンプト：共通ルール（fetch_articles.py と同一） =====
