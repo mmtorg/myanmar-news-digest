@@ -270,6 +270,7 @@ jobs:
           PY
 
       - name: Diagnostics | summaries/bodies coverage
+        if: ${{ inputs.mode == 'build-bundle' }}
         run: |
           python - <<'PY'
           import os, json, sys
@@ -300,6 +301,7 @@ jobs:
 
       # === 送信直前の build-bundle（PDF & 添付名を確実に生成） ===
       - name: Build bundle (PDF & attachment name)
+        if: ${{ inputs.mode == 'build-bundle' }}
         env:
           MNA_LOG_LEVEL: INFO # 必要に応じて DEBUG に
         run: |
@@ -309,6 +311,7 @@ jobs:
           ls -al bundle
 
       - name: Upload bundle artifact (sheet)
+        if: ${{ inputs.mode == 'build-bundle' }}
         uses: actions/upload-artifact@v4
         with:
           name: mna-bundle-sheet-${{ github.run_id }}
@@ -474,6 +477,7 @@ jobs:
 
       # ←← 先に build-bundle を実行して bundle を生成
       - name: Build bundle (PDF & attachment name)
+        if: ${{ inputs.mode == 'build-bundle' }}
         env:
           PYTHONPATH: .
           MNA_LOG_LEVEL: INFO
@@ -512,16 +516,6 @@ jobs:
           if missing[:5]:
               print("first_missing_examples:", missing[:5])
           PY
-
-      # === 送信直前の build-bundle（PDF & 添付名を確実に生成） ===
-      - name: Build bundle (PDF & attachment name)
-        env:
-          MNA_LOG_LEVEL: INFO # 必要に応じて DEBUG に
-        run: |
-          set -euxo pipefail
-          python sheet_pipeline.py build-bundle --bundle-dir bundle
-          echo "--- bundle after build-bundle ---"
-          ls -al bundle
 
       - name: Upload bundle (only when built) (sheet)
         if: inputs.mode == 'build-bundle'
