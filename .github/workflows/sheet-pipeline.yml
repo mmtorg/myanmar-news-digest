@@ -19,11 +19,12 @@ on:
         description: "collect16（16時回） / collect（18/20/22時回） / build-bundle（02:30）"
         type: choice
         required: true
-        default: collect
+        default: collect16
         options:
           - collect16
           - collect
           - build-bundle
+          - notify-email
 
 # どのイベントでも 1 workflow につき環境ごとに直列化
 concurrency:
@@ -417,7 +418,7 @@ jobs:
 
       # 手動実行でも通知を送れるように追加（collect/collect16 成功時のみ）
       - name: Notify by email via Python (manual run)
-        if: ${{ github.event_name == 'workflow_dispatch' && (inputs.mode == 'collect') && success() }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'notify-email' && success() }}
         run: |
           set -euo pipefail
           BODY="$(printf '%s\n%s\n%s\n%s\n%s\n' \
