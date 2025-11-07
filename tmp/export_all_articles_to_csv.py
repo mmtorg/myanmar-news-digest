@@ -78,7 +78,7 @@ def daterange_mmt(start: date, end: date) -> Iterable[date]:
 def collect_bbc_all_for_date(target_date_mmt: date) -> List[Dict]:
     """RSSをUTC→MMT換算し、対象日一致のみ返す（キーワード絞り込みなし）"""
     rss_url = "https://feeds.bbci.co.uk/burmese/rss.xml"
-    session = requests.Session()
+    session = _make_pooled_session()
     try:
         res = session.get(rss_url, timeout=10)
         res.raise_for_status()
@@ -114,6 +114,25 @@ def collect_bbc_all_for_date(target_date_mmt: date) -> List[Dict]:
         except Exception:
             continue
     return out
+
+from requests.adapters import HTTPAdapter
+def _make_pooled_session() -> requests.Session:
+    """
+    出力・ロジック不変のまま、接続プール/Keep-Alive/圧縮転送を有効化した Session を返す。
+    """
+    s = requests.Session()
+    adapter = HTTPAdapter(pool_connections=16, pool_maxsize=16, max_retries=0)  # リトライは既存ロジックに委ねる
+    s.mount("https://", adapter)
+    s.mount("http://", adapter)
+    s.headers.update({
+        "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                       "AppleWebKit/537.36 (KHTML, like Gecko) "
+                       "Chrome/128.0.0.0 Safari/537.36"),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+    })
+    return s
 
 # ===== Khit Thit Media =====
 def collect_khitthit_all_for_date(target_date_mmt: date, max_pages: int = 15) -> List[Dict]:
@@ -213,7 +232,7 @@ def collect_dvb_all_for_date(target_date_mmt: date) -> List[Dict]:
     CATEGORY_PATHS = ["/category/8/news"]
 
     try:
-        sess = requests.Session()
+        sess = _make_pooled_session()
     except Exception:
         sess = None
 
@@ -322,7 +341,7 @@ def collect_mizzima_all_for_date(target_date_mmt: date, max_pages: int = 15) -> 
     ]
 
     article_urls: List[str] = []
-    session = requests.Session()
+    session = _make_pooled_session()
     for page_num in range(1, max_pages + 1):
         url = f"{base_url}{category_path}" if page_num == 1 else f"{base_url}{category_path}/page/{page_num}/"
         try:
@@ -339,7 +358,7 @@ def collect_mizzima_all_for_date(target_date_mmt: date, max_pages: int = 15) -> 
     results: List[Dict] = []
     for url in article_urls:
         try:
-            res = requests.get(url, timeout=10)
+            res = session.get(url, timeout=10)
             if res.status_code != 200:
                 continue
             soup = BeautifulSoup(res.content, "html.parser")
@@ -410,6 +429,8 @@ def collect_myanmar_now_mm_all_for_date(target_date_mmt: date, max_pages: int = 
         "https://myanmar-now.org/mm/news/category/opinion/29/",
         "https://myanmar-now.org/mm/news/category/opinion/interview/",
     ]
+    
+    sess = _make_pooled_session()
 
     def _strip_source_suffix(title: str) -> str:
         if not title:
@@ -450,7 +471,7 @@ def collect_myanmar_now_mm_all_for_date(target_date_mmt: date, max_pages: int = 
 
     def _fetch_text(url: str, timeout: int = 20) -> str:
         try:
-            r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=timeout)
+            r = sess.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=timeout)
             if r.status_code == 200 and (r.text or "").strip():
                 return r.text
         except Exception:
@@ -460,7 +481,7 @@ def collect_myanmar_now_mm_all_for_date(target_date_mmt: date, max_pages: int = 
     def _fetch_text_via_jina(url: str, timeout: int = 25) -> str:
         try:
             alt = f"https://r.jina.ai/http://{url.lstrip('/')}"
-            r = requests.get(alt, headers={"User-Agent": "Mozilla/5.0"}, timeout=timeout)
+            r = sess.get(alt, headers={"User-Agent": "Mozilla/5.0"}, timeout=timeout)
             if r.status_code == 200 and (r.text or "").strip():
                 return r.text
         except Exception:
@@ -473,7 +494,7 @@ def collect_myanmar_now_mm_all_for_date(target_date_mmt: date, max_pages: int = 
                 "https://myanmar-now.org/wp-json/oembed/1.0/embed?url="
                 + requests.utils.requote_uri(u)
             )
-            r = requests.get(api, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+            r = sess.get(api, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
             if r.status_code == 200 and (r.text or "").strip():
                 data = r.json()
                 return unicodedata.normalize("NFC", (data.get("title") or "").strip())
@@ -548,7 +569,7 @@ def collect_myanmar_now_mm_all_for_date(target_date_mmt: date, max_pages: int = 
                 continue
 
             items.append({
-                "source": "Myanmar Now (mm)",
+                "source": "Myanmar Now",
                 "title": title,
                 "url": url,
                 # 直接HTMLでmeta日付確認できた場合はその日付、
@@ -557,7 +578,7 @@ def collect_myanmar_now_mm_all_for_date(target_date_mmt: date, max_pages: int = 
                 "body": body,
             })
         except Exception as e:
-            print(f"[warn] Myanmar Now (mm) article fetch failed: {url} ({e})")
+            print(f"[warn] Myanmar Now article fetch failed: {url} ({e})")
             continue
 
     return items
@@ -618,6 +639,8 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
         "/video",  # "/category/Video"は除外対象だがこのパターンもある
         "/cartoons",  # "/category/Cartoons"は除外対象だがこのパターンもある
     ]
+    
+    sess = _make_pooled_session()
 
     def _is_excluded_url(href: str) -> bool:
         try:
@@ -762,7 +785,7 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
     # 1.9) 候補が空なら RSS / Google News からフォールバック
     def _fetch_text(url: str, timeout: int = 20) -> str:
         try:
-            r = requests.get(
+            r = sess.get(
                 url,
                 headers={
                     "User-Agent": (
@@ -782,7 +805,7 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
     def _fetch_text_via_jina(url: str, timeout: int = 25) -> str:
         try:
             alt = f"https://r.jina.ai/http://{url.lstrip('/')}"
-            r = requests.get(alt, headers={"User-Agent": "Mozilla/5.0"}, timeout=timeout)
+            r = sess.get(alt, headers={"User-Agent": "Mozilla/5.0"}, timeout=timeout)
             if r.status_code == 200 and (r.text or "").strip():
                 return r.text
         except Exception:
@@ -984,7 +1007,7 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
                         "https://www.irrawaddy.com/wp-json/oembed/1.0/embed?url="
                         + requests.utils.requote_uri(u)
                     )
-                    r = requests.get(api, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+                    r = sess.get(api, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
                     if r.status_code == 200 and (r.text or "").strip():
                         data = r.json()
                         t = (data.get("title") or "").strip()

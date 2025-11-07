@@ -82,6 +82,13 @@ def _load_bundle(bundle_dir):
     attachment_name = (b/"attachment_name.txt").read_text(encoding="utf-8") if (b/"attachment_name.txt").exists() else None
     return meta, summaries, pdf_bytes, attachment_name
 
+# --- helper: preserve newlines for Sheet Pipeline Send only ---
+def _nl2br(s: str) -> str:
+    if not s:
+        return ""
+    s = s.replace("\r\n", "\n").replace("\r", "\n")
+    return s.replace("\n", "<br>")
+
 # ========= Gemini リトライ調整用の定数 =========
 GEMINI_MAX_RETRIES = 7          # 既定 5 → 7
 GEMINI_BASE_DELAY = 10.0        # 既定 2.0 → 10.0
@@ -2265,16 +2272,16 @@ def get_dvb_articles_for(date_obj: date, debug: bool = True) -> List[Dict]:
 
     return results
 
-# Myanmar Now (mm) 
+# Myanmar Now 
 def get_myanmar_now_articles_mm(date_obj, max_pages=3):
     """
-    Myanmar Now (mm) の各カテゴリから対象日の記事を取得して返す。
+    Myanmar Now の各カテゴリから対象日の記事を取得して返す。
     - カテゴリ一覧を最大 max_pages ページ巡回
     - 一覧では <span class="date meta-item tie-icon">Month D, YYYY</span> を見て今日だけ抽出
     - 個別記事では <meta property="article:published_time" content="..."> をUTC→MMT変換して最終確認
     - タイトル末尾の " - Myanmar Now" を除去
     - 本文は div.entry-content.entry.clearfix 内の <p> だけ（画像等は含めない）
-    返り値: list[dict] {url, title, date(ISO str, MMT), body, source="Myanmar Now (mm)"}
+    返り値: list[dict] {url, title, date(ISO str, MMT), body, source="Myanmar Now"}
     """
 
     BASE_CATEGORIES = [
@@ -2446,7 +2453,7 @@ def get_myanmar_now_articles_mm(date_obj, max_pages=3):
             # 4) キーワード判定
             _cache_body(url, body)
             if not any_keyword_hit(title, body):
-                log_no_keyword_hit("Myanmar Now (mm)", url, title, body, "mnw:article")
+                log_no_keyword_hit("Myanmar Now", url, title, body, "mnw:article")
                 continue
 
             results.append({
@@ -2454,7 +2461,7 @@ def get_myanmar_now_articles_mm(date_obj, max_pages=3):
                 "title": title,
                 "date": (dt_mmt.isoformat() if meta_ok else date_obj.isoformat()),
                 "body": body,
-                "source": "Myanmar Now (mm)",
+                "source": "Myanmar Now",
             })
         except Exception as e:
             print(f"[warn] Myanmar Now article fetch failed: {url} ({e})")
@@ -2670,7 +2677,23 @@ def _safe_json_loads_maybe_extract(text: str):
         if m:
             return json.loads(m.group(0))
         raise
-
+    
+# 公開ヘルパ
+def normalize_summary_text(output_text: str) -> str:
+    """
+    既存出力（output_text）を“基本そのまま”返すが、
+    ・「【要約】」が2回以上
+    ・Step/Q/→ の手順系が混入
+    のときのみ、最後の【要約】ブロックに補正して返す。
+    先頭行に「【要約】」が無ければ付与する。
+    """
+    original_lines = [(output_text or "").strip()]  # 既定は丸ごと1行扱い
+    try:
+        lines = build_summary_lines(output_text, original_lines)
+        return "\n".join(lines).strip()
+    except Exception:
+        # 何かあっても壊さない
+        return (output_text or "").strip()
 
 # 重複判定のログ出力
 def log_dedupe_report(
@@ -3546,7 +3569,8 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
             "・固有名詞は一般的な日本語表記に\n"
             "・ビルマ語/英語が混在していてもOK\n"
             "・タイトル（見出し）は訳さない／出力しない\n"
-            "・本文は改行と段落を活かして読みやすく\n\n"
+            "・本文は改行と段落を活かして読みやすく\n"
+            "・半角の()括弧はすべて全角の（ ）に統一すること\n\n"
             f"{COMMON_TRANSLATION_RULES}"
             "【本文以外は必ず除外（この関数専用）】\n"
             "以下は原文に含まれていても翻訳・出力しないこと（含めたら減点）。\n"
@@ -3715,6 +3739,21 @@ def build_combined_pdf_for_business(translated_items, out_path=None):
     # ===== 正規化ユーティリティ（不自然改行の抑止） =====
     _ZW_RE = re.compile(r"[\u200b\u200c\u200d\ufeff]")
     _SOFT_BREAK_RE = re.compile(r"(?<!\n)\n(?!\n)")
+    
+    # --- PDF中だけで使う「英字 + 半角スペース + CJK」境界のノーブレーク化 ---
+    NBSP = "\u00A0"  # non-breaking space
+    _CJK_RANGE = r"\u3040-\u30FF\u4E00-\u9FFF"  # ひらがな/カタカナ/漢字
+
+    def _protect_latin_cjk_boundaries(s: str) -> str:
+        """
+        英数字の直後に半角スペースがあり、その次がCJK（和文）のときだけ、
+        そのスペースを NBSP に置換して、PDF内の行頭分割を抑制する（PDF専用）。
+        例: 'Ooredoo Myanmar社' → 'Ooredoo\\u00A0Myanmar社'
+        """
+        import re
+        if not s:
+            return s
+        return re.sub(rf"([A-Za-z0-9]) ([{_CJK_RANGE}])", rf"\1{NBSP}\2", s)
 
     def _normalize_text_for_pdf(text: str) -> str:
         """
@@ -3780,6 +3819,33 @@ def build_combined_pdf_for_business(translated_items, out_path=None):
         
         # 行頭禁則（開きカッコの直前のスペースを NBSP に変換して改行禁止）
         t = re.sub(r"(?<=\S) (?=[\(\（\[\【])", "\u00A0", t)  # \u00A0 = NBSP
+        
+        # --- ① 英数字同士の単発改行を NBSP でブリッジ（段落改行は温存）---
+        # 例: "Finance\nUncovered" / "No\n Vote" / "Paka\nPha"
+        t = re.sub(r"(?<=[A-Za-z0-9])\n\s*(?=[A-Za-z0-9])", "\u00A0", t)
+
+        # --- ② スペースで挟まれたハイフンを改行禁止に ---
+        # 例: "Zero - Column - 5 -)" → "Zero - Column - 5 -)"
+        t = t.replace(" - ", "\u00A0-\u00A0")
+
+        # --- ③ 数字の直後に来る '‐-)' を改行不可ハイフンに置換 ---
+        # 例: "5-)" の '-' を U+2011 (NON-BREAKING HYPHEN) に
+        t = re.sub(r"(?<=\d)-(?=\))", "\u2011", t)
+        
+        # 英語の大文字始まり 2〜3語は語間を NBSP にして分断を防止（URLは対象外）
+        _PROPER_RE = re.compile(
+            r'\b([A-Z][A-Za-z0-9&\.\-]{1,20})\s+([A-Z][A-Za-z0-9&\.\-]{1,20})(?:\s+([A-Z][A-Za-z0-9&\.\-]{1,20}))?\b'
+        )
+        _place = {}
+        def _stash(m):
+            k = f"__URL{len(_place)}__"
+            _place[k] = m.group(0)
+            return k
+        _work = _URL_RE.sub(_stash, t)  # URLは退避して対象外に
+        _work = _PROPER_RE.sub(lambda m: "\u00A0".join([w for w in m.group(0).split(' ') if w]), _work)
+        for k, v in _place.items():
+            _work = _work.replace(k, v)
+        t = _work
 
         # 段落で分割（連続する空行を1つの区切りとみなす）
         paras = re.split(r"\n\s*\n", t.strip(), flags=re.MULTILINE)
@@ -3939,6 +4005,10 @@ def build_combined_pdf_for_business(translated_items, out_path=None):
         txt = _normalize_text_for_pdf(body)
         if not txt:
             return
+        
+        # ★ 追加：英字→和文の境界だけノーブレーク化（PDF出力専用）
+        txt = _protect_latin_cjk_boundaries(txt)
+        
         pdf.set_font("JP", size=BODY_SIZE)
         pdf.set_fill_color(*BODY_BG_RGB)
         # 1行ごとに塗られるため、段落全体として薄グレーになります
@@ -4000,6 +4070,7 @@ def send_email_digest(
     attachment_name: Optional[str] = None,
     delivery_date_mmt: Optional[date] = None,
     attach_pdf: bool = True,
+    preserve_newlines: bool = False,
 ):
     def _build_gmail_service():
         cid = os.getenv("GMAIL_CLIENT_ID")
@@ -4100,7 +4171,9 @@ def send_email_digest(
 
     for media, articles in media_grouped.items():
         for item in articles:
-            title_jp = item["title"]; url = item["url"]; summary_html = item["summary"]
+            title_jp = item["title"]; url = item["url"]
+            summary_raw = item["summary"]
+            summary_html = _nl2br(summary_raw) if preserve_newlines else summary_raw
             heading_html = (
                 "<h2 style='margin-bottom:5px'>"
                 f"{title_jp}　"
@@ -4328,6 +4401,11 @@ if __name__ == "__main__":
                         help="mono=従来どおり（収集+送信）。collect=収集のみ（CSV_EMAIL_RECIPIENTSだけ即時送信可）。send=束ねデータから送信。")
     parser.add_argument("--bundle-dir", default="bundle", help="二段構成での保存/読込ディレクトリ")
     parser.add_argument("--recipients-env", default=None, help="--phase send 時に送る宛先の環境変数名（例: LITE_EMAIL_RECIPIENTS）")
+    parser.add_argument(
+        "--sheet-mail-preserve-newlines",
+        action="store_true",
+        help="（Sheet Pipeline — Send専用）本文要約の改行をメールHTMLで保持"
+    )
     args, unknown = parser.parse_known_args()
 
     # 今日の日付をミャンマー時間で取得
@@ -4391,6 +4469,7 @@ if __name__ == "__main__":
                 attachment_name=attachment_name,
                 delivery_date_mmt=delivery_date_mmt,
                 attach_pdf=(not is_internal),   # ← INTERNAL（エーヤワディ専用）は PDF 無し
+                preserve_newlines=args.sheet_mail_preserve_newlines,
             )
 
         if args.recipients_env:

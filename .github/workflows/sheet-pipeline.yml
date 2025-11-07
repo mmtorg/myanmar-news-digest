@@ -1,34 +1,47 @@
 name: Daily Myanmar News Alert Sheet Pipeline
 
 on:
-  # スケジュールは「デフォルトブランチ」でのみ動作します（通常は main）。
-  # => 本番のみスケジュール実行したい要件を満たします。
-  schedule:
-    # 16:00 MMT（= 09:30 UTC）: 前日クリア → 追記
-    - cron: "30 9 * * *"
-    # 18:00 / 20:00 / 22:00 MMT（= 11:30 / 13:30 / 15:30 UTC）: 追記のみ
-    - cron: "30 11 * * *"
-    - cron: "30 13 * * *"
-    - cron: "30 15 * * *"
-    # 02:30 MMT（= 20:00 UTC 前日）: bundle生成
-    - cron: "0 20 * * *"
+  # # スケジュールは「デフォルトブランチ」でのみ動作（通常は main）
+  # # main 側の“呼び出し用”ワークフローから develop を実行します
+  # schedule:
+  #   # 15:30 MMT（= 09:00 UTC）: 前日クリア → 追記
+  #   - cron: "0 9 * * *"
+  #   # 17:30 / 19:30 / 21:30 MMT（= 11:00 / 13:00 / 15:00 UTC）: 追記のみ
+  #   - cron: "0 11 * * *"
+  #   - cron: "0 13 * * *"
+  #   - cron: "0 15 * * *"
+  #   # 02:30 MMT（= 20:00 UTC 前日）: bundle生成
+  #   - cron: "0 20 * * *"
 
   workflow_dispatch:
     inputs:
       mode:
-        description: "collect16（16時回） / collect（18/20/22時回） / build-bundle（02:30）"
+        description: "collect16（15:30回） / collect（17:30/19:30/21:30回） / build-bundle（02:30）"
         type: choice
         required: true
-        default: collect
+        default: collect16
         options:
           - collect16
           - collect
           - build-bundle
+          - notify-email
+  # developでテスト用に追加（main 側から再利用呼び出しできるようにする）
+  workflow_call:
+    inputs:
+      mode:
+        description: "collect16 / collect / build-bundle"
+        required: true
+        type: string
+      ref:
+        description: "実行対象のブランチ（既定: develop）"
+        required: false
+        default: "develop"
+        type: string
 
 # どのイベントでも 1 workflow につき環境ごとに直列化
 concurrency:
-  # 手動実行: main→production / develop→development / その他→development
-  group: mna-sheet-pipeline-${{ github.event_name == 'workflow_dispatch' && (github.ref_name == 'main' && 'production' || 'development') || 'production' }}
+  # 手動実行/再利用呼び出し: main→production / develop→development
+  group: mna-sheet-pipeline-${{ (github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call') && ((github.ref_name == 'main' || inputs.ref == 'main') && 'production' || 'development') || 'production' }}
   cancel-in-progress: false
 
 permissions:
@@ -41,11 +54,11 @@ defaults:
 jobs:
   # === スケジュール（本番のみ / mainブランチ運用前提） ===
   schedule-collect16:
-    if: github.event_name == 'schedule' && github.event.schedule == '30 9 * * *'
+    if: github.event_name == 'schedule' && github.event.schedule == '0 9 * * *'
     runs-on: ubuntu-latest
     # 環境別シークレット（Environments）の切替：本番固定
     environment: production
-    # ▼ 環境変数（prod用）のみ追加
+    # ▼ 環境変数（prod用）のみ追加（ここでのmulti-lineはOK：$GITHUB_ENV経由ではない）
     env:
       # ===== Gemini（production）=====
       GEMINI_API_KEY_MIZZIMA: ${{ secrets.GEMINI_API_KEY_MIZZIMA }}
@@ -61,6 +74,10 @@ jobs:
       GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
       MNA_SHEET_ID: ${{ secrets.MNA_SHEET_ID }}
       MNA_SHEET_NAME: "prod"
+      # ===== fetch_articles.pyで使う環境変数（production）=====
+      GEMINI_API_SUMMARY_KEY: ${{ secrets.GEMINI_API_SUMMARY_KEY }}
+      GEMINI_API_DEDUPE_KEY: ${{ secrets.GEMINI_API_DEDUPE_KEY }}
+      GEMINI_API_FULLTEXT_KEY: ${{ secrets.GEMINI_API_FULLTEXT_KEY }}
     steps:
       - name: Checkout (main)
         uses: actions/checkout@v4
@@ -75,20 +92,27 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install gspread google-auth requests beautifulsoup4 python-dateutil
+          pip install -r requirements.txt
 
       - name: Write GOOGLE_APPLICATION_CREDENTIALS
         if: env.GOOGLE_SERVICE_ACCOUNT_JSON != ''
         run: |
-          echo "${GOOGLE_SERVICE_ACCOUNT_JSON}" > $RUNNER_TEMP/sa.json
-          echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/sa.json" >> $GITHUB_ENV
+          SA_FILE="$RUNNER_TEMP/sa.json"
+          printf '%s' "${GOOGLE_SERVICE_ACCOUNT_JSON}" > "$SA_FILE"
+          echo "GOOGLE_APPLICATION_CREDENTIALS=$SA_FILE" >> "$GITHUB_ENV"
+          echo "GOOGLE_SERVICE_ACCOUNT_FILE=$SA_FILE" >> "$GITHUB_ENV"
 
-      - name: Collect → write to sheet (16:00 run, clear yesterday once)
+      - name: Use vendored JP fonts (fixed)
         run: |
-          python sheet_pipeline.py collect-to-sheet --clear-yesterday
+          set -eux
+          echo "PDF_FONT_PATH=$GITHUB_WORKSPACE/fonts/NotoSansJP-Regular.ttf" >> "$GITHUB_ENV"
+          echo "PDF_FONT_BOLD_PATH=$GITHUB_WORKSPACE/fonts/NotoSansJP-Bold.ttf" >> "$GITHUB_ENV"
+      - name: Collect → write to sheet (15:30 run, clear yesterday once)
+        run: |
+          python sheet_pipeline.py collect-to-sheet --clear-yesterday --bundle-dir bundle
 
   schedule-collect:
-    if: github.event_name == 'schedule' && contains(fromJson('["30 11 * * *","30 13 * * *","30 15 * * *"]'), github.event.schedule)
+    if: github.event_name == 'schedule' && contains(fromJson('["0 11 * * *","0 13 * * *","0 15 * * *"]'), github.event.schedule)
     runs-on: ubuntu-latest
     environment: production
     env:
@@ -106,29 +130,65 @@ jobs:
       GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
       MNA_SHEET_ID: ${{ secrets.MNA_SHEET_ID }}
       MNA_SHEET_NAME: "prod"
+      # ===== fetch_articles.pyで使う環境変数（production）=====
+      GEMINI_API_SUMMARY_KEY: ${{ secrets.GEMINI_API_SUMMARY_KEY }}
+      GEMINI_API_DEDUPE_KEY: ${{ secrets.GEMINI_API_DEDUPE_KEY }}
+      GEMINI_API_FULLTEXT_KEY: ${{ secrets.GEMINI_API_FULLTEXT_KEY }}
     steps:
       - name: Checkout (main)
         uses: actions/checkout@v4
         with:
           ref: main
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install gspread google-auth requests beautifulsoup4 python-dateutil
+          pip install -r requirements.txt
 
       - name: Write GOOGLE_APPLICATION_CREDENTIALS
         if: env.GOOGLE_SERVICE_ACCOUNT_JSON != ''
         run: |
-          echo "${GOOGLE_SERVICE_ACCOUNT_JSON}" > $RUNNER_TEMP/sa.json
-          echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/sa.json" >> $GITHUB_ENV
+          SA_FILE="$RUNNER_TEMP/sa.json"
+          printf '%s' "${GOOGLE_SERVICE_ACCOUNT_JSON}" > "$SA_FILE"
+          echo "GOOGLE_APPLICATION_CREDENTIALS=$SA_FILE" >> "$GITHUB_ENV"
+          echo "GOOGLE_SERVICE_ACCOUNT_FILE=$SA_FILE" >> "$GITHUB_ENV"
 
-      - name: Collect → append to sheet (18/20/22:00 runs)
+      - name: Use vendored JP fonts (fixed)
         run: |
-          python sheet_pipeline.py collect-to-sheet
+          set -eux
+          echo "PDF_FONT_PATH=$GITHUB_WORKSPACE/fonts/NotoSansJP-Regular.ttf" >> "$GITHUB_ENV"
+          echo "PDF_FONT_BOLD_PATH=$GITHUB_WORKSPACE/fonts/NotoSansJP-Bold.ttf" >> "$GITHUB_ENV"
+
+      - name: Collect → append to sheet (17:30/19:30/21:30 runs)
+        run: |
+          python sheet_pipeline.py collect-to-sheet --bundle-dir bundle
+
+      - name: Notify by email via Python (cron 21:30 MMT only)
+        if: ${{ github.event_name == 'schedule' && github.event.schedule == '0 15 * * *' && success() }}
+        run: |
+          set -euo pipefail
+          BODY="$(printf '%s\n%s\n%s\n%s\n' \
+            '✅ 21:30収集 完了（本番用）' \
+            '・対象シート: 「prod」シートに追記済みです。' \
+            '・翌 02:30 までにスプレッドシートの更新を完了してください。' )"
+          python notify_done.py \
+            --to "${CSV_EMAIL_RECIPIENTS}" \
+            --subject "【MNA 記事収集】21:30収集 完了（本番用）" \
+            --body "$BODY" \
+            --sheet-url "https://docs.google.com/spreadsheets/d/${{ secrets.MNA_SHEET_ID }}/edit"
+        env:
+          GMAIL_CLIENT_ID: ${{ secrets.GMAIL_CLIENT_ID }}
+          GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
+          GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
+          # 任意: From 表示名を固定したい場合のみ
+          EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }} # 例: no-reply@daily-mna.com
+          # 受信先（未設定だと --to が空になって失敗）
+          CSV_EMAIL_RECIPIENTS: ${{ secrets.CSV_EMAIL_RECIPIENTS }}
 
   schedule-build-bundle:
     if: github.event_name == 'schedule' && github.event.schedule == '0 20 * * *'
@@ -149,48 +209,143 @@ jobs:
       GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
       MNA_SHEET_ID: ${{ secrets.MNA_SHEET_ID }}
       MNA_SHEET_NAME: "prod"
+      # ===== fetch_articles.pyで使う環境変数（production）=====
+      GEMINI_API_SUMMARY_KEY: ${{ secrets.GEMINI_API_SUMMARY_KEY }}
+      GEMINI_API_DEDUPE_KEY: ${{ secrets.GEMINI_API_DEDUPE_KEY }}
+      GEMINI_API_FULLTEXT_KEY: ${{ secrets.GEMINI_API_FULLTEXT_KEY }}
     steps:
       - name: Checkout (main)
         uses: actions/checkout@v4
         with:
           ref: main
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install gspread google-auth requests beautifulsoup4 python-dateutil
+          pip install -r requirements.txt
 
       - name: Write GOOGLE_APPLICATION_CREDENTIALS
         if: env.GOOGLE_SERVICE_ACCOUNT_JSON != ''
         run: |
-          echo "${GOOGLE_SERVICE_ACCOUNT_JSON}" > $RUNNER_TEMP/sa.json
-          echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/sa.json" >> $GITHUB_ENV
+          SA_FILE="$RUNNER_TEMP/sa.json"
+          printf '%s' "${GOOGLE_SERVICE_ACCOUNT_JSON}" > "$SA_FILE"
+          echo "GOOGLE_APPLICATION_CREDENTIALS=$SA_FILE" >> "$GITHUB_ENV"
+          echo "GOOGLE_SERVICE_ACCOUNT_FILE=$SA_FILE" >> "$GITHUB_ENV"
 
-      - name: Build bundle from sheet
+      - name: Assert vendored fonts & export PDF_FONT_PATH
         run: |
-          python sheet_pipeline.py build-bundle --bundle-dir bundle
+          set -euxo pipefail
+          ls -al "$GITHUB_WORKSPACE/fonts"
+          test -f "$GITHUB_WORKSPACE/fonts/NotoSansJP-Regular.ttf"
+          test -f "$GITHUB_WORKSPACE/fonts/NotoSansJP-Bold.ttf"
+          echo "PDF_FONT_PATH=$GITHUB_WORKSPACE/fonts/NotoSansJP-Regular.ttf" >> "$GITHUB_ENV"
+          echo "PDF_FONT_BOLD_PATH=$GITHUB_WORKSPACE/fonts/NotoSansJP-Bold.ttf" >> "$GITHUB_ENV"
+          echo "PDF_FONT_PATH=${PDF_FONT_PATH:-<not-set>}"
 
-      - name: Upload bundle artifact
+      # === Diagnostics: ランナー環境と bundle の状況を確認（読み取りのみ） ===
+      - name: Diagnostics | env + tree
+        run: |
+          set -euxo pipefail
+          echo "PWD=$(pwd)"
+          python --version
+          echo "--- repo tree (top 2 levels) ---"
+          find . -maxdepth 2 -type d -print | sort
+          echo "--- bundle dir ---"
+          ls -al bundle || true
+
+      - name: Diagnostics | can import helpers?
+        run: |
+          python - <<'PY'
+          from importlib import import_module
+          m = import_module("fetch_articles")
+          req = ["translate_fulltexts_for_business", "build_combined_pdf_for_business", "_jp_date"]
+          ok = all(hasattr(m, x) for x in req)
+          print("helpers_importable:", ok)
+          print("module_file:", getattr(m, "__file__", None))
+          PY
+
+      - name: Diagnostics | gemini keys present? (masked)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          keys = sorted(k for k in os.environ if k.startswith("GEMINI"))
+          print("gemini_key_names:", keys)
+          # 値は True/False のみ表示（中身は GitHub が自動マスク）
+          print("gemini_keys_nonempty:", {k: bool(os.environ.get(k)) for k in keys})
+          PY
+
+      - name: Diagnostics | summaries/bodies coverage
+        run: |
+          python - <<'PY'
+          import os, json, sys
+          b = "bundle"
+          s = os.path.join(b, "summaries.json")
+          if not os.path.exists(s):
+              print("[X] bundle/summaries.json not found"); sys.exit(2)
+          summaries = json.load(open(s, encoding="utf-8"))
+          print("selected_count:", len(summaries))
+          bp = os.path.join(b, "bodies.json")
+          cache = {}
+          if os.path.exists(bp):
+              cache = json.load(open(bp, encoding="utf-8"))
+          missing = []
+          short = []
+          for it in summaries:
+              u = it.get("url","")
+              if not u: continue
+              body = (cache.get(u) or {}).get("body","")
+              if not body:
+                  missing.append(u)
+              elif len(body.strip()) < 80:
+                  short.append(u)
+          print("in_cache:", len(cache), "missing_bodies:", len(missing), "short_bodies:", len(short))
+          if missing[:5]:
+              print("first_missing_examples:", missing[:5])
+          PY
+
+      # === 送信直前の build-bundle（PDF & 添付名を確実に生成） ===
+      - name: Build bundle (PDF & attachment name)
+        if: ${{ inputs.mode == 'build-bundle' }}
+        env:
+          MNA_LOG_LEVEL: INFO # 必要に応じて DEBUG に
+        run: |
+          set -euxo pipefail
+          python sheet_pipeline.py build-bundle --bundle-dir bundle
+          echo "--- bundle after build-bundle ---"
+          ls -al bundle
+
+      - name: Upload bundle artifact (sheet)
+        if: ${{ inputs.mode == 'build-bundle' }}
         uses: actions/upload-artifact@v4
         with:
-          name: mna-bundle
-          path: bundle/**
+          name: mna-bundle-sheet-${{ github.run_id }}
+          # 送信用WF側で bundle/ をそのまま --bundle-dir に渡すため **ディレクトリ** を指す
+          path: |
+            bundle/meta.json
+            bundle/summaries.json
+            bundle/digest.pdf
+            bundle/attachment_name.txt
+            bundle/bodies.json
+          retention-days: 2
           if-no-files-found: error
 
-  # === 手動実行（本番 / 開発のどちらも UI から選択） ===
+  # === 手動 / 再利用呼び出し 共通 ===
   manual-run:
-    if: github.event_name == 'workflow_dispatch'
-    # main を選べば production / develop を選べば development
-    environment: ${{ github.ref_name == 'main' && 'production' || 'development' }}
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call'
+    environment: ${{ (github.ref_name == 'main' || inputs.ref == 'main') && 'production' || 'development' }}
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout (手動で選んだブランチ)
+      - name: Checkout (指定ブランチ)
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.ref }}
+          ref: ${{ github.event_name == 'workflow_call' && inputs.ref || github.ref }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -200,12 +355,13 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install gspread google-auth requests beautifulsoup4 python-dateutil
+          pip install -r requirements.txt
 
       # ▼ prod/dev で環境変数だけを切り替え（処理は変更しない）
-      - name: Export env (prod/dev switch by branch)
+      - name: Export env (prod/dev switch by ref)
         run: |
-          if [ "${GITHUB_REF_NAME}" = "develop" ]; then
+          TARGET_REF="${{ github.event_name == 'workflow_call' && inputs.ref || github.ref_name }}"
+          if [ "${TARGET_REF}" = "develop" ]; then
             {
               echo "GEMINI_API_KEY_MIZZIMA=${{ secrets.GEMINI_API_TEST_KEY_MIZZIMA }}";
               echo "GEMINI_API_KEY_BBC=${{ secrets.GEMINI_API_TEST_KEY_BBC }}";
@@ -213,7 +369,11 @@ jobs:
               echo "GEMINI_API_KEY_KHITTHIT=${{ secrets.GEMINI_API_TEST_KEY_KHITTHIT }}";
               echo "GEMINI_API_KEY_MYANMARNOW=${{ secrets.GEMINI_API_TEST_KEY_MYANMARNOW }}";
               echo "GEMINI_API_KEY_DVB=${{ secrets.GEMINI_API_TEST_KEY_DVB }}";
+              echo "GEMINI_API_SUMMARY_KEY=${{ secrets.GEMINI_API_TEST_SUMMARY_KEY }}";
+              echo "GEMINI_API_DEDUPE_KEY=${{ secrets.GEMINI_API_TEST_DEDUPE_KEY }}";
+              echo "GEMINI_API_FULLTEXT_KEY=${{ secrets.GEMINI_API_TEST_FULLTEXT_KEY }}";
               echo "MNA_SHEET_NAME=dev";
+              echo "CSV_EMAIL_RECIPIENTS=${{ secrets.CSV_EMAIL_RECIPIENTS }}";
             } >> "$GITHUB_ENV"
           else
             {
@@ -223,7 +383,11 @@ jobs:
               echo "GEMINI_API_KEY_KHITTHIT=${{ secrets.GEMINI_API_KEY_KHITTHIT }}";
               echo "GEMINI_API_KEY_MYANMARNOW=${{ secrets.GEMINI_API_KEY_MYANMARNOW }}";
               echo "GEMINI_API_KEY_DVB=${{ secrets.GEMINI_API_KEY_DVB }}";
+              echo "GEMINI_API_SUMMARY_KEY=${{ secrets.GEMINI_API_SUMMARY_KEY }}";
+              echo "GEMINI_API_DEDUPE_KEY=${{ secrets.GEMINI_API_DEDUPE_KEY }}";
+              echo "GEMINI_API_FULLTEXT_KEY=${{ secrets.GEMINI_API_FULLTEXT_KEY }}";
               echo "MNA_SHEET_NAME=prod";
+              echo "CSV_EMAIL_RECIPIENTS=${{ secrets.CSV_EMAIL_RECIPIENTS }}";
             } >> "$GITHUB_ENV"
           fi
           {
@@ -231,29 +395,31 @@ jobs:
             echo "GEMINI_MIN_INTERVAL_SEC=2.0";
             echo "GEMINI_JITTER_SEC=0.3";
             echo "MNA_SHEET_ID=${{ secrets.MNA_SHEET_ID }}";
-            echo "GOOGLE_SERVICE_ACCOUNT_JSON=${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}";
           } >> "$GITHUB_ENV"
 
-
-          # ===== multi-line secret → ファイルに保存 =====
+          # ===== multi-line secret → ファイルに保存（$GITHUB_ENV には書かない）=====
           SA_FILE="$RUNNER_TEMP/sa.json"
           printf '%s' '${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}' > "$SA_FILE"
-
-          # Google系SDK/ライブラリはこの環境変数にファイルパスがあると自動検出します
           echo "GOOGLE_APPLICATION_CREDENTIALS=$SA_FILE" >> "$GITHUB_ENV"
-
-          # もしあなたのPythonが独自に参照するなら、併せてこれも書いておくと安心
           echo "GOOGLE_SERVICE_ACCOUNT_FILE=$SA_FILE" >> "$GITHUB_ENV"
 
-      - name: Write GOOGLE_APPLICATION_CREDENTIALS
+      - name: Assert vendored fonts & export PDF_FONT_PATH (only for build-bundle)
+        if: ${{ inputs.mode == 'build-bundle' }}
         run: |
-          if [ -n "${GOOGLE_SERVICE_ACCOUNT_JSON}" ]; then
-              echo "${GOOGLE_SERVICE_ACCOUNT_JSON}" > $RUNNER_TEMP/sa.json
-              echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/sa.json" >> $GITHUB_ENV
-          fi
+          set -euxo pipefail
+          ls -al "$GITHUB_WORKSPACE/fonts" || true
+          test -f "$GITHUB_WORKSPACE/fonts/NotoSansJP-Regular.ttf"
+          test -f "$GITHUB_WORKSPACE/fonts/NotoSansJP-Bold.ttf"
+          echo "PDF_FONT_PATH=$GITHUB_WORKSPACE/fonts/NotoSansJP-Regular.ttf" >> "$GITHUB_ENV"
+          echo "PDF_FONT_BOLD_PATH=$GITHUB_WORKSPACE/fonts/NotoSansJP-Bold.ttf" >> "$GITHUB_ENV"
+          echo "PDF_FONT_PATH=${PDF_FONT_PATH:-<not-set>}"
 
+      # 既存どおり inputs.mode を見て実行（workflow_call でも同様）
       - name: Run selected mode
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.mode != 'notify-email' }}
         run: |
+          set -euo pipefail
+          echo "Run case \"${{ inputs.mode }}\" in"
           case "${{ inputs.mode }}" in
             collect16)
               python sheet_pipeline.py collect-to-sheet --clear-yesterday
@@ -269,10 +435,110 @@ jobs:
               ;;
           esac
 
-      - name: Upload bundle (only when built)
+      # 手動実行でも通知を送れるように追加（collect/collect16 成功時のみ）
+      - name: Notify by email via Python (manual run)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'notify-email' && success() }}
+        run: |
+          set -euo pipefail
+          BODY="$(printf '%s\n%s\n%s\n%s\n' \
+            '✅ 21:30収集 完了（開発用）' \
+            '・対象シート: 「dev」シートに追記済みです。' \
+            '・翌 02:30 までにスプレッドシートの更新を完了してください。' )"
+          python notify_done.py \
+            --to "${CSV_EMAIL_RECIPIENTS}" \
+            --subject "【MNA 記事収集】21:30収集 完了（開発用）" \
+            --body "$BODY" \
+            --sheet-url "https://docs.google.com/spreadsheets/d/${{ secrets.MNA_SHEET_ID }}/edit"
+        env:
+          GMAIL_CLIENT_ID: ${{ secrets.GMAIL_CLIENT_ID }}
+          GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
+          GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
+          EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
+
+      # === Diagnostics: ランナー環境と bundle の状況を確認（読み取りのみ） ===
+      - name: Diagnostics | env + tree
+        run: |
+          set -euxo pipefail
+          echo "PWD=$(pwd)"
+          python --version
+          find . -maxdepth 2 -type d -print | sort
+          ls -al bundle || true
+
+      - name: Diagnostics | Python helpers importable?
+        run: |
+          python - <<'PY'
+          from importlib import import_module
+          m = import_module("fetch_articles")
+          req = ["translate_fulltexts_for_business", "build_combined_pdf_for_business", "_jp_date"]
+          ok = all(hasattr(m, x) for x in req)
+          print("helpers_importable:", ok)
+          print("module_file:", getattr(m, "__file__", None))
+          PY
+
+      - name: Diagnostics | gemini keys present? (masked)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          keys = sorted(k for k in os.environ if k.startswith("GEMINI"))
+          print("gemini_key_names:", keys)
+          # 値は True/False のみ表示（中身は GitHub が自動マスク）
+          print("gemini_keys_nonempty:", {k: bool(os.environ.get(k)) for k in keys})
+          PY
+
+      # ←← 先に build-bundle を実行して bundle を生成
+      - name: Build bundle (PDF & attachment name)
+        if: ${{ inputs.mode == 'build-bundle' }}
+        env:
+          PYTHONPATH: .
+          MNA_LOG_LEVEL: INFO
+        run: |
+          set -euxo pipefail
+          python sheet_pipeline.py build-bundle --bundle-dir bundle
+          echo "--- bundle after build-bundle ---"
+          ls -al bundle
+
+      # ←← ここで初めて coverage を見る
+      - name: Diagnostics | summaries/bodies coverage
+        run: |
+          python - <<'PY'
+          import os, json, sys
+          b = "bundle"
+          s = os.path.join(b, "summaries.json")
+          if not os.path.exists(s):
+              print("[!] bundle/summaries.json not found (skipping coverage)"); sys.exit(0)
+          summaries = json.load(open(s, encoding="utf-8"))
+          print("selected_count:", len(summaries))
+          bp = os.path.join(b, "bodies.json")
+          cache = {}
+          if os.path.exists(bp):
+              cache = json.load(open(bp, encoding="utf-8"))
+          missing = []
+          short = []
+          for it in summaries:
+              u = it.get("url","")
+              if not u: continue
+              body = (cache.get(u) or {}).get("body","")
+              if not body:
+                  missing.append(u)
+              elif len(body.strip()) < 80:
+                  short.append(u)
+          print("in_cache:", len(cache), "missing_bodies:", len(missing), "short_bodies:", len(short))
+          if missing[:5]:
+              print("first_missing_examples:", missing[:5])
+          PY
+
+      - name: Upload bundle (only when built) (sheet)
         if: inputs.mode == 'build-bundle'
         uses: actions/upload-artifact@v4
         with:
-          name: mna-bundle
-          path: bundle/**
+          name: mna-bundle-sheet-${{ github.run_id }}
+          path: |
+            bundle/meta.json
+            bundle/summaries.json
+            bundle/digest.pdf
+            bundle/attachment_name.txt
+            bundle/bodies.json
+          retention-days: 2
           if-no-files-found: ignore

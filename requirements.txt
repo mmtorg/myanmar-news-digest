@@ -17,5 +17,6 @@ brotlicffi>=1.1.0
 google-api-python-client>=2.0.0
 google-auth>=2.0.0
 google-auth-oauthlib>=1.0.0
+gspread>=5.7.0
 fpdf2>=2.7.8,<3
 packaging
