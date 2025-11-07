@@ -402,6 +402,8 @@ jobs:
 
       - name: Run selected mode
         run: |
+          set -euo pipefail
+          echo "Run case \"${{ inputs.mode }}\" in"
           case "${{ inputs.mode }}" in
             collect16)
               python sheet_pipeline.py collect-to-sheet --clear-yesterday
@@ -410,12 +412,13 @@ jobs:
               python sheet_pipeline.py collect-to-sheet
               ;;
             build-bundle)
-              ;;
-            *)
-              echo "unknown mode: ${{ inputs.mode }}" ; exit 1
+              python sheet_pipeline.py build-bundle --bundle-dir bundle
               ;;
             notify-email)
               echo "notify-email: skip collect/build; email step will run next."
+              ;;
+            *)
+              echo "unknown mode: ${{ inputs.mode }}" ; exit 1
               ;;
           esac
 
