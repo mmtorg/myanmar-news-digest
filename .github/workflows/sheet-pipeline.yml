@@ -414,6 +414,9 @@ jobs:
             *)
               echo "unknown mode: ${{ inputs.mode }}" ; exit 1
               ;;
+            notify-email)
+              echo "notify-email: skip collect/build; email step will run next."
+              ;;
           esac
 
       # 手動実行でも通知を送れるように追加（collect/collect16 成功時のみ）
