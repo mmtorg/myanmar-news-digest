@@ -48,7 +48,7 @@ def main():
     client_id = os.environ.get("GMAIL_CLIENT_ID")
     client_secret = os.environ.get("GMAIL_CLIENT_SECRET")
     refresh_token = os.environ.get("GMAIL_REFRESH_TOKEN")
-    sender = os.environ.get("GMAIL_SENDER", "")  # オプション
+    sender = os.environ.get("EMAIL_SENDER", "")  # オプション
 
     if not all([client_id, client_secret, refresh_token]):
         print("GMAIL_* secrets not set", file=sys.stderr)
