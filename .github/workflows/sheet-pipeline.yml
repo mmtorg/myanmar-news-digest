@@ -4,19 +4,19 @@ on:
   # # スケジュールは「デフォルトブランチ」でのみ動作します（通常は main）。
   # # => 本番のみスケジュール実行したい要件を満たします。
   # schedule:
-  #   # 16:00 MMT（= 09:30 UTC）: 前日クリア → 追記
-  #   - cron: "30 9 * * *"
-  #   # 18:00 / 20:00 / 22:00 MMT（= 11:30 / 13:30 / 15:30 UTC）: 追記のみ
-  #   - cron: "30 11 * * *"
-  #   - cron: "30 13 * * *"
-  #   - cron: "30 15 * * *"
+  #   # 15:30 MMT（= 09:00 UTC）: 前日クリア → 追記
+  #   - cron: "0 9 * * *"
+  #   # 17:30 / 19:30 / 21:30 MMT（= 11:00 / 13:00 / 15:00 UTC）: 追記のみ
+  #   - cron: "0 11 * * *"
+  #   - cron: "0 13 * * *"
+  #   - cron: "0 15 * * *"
   #   # 02:30 MMT（= 20:00 UTC 前日）: bundle生成
   #   - cron: "0 20 * * *"
 
   workflow_dispatch:
     inputs:
       mode:
-        description: "collect16（16時回） / collect（18/20/22時回） / build-bundle（02:30）"
+        description: "collect16（15:30回） / collect（17:30/19:30/21:30回） / build-bundle（02:30）"
         type: choice
         required: true
         default: collect16
@@ -42,7 +42,7 @@ defaults:
 jobs:
   # === スケジュール（本番のみ / mainブランチ運用前提） ===
   schedule-collect16:
-    if: github.event_name == 'schedule' && github.event.schedule == '30 9 * * *'
+    if: github.event_name == 'schedule' && github.event.schedule == '0 9 * * *'
     runs-on: ubuntu-latest
     # 環境別シークレット（Environments）の切替：本番固定
     environment: production
@@ -95,12 +95,12 @@ jobs:
           set -eux
           echo "PDF_FONT_PATH=$GITHUB_WORKSPACE/fonts/NotoSansJP-Regular.ttf" >> "$GITHUB_ENV"
           echo "PDF_FONT_BOLD_PATH=$GITHUB_WORKSPACE/fonts/NotoSansJP-Bold.ttf" >> "$GITHUB_ENV"
-      - name: Collect → write to sheet (16:00 run, clear yesterday once)
+      - name: Collect → write to sheet (15:30 run, clear yesterday once)
         run: |
           python sheet_pipeline.py collect-to-sheet --clear-yesterday --bundle-dir bundle
 
   schedule-collect:
-    if: github.event_name == 'schedule' && contains(fromJson('["30 11 * * *","30 13 * * *","30 15 * * *"]'), github.event.schedule)
+    if: github.event_name == 'schedule' && contains(fromJson('["0 11 * * *","0 13 * * *","0 15 * * *"]'), github.event.schedule)
     runs-on: ubuntu-latest
     environment: production
     env:
@@ -152,21 +152,21 @@ jobs:
           echo "PDF_FONT_PATH=$GITHUB_WORKSPACE/fonts/NotoSansJP-Regular.ttf" >> "$GITHUB_ENV"
           echo "PDF_FONT_BOLD_PATH=$GITHUB_WORKSPACE/fonts/NotoSansJP-Bold.ttf" >> "$GITHUB_ENV"
 
-      - name: Collect → append to sheet (18/20/22:00 runs)
+      - name: Collect → append to sheet (17:30/19:30/21:30 runs)
         run: |
           python sheet_pipeline.py collect-to-sheet --bundle-dir bundle
 
-      - name: Notify by email via Python (cron 22:00 MMT only)
-        if: ${{ github.event_name == 'schedule' && github.event.schedule == '30 15 * * *' && success() }}
+      - name: Notify by email via Python (cron 21:30 MMT only)
+        if: ${{ github.event_name == 'schedule' && github.event.schedule == '0 15 * * *' && success() }}
         run: |
           set -euo pipefail
           BODY="$(printf '%s\n%s\n%s\n%s\n' \
-            '✅ 22:00収集 完了（本番用）' \
+            '✅ 21:30収集 完了（本番用）' \
             '・対象シート: 「prod」シートに追記済みです。' \
             '・翌 02:30 までにスプレッドシートの更新を完了してください。' )"
           python notify_done.py \
             --to "${CSV_EMAIL_RECIPIENTS}" \
-            --subject "【MNA 記事収集】22:00収集 完了（本番用）" \
+            --subject "【MNA 記事収集】21:30収集 完了（本番用）" \
             --body "$BODY" \
             --sheet-url "https://docs.google.com/spreadsheets/d/${{ secrets.MNA_SHEET_ID }}/edit"
         env:
@@ -429,12 +429,12 @@ jobs:
         run: |
           set -euo pipefail
           BODY="$(printf '%s\n%s\n%s\n%s\n' \
-            '✅ 22:00収集 完了（開発用）' \
+            '✅ 21:30収集 完了（開発用）' \
             '・対象シート: 「dev」シートに追記済みです。' \
             '・翌 02:30 までにスプレッドシートの更新を完了してください。' )"
           python notify_done.py \
             --to "${CSV_EMAIL_RECIPIENTS}" \
-            --subject "【MNA 記事収集】22:00収集 完了（開発用）" \
+            --subject "【MNA 記事収集】21:30収集 完了（開発用）" \
             --body "$BODY" \
             --sheet-url "https://docs.google.com/spreadsheets/d/${{ secrets.MNA_SHEET_ID }}/edit"
         env:
