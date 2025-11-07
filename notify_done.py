@@ -2,6 +2,8 @@
 import argparse, base64, json, os, sys, urllib.request, urllib.parse
 from email.message import EmailMessage
 from datetime import datetime, timezone
+from email.header import Header
+from email.utils import formataddr
 
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 GMAIL_SEND_URL = "https://gmail.googleapis.com/gmail/v1/users/me/messages/send"
@@ -31,7 +33,9 @@ def send_gmail(access_token: str, raw_mime: bytes) -> dict:
 
 def build_message(sender: str, to_list: list[str], subject: str, body: str) -> bytes:
     msg = EmailMessage()
-    msg["From"] = sender
+    from_display_name = "Myanmar News Alert"
+    # 表示名付きで From を設定（fetch_articles.py と同じ形式）
+    msg["From"] = formataddr((str(Header(from_display_name, "utf-8")), sender))
     msg["To"] = ", ".join(to_list)
     msg["Subject"] = subject
     msg.set_content(body)
