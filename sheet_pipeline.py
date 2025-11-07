@@ -259,9 +259,9 @@ def _get_body_once(url: str, source: str, out_dir: str, title: str = "") -> str:
     if get_body_with_refetch is None:
         # フォールバック（極力通らない想定）: 既存の共通フェッチャ＆抽出器で最低限動かす
         try:
-            html = _fetch_text_default(url)
+            html = fetch_once_requests(url)
             soup = BeautifulSoup(html, "html.parser")
-            raw = _extract_body_generic(soup) or ""
+            raw = extract_body_generic_from_soup(soup) or ""
             body = trim_by_chars(raw, FULLTEXT_MAX_CHARS)
         except Exception:
             body = ""
