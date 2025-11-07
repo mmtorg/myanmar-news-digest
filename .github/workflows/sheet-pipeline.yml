@@ -155,6 +155,28 @@ jobs:
         run: |
           python sheet_pipeline.py collect-to-sheet --bundle-dir bundle
 
+      - name: Notify by email via Python (cron 22:00 MMT only)
+        if: ${{ github.event_name == 'schedule' && github.event.schedule == '30 15 * * *' && success() }}
+        run: |
+          set -euo pipefail
+          BODY="$(printf '%s\n%s\n%s\n%s\n%s\n' \
+            '✅ 22:00収集 完了（本番用）' \
+            '・対象シート: 「prod」シートに追記済みです。' \
+            '・翌 02:30 までにスプレッドシートの更新を完了してください。' \
+          python notify_done.py \
+            --to "${CSV_EMAIL_RECIPIENTS}" \
+            --subject "【MNA 記事収集】22:00収集 完了（本番用）" \
+            --body "$BODY" \
+            --sheet-url "https://docs.google.com/spreadsheets/d/${{ secrets.MNA_SHEET_ID }}/edit"
+        env:
+          GMAIL_CLIENT_ID: ${{ secrets.GMAIL_CLIENT_ID }}
+          GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
+          GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
+          # 任意: From 表示名を固定したい場合のみ
+          EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }} # 例: no-reply@daily-mna.com
+          # 受信先（未設定だと --to が空になって失敗）
+          CSV_EMAIL_RECIPIENTS: ${{ secrets.CSV_EMAIL_RECIPIENTS }}
+
   schedule-build-bundle:
     if: github.event_name == 'schedule' && github.event.schedule == '0 20 * * *'
     runs-on: ubuntu-latest
@@ -336,6 +358,7 @@ jobs:
               echo "GEMINI_API_DEDUPE_KEY=${{ secrets.GEMINI_API_TEST_DEDUPE_KEY }}";
               echo "GEMINI_API_FULLTEXT_KEY=${{ secrets.GEMINI_API_TEST_FULLTEXT_KEY }}";
               echo "MNA_SHEET_NAME=dev";
+              echo "CSV_EMAIL_RECIPIENTS=${{ secrets.CSV_EMAIL_RECIPIENTS }}";
             } >> "$GITHUB_ENV"
           else
             {
@@ -349,6 +372,7 @@ jobs:
               echo "GEMINI_API_DEDUPE_KEY=${{ secrets.GEMINI_API_DEDUPE_KEY }}";
               echo "GEMINI_API_FULLTEXT_KEY=${{ secrets.GEMINI_API_FULLTEXT_KEY }}";
               echo "MNA_SHEET_NAME=prod";
+              echo "CSV_EMAIL_RECIPIENTS=${{ secrets.CSV_EMAIL_RECIPIENTS }}";
             } >> "$GITHUB_ENV"
           fi
           {
@@ -390,6 +414,26 @@ jobs:
               echo "unknown mode: ${{ inputs.mode }}" ; exit 1
               ;;
           esac
+
+      # 手動実行でも通知を送れるように追加（collect/collect16 成功時のみ）
+      - name: Notify by email via Python (manual run)
+        if: ${{ github.event_name == 'workflow_dispatch' && (inputs.mode == 'collect') && success() }}
+        run: |
+          set -euo pipefail
+          BODY="$(printf '%s\n%s\n%s\n%s\n%s\n' \
+            '✅ 22:00収集 完了（開発用）' \
+            '・対象シート: 「dev」シートに追記済みです。' \
+            '・翌 02:30 までにスプレッドシートの更新を完了してください。' \
+          python notify_done.py \
+            --to "${CSV_EMAIL_RECIPIENTS}" \
+            --subject "【MNA 記事収集】22:00収集 完了（開発用）" \
+            --body "$BODY" \
+            --sheet-url "https://docs.google.com/spreadsheets/d/${{ secrets.MNA_SHEET_ID }}/edit"
+        env:
+          GMAIL_CLIENT_ID: ${{ secrets.GMAIL_CLIENT_ID }}
+          GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
+          GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
+          EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
 
       # === Diagnostics: ランナー環境と bundle の状況を確認（読み取りのみ） ===
       - name: Diagnostics | env + tree
