@@ -120,6 +120,22 @@ try:
 except Exception:
     fetch_with_retry_irrawaddy = None
     extract_body_irrawaddy = None
+    
+# --- 用語集（州・管区訳）: fetch_articles.py 側の実装を“使えるなら使う／無ければ何もしない” ---
+try:
+    from fetch_articles import (
+        _build_region_glossary_prompt as _fa_build_region_glossary_prompt,
+        _apply_region_glossary_to_text as _fa_apply_region_glossary_to_text,
+    )
+    def _build_region_glossary_prompt() -> str:
+        return _fa_build_region_glossary_prompt()
+    def _apply_region_glossary_to_text(s: str) -> str:
+        return _fa_apply_region_glossary_to_text(s)
+except Exception:
+    def _build_region_glossary_prompt() -> str:
+        return ""
+    def _apply_region_glossary_to_text(s: str) -> str:
+        return s
 
 # ===== 本文キャッシュ（bundle/bodies.json） & 本文取得  =====
 _BODIES_LOCK = threading.Lock()
@@ -493,7 +509,88 @@ def _build_summary_prompt(item: dict, *, body_max: int) -> str:
         f"{body}\n"
         "###\n"
     )
-    return header + pre + STEP3_TASK + "\n" + input_block
+    glossary = _build_region_glossary_prompt()
+    term_rules = _build_term_rules_prompt(item.get("title") or "", body)
+    return header + pre + STEP3_TASK + glossary + term_rules + "\n" + input_block
+
+# ===== 用語集（A:Myanmar / B:English / C:本文訳 / D:見出し訳） =====
+_TERM_CACHE: list[dict] | None = None
+TERM_SHEET_ID = os.getenv("MNA_TERM_SHEET_ID") or SHEET_ID
+TERM_SHEET_NAME = os.getenv("MNA_TERM_SHEET_NAME") or "terms"
+
+def _load_term_glossary_gsheet() -> list[dict]:
+    """用語集を {mm,en,body_ja,title_ja} の配列で返す。失敗時は空配列。"""
+    global _TERM_CACHE
+    if _TERM_CACHE is not None:
+        return _TERM_CACHE
+    try:
+        gc = _gc_client()
+        ws = gc.open_by_key(TERM_SHEET_ID).worksheet(TERM_SHEET_NAME)
+        vals = ws.get_all_values() or []
+        rows = []
+        for r in (vals[1:] if len(vals) > 1 else []):
+            mm = (r[0] if len(r) > 0 else "").strip()
+            en = (r[1] if len(r) > 1 else "").strip()
+            bj = (r[2] if len(r) > 2 else "").strip()  # 本文訳（C）
+            tj = (r[3] if len(r) > 3 else "").strip()  # 見出し訳（D）
+            if not (mm or en):
+                continue
+            rows.append({"mm": mm, "en": en, "body_ja": bj, "title_ja": tj})
+        _TERM_CACHE = rows
+    except Exception:
+        _TERM_CACHE = []
+    return _TERM_CACHE
+
+def _build_term_rules_prompt(title_src: str, body_src: str) -> str:
+    """この記事で **実際にヒットした語だけ** を箇条書きで指示文にする。"""
+    ts, bs = (title_src or ""), (body_src or "")
+    if not (ts or bs):
+        return ""
+    rules_t, rules_b = [], []
+    for row in _load_term_glossary_gsheet():
+        mm, en, bj, tj = row["mm"], row["en"], row["body_ja"], row["title_ja"]
+        hit_t = (mm and mm in ts) or (en and en.lower() in ts.lower())
+        hit_b = (mm and mm in bs) or (en and en.lower() in bs.lower())
+        if hit_t and tj:
+            rules_t.append(f"- {mm or en} ⇒ {tj}")
+        if hit_b and bj:
+            rules_b.append(f"- {mm or en} ⇒ {bj}")
+    if not (rules_t or rules_b):
+        return ""
+    out = ["【用語固定ルール（この記事で該当した語のみ・厳守）】"]
+    if rules_t:
+        out.append("▼見出しに出た場合は次を必ず採用：")
+        out.extend(rules_t)
+    if rules_b:
+        out.append("▼本文に出た場合は次を必ず採用：")
+        out.extend(rules_b)
+    return "\n".join(out) + "\n"
+
+_WORD_RE = re.compile(r"\b", re.UNICODE)
+def _apply_term_glossary_to_output(text: str, *, src: str, prefer: str) -> str:
+    """
+    仕上げ用の軽い置換。
+    - src（原文）に A/B が出ている語だけ対象
+    - 出力内に英語/ビルマ語が残っていたら C/D の日本語で上書き
+    prefer: 'title_ja' または 'body_ja'
+    """
+    t = (text or "")
+    if not t:
+        return t
+    s = (src or "")
+    for row in _load_term_glossary_gsheet():
+        mm, en = row["mm"], row["en"]
+        ja = row["title_ja"] if prefer == "title_ja" else row["body_ja"]
+        if not ja:
+            continue
+        if not ((mm and mm in s) or (en and en.lower() in s.lower())):
+            continue
+        # 出力内に en/mm が残っていれば日本語で置換
+        if en:
+            t = re.sub(rf"(?<![A-Za-z]){re.escape(en)}(?![A-Za-z])", ja, t)
+        if mm:
+            t = t.replace(mm, ja)
+    return t
 
 # ===== 収集器：export_all_articles_to_csv.py から日付別収集関数を利用 =====
 collectors_loaded = False
@@ -628,12 +725,13 @@ def _headline_variants_ja(title: str, source: str, url: str, body: str = "") -> 
     os.environ["GEMINI_API_KEY"] = key
     model = os.getenv("GEMINI_HEADLINE_MODEL", "gemini-2.5-flash")
 
-    # ---- 案1：原題ベース（変更なし）----
+    glossary = _build_region_glossary_prompt() + _build_term_rules_prompt(title, body)
+    # ---- 案1：原題ベース ----
     try:
         if _LIMITER: _LIMITER.wait()
         resp1 = call_gemini_with_retries(
             client_summary,
-            f"{HEADLINE_PROMPT_1}\n\n原題: {title}\nsource:{source}\nurl:{url}",
+            f"{HEADLINE_PROMPT_1}{glossary}\n\n原題: {title}\nsource:{source}\nurl:{url}",
             model=model,
         )
         v1 = unicodedata.normalize("NFC", (resp1.text or "").strip())
@@ -643,7 +741,7 @@ def _headline_variants_ja(title: str, source: str, url: str, body: str = "") -> 
     # ---- 案2：案1を素材に再生成（変更なし／前回方針のまま）----
     try:
         if _LIMITER: _LIMITER.wait()
-        prompt2 = make_headline_prompt_2_from(v1)
+        prompt2 = (glossary or "") + make_headline_prompt_2_from(v1)
         resp2 = call_gemini_with_retries(client_summary, prompt2, model=model)
         v2 = unicodedata.normalize("NFC", (resp2.text or "").strip())
     except Exception:
@@ -659,7 +757,8 @@ def _headline_variants_ja(title: str, source: str, url: str, body: str = "") -> 
         else:
             prompt3 = (
                 f"{HEADLINE_PROMPT_3}\n\n"
-                "【本文】\n" + body_for_prompt + "\n\n"
+                + (glossary or "")
+                + "【本文】\n" + body_for_prompt + "\n\n"
                 f"（参考）原題: {title}\nsource:{source}\nurl:{url}\n"
             )
             resp3 = call_gemini_with_retries(client_summary, prompt3, model=model)
@@ -667,6 +766,10 @@ def _headline_variants_ja(title: str, source: str, url: str, body: str = "") -> 
     except Exception:
         v3 = v1
 
+    # 生成後の最終統一（州・管区名 → 既存）＋（用語集 → 新規）
+    v1 = _apply_region_glossary_to_text(v1); v1 = _apply_term_glossary_to_output(v1, src=title, prefer="title_ja")
+    v2 = _apply_region_glossary_to_text(v2); v2 = _apply_term_glossary_to_output(v2, src=title, prefer="title_ja")
+    v3 = _apply_region_glossary_to_text(v3); v3 = _apply_term_glossary_to_output(v3, src=title, prefer="title_ja")
     return [v1, v2, v3]
 
 def _summary_ja(source: str, title: str, body: str, url: str) -> str:
@@ -695,9 +798,13 @@ def _summary_ja(source: str, title: str, body: str, url: str) -> str:
         resp = call_gemini_with_retries(
             client_summary, prompt, model=os.getenv("GEMINI_SUMMARY_MODEL", "gemini-2.5-flash")
         )
-        return unicodedata.normalize("NFC", (resp.text or "").strip())
+        text = unicodedata.normalize("NFC", (resp.text or "").strip())
+        text = _apply_region_glossary_to_text(text)
+        return _apply_term_glossary_to_output(text, src=body, prefer="body_ja")
     except Exception:
-        return unicodedata.normalize("NFC", (body or "").strip())[:400]
+        text = unicodedata.normalize("NFC", (body or "").strip())[:400]
+        text = _apply_region_glossary_to_text(text)
+        return _apply_term_glossary_to_output(text, src=body, prefer="body_ja")
 
 def _is_ayeyarwady(title_ja: str, summary_ja: str) -> bool:
     """
@@ -1027,10 +1134,13 @@ def cmd_build_bundle_from_sheet(args):
         for it in translated:
             u = _norm(it.get("url", ""))
             meta = url_to_meta.get(u, {})
+            # ★ Business全文PDF用：title_ja / body_ja も最終置換
+            title_ja = _apply_region_glossary_to_text(meta.get("title_ja", ""))
+            body_ja  = _apply_region_glossary_to_text(it.get("body_ja", "") or "")
             translated_items.append({
                 "url":      u,
-                "title_ja": meta.get("title_ja", ""),
-                "body_ja":  it.get("body_ja", "") or "",
+                "title_ja": title_ja,
+                "body_ja":  body_ja,
                 "source":   meta.get("source", ""),
                 "date":     meta.get("date", ""),
             })
