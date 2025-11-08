@@ -26,6 +26,7 @@ jobs:
             SHEET_NAME: "regions"
             SHOW_ENTRIES: ${{ inputs.show_entries }}
             GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+            GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
             MNA_SHEET_ID: ${{ inputs.sheet_id != '' && inputs.sheet_id || secrets.MNA_SHEET_ID }}
             MNA_REGION_SHEET_NAME: "regions"
             # 既存ファイルで使われてる
@@ -73,11 +74,27 @@ jobs:
 
                   try:
                       fa = import_module("fetch_articles")
-
+                      import inspect
                       # まずローダ関数を探す
                       loader = getattr(fa, "_load_region_glossary_gsheet", None)
                       if callable(loader):
-                          entries = loader() or []
+                          # 関数のシグネチャに合わせて引数を渡す（sheet_key / worksheet など）
+                          sig = inspect.signature(loader)
+                          kwargs = {}
+                          params = sig.parameters
+                          if "sheet_key" in params:
+                              kwargs["sheet_key"] = sheet_id
+                          if "worksheet" in params:
+                              kwargs["worksheet"] = sheet_name
+                          # 念のため位置引数だけの実装にも対応
+                          try:
+                              entries = loader(**kwargs) if kwargs else loader(sheet_id, sheet_name)
+                          except TypeError:
+                              try:
+                                  entries = loader(sheet_id)
+                              except TypeError:
+                                  entries = loader()  # 最後のフォールバック
+                          entries = entries or []
                           print("loaded_entries:", len(entries))
                           if entries:
                               for i, x in enumerate(entries[:show], 1):
