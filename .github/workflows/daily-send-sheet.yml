@@ -11,18 +11,6 @@ on:
         required: false
         type: string
 
-  workflow_call:
-    inputs:
-      ref:
-        description: "実行対象ブランチ"
-        required: false
-        type: string
-        default: develop
-      send_time_mmt:
-        description: "送信時刻 (MMT)。空なら即送信"
-        required: false
-        type: string
-
 jobs:
   # =========================
   # 本番（production / main）
@@ -154,7 +142,7 @@ jobs:
   # 開発（development / develop）
   # =========================
   send_dev:
-    if: ${{ github.ref_name == 'develop' || (github.event_name == 'workflow_call' && inputs.ref == 'develop') }}
+    if: ${{ github.ref_name == 'develop' }}
     runs-on: ubuntu-latest
     environment: development
     permissions:
@@ -183,8 +171,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event_name == 'workflow_call' && inputs.ref || github.ref }}
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -231,7 +217,7 @@ jobs:
       # - スケジュール時: env vars の FIXED_SEND_TIME_MMT（environment=development のもの）
       - name: Wait until MMT time (if specified)
         env:
-          INPUT_SEND_TIME_MMT: ${{ (github.event_name == 'workflow_dispatch' && inputs.send_time_mmt) || (github.event_name == 'workflow_call' && inputs.send_time_mmt) || '' }}
+          INPUT_SEND_TIME_MMT: ${{ github.event_name == 'workflow_dispatch' && inputs.send_time_mmt || '' }}
           FIXED_SEND_TIME_MMT: ${{ github.event_name == 'schedule' && secrets.FIXED_SEND_TIME_MMT || '' }}
         run: |
           python - <<'PY'

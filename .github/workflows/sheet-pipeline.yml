@@ -1,8 +1,8 @@
 name: Daily Myanmar News Alert Sheet Pipeline
 
 on:
-  # # スケジュールは「デフォルトブランチ」でのみ動作（通常は main）
-  # # main 側の“呼び出し用”ワークフローから develop を実行します
+  # # スケジュールは「デフォルトブランチ」でのみ動作します（通常は main）。
+  # # => 本番のみスケジュール実行したい要件を満たします。
   # schedule:
   #   # 15:30 MMT（= 09:00 UTC）: 前日クリア → 追記
   #   - cron: "0 9 * * *"
@@ -25,23 +25,11 @@ on:
           - collect
           - build-bundle
           - notify-email
-  # developでテスト用に追加（main 側から再利用呼び出しできるようにする）
-  workflow_call:
-    inputs:
-      mode:
-        description: "collect16 / collect / build-bundle"
-        required: true
-        type: string
-      ref:
-        description: "実行対象のブランチ（既定: develop）"
-        required: false
-        default: "develop"
-        type: string
 
 # どのイベントでも 1 workflow につき環境ごとに直列化
 concurrency:
-  # 手動実行/再利用呼び出し: main→production / develop→development
-  group: mna-sheet-pipeline-${{(github.event_name == 'workflow_call' && (inputs.ref == 'main') || github.event_name == 'workflow_dispatch' && (github.ref_name == 'main')) && 'production' || 'development'}}
+  # 手動実行: main→production / develop→development / その他→production（元の式を踏襲）
+  group: mna-sheet-pipeline-${{ github.event_name == 'workflow_dispatch' && (github.ref_name == 'main' && 'production' || 'development') || 'production' }}
   cancel-in-progress: false
 
 permissions:
@@ -336,16 +324,17 @@ jobs:
           retention-days: 2
           if-no-files-found: error
 
-  # === 手動 / 再利用呼び出し 共通 ===
+  # === 手動実行（本番 / 開発のどちらも UI から選択） ===
   manual-run:
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call'
-    environment: ${{(github.event_name == 'workflow_call' && inputs.ref == 'main') ||(github.event_name != 'workflow_call' && github.ref_name == 'main')&& 'production' || 'development'}}
+    if: github.event_name == 'workflow_dispatch'
+    # main を選べば production / develop を選べば development
+    environment: ${{ github.ref_name == 'main' && 'production' || 'development' }}
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout (指定ブランチ)
+      - name: Checkout (手動で選んだブランチ)
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'workflow_call' && inputs.ref || github.ref }}
+          ref: ${{ github.ref }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -358,10 +347,9 @@ jobs:
           pip install -r requirements.txt
 
       # ▼ prod/dev で環境変数だけを切り替え（処理は変更しない）
-      - name: Export env (prod/dev switch by ref)
+      - name: Export env (prod/dev switch by branch)
         run: |
-          TARGET_REF="${{ github.event_name == 'workflow_call' && inputs.ref || github.ref_name }}"
-          if [ "${TARGET_REF}" = "develop" ]; then
+          if [ "${GITHUB_REF_NAME}" = "develop" ]; then
             {
               echo "GEMINI_API_KEY_MIZZIMA=${{ secrets.GEMINI_API_TEST_KEY_MIZZIMA }}";
               echo "GEMINI_API_KEY_BBC=${{ secrets.GEMINI_API_TEST_KEY_BBC }}";
@@ -414,7 +402,6 @@ jobs:
           echo "PDF_FONT_BOLD_PATH=$GITHUB_WORKSPACE/fonts/NotoSansJP-Bold.ttf" >> "$GITHUB_ENV"
           echo "PDF_FONT_PATH=${PDF_FONT_PATH:-<not-set>}"
 
-      # 既存どおり inputs.mode を見て実行（workflow_call でも同様）
       - name: Run selected mode
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.mode != 'notify-email' }}
         run: |
