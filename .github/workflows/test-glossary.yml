@@ -25,7 +25,9 @@ jobs:
             SHEET_ID_SECRET: ${{ secrets.MNA_SHEET_ID }}
             SHEET_NAME: "regions"
             SHOW_ENTRIES: ${{ inputs.show_entries }}
-            GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+            GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+            MNA_SHEET_ID: ${{ inputs.sheet_id != '' && inputs.sheet_id || secrets.MNA_SHEET_ID }}
+            MNA_REGION_SHEET_NAME: "regions"
             # 既存ファイルで使われてる
             PAID_PLAN_URL: ${{ secrets.PAID_PLAN_URL }}
             GEMINI_API_SUMMARY_KEY: ${{ secrets.GEMINI_API_TEST_SUMMARY_KEY }}
@@ -57,10 +59,10 @@ jobs:
                   import os, json
                   from importlib import import_module
 
-                  sheet_id = os.getenv("SHEET_ID_INPUT") or os.getenv("SHEET_ID_SECRET") or ""
-                  sheet_name = os.getenv("SHEET_NAME") or "Sheet1"
+                  sheet_id = os.getenv("MNA_SHEET_ID") or ""
+                  sheet_name = os.getenv("MNA_REGION_SHEET_NAME") or "regions"
                   show = max(1, int(os.getenv("SHOW_ENTRIES") or "10"))
-                  creds = bool(os.getenv("GOOGLE_CREDENTIALS_JSON"))
+                  creds = bool(os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON"))
 
                   print("=== Test Region Glossary (Google Sheet) ===")
                   print("branch: spreadsheet")
@@ -71,21 +73,57 @@ jobs:
 
                   try:
                       fa = import_module("fetch_articles")
-                      glossary = getattr(fa, "_REGION_GLOSSARY", None)
-                      if glossary is None:
-                          print("WARN: _REGION_GLOSSARY not found in module.")
-                          glossary = []
-                      print("loaded_entries:", len(glossary))
-                      if glossary:
-                          for i, x in enumerate(glossary[:show], 1):
-                              mm = x.get("mm") or x.get("Myanmar") or ""
-                              en = x.get("en") or x.get("English") or ""
-                              ja = x.get("ja") or x.get("Japanese") or ""
-                              print(f"{i:02d}. {en} / {mm} -> {ja}")
-                      else:
+                  # まずローダ関数を探す
+                  loader = getattr(fa, "_load_region_glossary_gsheet", None)
+                  if callable(loader):
+                      entries = loader() or []
+                      print("loaded_entries:", len(entries))
+                      for i, x in enumerate(entries[:show], 1):
+                          mm = (x.get("mm") or x.get("Myanmar") or "").strip()
+                          en = (x.get("en") or x.get("English") or "").strip()
+                          ja = (x.get("ja") or x.get("Japanese") or "").strip()
+                          print(f"{i:02d}. {en} / {mm} -> {ja}")
+                  else:
+                      # ローダが無い場合は、プロンプト生成で“読めているか”だけ確認
+                      try:
+                          sp = import_module("sheet_pipeline")
+                          prompt = getattr(sp, "_build_region_glossary_prompt")()
+                          lines = [ln for ln in (prompt or "").splitlines() if ln.strip().startswith("- ")]
+                          print("loaded_entries(via prompt):", len(lines))
+                          for i, ln in enumerate(lines[:show], 1):
+                              print(f"{i:02d}.", ln[2:])
+                      except Exception:
                           print("⚠️ No glossary loaded (check Sheet ID / credentials / worksheet name / sharing).")
 
                   except Exception as e:
                       print("ERROR: failed to import/use fetch_articles:", repr(e))
                       raise
+                  PY
+
+            - name: Diagnostics | list worksheets & first rows
+              run: |
+                  python - <<'PY'
+                  import os, json
+                  import gspread
+                  from google.oauth2.service_account import Credentials
+                  sj = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON") or os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON") or ""
+                  if not sj:
+                      sj = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON") or ""
+                  if not sj:
+                      print("no SA json found in env"); raise SystemExit(0)
+                  scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"]
+                  creds=Credentials.from_service_account_info(json.loads(sj), scopes=scopes)
+                  gc=gspread.authorize(creds)
+                  sid=os.getenv("MNA_SHEET_ID")
+                  ws_name=os.getenv("MNA_REGION_SHEET_NAME") or "regions"
+                  ss=gc.open_by_key(sid)
+                  print("worksheets:", [w.title for w in ss.worksheets()])
+                  try:
+                      ws=ss.worksheet(ws_name)
+                      vals=ws.get_all_values() or []
+                      print("rows_total:", len(vals))
+                      for i,row in enumerate(vals[:5], start=1):
+                          print(f"row{i}:", row)
+                  except Exception as e:
+                      print("worksheet_open_error:", repr(e))
                   PY
