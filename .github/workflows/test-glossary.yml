@@ -1,0 +1,86 @@
+name: Test Region Glossary (Google Sheet) — development / spreadsheet
+
+on:
+    workflow_dispatch:
+        inputs:
+            sheet_id:
+                description: "Google Sheet ID（未入力なら secrets.MNA_SHEET_ID を使用）"
+                required: false
+                type: string
+            show_entries:
+                description: "先頭から何件表示するか"
+                required: false
+                default: "10"
+                type: string
+
+jobs:
+    test-glossary:
+        runs-on: ubuntu-latest
+        # development環境・spreadsheetブランチでのみ動作
+        if: ${{ github.ref_name == 'spreadsheet' }}
+        environment: development
+
+        env:
+            SHEET_ID_INPUT: ${{ inputs.sheet_id }}
+            SHEET_ID_SECRET: ${{ secrets.MNA_SHEET_ID }}
+            SHEET_NAME: "regions"
+            SHOW_ENTRIES: ${{ inputs.show_entries }}
+            GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+
+        steps:
+            - name: Checkout spreadsheet branch
+              uses: actions/checkout@v4
+              with:
+                  ref: spreadsheet
+
+            - name: Set up Python
+              uses: actions/setup-python@v5
+              with:
+                  python-version: "3.11"
+
+            - name: Install deps (requirements.txt if exists) + minimal libs
+              run: |
+                  set -euxo pipefail
+                  if [ -f requirements.txt ]; then
+                    pip install -r requirements.txt
+                  fi
+                  pip install gspread google-auth
+
+            - name: Test region glossary loading
+              run: |
+                  python - <<'PY'
+                  import os, json
+                  from importlib import import_module
+
+                  sheet_id = os.getenv("SHEET_ID_INPUT") or os.getenv("SHEET_ID_SECRET") or ""
+                  sheet_name = os.getenv("SHEET_NAME") or "Sheet1"
+                  show = max(1, int(os.getenv("SHOW_ENTRIES") or "10"))
+                  creds = bool(os.getenv("GOOGLE_CREDENTIALS_JSON"))
+
+                  print("=== Test Region Glossary (Google Sheet) ===")
+                  print("branch: spreadsheet")
+                  print("environment: development")
+                  print("sheet_id_present:", bool(sheet_id))
+                  print("sheet_name:", sheet_name)
+                  print("creds_present:", creds)
+
+                  try:
+                      fa = import_module("fetch_articles")
+                      glossary = getattr(fa, "_REGION_GLOSSARY", None)
+                      if glossary is None:
+                          print("WARN: _REGION_GLOSSARY not found in module.")
+                          glossary = []
+                      print("loaded_entries:", len(glossary))
+                      if glossary:
+                          for i, x in enumerate(glossary[:show], 1):
+                              mm = x.get("mm") or x.get("Myanmar") or ""
+                              en = x.get("en") or x.get("English") or ""
+                              ja = x.get("ja") or x.get("Japanese") or ""
+                              print(f"{i:02d}. {en} / {mm} -> {ja}")
+                      else:
+                          print("⚠️ No glossary loaded (check Sheet ID / credentials / worksheet name / sharing).")
+
+                  except Exception as e:
+                      print("ERROR: failed to import/use fetch_articles:", repr(e))
+                      raise
+                  PY
