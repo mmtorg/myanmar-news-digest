@@ -812,9 +812,9 @@ def _keep_only_rows_of_date(date_str: str) -> int:
     if kept:
         ws.update("A2", kept, value_input_option="USER_ENTERED")
 
-    # K列（採用フラグなど）は全行 FALSE にリセット（A..J が空の行も含む）
+    # K列（採用フラグ）は全行 ブランク にリセット（A..J が空の行も含む）
     if total > 0:
-        ws.update(f"K2:K{total+1}", [["FALSE"]]*total, value_input_option="USER_ENTERED")
+        ws.update(f"K2:K{total+1}", [[""]]*total, value_input_option="USER_ENTERED")
 
     return len(rows) - len(kept)
 
@@ -897,7 +897,7 @@ def cmd_build_bundle_from_sheet(args):
     if not rows:
         logging.warning("[bundle] no rows")
         print("no rows"); return
-    logging.info(f"[bundle] rows_total={len(rows)} (採用フラグ=TRUEのみ抽出)")
+    logging.info(f"[bundle] rows_total={len(rows)} (採用フラグ=K='a' のみ抽出)")
 
     # 列名に依存しないよう、列記号(A..K)を固定でインデックス化して参照する
     col = {chr(ord('A')+i): i for i in range(len(header))}  # A:0, B:1, ... K:10
@@ -915,7 +915,7 @@ def cmd_build_bundle_from_sheet(args):
         selected = []
         media_counts = defaultdict(int)
         for r in rows:
-            if get(r, "K").upper() != "TRUE":  # 採用フラグ(K)
+            if get(r, "K") != "a":             # 採用フラグ(K) 小文字 'a' のみ採用
                 continue
             media = get(r, "C")  # メディア(C)
             selected.append((order.get(media, 999), r))
@@ -924,8 +924,8 @@ def cmd_build_bundle_from_sheet(args):
 
     total_selected = len(selected)
     if total_selected == 0:
-        logging.info("[bundle] no summaries selected (L=TRUE)")
-        print("no summaries selected (L=TRUE)"); return
+        logging.info("[bundle] no summaries selected (K='a')")
+        print("no summaries selected (K='a')"); return
 
     # 媒体別内訳（INFO）
     breakdown = ", ".join(f"{k}:{v}" for k, v in sorted(media_counts.items(), key=lambda x: order.get(x[0], 999)))
