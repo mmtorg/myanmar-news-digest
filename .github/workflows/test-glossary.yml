@@ -57,44 +57,85 @@ jobs:
             - name: Test region glossary loading
               run: |
                   python - <<'PY'
-                  import os, json
+                  import os, json, inspect
                   from importlib import import_module
 
-                  sheet_id = os.getenv("MNA_SHEET_ID") or ""
+                  # 1) シート／タブ／認証
+                  sheet_id   = os.getenv("MNA_SHEET_ID") or ""
                   sheet_name = os.getenv("MNA_REGION_SHEET_NAME") or "regions"
-                  show = max(1, int(os.getenv("SHOW_ENTRIES") or "10"))
-                  creds = bool(os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON"))
+                  show       = max(1, int(os.getenv("SHOW_ENTRIES") or "10"))
+
+                  # fetch_articles 側が参照しうる環境変数名を**全部**埋めておく（片方しか見ない実装対策）
+                  sa = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON") or ""
+                  if sa:
+                      os.environ.setdefault("GOOGLE_CREDENTIALS_JSON", sa)           # 別名
+                      os.environ.setdefault("GOOGLE_APPLICATION_CREDENTIALS_JSON", sa) # 念のため
+
+                  # タブ名も複数候補で上書き（実装差異を吸収）
+                  for k in [
+                      "MNA_REGION_SHEET_NAME",
+                      "MNA_REGION_GLOSSARY_SHEET_NAME",
+                      "REGION_GLOSSARY_SHEET_NAME",
+                      "REGION_SHEET_NAME",
+                  ]:
+                      os.environ.setdefault(k, sheet_name)
 
                   print("=== Test Region Glossary (Google Sheet) ===")
                   print("branch: spreadsheet")
                   print("environment: development")
                   print("sheet_id_present:", bool(sheet_id))
                   print("sheet_name:", sheet_name)
-                  print("creds_present:", creds)
+                  print("creds_present:", bool(sa))
 
                   try:
                       fa = import_module("fetch_articles")
-                      import inspect
-                      # まずローダ関数を探す
-                      loader = getattr(fa, "_load_region_glossary_gsheet", None)
+
+                      # 2) ローダ関数を見つける
+                      cand_names = [
+                          "_load_region_glossary_gsheet",
+                          "load_region_glossary_gsheet",
+                          "_load_region_glossary",
+                      ]
+                      loader = None
+                      for n in cand_names:
+                          loader = getattr(fa, n, None)
+                          if callable(loader):
+                              chosen = n
+                              break
+
+                      entries = []
                       if callable(loader):
-                          # 関数のシグネチャに合わせて引数を渡す（sheet_key / worksheet など）
+                          # 3) シグネチャに合わせて**確実に**渡す
                           sig = inspect.signature(loader)
-                          kwargs = {}
                           params = sig.parameters
-                          if "sheet_key" in params:
-                              kwargs["sheet_key"] = sheet_id
-                          if "worksheet" in params:
-                              kwargs["worksheet"] = sheet_name
-                          # 念のため位置引数だけの実装にも対応
+                          called = ""
                           try:
-                              entries = loader(**kwargs) if kwargs else loader(sheet_id, sheet_name)
-                          except TypeError:
-                              try:
-                                  entries = loader(sheet_id)
-                              except TypeError:
-                                  entries = loader()  # 最後のフォールバック
-                          entries = entries or []
+                              if {"sheet_key","worksheet"} <= set(params):
+                                  entries = loader(sheet_key=sheet_id, worksheet=sheet_name) or []
+                                  called = f"{chosen}(sheet_key=..., worksheet=...)"
+                              elif "sheet_key" in params:
+                                  entries = loader(sheet_key=sheet_id) or []
+                                  called = f"{chosen}(sheet_key=...)"
+                              elif "worksheet" in params:
+                                  entries = loader(worksheet=sheet_name) or []
+                                  called = f"{chosen}(worksheet=...)"
+                              else:
+                                  # 位置引数のみの可能性
+                                  try:
+                                      entries = loader(sheet_id, sheet_name) or []
+                                      called = f"{chosen}(<sheet_id>, <sheet_name>)"
+                                  except TypeError:
+                                      try:
+                                          entries = loader(sheet_id) or []
+                                          called = f"{chosen}(<sheet_id>)"
+                                      except TypeError:
+                                          entries = loader() or []
+                                          called = f"{chosen}()"
+                          except Exception as e:
+                              print(f"[loader-call-error] {e!r}")
+                              entries = []
+
+                          print("loader_called_as:", called)
                           print("loaded_entries:", len(entries))
                           if entries:
                               for i, x in enumerate(entries[:show], 1):
@@ -104,14 +145,14 @@ jobs:
                                   print(f"{i:02d}. {en} / {mm} -> {ja}")
                           else:
                               print("⚠️ No glossary loaded (check Sheet ID / credentials / worksheet name / sharing).")
+
                       else:
-                          # ローダが無い場合は、プロンプト生成で“読めているか”だけ確認
+                          # 4) ローダが無い場合：sheet_pipeline のプロンプト経由で確認
                           try:
                               sp = import_module("sheet_pipeline")
-                              prompt_fn = getattr(sp, "_build_region_glossary_prompt", None)
-                              if callable(prompt_fn):
-                                  prompt = prompt_fn() or ""
-                                  # 行頭 "- " の箇条書きだけ拾う（例: "- ヤンゴン管区（Yangon Region）"）
+                              pf = getattr(sp, "_build_region_glossary_prompt", None)
+                              if callable(pf):
+                                  prompt = pf() or ""
                                   lines = [ln for ln in prompt.splitlines() if ln.strip().startswith("- ")]
                                   print("loaded_entries(via prompt):", len(lines))
                                   for i, ln in enumerate(lines[:show], 1):
@@ -119,8 +160,7 @@ jobs:
                               else:
                                   print("⚠️ _build_region_glossary_prompt not found.")
                           except Exception as e2:
-                              print("⚠️ No glossary loaded (check Sheet ID / credentials / worksheet name / sharing).")
-                              print("detail:", repr(e2))
+                              print("⚠️ No glossary loaded (prompt). detail:", repr(e2))
 
                   except Exception as e:
                       print("ERROR: failed to import/use fetch_articles:", repr(e))

@@ -3212,7 +3212,7 @@ def _apply_term_glossary_to_output(text: str, *, src: str, prefer: str) -> str:
 # スプレッドシートに 3 列（Myanmar / English / Japanese）の表を用意。
 # ・読み取り失敗時は _REGION_GLOSSARY=[] として何もせずスキップ（Excel/ハードコードのフォールバックなし）
 # ・呼び出し側は空なら何もしない実装にしているため安全
-def _load_region_glossary_gsheet(sheet_key: str | None, worksheet_name: str = "Sheet1"):
+def _load_region_glossary_gsheet(sheet_key: str | None, worksheet_name: str = "regions"):
     """
     Google スプレッドシートから州・管区訳一覧を読み込む。
     - 先頭行がヘッダ：Myanmar / English / Japanese
@@ -3221,7 +3221,7 @@ def _load_region_glossary_gsheet(sheet_key: str | None, worksheet_name: str = "S
     依存：gspread / google-auth
     必要ENV：
       - MNA_SHEET_ID: スプレッドシートのキー（URLの /d/{KEY}/ の部分）
-      - REGION_GLOSSARY_SHEET_NAME (任意, 既定 "Sheet1")
+      - REGION_GLOSSARY_SHEET_NAME (任意, 既定 "regions")
       - GOOGLE_CREDENTIALS_JSON: サービスアカウントのJSON文字列
     """
     if not sheet_key:
@@ -3255,7 +3255,7 @@ def _load_region_glossary_gsheet(sheet_key: str | None, worksheet_name: str = "S
 
 # 読み込み（失敗したら [] のまま＝以降の置換/差込は自動で無効化）
 MNA_SHEET_ID   = os.getenv("MNA_SHEET_ID", "").strip()
-REGION_GLOSSARY_SHEET_NAME = os.getenv("REGION_GLOSSARY_SHEET_NAME", "Sheet1").strip() or "Sheet1"
+REGION_GLOSSARY_SHEET_NAME = os.getenv("REGION_GLOSSARY_SHEET_NAME", "regions").strip() or "regions"
 _REGION_GLOSSARY = _load_region_glossary_gsheet(MNA_SHEET_ID, REGION_GLOSSARY_SHEET_NAME)
 
 def _build_region_glossary_prompt() -> str:
