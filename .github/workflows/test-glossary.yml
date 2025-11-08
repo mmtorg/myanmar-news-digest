@@ -26,6 +26,11 @@ jobs:
             SHEET_NAME: "regions"
             SHOW_ENTRIES: ${{ inputs.show_entries }}
             GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+            # 既存ファイルで使われてる
+            PAID_PLAN_URL: ${{ secrets.PAID_PLAN_URL }}
+            GEMINI_API_SUMMARY_KEY: ${{ secrets.GEMINI_API_TEST_SUMMARY_KEY }}
+            GEMINI_API_DEDUPE_KEY: ${{ secrets.GEMINI_API_TEST_DEDUPE_KEY }}
+            GEMINI_API_FULLTEXT_KEY: ${{ secrets.GEMINI_API_TEST_FULLTEXT_KEY }}
 
         steps:
             - name: Checkout spreadsheet branch
