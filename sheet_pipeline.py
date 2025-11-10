@@ -901,20 +901,26 @@ def _append_rows(rows_to_append: List[List[str]]):
     if not rows_to_append:
         return
     header, rows, ws = _read_all_rows()
-    name_to_idx = {n:i for i,n in enumerate(header)}
-    idx_A = name_to_idx.get("日付", 0)  # A列（見出し "日付"）
+
+    # A列を固定的に参照（列名に依存しない）
+    idx_A = 0
+
     filled = sum(1 for r in rows if (r[idx_A] or "").strip())  # A列のみで判定
     start_row = 2 + filled
     logging.info(f"[sheet] append start_row=A{start_row} rows={len(rows_to_append)}")
+
     with _timeit("sheet.append", rows=len(rows_to_append), start_row=start_row):
         ws.update(f"A{start_row}", rows_to_append, value_input_option="USER_ENTERED")
 
 def _keep_only_rows_of_date(date_str: str) -> int:
-    """A列が date_str(YYYY-MM-DD) の行だけ残す (= 今日以外は A:J クリア & K=FALSE)。戻り値=削除行数"""
+    """A列が date_str(YYYY-MM-DD) の行だけ残す (= 今日以外は A:J と K をクリア)。戻り値=削除行数"""
     header, rows, ws = _read_all_rows()
-    if not rows: return 0
-    name_to_idx = {n:i for i,n in enumerate(header)}
-    idx_A = name_to_idx.get("日付", 1)  # A列（見出し "日付"）
+    if not rows:
+        return 0
+
+    # A列を固定的に参照（列名に依存しない）
+    idx_A = 0
+
     kept = []
     for r in rows:
         try:
