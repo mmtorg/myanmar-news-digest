@@ -50,7 +50,7 @@ defaults:
 jobs:
   # === スケジュール（本番のみ / mainブランチ運用前提） ===
   schedule-collect16:
-    if: github.event_name == 'schedule' && github.event.schedule == '0 9 * * *'
+    if: github.event_name == 'schedule' && github.event.schedule == '58 8 * * *'
     runs-on: ubuntu-latest
     # 環境別シークレット（Environments）の切替：本番固定
     environment: production
@@ -118,7 +118,7 @@ jobs:
           python sheet_pipeline.py collect-to-sheet --clear-yesterday
 
   schedule-collect:
-    if: github.event_name == 'schedule' && contains(fromJson('["0 11 * * *","0 13 * * *","0 15 * * *"]'), github.event.schedule)
+    if: github.event_name == 'schedule' && contains(fromJson('["57 10 * * *","58 12 * * *","57 14 * * *"]'), github.event.schedule)
     runs-on: ubuntu-latest
     environment: production
     env:
@@ -185,7 +185,7 @@ jobs:
           python sheet_pipeline.py collect-to-sheet
 
       - name: Notify by email via Python (cron 21:30 MMT only)
-        if: ${{ github.event_name == 'schedule' && github.event.schedule == '0 15 * * *' && success() }}
+        if: ${{ github.event_name == 'schedule' && github.event.schedule == '57 14 * * *' && success() }}
         run: |
           set -euo pipefail
           BODY="$(printf '%s\n%s\n%s\n%s\n' \
@@ -207,7 +207,7 @@ jobs:
           CSV_EMAIL_RECIPIENTS: ${{ secrets.CSV_EMAIL_RECIPIENTS }}
 
   schedule-build-bundle:
-    if: github.event_name == 'schedule' && github.event.schedule == '0 20 * * *'
+    if: github.event_name == 'schedule' && github.event.schedule == '58 19 * * *'
     runs-on: ubuntu-latest
     environment: production
     env:
