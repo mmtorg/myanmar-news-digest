@@ -121,21 +121,33 @@ except Exception:
     fetch_with_retry_irrawaddy = None
     extract_body_irrawaddy = None
     
-# --- 用語集（州・管区訳）: fetch_articles.py 側の実装を“使えるなら使う／無ければ何もしない” ---
+# --- 用語集（州・管区訳）: タイトル=D / 本文=C を fetch_articles の実装で再利用 ---
 try:
     from fetch_articles import (
-        _build_region_glossary_prompt as _fa_build_region_glossary_prompt,
+        _load_region_glossary_gsheet as _fa_load_regions,
+        _select_region_entries_for_text as _fa_sel_regions,
+        _build_region_glossary_prompt_for as _fa_build_rg_for,
         _apply_region_glossary_to_text as _fa_apply_region_glossary_to_text,
     )
-    def _build_region_glossary_prompt() -> str:
-        return _fa_build_region_glossary_prompt()
+    _REGION_CACHE: list[dict] | None = None
+    def _regions():
+        global _REGION_CACHE
+        if _REGION_CACHE is None:
+            _REGION_CACHE = _fa_load_regions(
+                os.getenv("MNA_SHEET_ID"),
+                os.getenv("MNA_REGION_SHEET_NAME") or "regions",
+            )
+        return _REGION_CACHE or []
+    def _region_rules_for_title(title: str) -> str:
+        return _fa_build_rg_for(_fa_sel_regions(title or "", _regions()), use_headline_ja=True)
+    def _region_rules_for_body(body: str) -> str:
+        return _fa_build_rg_for(_fa_sel_regions(body or "", _regions()), use_headline_ja=False)
     def _apply_region_glossary_to_text(s: str) -> str:
         return _fa_apply_region_glossary_to_text(s)
 except Exception:
-    def _build_region_glossary_prompt() -> str:
-        return ""
-    def _apply_region_glossary_to_text(s: str) -> str:
-        return s
+    def _region_rules_for_title(_: str) -> str: return ""
+    def _region_rules_for_body(_: str) -> str: return ""
+    def _apply_region_glossary_to_text(s: str) -> str: return s
 
 # ===== 本文キャッシュ（bundle/bodies.json） & 本文取得  =====
 _BODIES_LOCK = threading.Lock()
@@ -509,14 +521,15 @@ def _build_summary_prompt(item: dict, *, body_max: int) -> str:
         f"{body}\n"
         "###\n"
     )
-    glossary = _build_region_glossary_prompt()
+    rg_title = _region_rules_for_title(item.get("title") or "")
+    rg_body  = _region_rules_for_body(body)
     term_rules = _build_term_rules_prompt(item.get("title") or "", body)
-    return header + pre + STEP3_TASK + glossary + term_rules + "\n" + input_block
+    return header + pre + STEP3_TASK + (rg_title + rg_body) + term_rules + "\n" + input_block
 
 # ===== 用語集（A:Myanmar / B:English / C:本文訳 / D:見出し訳） =====
 _TERM_CACHE: list[dict] | None = None
-TERM_SHEET_ID = os.getenv("MNA_TERM_SHEET_ID") or SHEET_ID
-TERM_SHEET_NAME = os.getenv("MNA_TERM_SHEET_NAME") or "terms"
+TERM_SHEET_ID = os.getenv("MNA_TERM_SHEET_ID")
+TERM_SHEET_NAME = os.getenv("MNA_TERM_SHEET_NAME") or "regions"
 
 def _load_term_glossary_gsheet() -> list[dict]:
     """用語集を {mm,en,body_ja,title_ja} の配列で返す。失敗時は空配列。"""

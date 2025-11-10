@@ -3132,8 +3132,8 @@ SKIP_NOTE_IRRAWADDY = "【重要】本記事は Irrawaddy の記事です。Step
 
 # ===== 用語集（A:Myanmar / B:English / C:本文訳 / D:見出し訳） =====
 _TERM_CACHE: list[dict] | None = None
-TERM_SHEET_ID = os.getenv("MNA_TERM_SHEET_ID") or os.getenv("MNA_SHEET_ID")
-TERM_SHEET_NAME = os.getenv("MNA_TERM_SHEET_NAME") or "terms"
+TERM_SHEET_ID = os.getenv("MNA_SHEET_ID")
+TERM_SHEET_NAME = os.getenv("MNA_TERM_SHEET_NAME") or "regions"
 
 def _gc_client_terms():
     # 既存の gspread 認証関数があればそれを再利用。無ければこのモジュール内の実装でOK。
@@ -3152,7 +3152,7 @@ def _gc_client_terms():
     if info:
         creds = Credentials.from_service_account_info(json.loads(info), scopes=scopes)
         return gspread.authorize(creds)
-    raise SystemExit("Google SA credential not found for terms.")
+    raise SystemExit("Google SA credential not found for regions.")
 
 def _load_term_glossary_gsheet() -> list[dict]:
     global _TERM_CACHE
@@ -3209,20 +3209,11 @@ def _apply_term_glossary_to_output(text: str, *, src: str, prefer: str) -> str:
 # =========================
 # Region/State Glossary (Google Sheets)
 # =========================
-# スプレッドシートに 3 列（Myanmar / English / Japanese）の表を用意。
-# ・読み取り失敗時は _REGION_GLOSSARY=[] として何もせずスキップ（Excel/ハードコードのフォールバックなし）
-# ・呼び出し側は空なら何もしない実装にしているため安全
 def _load_region_glossary_gsheet(sheet_key: str | None, worksheet_name: str = "regions"):
     """
-    Google スプレッドシートから州・管区訳一覧を読み込む。
-    - 先頭行がヘッダ：Myanmar / English / Japanese
-    - 各行から {"mm","en","ja"} を作る
-    - 読み取りに失敗した場合は [] を返して処理全体は継続
-    依存：gspread / google-auth
-    必要ENV：
-      - MNA_SHEET_ID: スプレッドシートのキー（URLの /d/{KEY}/ の部分）
-      - REGION_GLOSSARY_SHEET_NAME (任意, 既定 "regions")
-      - GOOGLE_CREDENTIALS_JSON: サービスアカウントのJSON文字列
+    Google シート A:D を列位置で読む（列名は見ない）
+      A: Myanmar / B: English / C: 本文訳 / D: 見出し訳
+    戻り値: {"mm","en","ja","ja_body","ja_headline"} の配列（ja は後方互換のフォールバック）
     """
     if not sheet_key:
         return []
@@ -3239,61 +3230,83 @@ def _load_region_glossary_gsheet(sheet_key: str | None, worksheet_name: str = "r
         creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
         client = gspread.authorize(creds)
         ws = client.open_by_key(sheet_key).worksheet(worksheet_name)
-        rows = ws.get_all_records()  # [{'Myanmar':..., 'English':..., 'Japanese':...}, ...]
+        values = ws.get("A:D") or []
+        if len(values) <= 1:
+            print("[region-glossary] no data rows in A:D")
+            return []
+        rows_data = values[1:]  # 1行目はヘッダ相当としてスキップ
         out = []
-        for r in rows:
-            mm = (r.get("Myanmar") or "").strip()
-            en = (r.get("English") or "").strip()
-            ja = (r.get("Japanese") or "").strip()
-            if ja and (mm or en):
-                out.append({"mm": mm, "en": en, "ja": ja})
-        print(f"[region-glossary] loaded {len(out)} entries from Google Sheet")
+        for r in rows_data:
+            mm = (r[0] if len(r) > 0 else "").strip()
+            en = (r[1] if len(r) > 1 else "").strip()
+            ja_body = (r[2] if len(r) > 2 else "").strip()
+            ja_head = (r[3] if len(r) > 3 else "").strip()
+            if not (mm or en or ja_body or ja_head):
+                continue
+            ja = ja_head or ja_body  # 既存呼び出しの後方互換
+            out.append({"mm": mm, "en": en, "ja": ja, "ja_body": ja_body, "ja_headline": ja_head})
+        print(f"[region-glossary] loaded {len(out)} entries from A:D of '{worksheet_name}'")
         return out
     except Exception as e:
         print(f"[region-glossary] failed to load gsheet: {e}")
         return []
+    
+# ===== Region Glossary helpers (タイトル=D列 / 本文=C列) =====
+_REGIONS_CACHE: list[dict] | None = None
 
-# 読み込み（失敗したら [] のまま＝以降の置換/差込は自動で無効化）
-MNA_SHEET_ID   = os.getenv("MNA_SHEET_ID", "").strip()
-REGION_GLOSSARY_SHEET_NAME = os.getenv("REGION_GLOSSARY_SHEET_NAME", "regions").strip() or "regions"
-_REGION_GLOSSARY = _load_region_glossary_gsheet(MNA_SHEET_ID, REGION_GLOSSARY_SHEET_NAME)
+def _load_regions_cached() -> list[dict]:
+    global _REGIONS_CACHE
+    if _REGIONS_CACHE is None:
+        _REGIONS_CACHE = _load_region_glossary_gsheet(
+            os.getenv("MNA_SHEET_ID"),
+            os.getenv("MNA_REGION_SHEET_NAME") or "regions",
+        )
+    return _REGIONS_CACHE or []
 
-def _build_region_glossary_prompt() -> str:
-    """
-    プロンプトに差し込む “厳守” 用語集ブロックを生成。_REGION_GLOSSARY が空なら空文字を返す。
-    """
-    if not _REGION_GLOSSARY:
-        return ""
-    lines = [
-        "【州・管区の訳語（厳守）】\n",
-        "以下に挙げる語が本文に出た場合、ミャンマー語／英語いずれでも必ず右の日本語に統一してください。\n",
-        "例：'Yangon Region' / 'ရန်ကုန်တိုင်းဒေသကြီး' → 'ヤンゴン管区'\n",
-    ]
-    for it in _REGION_GLOSSARY:
-        lines.append(f"- {it['ja']} ← {it['English'] if 'English' in it else it['en']} / {it['Myanmar'] if 'Myanmar' in it else it['mm']}\n")
-    lines.append("\n")
-    return "".join(lines)
-
-def _apply_region_glossary_to_text(s: str) -> str:
-    """
-    生成後の日本語テキストへ最終置換を適用。
-    - 英語は大文字小文字を無視して置換
-    - ビルマ語はそのまま完全一致置換
-    - _REGION_GLOSSARY が空ならそのまま返す
-    """
-    if not s or not _REGION_GLOSSARY:
-        return s or ""
-    import re
-    out = s
-    for it in _REGION_GLOSSARY:
-        ja = (it.get("ja") or it.get("Japanese") or "").strip()
-        en = (it.get("en") or it.get("English")  or "").strip()
-        mm = (it.get("mm") or it.get("Myanmar")  or "").strip()
-        if en:
-            out = re.sub(re.escape(en), ja, out, flags=re.IGNORECASE)
+def _select_region_entries_for_text(text: str, entries: list[dict]) -> list[dict]:
+    """本文/タイトル文字列に mm/en のどちらかが“出現した行だけ”を返す（NFCで近似一致）。"""
+    import re, unicodedata
+    if not (text and entries):
+        return []
+    t = unicodedata.normalize("NFC", text)
+    mm_block = r"\u1000-\u109F"  # Myanmar
+    picked, seen = [], set()
+    for e in entries:
+        mm = unicodedata.normalize("NFC", (e.get("mm") or ""))
+        en = (e.get("en") or "")
+        hit = False
         if mm:
-            out = out.replace(mm, ja)
-    return out
+            pat_mm = re.compile(rf"(?<![{mm_block}]){re.escape(mm)}(?![{mm_block}])")
+            if pat_mm.search(t):
+                hit = True
+        if (not hit) and en:
+            pat_en = re.compile(rf"\b{re.escape(en)}\b", re.IGNORECASE)
+            if pat_en.search(t):
+                hit = True
+        if hit:
+            key = (mm, en)
+            if key not in seen:
+                seen.add(key); picked.append(e)
+    return picked
+
+def _build_region_glossary_prompt_for(entries: list[dict], *, use_headline_ja: bool) -> str:
+    """選ばれた entries から、翻訳プロンプトに埋め込む“用語固定”ルールを作る。"""
+    if not entries:
+        return ""
+    lines = []
+    for e in entries:
+        mm = e.get("mm") or ""
+        en = e.get("en") or ""
+        ja = (e.get("ja_headline") or e.get("ja")) if use_headline_ja else (e.get("ja_body") or e.get("ja"))
+        if not ja:
+            continue
+        if mm and en:
+            lines.append(f"- 「{mm}」または「{en}」が出たら、必ず「{ja}」と訳す。")
+        elif mm:
+            lines.append(f"- 「{mm}」が出たら、必ず「{ja}」と訳す。")
+        elif en:
+            lines.append(f"- 「{en}」が出たら、必ず「{ja}」と訳す。")
+    return ("【用語固定（必須）】\n" + "\n".join(lines) + "\n") if lines else ""
 
 def build_prompt(item: dict, *, skip_filters: bool, body_max: int) -> str:
     header = "次の手順で記事を判定・処理してください。\n\n"
@@ -3306,9 +3319,22 @@ def build_prompt(item: dict, *, skip_filters: bool, body_max: int) -> str:
         f"{item['body'][:body_max]}\n"
         "###\n"
     )
-    # 州・管区訳語の“厳守”ブロックを差し込み（_REGION_GLOSSARY が空なら空文字）
-    glossary = _build_region_glossary_prompt()
-    return header + pre + STEP3_TASK + glossary + "\n" + input_block
+    # --- ここから追加：タイトル=D列 / 本文=C列 の“用語固定（必須）”を、出現語だけ注入 ---
+    title_src = (item.get("title") or "")
+    body_src  = (item.get("body") or "")[:body_max]
+    rg_title = _build_region_glossary_prompt_for(
+        _select_region_entries_for_text(title_src, _load_regions_cached()),
+        use_headline_ja=True,   # タイトルは D 列（見出し訳）
+    )
+    rg_body = _build_region_glossary_prompt_for(
+        _select_region_entries_for_text(body_src, _load_regions_cached()),
+        use_headline_ja=False,  # 本文は C 列（本文訳）
+    )
+    # terms シートのヒット語だけを固定する既存ルール（見出し=title_ja / 本文=body_ja）
+    term_rules = _build_term_rules_prompt(title_src, body_src)
+
+    # ルール → 入力、の順でプロンプトを構成
+    return header + pre + STEP3_TASK + rg_title + rg_body + term_rules + "\n" + input_block
 
 
 # 超要約を先に抜く処理
@@ -3461,9 +3487,6 @@ def process_translation_batches(batch_size=TRANSLATION_BATCH_SIZE, wait_seconds=
                     title_text or item.get("title") or "（翻訳失敗）"
                 ).strip()
 
-                # 地名・管区名の日本語表記を最終統一（_REGION_GLOSSARY が空なら無処理）
-                translated_title = _apply_region_glossary_to_text(translated_title)
-
                 # --- 要約ラベルを先頭に強制 ---
                 if not lines or not re.match(r"^【\s*要約\s*】\s*$", lines[0]):
                     lines.insert(0, "【要約】")
@@ -3471,8 +3494,6 @@ def process_translation_batches(batch_size=TRANSLATION_BATCH_SIZE, wait_seconds=
                 lines_summary = build_summary_lines(output_text, lines)
                 summary_text = "\n".join(lines_summary).strip()
                 summary_html  = summary_text.replace("\n", "<br>")
-                # 要約本文にも最終統一
-                summary_html  = _apply_region_glossary_to_text(summary_html)
 
                 norm_url = _norm_id(item.get("url") or "")
 
@@ -3742,7 +3763,8 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
             "・タイトル（見出し）は訳さない／出力しない\n"
             "・本文は改行と段落を活かして読みやすく\n"
             "・半角の()括弧はすべて全角の（ ）に統一すること\n\n"
-            f"{COMMON_TRANSLATION_RULES}" + _build_region_glossary_prompt(),
+            f"{COMMON_TRANSLATION_RULES}"
+            f"{_build_region_glossary_prompt_for(_select_region_entries_for_text(' '.join([x.get('body','') for x in input_array]), _load_regions_cached()), use_headline_ja=False)}"
             "【本文以外は必ず除外（この関数専用）】\n"
             "以下は原文に含まれていても翻訳・出力しないこと（含めたら減点）。\n"
             "- 写真キャプション／クレジット（先頭が「写真:」「ဓာတ်ပုံ」「Photo」「(写真」「(Photo」「（写真」などの行）\n"
@@ -3837,14 +3859,14 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
                 x = url_to_res.get(b["url"]) or {}
                 body_src = b["body"]
                 body_ja = (x.get("body_ja") or body_src).strip()
-                # 《追加》本文に出現したA/Bに対し、C列（本文訳）で最終置換
-                body_ja = _apply_term_glossary_to_output(body_ja, src=body_src)
+                # 《最終置換》terms グロッサリを本文用（body_ja）で適用
+                body_ja = _apply_term_glossary_to_output(body_ja, src=body_src, prefer="body_ja")
                 results.append({"url": b["url"], "body_ja": body_ja})
         except Exception as e:
             print("🛑 fulltext batch failed:", e)
             for b in batch:
                 # 失敗フォールバック時も用語表の最終置換を適用
-                bj = _apply_term_glossary_to_output(b["body"], src=b["body"])
+                bj = _apply_term_glossary_to_output(b["body"], src=b["body"], prefer="body_ja")
                 results.append({"url": b["url"], "body_ja": bj})
 
         # === このバッチで積んだ結果のうち「日本語が全く無い」ものだけ再翻訳 ===
@@ -3861,8 +3883,10 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
                 fixed = _single_fulltext_retry(url, raw_body, max_chars=FULLTEXT_MAX_CHARS)
                 # 最終採用条件：日本語が含まれていればOK
                 if fixed and _contains_cjk(fixed):
-                    # 再取得結果にも最終置換
-                    results[j]["body_ja"] = _apply_region_glossary_to_text(fixed)
+                    # 再取得結果にも terms を本文用で最終置換（地域名はプロンプトで強制済み）
+                    results[j]["body_ja"] = _apply_term_glossary_to_output(
+                        fixed, src=raw_body, prefer="body_ja"
+                    )
                     print(f"[ok] repaired untranslated fulltext via single retry: {url}")
                 # 呼びすぎ回避の小休止（要約と同じ運用）
                 time.sleep(0.6)
