@@ -1,35 +1,37 @@
 name: Test Region Glossary (Google Sheet) — development / spreadsheet
 
+# サンプル見出し・本文に対しfetch_articles の処理使って翻訳テスト
 on:
     workflow_dispatch:
         inputs:
-            sheet_id:
-                description: "Google Sheet ID（未入力なら secrets.MNA_SHEET_ID を使用）"
-                required: false
+            title_text:
+                description: "テストしたい見出し（任意）"
+                required: true
                 type: string
-            show_entries:
-                description: "先頭から何件表示するか"
+            body_text:
+                description: "テストしたい本文（任意）"
+                required: true
+                type: string
+            show_hits:
+                description: "一致候補の表示数（デバッグ）"
                 required: false
-                default: "10"
+                default: "5"
                 type: string
 
 jobs:
-    test-glossary:
+    test-translate:
         runs-on: ubuntu-latest
-        # development環境・spreadsheetブランチでのみ動作
+        # spreadsheetブランチ・development環境でのみ動作
         if: ${{ github.ref_name == 'spreadsheet' }}
         environment: development
 
         env:
-            SHEET_ID_INPUT: ${{ inputs.sheet_id }}
-            SHEET_ID_SECRET: ${{ secrets.MNA_SHEET_ID }}
-            SHEET_NAME: "regions"
-            SHOW_ENTRIES: ${{ inputs.show_entries }}
-            GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-            GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-            MNA_SHEET_ID: ${{ inputs.sheet_id != '' && inputs.sheet_id || secrets.MNA_SHEET_ID }}
+            # シートは secrets のみを使用（手入力は不要）
+            MNA_SHEET_ID: ${{ secrets.MNA_SHEET_ID }}
             MNA_REGION_SHEET_NAME: "regions"
-            # 既存ファイルで使われてる
+            GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+
+            # fetch_articles が参照しうる別名も埋めておく（実装差異防止）
             PAID_PLAN_URL: ${{ secrets.PAID_PLAN_URL }}
             GEMINI_API_SUMMARY_KEY: ${{ secrets.GEMINI_API_TEST_SUMMARY_KEY }}
             GEMINI_API_DEDUPE_KEY: ${{ secrets.GEMINI_API_TEST_DEDUPE_KEY }}
@@ -46,153 +48,375 @@ jobs:
               with:
                   python-version: "3.11"
 
-            - name: Install deps (requirements.txt if exists) + minimal libs
+            - name: Install deps (match repo if requirements.txt exists)
               run: |
                   set -euxo pipefail
                   if [ -f requirements.txt ]; then
                     pip install -r requirements.txt
                   fi
+                  # 念のため最小限も入れておく
                   pip install gspread google-auth
 
-            - name: Test region glossary loading
+            - name: Run translation test via fetch_articles loader (A/B→C/D)
+              env:
+                  INPUT_TITLE_TEXT: ${{ inputs.title_text }}
+                  INPUT_BODY_TEXT: ${{ inputs.body_text }}
+                  INPUT_SHOW_HITS: ${{ inputs.show_hits }}
               run: |
                   python - <<'PY'
-                  import os, json, inspect
+                  import os, json, inspect, unicodedata
                   from importlib import import_module
 
-                  # 1) シート／タブ／認証
-                  sheet_id   = os.getenv("MNA_SHEET_ID") or ""
-                  sheet_name = os.getenv("MNA_REGION_SHEET_NAME") or "regions"
-                  show       = max(1, int(os.getenv("SHOW_ENTRIES") or "10"))
+                  def nfc(s:str) -> str:
+                      return unicodedata.normalize("NFC", s or "")
 
-                  # fetch_articles 側が参照しうる環境変数名を**全部**埋めておく（片方しか見ない実装対策）
+                  # ---- inputs/env
+                  sid = os.getenv("MNA_SHEET_ID") or ""
+                  ws_name = os.getenv("MNA_REGION_SHEET_NAME") or "regions"
+                  title_text = os.getenv("INPUT_TITLE_TEXT") or ""
+                  body_text  = os.getenv("INPUT_BODY_TEXT")  or ""
+                  show_hits  = int(os.getenv("INPUT_SHOW_HITS") or "5")
+
+                  # fetch_articles が参照しそうな認証変数も網羅
                   sa = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON") or ""
                   if sa:
-                      os.environ.setdefault("GOOGLE_CREDENTIALS_JSON", sa)           # 別名
-                      os.environ.setdefault("GOOGLE_APPLICATION_CREDENTIALS_JSON", sa) # 念のため
+                      os.environ.setdefault("GOOGLE_CREDENTIALS_JSON", sa)
+                      os.environ.setdefault("GOOGLE_APPLICATION_CREDENTIALS_JSON", sa)
 
-                  # タブ名も複数候補で上書き（実装差異を吸収）
+                  # タブ名の別名も埋めておく（実装差異を吸収）
                   for k in [
                       "MNA_REGION_SHEET_NAME",
                       "MNA_REGION_GLOSSARY_SHEET_NAME",
                       "REGION_GLOSSARY_SHEET_NAME",
                       "REGION_SHEET_NAME",
                   ]:
-                      os.environ.setdefault(k, sheet_name)
+                      os.environ.setdefault(k, ws_name)
 
-                  print("=== Test Region Glossary (Google Sheet) ===")
-                  print("branch: spreadsheet")
-                  print("environment: development")
-                  print("sheet_id_present:", bool(sheet_id))
-                  print("sheet_name:", sheet_name)
+                  print("=== Glossary Translation Check (near-prod) ===")
+                  print("sheet_id_present:", bool(sid))
+                  print("sheet_name:", ws_name)
                   print("creds_present:", bool(sa))
+                  print("--- input ---")
+                  print("title:", title_text)
+                  print("body :", (body_text[:120] + ("..." if len(body_text)>120 else "")))
 
+                  # ---- load glossary via fetch_articles
+                  fa = import_module("fetch_articles")
+
+                  cand_names = [
+                      "_load_region_glossary_gsheet",
+                      "load_region_glossary_gsheet",
+                      "_load_region_glossary",
+                  ]
+                  loader = None
+                  chosen = None
+                  for n in cand_names:
+                      fn = getattr(fa, n, None)
+                      if callable(fn):
+                          loader = fn
+                          chosen = n
+                          break
+
+                  if not loader:
+                      raise SystemExit("❌ ローダ関数が見つかりませんでした（fetch_articles 内の *_load_region_glossary_gsheet 等）。")
+
+                  # シグネチャに合わせて安全に呼ぶ
+                  import inspect
+                  sig = inspect.signature(loader)
+                  params = sig.parameters
+                  entries = []
                   try:
-                      fa = import_module("fetch_articles")
-
-                      # 2) ローダ関数を見つける
-                      cand_names = [
-                          "_load_region_glossary_gsheet",
-                          "load_region_glossary_gsheet",
-                          "_load_region_glossary",
-                      ]
-                      loader = None
-                      for n in cand_names:
-                          loader = getattr(fa, n, None)
-                          if callable(loader):
-                              chosen = n
-                              break
-
-                      entries = []
-                      if callable(loader):
-                          # 3) シグネチャに合わせて**確実に**渡す
-                          sig = inspect.signature(loader)
-                          params = sig.parameters
-                          called = ""
-                          try:
-                              if {"sheet_key","worksheet"} <= set(params):
-                                  entries = loader(sheet_key=sheet_id, worksheet=sheet_name) or []
-                                  called = f"{chosen}(sheet_key=..., worksheet=...)"
-                              elif "sheet_key" in params:
-                                  entries = loader(sheet_key=sheet_id) or []
-                                  called = f"{chosen}(sheet_key=...)"
-                              elif "worksheet" in params:
-                                  entries = loader(worksheet=sheet_name) or []
-                                  called = f"{chosen}(worksheet=...)"
-                              else:
-                                  # 位置引数のみの可能性
-                                  try:
-                                      entries = loader(sheet_id, sheet_name) or []
-                                      called = f"{chosen}(<sheet_id>, <sheet_name>)"
-                                  except TypeError:
-                                      try:
-                                          entries = loader(sheet_id) or []
-                                          called = f"{chosen}(<sheet_id>)"
-                                      except TypeError:
-                                          entries = loader() or []
-                                          called = f"{chosen}()"
-                          except Exception as e:
-                              print(f"[loader-call-error] {e!r}")
-                              entries = []
-
-                          print("loader_called_as:", called)
-                          print("loaded_entries:", len(entries))
-                          if entries:
-                              for i, x in enumerate(entries[:show], 1):
-                                  mm = (x.get("mm") or x.get("Myanmar") or "").strip()
-                                  en = (x.get("en") or x.get("English") or "").strip()
-                                  ja = (x.get("ja") or x.get("Japanese") or "").strip()
-                                  print(f"{i:02d}. {en} / {mm} -> {ja}")
-                          else:
-                              print("⚠️ No glossary loaded (check Sheet ID / credentials / worksheet name / sharing).")
-
+                      if {"sheet_key","worksheet"} <= set(params):
+                          entries = loader(sheet_key=sid, worksheet=ws_name) or []
+                          how = f"{chosen}(sheet_key=..., worksheet=...)"
+                      elif "sheet_key" in params:
+                          entries = loader(sheet_key=sid) or []
+                          how = f"{chosen}(sheet_key=...)"
+                      elif "worksheet" in params:
+                          entries = loader(worksheet=ws_name) or []
+                          how = f"{chosen}(worksheet=...)"
                       else:
-                          # 4) ローダが無い場合：sheet_pipeline のプロンプト経由で確認
+                          # 位置引数の可能性
                           try:
-                              sp = import_module("sheet_pipeline")
-                              pf = getattr(sp, "_build_region_glossary_prompt", None)
-                              if callable(pf):
-                                  prompt = pf() or ""
-                                  lines = [ln for ln in prompt.splitlines() if ln.strip().startswith("- ")]
-                                  print("loaded_entries(via prompt):", len(lines))
-                                  for i, ln in enumerate(lines[:show], 1):
-                                      print(f"{i:02d}.", ln[2:])
-                              else:
-                                  print("⚠️ _build_region_glossary_prompt not found.")
-                          except Exception as e2:
-                              print("⚠️ No glossary loaded (prompt). detail:", repr(e2))
-
+                              entries = loader(sid, ws_name) or []
+                              how = f"{chosen}(<sheet_id>, <sheet_name>)"
+                          except TypeError:
+                              try:
+                                  entries = loader(sid) or []
+                                  how = f"{chosen}(<sheet_id>)"
+                              except TypeError:
+                                  entries = loader() or []
+                                  how = f"{chosen}()"
                   except Exception as e:
-                      print("ERROR: failed to import/use fetch_articles:", repr(e))
-                      raise
+                      print("[loader-call-error]", repr(e))
+                      entries = []
+
+                  print("loader_called_as:", how if entries is not None else "(failed)")
+                  print("loaded_entries:", len(entries))
+
+                  # entries 想定：各行は dict で A/B/C/D を何らかのキーで持つ
+                  # よくあるキーの別名を吸収
+                  norm_rows = []
+                  for e in entries or []:
+                      mm = (e.get("mm") or e.get("Myanmar") or e.get("myanmar") or "").strip()
+                      en = (e.get("en") or e.get("English") or e.get("english") or "").strip()
+                      ja_body  = (e.get("ja_body")  or e.get("C") or e.get("body") or e.get("本文訳") or e.get("ja") or "").strip()
+                      ja_title = (e.get("ja_title") or e.get("D") or e.get("title") or e.get("見出し訳") or "").strip()
+                      if any([mm,en,ja_body,ja_title]):
+                          norm_rows.append({"mm":mm, "en":en, "ja_body":ja_body, "ja_title":ja_title})
+
+                  # 正規化したテキスト
+                  t_norm = nfc(title_text)
+                  b_norm = nfc(body_text)
+
+                  def find_hits(text, rows):
+                      t_en = text.lower()
+                      hits=[]
+                      for i,r in enumerate(rows):
+                          mm = nfc(r["mm"])
+                          en = nfc(r["en"])
+                          if mm and mm in text:
+                              hits.append(("mm", mm, i))
+                          elif en and en.lower() in t_en:
+                              hits.append(("en", en, i))
+                      hits.sort(key=lambda x: len(x[1]), reverse=True)  # 長い一致語優先
+                      return hits
+
+                  title_hits = find_hits(t_norm, norm_rows)
+                  body_hits  = find_hits(b_norm, norm_rows)
+
+                  ja_title = None; ja_body = None
+                  title_src=None; body_src=None
+                  if title_hits:
+                      _,_,i = title_hits[0]
+                      ja_title = norm_rows[i]["ja_title"] or ""
+                      title_src = {"match_kind": title_hits[0][0], "matched": title_hits[0][1], "row_index": i+2}
+                  if body_hits:
+                      _,_,i = body_hits[0]
+                      ja_body = norm_rows[i]["ja_body"] or ""
+                      body_src = {"match_kind": body_hits[0][0], "matched": body_hits[0][1], "row_index": i+2}
+
+                  print("\n--- result ---")
+                  print("title_matched :", bool(title_hits))
+                  if title_src:
+                      print("  via         :", title_src)
+                      print("  ja_title(D) :", ja_title or "(D列が空)")
+                  else:
+                      print("  no title match")
+
+                  print("body_matched  :", bool(body_hits))
+                  if body_src:
+                      print("  via         :", body_src)
+                      print("  ja_body(C)  :", ja_body or "(C列が空)")
+                  else:
+                      print("  no body match")
+
+                  # 上位候補も少し表示
+                  show = max(1, int(os.getenv("INPUT_SHOW_HITS") or "5"))
+                  if title_hits:
+                      print("\nTop title hits:")
+                      for k,(kind,word,idx) in enumerate(title_hits[:show],1):
+                          print(f"  {k:02d}. [{kind}] {word}  (row={idx+2})  D='{norm_rows[idx]['ja_title']}'")
+                  if body_hits:
+                      print("\nTop body hits:")
+                      for k,(kind,word,idx) in enumerate(body_hits[:show],1):
+                          print(f"  {k:02d}. [{kind}] {word}  (row={idx+2})  C='{norm_rows[idx]['ja_body']}'")
                   PY
 
-            - name: Diagnostics | list worksheets & first rows
-              run: |
-                  python - <<'PY'
-                  import os, json
-                  import gspread
-                  from google.oauth2.service_account import Credentials
+# spreadsheetからデータ取得をテスト
+# on:
+#     workflow_dispatch:
+#         inputs:
+#             sheet_id:
+#                 description: "Google Sheet ID（未入力なら secrets.MNA_SHEET_ID を使用）"
+#                 required: false
+#                 type: string
+#             show_entries:
+#                 description: "先頭から何件表示するか"
+#                 required: false
+#                 default: "10"
+#                 type: string
 
-                  sj = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON") or ""
-                  if not sj:
-                      print("no SA json found in env"); raise SystemExit(0)
+# jobs:
+#     test-glossary:
+#         runs-on: ubuntu-latest
+#         # development環境・spreadsheetブランチでのみ動作
+#         if: ${{ github.ref_name == 'spreadsheet' }}
+#         environment: development
 
-                  scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"]
-                  creds=Credentials.from_service_account_info(json.loads(sj), scopes=scopes)
-                  gc=gspread.authorize(creds)
+#         env:
+#             SHEET_ID_INPUT: ${{ inputs.sheet_id }}
+#             SHEET_ID_SECRET: ${{ secrets.MNA_SHEET_ID }}
+#             SHEET_NAME: "regions"
+#             SHOW_ENTRIES: ${{ inputs.show_entries }}
+#             GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+#             GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+#             MNA_SHEET_ID: ${{ inputs.sheet_id != '' && inputs.sheet_id || secrets.MNA_SHEET_ID }}
+#             MNA_REGION_SHEET_NAME: "regions"
+#             # 既存ファイルで使われてる
+#             PAID_PLAN_URL: ${{ secrets.PAID_PLAN_URL }}
+#             GEMINI_API_SUMMARY_KEY: ${{ secrets.GEMINI_API_TEST_SUMMARY_KEY }}
+#             GEMINI_API_DEDUPE_KEY: ${{ secrets.GEMINI_API_TEST_DEDUPE_KEY }}
+#             GEMINI_API_FULLTEXT_KEY: ${{ secrets.GEMINI_API_TEST_FULLTEXT_KEY }}
 
-                  sid=os.getenv("MNA_SHEET_ID")
-                  ws_name=os.getenv("MNA_REGION_SHEET_NAME") or "regions"
+#         steps:
+#             - name: Checkout spreadsheet branch
+#               uses: actions/checkout@v4
+#               with:
+#                   ref: spreadsheet
 
-                  ss=gc.open_by_key(sid)
-                  print("worksheets:", [w.title for w in ss.worksheets()])
-                  try:
-                      ws=ss.worksheet(ws_name)
-                      vals=ws.get_all_values() or []
-                      print("rows_total:", len(vals))
-                      for i,row in enumerate(vals[:5], start=1):
-                          print(f"row{i}:", row)
-                  except Exception as e:
-                      print("worksheet_open_error:", repr(e))
-                  PY
+#             - name: Set up Python
+#               uses: actions/setup-python@v5
+#               with:
+#                   python-version: "3.11"
+
+#             - name: Install deps (requirements.txt if exists) + minimal libs
+#               run: |
+#                   set -euxo pipefail
+#                   if [ -f requirements.txt ]; then
+#                     pip install -r requirements.txt
+#                   fi
+#                   pip install gspread google-auth
+
+#             - name: Test region glossary loading
+#               run: |
+#                   python - <<'PY'
+#                   import os, json, inspect
+#                   from importlib import import_module
+
+#                   # 1) シート／タブ／認証
+#                   sheet_id   = os.getenv("MNA_SHEET_ID") or ""
+#                   sheet_name = os.getenv("MNA_REGION_SHEET_NAME") or "regions"
+#                   show       = max(1, int(os.getenv("SHOW_ENTRIES") or "10"))
+
+#                   # fetch_articles 側が参照しうる環境変数名を**全部**埋めておく（片方しか見ない実装対策）
+#                   sa = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON") or ""
+#                   if sa:
+#                       os.environ.setdefault("GOOGLE_CREDENTIALS_JSON", sa)           # 別名
+#                       os.environ.setdefault("GOOGLE_APPLICATION_CREDENTIALS_JSON", sa) # 念のため
+
+#                   # タブ名も複数候補で上書き（実装差異を吸収）
+#                   for k in [
+#                       "MNA_REGION_SHEET_NAME",
+#                       "MNA_REGION_GLOSSARY_SHEET_NAME",
+#                       "REGION_GLOSSARY_SHEET_NAME",
+#                       "REGION_SHEET_NAME",
+#                   ]:
+#                       os.environ.setdefault(k, sheet_name)
+
+#                   print("=== Test Region Glossary (Google Sheet) ===")
+#                   print("branch: spreadsheet")
+#                   print("environment: development")
+#                   print("sheet_id_present:", bool(sheet_id))
+#                   print("sheet_name:", sheet_name)
+#                   print("creds_present:", bool(sa))
+
+#                   try:
+#                       fa = import_module("fetch_articles")
+
+#                       # 2) ローダ関数を見つける
+#                       cand_names = [
+#                           "_load_region_glossary_gsheet",
+#                           "load_region_glossary_gsheet",
+#                           "_load_region_glossary",
+#                       ]
+#                       loader = None
+#                       for n in cand_names:
+#                           loader = getattr(fa, n, None)
+#                           if callable(loader):
+#                               chosen = n
+#                               break
+
+#                       entries = []
+#                       if callable(loader):
+#                           # 3) シグネチャに合わせて**確実に**渡す
+#                           sig = inspect.signature(loader)
+#                           params = sig.parameters
+#                           called = ""
+#                           try:
+#                               if {"sheet_key","worksheet"} <= set(params):
+#                                   entries = loader(sheet_key=sheet_id, worksheet=sheet_name) or []
+#                                   called = f"{chosen}(sheet_key=..., worksheet=...)"
+#                               elif "sheet_key" in params:
+#                                   entries = loader(sheet_key=sheet_id) or []
+#                                   called = f"{chosen}(sheet_key=...)"
+#                               elif "worksheet" in params:
+#                                   entries = loader(worksheet=sheet_name) or []
+#                                   called = f"{chosen}(worksheet=...)"
+#                               else:
+#                                   # 位置引数のみの可能性
+#                                   try:
+#                                       entries = loader(sheet_id, sheet_name) or []
+#                                       called = f"{chosen}(<sheet_id>, <sheet_name>)"
+#                                   except TypeError:
+#                                       try:
+#                                           entries = loader(sheet_id) or []
+#                                           called = f"{chosen}(<sheet_id>)"
+#                                       except TypeError:
+#                                           entries = loader() or []
+#                                           called = f"{chosen}()"
+#                           except Exception as e:
+#                               print(f"[loader-call-error] {e!r}")
+#                               entries = []
+
+#                           print("loader_called_as:", called)
+#                           print("loaded_entries:", len(entries))
+#                           if entries:
+#                               for i, x in enumerate(entries[:show], 1):
+#                                   mm = (x.get("mm") or x.get("Myanmar") or "").strip()
+#                                   en = (x.get("en") or x.get("English") or "").strip()
+#                                   ja = (x.get("ja") or x.get("Japanese") or "").strip()
+#                                   print(f"{i:02d}. {en} / {mm} -> {ja}")
+#                           else:
+#                               print("⚠️ No glossary loaded (check Sheet ID / credentials / worksheet name / sharing).")
+
+#                       else:
+#                           # 4) ローダが無い場合：sheet_pipeline のプロンプト経由で確認
+#                           try:
+#                               sp = import_module("sheet_pipeline")
+#                               pf = getattr(sp, "_build_region_glossary_prompt", None)
+#                               if callable(pf):
+#                                   prompt = pf() or ""
+#                                   lines = [ln for ln in prompt.splitlines() if ln.strip().startswith("- ")]
+#                                   print("loaded_entries(via prompt):", len(lines))
+#                                   for i, ln in enumerate(lines[:show], 1):
+#                                       print(f"{i:02d}.", ln[2:])
+#                               else:
+#                                   print("⚠️ _build_region_glossary_prompt not found.")
+#                           except Exception as e2:
+#                               print("⚠️ No glossary loaded (prompt). detail:", repr(e2))
+
+#                   except Exception as e:
+#                       print("ERROR: failed to import/use fetch_articles:", repr(e))
+#                       raise
+#                   PY
+
+#             - name: Diagnostics | list worksheets & first rows
+#               run: |
+#                   python - <<'PY'
+#                   import os, json
+#                   import gspread
+#                   from google.oauth2.service_account import Credentials
+
+#                   sj = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON") or ""
+#                   if not sj:
+#                       print("no SA json found in env"); raise SystemExit(0)
+
+#                   scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"]
+#                   creds=Credentials.from_service_account_info(json.loads(sj), scopes=scopes)
+#                   gc=gspread.authorize(creds)
+
+#                   sid=os.getenv("MNA_SHEET_ID")
+#                   ws_name=os.getenv("MNA_REGION_SHEET_NAME") or "regions"
+
+#                   ss=gc.open_by_key(sid)
+#                   print("worksheets:", [w.title for w in ss.worksheets()])
+#                   try:
+#                       ws=ss.worksheet(ws_name)
+#                       vals=ws.get_all_values() or []
+#                       print("rows_total:", len(vals))
+#                       for i,row in enumerate(vals[:5], start=1):
+#                           print(f"row{i}:", row)
+#                   except Exception as e:
+#                       print("worksheet_open_error:", repr(e))
+#                   PY
