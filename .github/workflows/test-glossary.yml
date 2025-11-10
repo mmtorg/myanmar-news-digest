@@ -161,7 +161,7 @@ jobs:
                       mm = (e.get("mm") or e.get("Myanmar") or e.get("myanmar") or "").strip()
                       en = (e.get("en") or e.get("English") or e.get("english") or "").strip()
                       ja_body  = (e.get("ja_body")  or e.get("C") or e.get("body") or e.get("本文訳") or e.get("ja") or "").strip()
-                      ja_title = (e.get("ja_title") or e.get("D") or e.get("title") or e.get("見出し訳") or "").strip()
+                      ja_title = (e.get("ja_headline") or e.get("ja_title") or e.get("D") or e.get("title") or e.get("見出し訳") or "").strip()
                       if any([mm,en,ja_body,ja_title]):
                           norm_rows.append({"mm":mm, "en":en, "ja_body":ja_body, "ja_title":ja_title})
 
