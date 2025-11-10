@@ -738,7 +738,12 @@ def _headline_variants_ja(title: str, source: str, url: str, body: str = "") -> 
     os.environ["GEMINI_API_KEY"] = key
     model = os.getenv("GEMINI_HEADLINE_MODEL", "gemini-2.5-flash")
 
-    glossary = _build_region_glossary_prompt() + _build_term_rules_prompt(title, body)
+    # タイトルに出現した語 → D列（見出し訳）を採用
+    # 本文に出現した語 → C列（本文訳）を採用
+    rg_title = _region_rules_for_title(title)
+    rg_body  = _region_rules_for_body(body)
+    glossary = rg_title + rg_body + _build_term_rules_prompt(title, body)
+
     # ---- 案1：原題ベース ----
     try:
         if _LIMITER: _LIMITER.wait()
