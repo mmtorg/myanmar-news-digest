@@ -2,8 +2,8 @@ name: Daily Myanmar News Alert
 
 on:
   schedule:
-    # 22:00 MMT = 15:30 UTC
-    - cron: "30 15 * * *"
+    # 21:57 MMT = 15:27 UTC
+    - cron: "27 15 * * *" # 21:57 MMT（UTC+06:30）
   workflow_dispatch: # 手動＝開発で実行
     inputs:
       date_mmt:
