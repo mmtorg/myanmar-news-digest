@@ -4383,8 +4383,11 @@ def send_email_digest(
             f"{summary_html}"
             "</div>"
         )
-        if include_read_link:
-            html_content += f"<p><a href='{url}' style='color:#1a0dab' target='_blank'>本文を読む</a></p>"
+        # J列（URL）が空なら「本文を読む」を非表示
+        if include_read_link and (url or "").strip():
+            html_content += (
+                f"<p><a href='{url}' style='color:#1a0dab' target='_blank'>本文を読む</a></p>"
+            )
         html_content += "</div><hr style='border-top: 1px solid #cccccc;'>"
 
     if trial_footer_url:
