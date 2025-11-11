@@ -1035,51 +1035,39 @@ def cmd_build_bundle_from_sheet(args):
     col = {chr(ord('A')+i): i for i in range(len(header))}  # A:0, B:1, ... K:10
     get = lambda r, key, default="": (r[col.get(key, -1)] if col.get(key, -1) >= 0 else default).strip()
 
-    MEDIA_ORDER = [
-        "Mizzima (Burmese)", "BBC Burmese", "Irrawaddy",
-        "Khit Thit Media", "DVB", "Myanmar Now",
-    ]
-    order = {m: i for i, m in enumerate(MEDIA_ORDER)}
-
-    # ② 採用フラグで選別（件数・媒体内訳をログ）
+    # ② 採用フラグで選別（※並べ替えしない。シートの出現順を維持）
     from collections import defaultdict
     with _timeit("build-bundle:select"):
-        selected = []
+        selected_rows = []
         media_counts = defaultdict(int)
         for r in rows:
-            if get(r, "K") != "a":             # 採用フラグ(K) 小文字 'a' のみ採用
+            if get(r, "K") != "a":
                 continue
-            media = get(r, "C")  # メディア(C)
-            selected.append((order.get(media, 999), r))
-            media_counts[media] += 1
-        selected.sort(key=lambda x: x[0])
+            selected_rows.append(r)
+            media_counts[get(r, "C")] += 1
 
-    total_selected = len(selected)
+    total_selected = len(selected_rows)
     if total_selected == 0:
         logging.info("[bundle] no summaries selected (K='a')")
         print("no summaries selected (K='a')"); return
 
-    # 媒体別内訳（INFO）
-    breakdown = ", ".join(f"{k}:{v}" for k, v in sorted(media_counts.items(), key=lambda x: order.get(x[0], 999)))
-    logging.info(f"[bundle] selected={total_selected} by_media=({breakdown})")
-
     # ③ summaries 構築
-    with _timeit("build-bundle:construct", selected=total_selected):
+    with _timeit("build-bundle:construct", selected=len(selected_rows)):
         summaries = []
-        for _, r in selected:
-            delivery    = get(r, "A")                        # 日付(A)
-            media       = get(r, "C")                        # メディア(C)
-            title_final = get(r, "H")                        # 確定見出し日本語訳(H)
-            body_sum    = get(r, "I")                        # 本文要約(I)
-            url         = get(r, "J")                        # URL(J)
-            is_ay       = (get(r, "D").upper() == "TRUE")    # エーヤワディー(D)
+        for r in selected_rows:
+            delivery    = get(r, "A") # 日付(A)
+            media       = get(r, "C") # メディア(C)
+            title_final = get(r, "H") # 確定見出し日本語訳(H)
+            body_sum    = get(r, "I") # 本文要約(I)
+            url         = get(r, "J") # URL(J)
+            is_ay       = (get(r, "D").upper() == "TRUE") # エーヤワディー(D)
             summaries.append({
                 "source": media,
                 "url": url,
                 "title": unicodedata.normalize("NFC", title_final),
                 "summary": unicodedata.normalize("NFC", body_sum),
                 "is_ayeyarwady": is_ay,
-                "is_ayeyar": is_ay,  # ← fetch_articles.py の件名ロジック互換のため追加
+                "is_ayeyar": is_ay,
                 "date_mmt": delivery,
             })
 
@@ -1102,36 +1090,26 @@ def cmd_build_bundle_from_sheet(args):
             json.dump(summaries, f, ensure_ascii=False, indent=2)
 
         # Ayeyarwady 専用サマリ（INTERNAL 配信で fetch_articles.py が参照）
-        # ※ K列の採用フラグには依存させない（D=TRUE なら K 不問）
-        ayeyar_pairs = []
-        for r in rows:  # ← selected ではなく rows 全体から抽出
-            is_ay = (get(r, "D").upper() == "TRUE")
-            if not is_ay:
+        # ※ K列の採用フラグには依存しない（D=TRUE なら K 不問、かつシート出現順を維持）
+        summaries_ayeyar = []
+        for r in rows:  # rows 全体をシート出現順で走査
+            if (get(r, "D").upper() != "TRUE"):
                 continue
-            delivery    = get(r, "A")                     # 日付(A)
-            media       = get(r, "C")                     # メディア(C)
-            title_final = get(r, "H")                     # 確定見出し日本語訳(H)
-            body_sum    = get(r, "I")                     # 本文要約(I)
-            url         = get(r, "J")                     # URL(J)
-            ayeyar_pairs.append((
-                order.get(media, 999),  # 既存の媒体順に合わせる
-                {
-                    "source": media,
-                    "url": url,
-                    "title": unicodedata.normalize("NFC", title_final),
-                    "summary": unicodedata.normalize("NFC", body_sum),
-                    "is_ayeyarwady": True,
-                    "is_ayeyar": True,  # 件名ロジック互換
-                    "date_mmt": delivery,
-                }
-            ))
-        ayeyar_pairs.sort(key=lambda x: x[0])
-        summaries_ayeyar = [s for _, s in ayeyar_pairs]
-        with open(os.path.join(out_dir, "summaries_ayeyar.json"), "w", encoding="utf-8") as f:
-            json.dump(summaries_ayeyar, f, ensure_ascii=False, indent=2)
+            delivery    = get(r, "A")  # 日付(A)
+            media       = get(r, "C")  # メディア(C)
+            title_final = get(r, "H")  # 確定見出し日本語訳(H)
+            body_sum    = get(r, "I")  # 本文要約(I)
+            url         = get(r, "J")  # URL(J)
+            summaries_ayeyar.append({
+                "source": media,
+                "url": url,
+                "title": unicodedata.normalize("NFC", title_final),
+                "summary": unicodedata.normalize("NFC", body_sum),
+                "is_ayeyarwady": True,
+                "is_ayeyar": True,   # 件名ロジック互換
+                "date_mmt": delivery,
+            })
 
-        # Ayeyarwady 専用サマリ（INTERNAL 配信で fetch_articles.py が参照）
-        summaries_ayeyar = [s for s in summaries if s.get("is_ayeyar") or s.get("is_ayeyarwady")]
         with open(os.path.join(out_dir, "summaries_ayeyar.json"), "w", encoding="utf-8") as f:
             json.dump(summaries_ayeyar, f, ensure_ascii=False, indent=2)
 

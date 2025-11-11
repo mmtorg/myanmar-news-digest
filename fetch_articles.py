@@ -4352,10 +4352,6 @@ def send_email_digest(
     digest_date = get_today_date_mmt()
     date_str = digest_date.strftime("%Y年%-m月%-d日") + "分"
 
-    media_grouped = defaultdict(list)
-    for item in summaries:
-        media_grouped[item["source"]].append(item)
-
     headlines = [f"✓ {item['title']}" for item in summaries]
     headline_html = (
         "<div style='margin-bottom:20px'>"
@@ -4367,29 +4363,29 @@ def send_email_digest(
     html_content = "<html><body style='font-family: Arial, sans-serif; background-color: #ffffff; color: #333333;'>"
     html_content += headline_html
 
-    for media, articles in media_grouped.items():
-        for item in articles:
-            title_jp = item["title"]; url = item["url"]
-            summary_raw = item["summary"]
-            summary_html = _nl2br(summary_raw) if preserve_newlines else summary_raw
-            heading_html = (
-                "<h2 style='margin-bottom:5px'>"
-                f"{title_jp}　"
-                "<span style='font-size:0.83rem;font-weight:600'>"
-                f"{media} "
-                "</span>"
-                "</h2>"
-            )
-            html_content += (
-                "<div style='margin-bottom:20px'>"
-                f"{heading_html}"
-                "<div style='background-color:#f9f9f9;padding:10px;border-radius:8px'>"
-                f"{summary_html}"
-                "</div>"
-            )
-            if include_read_link:
-                html_content += f"<p><a href='{url}' style='color:#1a0dab' target='_blank'>本文を読む</a></p>"
-            html_content += "</div><hr style='border-top: 1px solid #cccccc;'>"
+    for item in summaries:
+        media = item["source"]
+        title_jp = item["title"]; url = item["url"]
+        summary_raw = item["summary"]
+        summary_html = _nl2br(summary_raw) if preserve_newlines else summary_raw
+        heading_html = (
+            "<h2 style='margin-bottom:5px'>"
+            f"{title_jp}　"
+            "<span style='font-size:0.83rem;font-weight:600'>"
+            f"{media} "
+            "</span>"
+            "</h2>"
+        )
+        html_content += (
+            "<div style='margin-bottom:20px'>"
+            f"{heading_html}"
+            "<div style='background-color:#f9f9f9;padding:10px;border-radius:8px'>"
+            f"{summary_html}"
+            "</div>"
+        )
+        if include_read_link:
+            html_content += f"<p><a href='{url}' style='color:#1a0dab' target='_blank'>本文を読む</a></p>"
+        html_content += "</div><hr style='border-top: 1px solid #cccccc;'>"
 
     if trial_footer_url:
         # ===== TRIAL footer (HTML/CSS, no images) =====
