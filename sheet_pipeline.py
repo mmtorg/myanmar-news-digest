@@ -1079,6 +1079,7 @@ def cmd_build_bundle_from_sheet(args):
                 "title": unicodedata.normalize("NFC", title_final),
                 "summary": unicodedata.normalize("NFC", body_sum),
                 "is_ayeyarwady": is_ay,
+                "is_ayeyar": is_ay,  # ← fetch_articles.py の件名ロジック互換のため追加
                 "date_mmt": delivery,
             })
 
@@ -1099,6 +1100,40 @@ def cmd_build_bundle_from_sheet(args):
             json.dump(meta, f, ensure_ascii=False, indent=2)
         with open(os.path.join(out_dir, "summaries.json"), "w", encoding="utf-8") as f:
             json.dump(summaries, f, ensure_ascii=False, indent=2)
+
+        # Ayeyarwady 専用サマリ（INTERNAL 配信で fetch_articles.py が参照）
+        # ※ K列の採用フラグには依存させない（D=TRUE なら K 不問）
+        ayeyar_pairs = []
+        for r in rows:  # ← selected ではなく rows 全体から抽出
+            is_ay = (get(r, "D").upper() == "TRUE")
+            if not is_ay:
+                continue
+            delivery    = get(r, "A")                     # 日付(A)
+            media       = get(r, "C")                     # メディア(C)
+            title_final = get(r, "H")                     # 確定見出し日本語訳(H)
+            body_sum    = get(r, "I")                     # 本文要約(I)
+            url         = get(r, "J")                     # URL(J)
+            ayeyar_pairs.append((
+                order.get(media, 999),  # 既存の媒体順に合わせる
+                {
+                    "source": media,
+                    "url": url,
+                    "title": unicodedata.normalize("NFC", title_final),
+                    "summary": unicodedata.normalize("NFC", body_sum),
+                    "is_ayeyarwady": True,
+                    "is_ayeyar": True,  # 件名ロジック互換
+                    "date_mmt": delivery,
+                }
+            ))
+        ayeyar_pairs.sort(key=lambda x: x[0])
+        summaries_ayeyar = [s for _, s in ayeyar_pairs]
+        with open(os.path.join(out_dir, "summaries_ayeyar.json"), "w", encoding="utf-8") as f:
+            json.dump(summaries_ayeyar, f, ensure_ascii=False, indent=2)
+
+        # Ayeyarwady 専用サマリ（INTERNAL 配信で fetch_articles.py が参照）
+        summaries_ayeyar = [s for s in summaries if s.get("is_ayeyar") or s.get("is_ayeyarwady")]
+        with open(os.path.join(out_dir, "summaries_ayeyar.json"), "w", encoding="utf-8") as f:
+            json.dump(summaries_ayeyar, f, ensure_ascii=False, indent=2)
 
     logging.info(f"[bundle] rebuilt dir={out_dir} items={len(summaries)} date_mmt={summaries[0]['date_mmt']}")
     print(f"bundle rebuilt: {out_dir} (items={len(summaries)})")

@@ -344,6 +344,7 @@ jobs:
           path: |
             bundle/meta.json
             bundle/summaries.json
+            bundle/summaries_ayeyar.json
             bundle/digest.pdf
             bundle/attachment_name.txt
             bundle/bodies.json
@@ -550,6 +551,7 @@ jobs:
           path: |
             bundle/meta.json
             bundle/summaries.json
+            bundle/summaries_ayeyar.json
             bundle/digest.pdf
             bundle/attachment_name.txt
             bundle/bodies.json
