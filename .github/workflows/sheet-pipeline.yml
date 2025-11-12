@@ -64,9 +64,9 @@ jobs:
       GEMINI_API_KEY_KHITTHIT: ${{ secrets.GEMINI_API_KEY_KHITTHIT }}
       GEMINI_API_KEY_MYANMARNOW: ${{ secrets.GEMINI_API_KEY_MYANMARNOW }}
       GEMINI_API_KEY_DVB: ${{ secrets.GEMINI_API_KEY_DVB }}
-      GEMINI_REQS_PER_MIN: 9
-      GEMINI_MIN_INTERVAL_SEC: 2.0
-      GEMINI_JITTER_SEC: 0.3
+      GEMINI_REQS_PER_MIN: 6
+      GEMINI_MIN_INTERVAL_SEC: 2.5
+      GEMINI_JITTER_SEC: 0.5
       # ===== Google Sheets（production）=====
       GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
       MNA_SHEET_ID: ${{ secrets.MNA_SHEET_ID }}
@@ -131,9 +131,9 @@ jobs:
       GEMINI_API_KEY_KHITTHIT: ${{ secrets.GEMINI_API_KEY_KHITTHIT }}
       GEMINI_API_KEY_MYANMARNOW: ${{ secrets.GEMINI_API_KEY_MYANMARNOW }}
       GEMINI_API_KEY_DVB: ${{ secrets.GEMINI_API_KEY_DVB }}
-      GEMINI_REQS_PER_MIN: 9
-      GEMINI_MIN_INTERVAL_SEC: 2.0
-      GEMINI_JITTER_SEC: 0.3
+      GEMINI_REQS_PER_MIN: 6
+      GEMINI_MIN_INTERVAL_SEC: 2.5
+      GEMINI_JITTER_SEC: 0.5
       # ===== Google Sheets（production）=====
       GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
       MNA_SHEET_ID: ${{ secrets.MNA_SHEET_ID }}
@@ -220,9 +220,9 @@ jobs:
       GEMINI_API_KEY_KHITTHIT: ${{ secrets.GEMINI_API_KEY_KHITTHIT }}
       GEMINI_API_KEY_MYANMARNOW: ${{ secrets.GEMINI_API_KEY_MYANMARNOW }}
       GEMINI_API_KEY_DVB: ${{ secrets.GEMINI_API_KEY_DVB }}
-      GEMINI_REQS_PER_MIN: 9
-      GEMINI_MIN_INTERVAL_SEC: 2.0
-      GEMINI_JITTER_SEC: 0.3
+      GEMINI_REQS_PER_MIN: 6
+      GEMINI_MIN_INTERVAL_SEC: 2.5
+      GEMINI_JITTER_SEC: 0.5
       # ===== Google Sheets（production）=====
       GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
       MNA_SHEET_ID: ${{ secrets.MNA_SHEET_ID }}
@@ -408,9 +408,9 @@ jobs:
             } >> "$GITHUB_ENV"
           fi
           {
-            echo "GEMINI_REQS_PER_MIN=9";
-            echo "GEMINI_MIN_INTERVAL_SEC=2.0";
-            echo "GEMINI_JITTER_SEC=0.3";
+            echo "GEMINI_REQS_PER_MIN=6";
+            echo "GEMINI_MIN_INTERVAL_SEC=2.5";
+            echo "GEMINI_JITTER_SEC=0.5";
             echo "MNA_SHEET_ID=${{ secrets.MNA_SHEET_ID }}";
           } >> "$GITHUB_ENV"
 
