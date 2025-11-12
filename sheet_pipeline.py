@@ -120,6 +120,34 @@ try:
 except Exception:
     fetch_with_retry_irrawaddy = None
     extract_body_irrawaddy = None
+    
+# --- 用語集（州・管区訳）: タイトル=D / 本文=C を fetch_articles の実装で再利用 ---
+try:
+    from fetch_articles import (
+        _load_region_glossary_gsheet as _fa_load_regions,
+        _select_region_entries_for_text as _fa_sel_regions,
+        _build_region_glossary_prompt_for as _fa_build_rg_for,
+        _apply_region_glossary_to_text as _fa_apply_region_glossary_to_text,
+    )
+    _REGION_CACHE: list[dict] | None = None
+    def _regions():
+        global _REGION_CACHE
+        if _REGION_CACHE is None:
+            _REGION_CACHE = _fa_load_regions(
+                os.getenv("MNA_SHEET_ID"),
+                os.getenv("MNA_REGION_SHEET_NAME") or "regions",
+            )
+        return _REGION_CACHE or []
+    def _region_rules_for_title(title: str) -> str:
+        return _fa_build_rg_for(_fa_sel_regions(title or "", _regions()), use_headline_ja=True)
+    def _region_rules_for_body(body: str) -> str:
+        return _fa_build_rg_for(_fa_sel_regions(body or "", _regions()), use_headline_ja=False)
+    def _apply_region_glossary_to_text(s: str) -> str:
+        return _fa_apply_region_glossary_to_text(s)
+except Exception:
+    def _region_rules_for_title(_: str) -> str: return ""
+    def _region_rules_for_body(_: str) -> str: return ""
+    def _apply_region_glossary_to_text(s: str) -> str: return s
 
 # ===== 本文キャッシュ（bundle/bodies.json） & 本文取得  =====
 _BODIES_LOCK = threading.Lock()
@@ -397,6 +425,7 @@ COMMON_TRANSLATION_RULES = (
 TITLE_OUTPUT_RULES = (
     "出力は見出し文だけを1行で返してください。\n"
     "【翻訳】や【日本語見出し案】、## 翻訳 などのラベル・注釈タグ・見出しは出力しないでください。\n"
+    "文体は だ・である調。必要に応じて体言止めを用いる（乱用は避ける）。\n"
 )
 
 # ===== ▼ プロンプト管理（見出し翻訳 / 本文要約）================================
@@ -462,8 +491,8 @@ STEP3_TASK = (
     "以下のルールに従って、本文を要約してください。\n\n"
     f"{COMMON_TRANSLATION_RULES}"
     "本文要約：\n"
-    "- 以下の記事本文について重要なポイントをまとめ、500字以内で具体的に要約してください。\n"
-    "- 自然な日本語に翻訳してください。\n"
+    "- 以下の記事本文について重要なポイントをまとめ、最大500字で具体的に要約する（500字を超えない）。\n"
+    "- 自然な日本語に翻訳する。文体は だ・である調。必要に応じて体言止めを用いる（乱用は避ける）。\n"
     "- 個別記事の本文のみを対象とし、メディア説明やページ全体の解説は不要です。\n"
     "- レスポンスでは要約のみを返してください、それ以外の文言は不要です。\n\n"
     "本文要約の出力条件：\n"
@@ -477,7 +506,7 @@ STEP3_TASK = (
     "- 箇条書きは`・`を使ってください。\n"
     "- 「【要約】」は1回だけ書き、途中や本文の末尾には繰り返さないでください。\n"
     "- 思考用の手順（Step 1/2/3、Q1/Q2、→ など）は出力に含めないこと。\n"
-    "- 本文要約の合計は最大500文字以内に収めてください。\n\n"
+    "- 本文要約の合計は最大500文字以内に収める。超えそうな場合は重要情報を優先して削る（日時・主体・行為・規模・結果を優先）。\n\n"
 )
 
 def _build_summary_prompt(item: dict, *, body_max: int) -> str:
@@ -493,7 +522,89 @@ def _build_summary_prompt(item: dict, *, body_max: int) -> str:
         f"{body}\n"
         "###\n"
     )
-    return header + pre + STEP3_TASK + "\n" + input_block
+    rg_title = _region_rules_for_title(item.get("title") or "")
+    rg_body  = _region_rules_for_body(body)
+    term_rules = _build_term_rules_prompt(item.get("title") or "", body)
+    return header + pre + STEP3_TASK + (rg_title + rg_body) + term_rules + "\n" + input_block
+
+# ===== 用語集（A:Myanmar / B:English / C:本文訳 / D:見出し訳） =====
+_TERM_CACHE: list[dict] | None = None
+TERM_SHEET_ID = os.getenv("MNA_TERM_SHEET_ID")
+TERM_SHEET_NAME = os.getenv("MNA_TERM_SHEET_NAME") or "regions"
+
+def _load_term_glossary_gsheet() -> list[dict]:
+    """用語集を {mm,en,body_ja,title_ja} の配列で返す。失敗時は空配列。"""
+    global _TERM_CACHE
+    if _TERM_CACHE is not None:
+        return _TERM_CACHE
+    try:
+        gc = _gc_client()
+        ws = gc.open_by_key(TERM_SHEET_ID).worksheet(TERM_SHEET_NAME)
+        vals = ws.get_all_values() or []
+        rows = []
+        for r in (vals[1:] if len(vals) > 1 else []):
+            mm = (r[0] if len(r) > 0 else "").strip()
+            en = (r[1] if len(r) > 1 else "").strip()
+            bj = (r[2] if len(r) > 2 else "").strip()  # 本文訳（C）
+            tj = (r[3] if len(r) > 3 else "").strip()  # 見出し訳（D）
+            if not (mm or en):
+                continue
+            rows.append({"mm": mm, "en": en, "body_ja": bj, "title_ja": tj})
+        _TERM_CACHE = rows
+    except Exception:
+        _TERM_CACHE = []
+    return _TERM_CACHE
+
+def _build_term_rules_prompt(title_src: str, body_src: str) -> str:
+    """この記事で **実際にヒットした語だけ** を箇条書きで指示文にする。"""
+    ts, bs = (title_src or ""), (body_src or "")
+    if not (ts or bs):
+        return ""
+    rules_t, rules_b = [], []
+    for row in _load_term_glossary_gsheet():
+        mm, en, bj, tj = row["mm"], row["en"], row["body_ja"], row["title_ja"]
+        hit_t = (mm and mm in ts) or (en and en.lower() in ts.lower())
+        hit_b = (mm and mm in bs) or (en and en.lower() in bs.lower())
+        if hit_t and tj:
+            rules_t.append(f"- {mm or en} ⇒ {tj}")
+        if hit_b and bj:
+            rules_b.append(f"- {mm or en} ⇒ {bj}")
+    if not (rules_t or rules_b):
+        return ""
+    out = ["【用語固定ルール（この記事で該当した語のみ・厳守）】"]
+    if rules_t:
+        out.append("▼見出しに出た場合は次を必ず採用：")
+        out.extend(rules_t)
+    if rules_b:
+        out.append("▼本文に出た場合は次を必ず採用：")
+        out.extend(rules_b)
+    return "\n".join(out) + "\n"
+
+_WORD_RE = re.compile(r"\b", re.UNICODE)
+def _apply_term_glossary_to_output(text: str, *, src: str, prefer: str) -> str:
+    """
+    仕上げ用の軽い置換。
+    - src（原文）に A/B が出ている語だけ対象
+    - 出力内に英語/ビルマ語が残っていたら C/D の日本語で上書き
+    prefer: 'title_ja' または 'body_ja'
+    """
+    t = (text or "")
+    if not t:
+        return t
+    s = (src or "")
+    for row in _load_term_glossary_gsheet():
+        mm, en = row["mm"], row["en"]
+        ja = row["title_ja"] if prefer == "title_ja" else row["body_ja"]
+        if not ja:
+            continue
+        if not ((mm and mm in s) or (en and en.lower() in s.lower())):
+            continue
+        # 出力内に en/mm が残っていれば日本語で置換
+        if en:
+            t = re.sub(rf"(?<![A-Za-z]){re.escape(en)}(?![A-Za-z])", ja, t)
+        if mm:
+            t = t.replace(mm, ja)
+    return t
 
 # ===== 収集器：export_all_articles_to_csv.py から日付別収集関数を利用 =====
 collectors_loaded = False
@@ -628,12 +739,18 @@ def _headline_variants_ja(title: str, source: str, url: str, body: str = "") -> 
     os.environ["GEMINI_API_KEY"] = key
     model = os.getenv("GEMINI_HEADLINE_MODEL", "gemini-2.5-flash")
 
-    # ---- 案1：原題ベース（変更なし）----
+    # タイトルに出現した語 → D列（見出し訳）を採用
+    # 本文に出現した語 → C列（本文訳）を採用
+    rg_title = _region_rules_for_title(title)
+    rg_body  = _region_rules_for_body(body)
+    glossary = rg_title + rg_body + _build_term_rules_prompt(title, body)
+
+    # ---- 案1：原題ベース ----
     try:
         if _LIMITER: _LIMITER.wait()
         resp1 = call_gemini_with_retries(
             client_summary,
-            f"{HEADLINE_PROMPT_1}\n\n原題: {title}\nsource:{source}\nurl:{url}",
+            f"{HEADLINE_PROMPT_1}{glossary}\n\n原題: {title}\nsource:{source}\nurl:{url}",
             model=model,
         )
         v1 = unicodedata.normalize("NFC", (resp1.text or "").strip())
@@ -643,7 +760,7 @@ def _headline_variants_ja(title: str, source: str, url: str, body: str = "") -> 
     # ---- 案2：案1を素材に再生成（変更なし／前回方針のまま）----
     try:
         if _LIMITER: _LIMITER.wait()
-        prompt2 = make_headline_prompt_2_from(v1)
+        prompt2 = (glossary or "") + make_headline_prompt_2_from(v1)
         resp2 = call_gemini_with_retries(client_summary, prompt2, model=model)
         v2 = unicodedata.normalize("NFC", (resp2.text or "").strip())
     except Exception:
@@ -659,7 +776,8 @@ def _headline_variants_ja(title: str, source: str, url: str, body: str = "") -> 
         else:
             prompt3 = (
                 f"{HEADLINE_PROMPT_3}\n\n"
-                "【本文】\n" + body_for_prompt + "\n\n"
+                + (glossary or "")
+                + "【本文】\n" + body_for_prompt + "\n\n"
                 f"（参考）原題: {title}\nsource:{source}\nurl:{url}\n"
             )
             resp3 = call_gemini_with_retries(client_summary, prompt3, model=model)
@@ -667,6 +785,10 @@ def _headline_variants_ja(title: str, source: str, url: str, body: str = "") -> 
     except Exception:
         v3 = v1
 
+    # 生成後の最終統一（州・管区名 → 既存）＋（用語集 → 新規）
+    v1 = _apply_region_glossary_to_text(v1); v1 = _apply_term_glossary_to_output(v1, src=title, prefer="title_ja")
+    v2 = _apply_region_glossary_to_text(v2); v2 = _apply_term_glossary_to_output(v2, src=title, prefer="title_ja")
+    v3 = _apply_region_glossary_to_text(v3); v3 = _apply_term_glossary_to_output(v3, src=title, prefer="title_ja")
     return [v1, v2, v3]
 
 def _summary_ja(source: str, title: str, body: str, url: str) -> str:
@@ -695,9 +817,13 @@ def _summary_ja(source: str, title: str, body: str, url: str) -> str:
         resp = call_gemini_with_retries(
             client_summary, prompt, model=os.getenv("GEMINI_SUMMARY_MODEL", "gemini-2.5-flash")
         )
-        return unicodedata.normalize("NFC", (resp.text or "").strip())
+        text = unicodedata.normalize("NFC", (resp.text or "").strip())
+        text = _apply_region_glossary_to_text(text)
+        return _apply_term_glossary_to_output(text, src=body, prefer="body_ja")
     except Exception:
-        return unicodedata.normalize("NFC", (body or "").strip())[:400]
+        text = unicodedata.normalize("NFC", (body or "").strip())[:400]
+        text = _apply_region_glossary_to_text(text)
+        return _apply_term_glossary_to_output(text, src=body, prefer="body_ja")
 
 def _is_ayeyarwady(title_ja: str, summary_ja: str) -> bool:
     """
@@ -781,20 +907,26 @@ def _append_rows(rows_to_append: List[List[str]]):
     if not rows_to_append:
         return
     header, rows, ws = _read_all_rows()
-    name_to_idx = {n:i for i,n in enumerate(header)}
-    idx_A = name_to_idx.get("日付", 0)  # A列（見出し "日付"）
+
+    # A列を固定的に参照（列名に依存しない）
+    idx_A = 0
+
     filled = sum(1 for r in rows if (r[idx_A] or "").strip())  # A列のみで判定
     start_row = 2 + filled
     logging.info(f"[sheet] append start_row=A{start_row} rows={len(rows_to_append)}")
+
     with _timeit("sheet.append", rows=len(rows_to_append), start_row=start_row):
         ws.update(f"A{start_row}", rows_to_append, value_input_option="USER_ENTERED")
 
 def _keep_only_rows_of_date(date_str: str) -> int:
-    """A列が date_str(YYYY-MM-DD) の行だけ残す (= 今日以外は A:J クリア & K=FALSE)。戻り値=削除行数"""
+    """A列が date_str(YYYY-MM-DD) の行だけ残す (= 今日以外は A:J と K をクリア)。戻り値=削除行数"""
     header, rows, ws = _read_all_rows()
-    if not rows: return 0
-    name_to_idx = {n:i for i,n in enumerate(header)}
-    idx_A = name_to_idx.get("日付", 1)  # A列（見出し "日付"）
+    if not rows:
+        return 0
+
+    # A列を固定的に参照（列名に依存しない）
+    idx_A = 0
+
     kept = []
     for r in rows:
         try:
@@ -812,9 +944,9 @@ def _keep_only_rows_of_date(date_str: str) -> int:
     if kept:
         ws.update("A2", kept, value_input_option="USER_ENTERED")
 
-    # K列（採用フラグなど）は全行 FALSE にリセット（A..J が空の行も含む）
+    # K列（採用フラグ）は全行 ブランク にリセット（A..J が空の行も含む）
     if total > 0:
-        ws.update(f"K2:K{total+1}", [["FALSE"]]*total, value_input_option="USER_ENTERED")
+        ws.update(f"K2:K{total+1}", [[""]]*total, value_input_option="USER_ENTERED")
 
     return len(rows) - len(kept)
 
@@ -897,56 +1029,45 @@ def cmd_build_bundle_from_sheet(args):
     if not rows:
         logging.warning("[bundle] no rows")
         print("no rows"); return
-    logging.info(f"[bundle] rows_total={len(rows)} (採用フラグ=TRUEのみ抽出)")
+    logging.info(f"[bundle] rows_total={len(rows)} (採用フラグ=K='a' のみ抽出)")
 
     # 列名に依存しないよう、列記号(A..K)を固定でインデックス化して参照する
     col = {chr(ord('A')+i): i for i in range(len(header))}  # A:0, B:1, ... K:10
     get = lambda r, key, default="": (r[col.get(key, -1)] if col.get(key, -1) >= 0 else default).strip()
 
-    MEDIA_ORDER = [
-        "Mizzima (Burmese)", "BBC Burmese", "Irrawaddy",
-        "Khit Thit Media", "DVB", "Myanmar Now",
-    ]
-    order = {m: i for i, m in enumerate(MEDIA_ORDER)}
-
-    # ② 採用フラグで選別（件数・媒体内訳をログ）
+    # ② 採用フラグで選別（※並べ替えしない。シートの出現順を維持）
     from collections import defaultdict
     with _timeit("build-bundle:select"):
-        selected = []
+        selected_rows = []
         media_counts = defaultdict(int)
         for r in rows:
-            if get(r, "K").upper() != "TRUE":  # 採用フラグ(K)
+            if get(r, "K") != "a":
                 continue
-            media = get(r, "C")  # メディア(C)
-            selected.append((order.get(media, 999), r))
-            media_counts[media] += 1
-        selected.sort(key=lambda x: x[0])
+            selected_rows.append(r)
+            media_counts[get(r, "C")] += 1
 
-    total_selected = len(selected)
+    total_selected = len(selected_rows)
     if total_selected == 0:
-        logging.info("[bundle] no summaries selected (L=TRUE)")
-        print("no summaries selected (L=TRUE)"); return
-
-    # 媒体別内訳（INFO）
-    breakdown = ", ".join(f"{k}:{v}" for k, v in sorted(media_counts.items(), key=lambda x: order.get(x[0], 999)))
-    logging.info(f"[bundle] selected={total_selected} by_media=({breakdown})")
+        logging.info("[bundle] no summaries selected (K='a')")
+        print("no summaries selected (K='a')"); return
 
     # ③ summaries 構築
-    with _timeit("build-bundle:construct", selected=total_selected):
+    with _timeit("build-bundle:construct", selected=len(selected_rows)):
         summaries = []
-        for _, r in selected:
-            delivery    = get(r, "A")                        # 日付(A)
-            media       = get(r, "C")                        # メディア(C)
-            title_final = get(r, "H")                        # 確定見出し日本語訳(H)
-            body_sum    = get(r, "I")                        # 本文要約(I)
-            url         = get(r, "J")                        # URL(J)
-            is_ay       = (get(r, "D").upper() == "TRUE")    # エーヤワディー(D)
+        for r in selected_rows:
+            delivery    = get(r, "A") # 日付(A)
+            media       = get(r, "C") # メディア(C)
+            title_final = get(r, "H") # 確定見出し日本語訳(H)
+            body_sum    = get(r, "I") # 本文要約(I)
+            url         = get(r, "J") # URL(J)
+            is_ay       = (get(r, "D").upper() == "TRUE") # エーヤワディー(D)
             summaries.append({
                 "source": media,
                 "url": url,
                 "title": unicodedata.normalize("NFC", title_final),
                 "summary": unicodedata.normalize("NFC", body_sum),
                 "is_ayeyarwady": is_ay,
+                "is_ayeyar": is_ay,
                 "date_mmt": delivery,
             })
 
@@ -967,6 +1088,30 @@ def cmd_build_bundle_from_sheet(args):
             json.dump(meta, f, ensure_ascii=False, indent=2)
         with open(os.path.join(out_dir, "summaries.json"), "w", encoding="utf-8") as f:
             json.dump(summaries, f, ensure_ascii=False, indent=2)
+
+        # Ayeyarwady 専用サマリ（INTERNAL 配信で fetch_articles.py が参照）
+        # ※ K列の採用フラグには依存しない（D=TRUE なら K 不問、かつシート出現順を維持）
+        summaries_ayeyar = []
+        for r in rows:  # rows 全体をシート出現順で走査
+            if (get(r, "D").upper() != "TRUE"):
+                continue
+            delivery    = get(r, "A")  # 日付(A)
+            media       = get(r, "C")  # メディア(C)
+            title_final = get(r, "H")  # 確定見出し日本語訳(H)
+            body_sum    = get(r, "I")  # 本文要約(I)
+            url         = get(r, "J")  # URL(J)
+            summaries_ayeyar.append({
+                "source": media,
+                "url": url,
+                "title": unicodedata.normalize("NFC", title_final),
+                "summary": unicodedata.normalize("NFC", body_sum),
+                "is_ayeyarwady": True,
+                "is_ayeyar": True,   # 件名ロジック互換
+                "date_mmt": delivery,
+            })
+
+        with open(os.path.join(out_dir, "summaries_ayeyar.json"), "w", encoding="utf-8") as f:
+            json.dump(summaries_ayeyar, f, ensure_ascii=False, indent=2)
 
     logging.info(f"[bundle] rebuilt dir={out_dir} items={len(summaries)} date_mmt={summaries[0]['date_mmt']}")
     print(f"bundle rebuilt: {out_dir} (items={len(summaries)})")
@@ -1027,10 +1172,13 @@ def cmd_build_bundle_from_sheet(args):
         for it in translated:
             u = _norm(it.get("url", ""))
             meta = url_to_meta.get(u, {})
+            # ★ Business全文PDF用：title_ja / body_ja も最終置換
+            title_ja = _apply_region_glossary_to_text(meta.get("title_ja", ""))
+            body_ja  = _apply_region_glossary_to_text(it.get("body_ja", "") or "")
             translated_items.append({
                 "url":      u,
-                "title_ja": meta.get("title_ja", ""),
-                "body_ja":  it.get("body_ja", "") or "",
+                "title_ja": title_ja,
+                "body_ja":  body_ja,
                 "source":   meta.get("source", ""),
                 "date":     meta.get("date", ""),
             })
