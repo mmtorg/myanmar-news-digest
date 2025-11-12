@@ -3762,6 +3762,8 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
             "・ビルマ語/英語が混在していてもOK\n"
             "・タイトル（見出し）は訳さない／出力しない\n"
             "・本文は改行と段落を活かして読みやすく\n"
+            "・文体は だ・である調。必要に応じて体言止めを用いる（乱用は避ける）\n"
+            "・冗長な修飾は削り、できるだけ簡潔に表現する\n"
             "・半角の()括弧はすべて全角の（ ）に統一すること\n\n"
             f"{COMMON_TRANSLATION_RULES}"
             f"{_build_region_glossary_prompt_for(_select_region_entries_for_text(' '.join([x.get('body','') for x in input_array]), _load_regions_cached()), use_headline_ja=False)}"
