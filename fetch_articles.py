@@ -29,6 +29,7 @@ from email.header import Header
 import xml.etree.ElementTree as ET
 from urllib.parse import urljoin
 from email.message import EmailMessage
+import logging
 
 try:
     import httpx
@@ -374,6 +375,10 @@ def call_gemini_with_retries(
     last_exc = None
     for attempt in range(max_retries):
         try:
+            logging.info(
+                f"[gemini-call] model={model} usage_tag={usage_tag} "
+                f"client_api_key_prefix={getattr(client, 'api_key', '')[:8]}"
+            )
             # 実際の呼び出し（既存コードの呼び方に合わせて調整）
             resp = client.models.generate_content(model=model, contents=prompt)
             # 使用量ログ
