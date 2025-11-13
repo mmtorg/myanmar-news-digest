@@ -742,6 +742,7 @@ def _client_for_source(source: str) -> genai.Client | None:
         return _CLIENT_CACHE[key]
 
     client = genai.Client(api_key=key)
+    client._key_prefix = key[:8]  
     _CLIENT_CACHE[key] = client
     logging.info(
         f"[gemini] Created NEW client for source='{source}' "

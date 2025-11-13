@@ -398,7 +398,7 @@ def call_gemini_with_retries(
         try:
             logging.info(
                 f"[gemini-call] model={model} usage_tag={usage_tag} "
-                f"client_api_key_prefix={getattr(client, 'api_key', '')[:8]}"
+                f"client_api_key_prefix={getattr(client, '_key_prefix', '')}"
             )
             # 実際の呼び出し（既存コードの呼び方に合わせて調整）
             resp = client.models.generate_content(model=model, contents=prompt)
