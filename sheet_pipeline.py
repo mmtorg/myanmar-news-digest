@@ -9,7 +9,6 @@ from typing import List, Dict
 import time
 import os
 import re
-import google.generativeai as genai
 import logging, contextlib, time
 
 # --- ensure we can import helpers living next to this file ---
@@ -721,6 +720,8 @@ def _gemini_key_for_source(source: str) -> str | None:
         return None
     key = (os.getenv(env_name) or "").strip()
     return key or None
+
+from fetch_articles import genai 
 
 # --- 媒体ごとの Gemini client を返すヘルパー ---
 _CLIENT_CACHE: dict[str, genai.Client] = {}
