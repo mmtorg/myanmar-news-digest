@@ -114,9 +114,31 @@ jobs:
           printf '%s' "${GOOGLE_SERVICE_ACCOUNT_JSON}" > "$SA_FILE"
           echo "GOOGLE_APPLICATION_CREDENTIALS=$SA_FILE" >> "$GITHUB_ENV"
           echo "GOOGLE_SERVICE_ACCOUNT_FILE=$SA_FILE" >> "$GITHUB_ENV"
+
       - name: Collect → write to sheet (15:50 run, clear yesterday once)
         run: |
           python sheet_pipeline.py collect-to-sheet --clear-yesterday
+
+      # ★ 15:50 枠の収集完了時にメール通知
+      - name: Notify by email via Python (cron 15:50 MMT)
+        if: ${{ github.event_name == 'schedule' && success() }}
+        run: |
+          set -euo pipefail
+          BODY="$(printf '%s\n%s\n%s\n' \
+            '✅ 15:50収集 完了（本番用）' \
+            '・対象シート: 「prod」シートに追記済みです。' \
+            '・17:50 / 20:50 / 22:50 の収集が順次実行予定です。' )"
+          python notify_done.py \
+            --to "${CSV_EMAIL_RECIPIENTS}" \
+            --subject "【MNA 記事収集】15:50収集 完了（本番用）" \
+            --body "$BODY" \
+            --sheet-url "https://docs.google.com/spreadsheets/d/${{ secrets.MNA_SHEET_ID }}/edit"
+        env:
+          GMAIL_CLIENT_ID: ${{ secrets.GMAIL_CLIENT_ID }}
+          GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
+          GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
+          EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
+          CSV_EMAIL_RECIPIENTS: ${{ secrets.CSV_EMAIL_RECIPIENTS }}
 
   schedule-collect:
     # 17:50 / 20:50 / 22:50 枠
@@ -186,17 +208,25 @@ jobs:
         run: |
           python sheet_pipeline.py collect-to-sheet
 
-      - name: Notify by email via Python (cron 22:50 MMT only)
-        if: ${{ github.event_name == 'schedule' && github.event.schedule == '17 16 * * *' && success() }}
+      # ★ 17:50 / 20:50 / 22:50 枠ごとに、collect 完了後にメール通知
+      - name: Notify by email via Python (cron 17:50/20:50/22:50 MMT)
+        if: ${{ github.event_name == 'schedule' && success() }}
         run: |
           set -euo pipefail
-          BODY="$(printf '%s\n%s\n%s\n%s\n' \
-            '✅ 22:50収集 完了（本番用）' \
+          # github.event.schedule から MMT 時刻ラベルを決定
+          case "${{ github.event.schedule }}" in
+            "17 11 * * *") SLOT_LABEL="17:50" ;;
+            "17 14 * * *") SLOT_LABEL="20:50" ;;
+            "17 16 * * *") SLOT_LABEL="22:50" ;;
+            *)             SLOT_LABEL="定期収集" ;;
+          esac
+          BODY="$(printf '%s\n%s\n%s\n' \
+            "✅ ${SLOT_LABEL}収集 完了（本番用）" \
             '・対象シート: 「prod」シートに追記済みです。' \
             '・翌 02:30 までにスプレッドシートの更新を完了してください。' )"
           python notify_done.py \
             --to "${CSV_EMAIL_RECIPIENTS}" \
-            --subject "【MNA 記事収集】22:50収集 完了（本番用）" \
+            --subject "【MNA 記事収集】${SLOT_LABEL}収集 完了（本番用）" \
             --body "$BODY" \
             --sheet-url "https://docs.google.com/spreadsheets/d/${{ secrets.MNA_SHEET_ID }}/edit"
         env:
@@ -456,7 +486,7 @@ jobs:
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'notify-email' && success() }}
         run: |
           set -euo pipefail
-          BODY="$(printf '%s\n%s\n%s\n%s\n' \
+          BODY="$(printf '%s\n%s\n%s\n' \
             '✅ 22:50収集 完了（開発用）' \
             '・対象シート: 「dev」シートに追記済みです。' \
             '・翌 02:30 までにスプレッドシートの更新を完了してください。' )"
