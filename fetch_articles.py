@@ -29,6 +29,7 @@ from email.header import Header
 import xml.etree.ElementTree as ET
 from urllib.parse import urljoin
 from email.message import EmailMessage
+import logging
 
 try:
     import httpx
@@ -168,6 +169,17 @@ def _is_retriable_exc(e: Exception) -> bool:
         return True
     return False
 
+def _is_free_tier_quota_error(e: Exception) -> bool:
+    """
+    Gemini Free tier の「generate_content_free_tier_requests」系 429 を検出。
+    このエラーはその日これ以上打てないので、即座に諦めてリトライしない。
+    """
+    if not isinstance(e, ResourceExhausted):
+        return False
+    # google.api_core.exceptions.ResourceExhausted は .message を持つことが多いが、
+    # 念のため str(e) もフォールバックとして見る
+    msg = str(getattr(e, "message", "")) or str(e)
+    return "generate_content_free_tier_requests" in msg
 
 # === Gemini 使用量ログ（入出力トークン） ======================================
 def _usage_from_resp(resp):
@@ -368,19 +380,38 @@ def call_gemini_with_retries(
     """
     Gemini 呼び出しの共通リトライラッパー。
     - 503/UNAVAILABLE/一時的ネットワークエラーは指数バックオフ+ジッターで再試行
-    - 429/レート系は待機して再試行（Gemini Freeの瞬間上限に当たることが多い）
-    - それ以外の恒久的エラーは即時raise
+      （503 が一定回数連続したら、さらに長めのクールダウンを入れる）
+    - 429/レート系は待機して再試行（Gemini Free の瞬間上限に当たることが多い）
+    - Free tier の「generate_content_free_tier_requests」系 429 は即諦める
+    - それ以外の恒久的エラーは即時 raise
     """
     last_exc = None
+    consecutive_503 = 0  # 503 の連発検出用
+
+    # 503 連発時のクールダウン秒数（環境変数で調整可能）
+    try:
+        cooldown_default = float(os.getenv("GEMINI_503_COOLDOWN_SEC", "60.0"))
+    except Exception:
+        cooldown_default = 60.0
+
     for attempt in range(max_retries):
         try:
+            logging.info(
+                f"[gemini-call] model={model} usage_tag={usage_tag} "
+                f"client_api_key_prefix={getattr(client, '_key_prefix', '')}"
+            )
             # 実際の呼び出し（既存コードの呼び方に合わせて調整）
             resp = client.models.generate_content(model=model, contents=prompt)
+
+            # 成功したので 503 カウンタはリセット
+            consecutive_503 = 0
+
             # 使用量ログ
             try:
                 _log_gemini_usage(resp, tag=(usage_tag or "gen"), model=model)
             except Exception:
                 pass
+
             # Free tier 監視（MMT日次 / RPM / 入力TPM）
             try:
                 if _FREE_TIER_MON:
@@ -393,37 +424,62 @@ def call_gemini_with_retries(
                     )
             except Exception:
                 pass
+
             return resp
+
         except Exception as e:
             msg = str(e)
             last_exc = e
 
+            # 🔴 free tier quota exceeded は即諦める
+            if _is_free_tier_quota_error(e):
+                print("🚫 [gemini] free tier quota exceeded。今日はこれ以上打てません。")
+                # ここで即 raise することで、無駄なリトライ + 長時間 sleep を避ける
+                raise
+
             # 例外メッセージの簡易判定（SDK差異を吸収するため文字列ベース）
-            is_503 = "503" in msg or "UNAVAILABLE" in msg or "overloaded" in msg
-            is_429 = "429" in msg or "RESOURCE_EXHAUSTED" in msg or "rate" in msg.lower()
-            
+            is_503 = ("503" in msg) or ("UNAVAILABLE" in msg) or ("overloaded" in msg)
+            is_429 = ("429" in msg) or ("RESOURCE_EXHAUSTED" in msg) or ("rate" in msg.lower())
+
+            # 503 が続いたら強めのクールダウン（例: 3回連続で 1分停止）
+            if is_503:
+                consecutive_503 += 1
+                if consecutive_503 >= 3:
+                    cooldown = cooldown_default
+                    print(
+                        f"⏸ [gemini] 503 が {consecutive_503} 回連続。"
+                        f" cooldown={cooldown:.1f}s（完全停止）"
+                    )
+                    try:
+                        time.sleep(cooldown)
+                    except KeyboardInterrupt:
+                        raise
+                    # クールダウン後にカウンタをリセットして再開
+                    consecutive_503 = 0
+            else:
+                # 503 以外のエラーが来たら連続カウンタはリセット
+                consecutive_503 = 0
+
             # ✅ 追加: 網羅的な判定関数を併用（server disconnected / RemoteProtocolError 等も拾う）
             should_retry = _is_retriable_exc(e) or is_429
 
-            # 再試行対象
-            if should_retry:
-                print(f"⚠️ Gemini retry {attempt+1}/{max_retries} after: {e}")
-                sleep_sec = _exp_backoff_sleep(attempt, base_delay, max_delay)
-                if is_429:
-                    sleep_sec = min(GEMINI_MAX_DELAY, sleep_sec + 5.0)
-                try:
-                    import time
-                    time.sleep(sleep_sec)
-                except KeyboardInterrupt:
-                    raise
-                continue
+            # 最大リトライ回数を超える／そもそもリトライ対象でない場合は即 raise
+            if (not should_retry) or (attempt == max_retries - 1):
+                raise
 
-            # 非リトライ系は即raise
-            raise
+            # 再試行対象 → バックオフしてリトライ
+            print(f"⚠️ Gemini retry {attempt+1}/{max_retries} after: {e}")
+            sleep_sec = _exp_backoff_sleep(attempt, base_delay, max_delay)
+            if is_429:
+                # 429 の場合は少し余分に待つ（瞬間上限を外すため）
+                sleep_sec = min(GEMINI_MAX_DELAY, sleep_sec + 5.0)
+            try:
+                time.sleep(sleep_sec)
+            except KeyboardInterrupt:
+                raise
 
     # すべて失敗
     raise last_exc if last_exc else RuntimeError("Gemini call failed with unknown error.")
-
 
 # 要約用に送る本文の最大文字数（固定）
 # Irrawaddy英語記事が3500文字くらいある

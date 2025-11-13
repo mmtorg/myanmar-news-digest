@@ -9,7 +9,6 @@ from typing import List, Dict
 import time
 import os
 import re
-
 import logging, contextlib, time
 
 # --- ensure we can import helpers living next to this file ---
@@ -722,6 +721,35 @@ def _gemini_key_for_source(source: str) -> str | None:
     key = (os.getenv(env_name) or "").strip()
     return key or None
 
+from fetch_articles import genai 
+
+# --- 媒体ごとの Gemini client を返すヘルパー ---
+_CLIENT_CACHE: dict[str, genai.Client] = {}
+
+def _client_for_source(source: str) -> genai.Client | None:
+    """
+    source（媒体名）に紐づいた API キーから Gemini client を返す。
+    - キーが定義されていなければ None
+    - 1つのキーにつき client を使い回す（_CLIENT_CACHE）
+    """
+    key = _gemini_key_for_source(source)
+    if not key:
+        logging.warning(f"[gemini] No API key found for source='{source}'. Using fallback (client_summary).")
+        return None
+
+    if key in _CLIENT_CACHE:
+        logging.info(f"[gemini] Reusing client for source='{source}' key_prefix={key[:8]}...")
+        return _CLIENT_CACHE[key]
+
+    client = genai.Client(api_key=key)
+    client._key_prefix = key[:8]  
+    _CLIENT_CACHE[key] = client
+    logging.info(
+        f"[gemini] Created NEW client for source='{source}' "
+        f"env_key={SOURCE_KEY_ENV_MAP.get(_norm(source))} key_prefix={key[:8]} len={len(key)}"
+    )
+    return client
+
 def _clip_body_for_headline(body: str, max_chars: int = 1200) -> str:
     """見出し生成用に本文を安全に切り詰める。段落の途中切りも許容。"""
     b = (body or "").strip()
@@ -729,14 +757,15 @@ def _clip_body_for_headline(body: str, max_chars: int = 1200) -> str:
         return b
     return b[:max_chars].rstrip()
 
-# 既存定義を差し替え
 def _headline_variants_ja(title: str, source: str, url: str, body: str = "") -> List[str]:
-    key = _gemini_key_for_source(source)
-    if not (call_gemini_with_retries and client_summary and key):
+    # ★ 媒体ごとの client を取得
+    client = _client_for_source(source)
+
+    # client が用意できない場合は安全フォールバック
+    if not (call_gemini_with_retries and client):
         t = unicodedata.normalize("NFC", title or "").strip()
         return [t, t, t]
 
-    os.environ["GEMINI_API_KEY"] = key
     model = os.getenv("GEMINI_HEADLINE_MODEL", "gemini-2.5-flash")
 
     # タイトルに出現した語 → D列（見出し訳）を採用
@@ -747,9 +776,10 @@ def _headline_variants_ja(title: str, source: str, url: str, body: str = "") -> 
 
     # ---- 案1：原題ベース ----
     try:
-        if _LIMITER: _LIMITER.wait()
+        if _LIMITER:
+            _LIMITER.wait()
         resp1 = call_gemini_with_retries(
-            client_summary,
+            client,
             f"{HEADLINE_PROMPT_1}{glossary}\n\n原題: {title}\nsource:{source}\nurl:{url}",
             model=model,
         )
@@ -757,18 +787,20 @@ def _headline_variants_ja(title: str, source: str, url: str, body: str = "") -> 
     except Exception:
         v1 = unicodedata.normalize("NFC", (title or "").strip())
 
-    # ---- 案2：案1を素材に再生成（変更なし／前回方針のまま）----
+    # ---- 案2：案1を素材に再生成 ----
     try:
-        if _LIMITER: _LIMITER.wait()
+        if _LIMITER:
+            _LIMITER.wait()
         prompt2 = (glossary or "") + make_headline_prompt_2_from(v1)
-        resp2 = call_gemini_with_retries(client_summary, prompt2, model=model)
+        resp2 = call_gemini_with_retries(client, prompt2, model=model)
         v2 = unicodedata.normalize("NFC", (resp2.text or "").strip())
     except Exception:
         v2 = v1
 
-    # ---- 案3：本文から要素抽出して新聞見出し化（今回の修正）----
+    # ---- 案3：本文から要素抽出して新聞見出し化 ----
     try:
-        if _LIMITER: _LIMITER.wait()
+        if _LIMITER:
+            _LIMITER.wait()
         body_for_prompt = _clip_body_for_headline(body, max_chars=1200)
         if not body_for_prompt:
             # 本文が無いときは案1でフォールバック
@@ -780,7 +812,7 @@ def _headline_variants_ja(title: str, source: str, url: str, body: str = "") -> 
                 + "【本文】\n" + body_for_prompt + "\n\n"
                 f"（参考）原題: {title}\nsource:{source}\nurl:{url}\n"
             )
-            resp3 = call_gemini_with_retries(client_summary, prompt3, model=model)
+            resp3 = call_gemini_with_retries(client, prompt3, model=model)
             v3 = unicodedata.normalize("NFC", (resp3.text or "").strip())
     except Exception:
         v3 = v1
@@ -792,30 +824,41 @@ def _headline_variants_ja(title: str, source: str, url: str, body: str = "") -> 
     return [v1, v2, v3]
 
 def _summary_ja(source: str, title: str, body: str, url: str) -> str:
-    key = _gemini_key_for_source(source)
-    if not (call_gemini_with_retries and client_summary and key):
+    # ★ 媒体ごとの client を取得
+    client = _client_for_source(source)
+
+    if not (call_gemini_with_retries and client):
         # グローバルキー無し前提：媒体別キーが無い場合は安全フォールバック＋警告
         try:
             import sys
-            print(f"[warn] Gemini key not configured for source='{source}'. "
-                  f"Skipped API call; returned trimmed body.", file=sys.stderr)
+            print(
+                f"[warn] Gemini key/client not configured for source='{source}'. "
+                f"Skipped API call; returned trimmed body.",
+                file=sys.stderr,
+            )
         except Exception:
             pass
-        return unicodedata.normalize("NFC", (body or "").strip())[:400]
-    os.environ["GEMINI_API_KEY"] = key
+        text = unicodedata.normalize("NFC", (body or "").strip())[:400]
+        text = _apply_region_glossary_to_text(text)
+        return _apply_term_glossary_to_output(text, src=body, prefer="body_ja")
+
     # fetch_articles.py に定義があればそれを採用、無ければ 1800 に固定
     try:
         from fetch_articles import BODY_MAX_CHARS as _FA_BODY_MAX
         body_max = int(_FA_BODY_MAX)
     except Exception:
         body_max = 1800
+
     payload = {"source": source, "title": title, "url": url, "body": body}
     prompt = _build_summary_prompt(payload, body_max=body_max)
+
     try:
         if _LIMITER:
             _LIMITER.wait()
         resp = call_gemini_with_retries(
-            client_summary, prompt, model=os.getenv("GEMINI_SUMMARY_MODEL", "gemini-2.5-flash")
+            client,
+            prompt,
+            model=os.getenv("GEMINI_SUMMARY_MODEL", "gemini-2.5-flash"),
         )
         text = unicodedata.normalize("NFC", (resp.text or "").strip())
         text = _apply_region_glossary_to_text(text)
@@ -824,6 +867,7 @@ def _summary_ja(source: str, title: str, body: str, url: str) -> str:
         text = unicodedata.normalize("NFC", (body or "").strip())[:400]
         text = _apply_region_glossary_to_text(text)
         return _apply_term_glossary_to_output(text, src=body, prefer="body_ja")
+
 
 def _is_ayeyarwady(title_ja: str, summary_ja: str) -> bool:
     """
