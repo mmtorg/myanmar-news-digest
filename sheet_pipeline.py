@@ -869,16 +869,18 @@ def _summary_ja(source: str, title: str, body: str, url: str) -> str:
         return _apply_term_glossary_to_output(text, src=body, prefer="body_ja")
 
 
-def _is_ayeyarwady(title_ja: str, summary_ja: str) -> bool:
+def _is_ayeyarwady(title_raw: str, body_raw: str) -> bool:
     """
-    fetch_articles.py と同一の Ayeyarwady 判定ロジック（is_ayeyarwady_hit）を利用する。
-    取りこぼしやバージョン差異を避けるため、まずは関数を import。
-    もし import に失敗した場合のみ、fetch_articles 側のキーワードにフォールバック。
+    記事「原文」のタイトル/本文に対して Ayeyarwady 判定を行う。
+
+    fetch_articles.py の is_ayeyarwady_hit と同一ロジックを優先的に利用し、
+    import に失敗した場合のみ、同じキーワード集合でフォールバック判定する。
     """
     from unicodedata import normalize
 
-    t = normalize("NFC", (title_ja or "").strip())
-    b = normalize("NFC", (summary_ja or "").strip())
+    # fetch_articles 側と同様に NFC 正規化してから判定
+    t = normalize("NFC", (title_raw or "").strip())
+    b = normalize("NFC", (body_raw  or "").strip())
 
     try:
         # fetch_articles.py の本家ロジックを直接利用
@@ -1003,7 +1005,6 @@ def cmd_collect_to_sheet(args):
 
     if getattr(args, "clear_yesterday", False):
         today = now_mmt.date().isoformat()
-        removed = _keep_only_rows_of_date(today)
         with _timeit("clear-yesterday", date=today):
             removed = _keep_only_rows_of_date(today)
         logging.info(f"[clean] kept only {today} (removed {removed} rows)")
@@ -1040,14 +1041,14 @@ def cmd_collect_to_sheet(args):
             f, g, h = _headline_variants_ja(title, source, url, body)
         with _timeit("summary", source=source):
             summ    = _summary_ja(source, title, body, url)
-            # summ = ""
         # 異常時のみ “最後の【要約】抽出＋手順行除去” を適用（存在すれば）
         try:
             from fetch_articles import normalize_summary_text
             summ = normalize_summary_text(summ)
         except Exception:
             pass
-        is_ay   = _is_ayeyarwady(f, summ)
+        # 原文に対してエーヤワディ判定
+        is_ay = _is_ayeyarwady(title, body)
         logging.info(f"[row] source={source} body_len={len(body)} ayeyarwady={is_ay} url={url}")
 
         rows_to_append.append([
