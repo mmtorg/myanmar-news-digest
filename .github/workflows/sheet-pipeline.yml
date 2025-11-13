@@ -486,7 +486,7 @@ jobs:
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'notify-email' && success() }}
         run: |
           set -euo pipefail
-          BODY="$(printf '%s\n%s\n%s\n%s\n' \
+          BODY="$(printf '%s\n%s\n%s\n' \
             '✅ 22:50収集 完了（開発用）' \
             '・対象シート: 「dev」シートに追記済みです。' \
             '・翌 02:30 までにスプレッドシートの更新を完了してください。' )"
