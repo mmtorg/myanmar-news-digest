@@ -956,6 +956,12 @@ function processDirtyRows() {
   try {
     lock.waitLock(30 * 1000);
 
+    // ★ ここで時間帯外なら即スキップ
+    if (!isWithinProcessingWindow_()) {
+      Logger.log("[processDirtyRows] outside allowed time window → skip");
+      return;
+    }
+
     const ss = SpreadsheetApp.getActive();
     const sheetNames = ["prod", "dev"];
     let remaining = MAX_ROWS_PER_RUN;
@@ -1102,6 +1108,12 @@ function runGeminiBatch() {
     // 同時実行防止（最大30秒待つ）
     lock.waitLock(30 * 1000);
 
+    // ★ 時間帯チェック
+    if (!isWithinProcessingWindow_()) {
+      Logger.log("[runGeminiBatch] outside allowed time window → skip");
+      return;
+    }
+
     const ss = SpreadsheetApp.getActive();
     const sheetNames = ["prod", "dev"]; // 対象シート
     let remaining = MAX_ROWS_PER_RUN;
@@ -1167,12 +1179,18 @@ function runGeminiBatch() {
   }
 }
 
-function manualInit() {
-  const dummyApiKey = "DUMMY";
-  const prompt = "test";
-  try {
-    callGeminiWithKey_(dummyApiKey, prompt);
-  } catch (e) {
-    Logger.log(e);
-  }
+// ミャンマー時間 16:00〜翌 2:30 の間だけ true を返す
+function isWithinProcessingWindow_() {
+  // appsscript.json の timeZone が "Asia/Yangon" になっている前提
+  const now = new Date();
+  const h = now.getHours(); // 0〜23
+  const m = now.getMinutes(); // 0〜59
+  const t = h * 60 + m; // その日の 0:00 からの経過分数
+
+  const START = 16 * 60; // 16:00 → 960 分
+  const END = 2 * 60 + 30; // 02:30 → 150 分
+
+  // 日付をまたぐウィンドウの判定:
+  // 16:00〜24:00 か 0:00〜2:30 のどちらかなら OK
+  return t >= START || t <= END;
 }
