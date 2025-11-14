@@ -736,7 +736,7 @@ function callGeminiWithKey_(apiKey, prompt, usageTagOpt) {
  *   - I列: 本文要約（STEP3_TASK）
  ************************************************************/
 
-function processRow_(sheet, row) {
+function processRow_(sheet, row, prevStatus) {
   const colC = 3; // メディア
   const colM = 13; // タイトル原文
   const colN = 14; // 本文原文
@@ -887,16 +887,18 @@ function processRow_(sheet, row) {
   if (errors.length === 0) {
     statusText = "OK";
   } else {
-    // NGが複数ある場合は / 区切りで全部記録
-    // 例: NG: E=ERROR: ... / G=ERROR: ...
-    statusText = "NG: " + errors.join(" / ");
+    // 呼び出し元から渡された「前回までのステータス」から回数を計算
+    const prevCount = parseRetryCount_(prevStatus || "");
+    const newCount = prevCount + 1;
+
+    statusText = `NG(${newCount}): ` + errors.join(" / ");
   }
 
   sheet.getRange(row, colL).setValue(statusText);
 }
 
 /************************************************************
- * 4. onEditHead トリガー
+ * 4. トリガー
  *   - M列 or N列 が編集されたとき、その行の E〜G を再計算
  ************************************************************/
 
@@ -924,261 +926,6 @@ function _clearLogSheetFor_(sheetName) {
   sh.getRange(2, 1, lastRow - 1, lastCol).clearContent();
 }
 
-const STATUS_PENDING = "PENDING";
-
-function enqueueRowForProcess_(sheet, row) {
-  // ヘッダー行は無視
-  if (row === 1) return;
-
-  const titleRaw = sheet.getRange(row, 13).getValue(); // M列
-  const bodyRaw = sheet.getRange(row, 14).getValue(); // N列
-
-  // タイトルも本文も空なら何もしない
-  if (!titleRaw && !bodyRaw) {
-    return;
-  }
-
-  const statusCell = sheet.getRange(row, STATUS_COL);
-  const statusVal = (statusCell.getValue() || "").toString();
-
-  // すでに OK / NG など何かしら結果が入っている場合、
-  // 上書きして再処理させたいなら常に PENDING にしてよい。
-  // 「一度処理したものは二度とやらない」なら、ここで return してもよい。
-  statusCell.setValue(STATUS_PENDING);
-}
-
-// pythonで操作した時にも動く
-const MAX_ROWS_PER_RUN = 3; // 1回の実行で処理する最大行数
-const STATUS_COL = 12; // L列 (ステータス列の列番号)
-
-function processDirtyRows() {
-  const lock = LockService.getDocumentLock();
-  try {
-    lock.waitLock(30 * 1000);
-
-    // ★ ここで時間帯外なら即スキップ
-    if (!isWithinProcessingWindow_()) {
-      Logger.log("[processDirtyRows] outside allowed time window → skip");
-      return;
-    }
-
-    const ss = SpreadsheetApp.getActive();
-    const sheetNames = ["prod", "dev"];
-    let remaining = MAX_ROWS_PER_RUN;
-
-    for (let s = 0; s < sheetNames.length; s++) {
-      if (remaining <= 0) break;
-
-      const sheetName = sheetNames[s];
-      const sh = ss.getSheetByName(sheetName);
-      if (!sh) continue;
-
-      const lastRow = sh.getLastRow();
-      if (lastRow < 2) continue;
-
-      const startRow = 2;
-      const numRows = lastRow - 1;
-      const numCols = 14;
-      const values = sh.getRange(startRow, 1, numRows, numCols).getValues();
-
-      for (let i = 0; i < numRows; i++) {
-        if (remaining <= 0) break;
-
-        const rowIndex = startRow + i;
-        const row = values[i];
-
-        const titleRaw = row[13 - 1]; // M列
-        const bodyRaw = row[14 - 1]; // N列
-        const status = (row[STATUS_COL - 1] || "").toString(); // L列
-
-        // M・N が空 → 処理しない
-        if (!titleRaw && !bodyRaw) continue;
-
-        // OK の行はスキップ（再処理させない）
-        if (status.startsWith("OK")) continue;
-
-        // ★ RUNNING の行はスキップ（前回の処理途中で止まった場合）
-        if (status.startsWith("RUNNING")) continue;
-
-        Logger.log(
-          "[processDirtyRows_] processing %s row %s (status=%s)",
-          sheetName,
-          rowIndex,
-          status
-        );
-
-        // ★ 処理開始をマーク
-        sh.getRange(rowIndex, STATUS_COL).setValue("RUNNING");
-
-        // ★ 実際の1行処理
-        processRow_(sh, rowIndex);
-
-        remaining--;
-      }
-    }
-
-    Logger.log(
-      "[processDirtyRows_] done, processed rows=%s",
-      MAX_ROWS_PER_RUN - remaining
-    );
-  } catch (err) {
-    Logger.log("[processDirtyRows_] lock error: " + err);
-  } finally {
-    try {
-      lock.releaseLock();
-    } catch (e2) {}
-  }
-}
-
-// 手で操作した時しか動かない
-function onEditHead(e) {
-  const range = e.range;
-  const sheet = range.getSheet();
-  const sheetName = sheet.getName();
-
-  // === 1) prod / dev シート以外は一切処理しない ===
-  if (sheetName !== "prod" && sheetName !== "dev") {
-    return;
-  }
-
-  const startRow = range.getRow();
-  const startCol = range.getColumn();
-  const numRows = range.getNumRows();
-  const numCols = range.getNumColumns();
-  const endRow = startRow + numRows - 1;
-  const endCol = startCol + numCols - 1;
-
-  // === 2) A2 以降がクリアされたら、そのシート用ログをクリア ===
-  // 貼り付け・削除の範囲に A列(1) が含まれていて、かつ 2行目以降ならログクリア
-  if (startCol <= 1 && endCol >= 1 && endRow >= 2) {
-    const fromRow = Math.max(2, startRow);
-    const rows = endRow - fromRow + 1;
-    const aValues = sheet.getRange(fromRow, 1, rows, 1).getValues();
-
-    // どこか1つでも A列セルが空になっていたらログクリア（ざっくりなルール）
-    let clearedA = false;
-    for (let i = 0; i < aValues.length; i++) {
-      if (!aValues[i][0]) {
-        clearedA = true;
-        break;
-      }
-    }
-    if (clearedA) {
-      _clearLogSheetFor_(sheetName);
-    }
-    // A列編集時はここで終了（要約・翻訳は走らせない）
-    // ※必要なら、「A列と同時にM/Nも貼った場合も処理したい」ように拡張できます
-  }
-
-  // === 3) M列(13) / N列(14) が範囲にまったく含まれていなければ何もしない ===
-  const touchesM = startCol <= 13 && endCol >= 13;
-  const touchesN = startCol <= 14 && endCol >= 14;
-  if (!touchesM && !touchesN) {
-    return;
-  }
-
-  // === 4) ヘッダー行(1行目)は無視、2行目以降を対象 ===
-  const firstRow = Math.max(2, startRow);
-
-  // === 5) 貼り付け範囲内で M/N 列が含まれる各行を処理 ===
-  for (let r = firstRow; r <= endRow; r++) {
-    // この行で実際に見るのは M(13) と N(14) だけ
-    const titleRaw = sheet.getRange(r, 13).getValue(); // M列
-    const bodyRaw = sheet.getRange(r, 14).getValue(); // N列
-
-    // 両方空なら要約・翻訳処理は走らせない
-    if (!titleRaw && !bodyRaw) {
-      // 必要ならここで E/F/G/I/L を消す:
-      // sheet.getRange(r, 5, 1, 1).clearContent();  // E
-      // sheet.getRange(r, 6, 1, 1).clearContent();  // F
-      // sheet.getRange(r, 7, 1, 1).clearContent();  // G
-      // sheet.getRange(r, 9, 1, 1).clearContent();  // I
-      // sheet.getRange(r, 12, 1, 1).clearContent(); // L
-      continue;
-    }
-
-    // この行は M/N が埋まっているので、1行分処理
-    processRow_(sheet, r);
-  }
-}
-
-function runGeminiBatch() {
-  const lock = LockService.getDocumentLock();
-  try {
-    // 同時実行防止（最大30秒待つ）
-    lock.waitLock(30 * 1000);
-
-    // ★ 時間帯チェック
-    if (!isWithinProcessingWindow_()) {
-      Logger.log("[runGeminiBatch] outside allowed time window → skip");
-      return;
-    }
-
-    const ss = SpreadsheetApp.getActive();
-    const sheetNames = ["prod", "dev"]; // 対象シート
-    let remaining = MAX_ROWS_PER_RUN;
-
-    for (let s = 0; s < sheetNames.length; s++) {
-      if (remaining <= 0) break;
-
-      const sheetName = sheetNames[s];
-      const sh = ss.getSheetByName(sheetName);
-      if (!sh) continue;
-
-      const lastRow = sh.getLastRow();
-      if (lastRow < 2) continue; // データ無し
-
-      const startRow = 2;
-      const numRows = lastRow - 1;
-      const numCols = 14; // A〜N までを読んでおく
-      const values = sh.getRange(startRow, 1, numRows, numCols).getValues();
-
-      for (let i = 0; i < numRows; i++) {
-        if (remaining <= 0) break;
-
-        const rowIndex = startRow + i;
-        const row = values[i];
-
-        const titleRaw = row[13 - 1]; // M列 (13)
-        const bodyRaw = row[14 - 1]; // N列 (14)
-        const status = (row[STATUS_COL - 1] || "").toString(); // L列
-
-        // タイトルも本文も空 → スキップ
-        if (!titleRaw && !bodyRaw) {
-          continue;
-        }
-
-        // 「PENDING」の行だけ処理対象にする
-        if (status !== STATUS_PENDING) {
-          continue;
-        }
-
-        Logger.log(
-          "[runGeminiBatch] processing %s row %s",
-          sheetName,
-          rowIndex
-        );
-
-        // この行を実際に処理（見出し/要約作成＋L列にOK/NG書き込み）
-        processRow_(sh, rowIndex);
-
-        remaining--;
-      }
-    }
-
-    Logger.log(
-      "[runGeminiBatch] done, processed rows=%s",
-      MAX_ROWS_PER_RUN - remaining
-    );
-  } catch (err) {
-    Logger.log("[runGeminiBatch] lock error: " + err);
-  } finally {
-    try {
-      lock.releaseLock();
-    } catch (e2) {}
-  }
-}
-
 // ミャンマー時間 16:00〜翌 2:30 の間だけ true を返す
 function isWithinProcessingWindow_() {
   // appsscript.json の timeZone が "Asia/Yangon" になっている前提
@@ -1193,4 +940,124 @@ function isWithinProcessingWindow_() {
   // 日付をまたぐウィンドウの判定:
   // 16:00〜24:00 か 0:00〜2:30 のどちらかなら OK
   return t >= START || t <= END;
+}
+
+// "NG(3): xxxx" のような形式から試行回数を取り出す
+function parseRetryCount_(status) {
+  if (!status) return 0;
+  const m = status.match(/^NG\((\d+)\)/);
+  if (!m) return 0;
+  return Number(m[1]);
+}
+
+// pythonで操作した時にも動く
+const MAX_ROWS_PER_RUN = 3; // 1回の実行で処理する最大行数
+const STATUS_COL = 12; // L列 (ステータス列の列番号)
+
+// ★ 統合版：この関数だけを時間トリガーで動かす
+function processRowsBatch() {
+  const lock = LockService.getDocumentLock();
+  try {
+    // 同時実行防止
+    lock.waitLock(30 * 1000);
+
+    // ★ 時間帯外なら即スキップ（16:00〜翌2:30だけ動かす）
+    if (!isWithinProcessingWindow_()) {
+      Logger.log("[processRowsBatch] outside allowed time window → skip");
+      return;
+    }
+
+    const ss = SpreadsheetApp.getActive();
+    const sheetNames = ["prod", "dev"]; // 対象シート
+    let remaining = MAX_ROWS_PER_RUN; // 1回の実行で処理する最大行数（既存の定数）
+
+    for (let s = 0; s < sheetNames.length; s++) {
+      if (remaining <= 0) break;
+
+      const sheetName = sheetNames[s];
+      const sh = ss.getSheetByName(sheetName);
+      if (!sh) continue;
+
+      const lastRow = sh.getLastRow();
+      if (lastRow < 2) continue; // データ行なし
+
+      const startRow = 2;
+      const numRows = lastRow - 1;
+      const numCols = 14; // A〜N まで読む
+      const values = sh.getRange(startRow, 1, numRows, numCols).getValues();
+
+      for (let i = 0; i < numRows; i++) {
+        if (remaining <= 0) break;
+
+        const rowIndex = startRow + i;
+        const row = values[i];
+
+        const titleRaw = row[13 - 1]; // M列 (13)
+        const bodyRaw = row[14 - 1]; // N列 (14)
+        const status = (row[STATUS_COL - 1] || "").toString(); // L列 (STATUS_COL=12)
+
+        // タイトルも本文も空 → 処理不要
+        if (!titleRaw && !bodyRaw) {
+          continue;
+        }
+
+        // すでに成功している行はスキップ
+        if (status.startsWith("OK")) {
+          continue;
+        }
+
+        // 前回 RUNNING のまま残っている行は、とりあえずスキップ
+        // （タイムアウトで止まっている可能性もあるが、安全寄り）
+        if (status.startsWith("RUNNING")) {
+          continue;
+        }
+
+        // ★ NG の再試行回数チェック
+        const maxRetry = 5;
+        // NG の場合、何回失敗したか取得
+        const retryCount = parseRetryCount_(status);
+
+        // すでに 5回以上失敗している行は再試行しない
+        if (retryCount >= maxRetry) {
+          Logger.log(
+            "[processRowsBatch] skip row %s (retryCount=%s >= %s)",
+            rowIndex,
+            retryCount,
+            maxRetry
+          );
+          continue;
+        }
+
+        // ここまで来たら「未処理 or 失敗 or PENDING」なので処理対象
+        Logger.log(
+          "[processRowsBatch] processing %s row %s (status=%s)",
+          sheetName,
+          rowIndex,
+          status
+        );
+
+        // この行の「処理前ステータス」を保持（NG(1) など）
+        const prevStatus = status;
+
+        // 処理開始マーク
+        sh.getRange(rowIndex, STATUS_COL).setValue("RUNNING");
+
+        // 実際の1行処理（prevStatus を渡す）
+        processRow_(sh, rowIndex, prevStatus);
+
+        remaining--;
+      }
+    }
+
+    Logger.log(
+      "[processRowsBatch] done, processed rows=%s",
+      MAX_ROWS_PER_RUN - remaining
+    );
+  } catch (err) {
+    Logger.log("[processRowsBatch] lock error: " + err);
+  } finally {
+    try {
+      lock.releaseLock();
+    } catch (e2) {}
+  }
 }
