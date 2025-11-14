@@ -983,8 +983,8 @@ def _keep_only_rows_of_date(date_str: str) -> int:
 
     total = len(rows)
 
-    # A:J は一旦全クリア
-    ws.batch_clear(["A2:J"])
+    # A2 以降の全ての列をクリア
+    ws.batch_clear(["2:1000"])   # クリアしたい最大行数は適宜調整
 
     # 今日の行だけ A2 から詰め直す（A..J）
     if kept:
