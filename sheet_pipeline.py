@@ -1035,7 +1035,7 @@ def cmd_collect_to_sheet(args):
             logging.debug(f"[skip] url empty or duplicated url={url!r}")
             continue
 
-        # collector が本文を持っていればそれを優先
+        # collector が本文を持っていればそれを最優先（再取得しない）
         body = (it.get("body") or "").strip()
         if body:
             with _BODIES_LOCK:
@@ -1043,28 +1043,30 @@ def cmd_collect_to_sheet(args):
                 cache[url] = {"source": source, "title": title, "body": body}
                 _save_bodies_cache(bundle_dir, cache)
         else:
-            # なければ1回だけ本文抽出（従来どおり）
+            # なければ堅牢抽出器で1回だけ取得→キャッシュ
             body = _get_body_once(url, source, out_dir=bundle_dir, title=title)
 
-        # ★ここでは Gemini を呼ばず、原文ベースでエーヤワディ判定だけ行う
+        # ★ ここから：Gemini は使わず、エーヤワディ判定だけを行う
         is_ay = _is_ayeyarwady(title, body)
         logging.info(
             f"[row] source={source} body_len={len(body)} "
             f"ayeyarwady={is_ay} url={url}"
         )
 
-        # ★シートへの書き込み：E=タイトル原文, F=本文原文
+        # ★ E/F/G はブランク, M にタイトル原文, N に本文原文
         rows_to_append.append([
-            target.isoformat(),               # A 日付(配信日)
-            ts,                               # B timestamp
-            source,                           # C メディア
-            "TRUE" if is_ay else "FALSE",     # D エーヤワディー
-            title,                            # E 記事タイトル原文
-            body,                             # F 記事本文原文
-            "",                               # G 予備（未使用）
-            "",                               # H 予備（未使用）
-            "",                               # I 予備（未使用）
-            url,                              # J URL
+            target.isoformat(),                  # A 日付(配信日)
+            ts,                                  # B timestamp
+            source,                              # C メディア
+            "TRUE" if is_ay else "FALSE",        # D エーヤワディー
+            "", "", "",                          # E/F/G 見出し訳３案（今回は空）
+            "",                                  # H 確定見出し（手動）
+            "",                                  # I 本文要約（空）
+            url,                                 # J URL
+            "",                                  # K 採用フラグ（初期値空）
+            "",                                  # L（将来用など、現状不使用なら空）
+            title,                               # M 記事タイトル原文
+            body,                                # N 記事本文原文
         ])
         existing.add(url)
 
