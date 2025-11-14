@@ -124,6 +124,10 @@ jobs:
         if: ${{ github.event_name == 'schedule' && success() }}
         run: |
           set -euo pipefail
+
+          echo "Prev step finished. Sleep 60 minutes before sending email..."
+          sleep 3600  # ← 60 分
+
           BODY="$(printf '%s\n%s\n%s\n' \
             '✅ 15:50収集 完了（本番用）' \
             '・対象シート: 「prod」シートに追記済みです。' \
@@ -213,6 +217,10 @@ jobs:
         if: ${{ github.event_name == 'schedule' && success() }}
         run: |
           set -euo pipefail
+
+          echo "Prev step finished. Sleep 40 minutes before sending email..."
+          sleep 2400 # 40分
+
           # github.event.schedule から MMT 時刻ラベルを決定
           case "${{ github.event.schedule }}" in
             "17 11 * * *") SLOT_LABEL="17:50" ;;
