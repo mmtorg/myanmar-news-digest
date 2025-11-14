@@ -327,10 +327,10 @@ function getApiKeyFromSheetAndSource_(sheetName, sourceRaw) {
  * Gemini 共通設定（リトライ＆ログ）
  ************************************************************/
 
-// リトライ設定（Python版に揃えた値）
-const GEMINI_JS_MAX_RETRIES = 7; // 最大リトライ回数
-const GEMINI_JS_BASE_DELAY_SEC = 10; // 初回待機（秒）
-const GEMINI_JS_MAX_DELAY_SEC = 120; // 最大待機（秒）
+// リトライ設定（少し控えめに）
+const GEMINI_JS_MAX_RETRIES = 4; // 7 → 4 に減らす
+const GEMINI_JS_BASE_DELAY_SEC = 5; // 10 → 5 に短縮
+const GEMINI_JS_MAX_DELAY_SEC = 60; // 120 → 60 に短縮
 
 // 乱数ジッター付き指数バックオフ: attempt=0,1,2,... → 待機ミリ秒
 function _expBackoffMs_(attempt) {
@@ -950,6 +950,45 @@ function parseRetryCount_(status) {
   return Number(m[1]);
 }
 
+// ★ 古い RUNNING ステータスを NG(1): timeout に置き換える
+function cleanupStaleRunningStatuses_() {
+  const ss = SpreadsheetApp.getActive();
+  const sheetNames = ["prod", "dev"]; // 対象シート
+
+  sheetNames.forEach(function (sheetName) {
+    const sh = ss.getSheetByName(sheetName);
+    if (!sh) return;
+
+    const lastRow = sh.getLastRow();
+    if (lastRow < 2) return; // データ行なし
+
+    const numRows = lastRow - 1;
+    const statusRange = sh.getRange(2, STATUS_COL, numRows, 1); // L列
+    const values = statusRange.getValues();
+
+    let changed = false;
+
+    for (let i = 0; i < numRows; i++) {
+      const status = (values[i][0] || "").toString();
+
+      // 前回実行で RUNNING のまま残った行とみなす
+      if (status.startsWith("RUNNING")) {
+        // 1回目の失敗として扱う
+        values[i][0] = "NG(1): timeout";
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      statusRange.setValues(values);
+      Logger.log(
+        "[cleanupStaleRunningStatuses_] sheet=%s cleaned RUNNING rows",
+        sheetName
+      );
+    }
+  });
+}
+
 // pythonで操作した時にも動く
 const MAX_ROWS_PER_RUN = 3; // 1回の実行で処理する最大行数
 const STATUS_COL = 12; // L列 (ステータス列の列番号)
@@ -960,6 +999,9 @@ function processRowsBatch() {
   try {
     // 同時実行防止
     lock.waitLock(30 * 1000);
+
+    // ★ ここで「前回の RUNNING」を NG に戻す
+    cleanupStaleRunningStatuses_();
 
     // ★ 時間帯外なら即スキップ（16:00〜翌2:30だけ動かす）
     if (!isWithinProcessingWindow_()) {
@@ -1013,7 +1055,7 @@ function processRowsBatch() {
         }
 
         // ★ NG の再試行回数チェック
-        const maxRetry = 5;
+        const maxRetry = 3;
         // NG の場合、何回失敗したか取得
         const retryCount = parseRetryCount_(status);
 
