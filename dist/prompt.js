@@ -3,6 +3,7 @@
  ************************************************************/
 
 // 用語統一＋通貨変換ルール（COMMON_TRANSLATION_RULES 相当）
+
 const COMMON_TRANSLATION_RULES = `
 【翻訳時の用語統一ルール（必ず従うこと）】
 このルールは記事タイトルと本文の翻訳に必ず適用してください。
@@ -493,11 +494,11 @@ function processRow_(sheet, row) {
 }
 
 /************************************************************
- * 4. onEdit トリガー
+ * 4. onEditHead トリガー
  *   - M列 or N列 が編集されたとき、その行の E〜G を再計算
  ************************************************************/
 
-function onEdit(e) {
+function onEditHead(e) {
   const range = e.range;
   const sheet = range.getSheet();
   const row = range.getRow();
@@ -508,5 +509,15 @@ function onEdit(e) {
   // M列(13) or N列(14) が編集されたときだけ実行
   if (col === 13 || col === 14) {
     processRow_(sheet, row);
+  }
+}
+
+function manualInit() {
+  const dummyApiKey = "DUMMY";
+  const prompt = "test";
+  try {
+    callGeminiWithKey_(dummyApiKey, prompt);
+  } catch (e) {
+    Logger.log(e);
   }
 }
