@@ -983,8 +983,8 @@ def _keep_only_rows_of_date(date_str: str) -> int:
 
     total = len(rows)
 
-    # A:J は一旦全クリア
-    ws.batch_clear(["A2:J"])
+    # A2 以降の全ての列をクリア
+    ws.batch_clear(["2:1000"])   # クリアしたい最大行数は適宜調整
 
     # 今日の行だけ A2 から詰め直す（A..J）
     if kept:
@@ -996,29 +996,37 @@ def _keep_only_rows_of_date(date_str: str) -> int:
 
     return len(rows) - len(kept)
 
-# ===== コマンド：収集→追記（16/18/20/22） =====
+# ===== Gemini を呼ばずに E=タイトル原文, F=本文原文 を書き出す版 =====
 def cmd_collect_to_sheet(args):
     now_mmt = datetime.now(MMT)
     target = now_mmt.date()
     
-    logging.info(f"[collect] start target_date_mmt={target.isoformat()} clear_yesterday={getattr(args,'clear_yesterday',False)}")
+    logging.info(
+        f"[collect] start target_date_mmt={target.isoformat()} "
+        f"clear_yesterday={getattr(args,'clear_yesterday',False)}"
+    )
 
+    # 前日クリアオプション
     if getattr(args, "clear_yesterday", False):
         today = now_mmt.date().isoformat()
         with _timeit("clear-yesterday", date=today):
             removed = _keep_only_rows_of_date(today)
         logging.info(f"[clean] kept only {today} (removed {removed} rows)")
 
+    # ① 各メディアから記事収集（export_all_articles_to_csv と同じ collectors）
     items = _collect_all_for(target)
     if not items:
         logging.warning("[collect] no items to write")
-        print("no items to write"); return
+        print("no items to write")
+        return
 
     existing = _existing_urls_set()
     logging.info(f"[sheet] existing_urls={len(existing)}")
+
     ts = datetime.now(MMT).strftime("%Y-%m-%d %H:%M:%S")
-    rows_to_append = []
+    rows_to_append: List[List[str]] = []
     bundle_dir = getattr(args, "bundle_dir", "bundle")
+
     for it in items:
         source = it.get("source") or ""
         title  = it.get("title") or ""
@@ -1026,6 +1034,7 @@ def cmd_collect_to_sheet(args):
         if not url or url in existing:
             logging.debug(f"[skip] url empty or duplicated url={url!r}")
             continue
+
         # collector が本文を持っていればそれを最優先（再取得しない）
         body = (it.get("body") or "").strip()
         if body:
@@ -1037,29 +1046,27 @@ def cmd_collect_to_sheet(args):
             # なければ堅牢抽出器で1回だけ取得→キャッシュ
             body = _get_body_once(url, source, out_dir=bundle_dir, title=title)
 
-        with _timeit("headline-variants", source=source):
-            f, g, h = _headline_variants_ja(title, source, url, body)
-        with _timeit("summary", source=source):
-            summ    = _summary_ja(source, title, body, url)
-        # 異常時のみ “最後の【要約】抽出＋手順行除去” を適用（存在すれば）
-        try:
-            from fetch_articles import normalize_summary_text
-            summ = normalize_summary_text(summ)
-        except Exception:
-            pass
-        # 原文に対してエーヤワディ判定
+        # ★ ここから：Gemini は使わず、エーヤワディ判定だけを行う
         is_ay = _is_ayeyarwady(title, body)
-        logging.info(f"[row] source={source} body_len={len(body)} ayeyarwady={is_ay} url={url}")
+        logging.info(
+            f"[row] source={source} body_len={len(body)} "
+            f"ayeyarwady={is_ay} url={url}"
+        )
 
+        # ★ E/F/G はブランク, M にタイトル原文, N に本文原文
         rows_to_append.append([
-            target.isoformat(),          # A 日付(配信日)
-            ts,                          # B timestamp
-            source,                      # C メディア
-            "TRUE" if is_ay else "FALSE",# D エーヤワディー
-            f, g, h,                     # E/F/G 見出し訳３案
-            "",                          # H 確定見出し（手動）
-            summ,                        # I 本文要約
-            url,                         # J URL
+            target.isoformat(),                  # A 日付(配信日)
+            ts,                                  # B timestamp
+            source,                              # C メディア
+            "TRUE" if is_ay else "FALSE",        # D エーヤワディー
+            "", "", "",                          # E/F/G 見出し訳３案（今回は空）
+            "",                                  # H 確定見出し（手動）
+            "",                                  # I 本文要約（空）
+            url,                                 # J URL
+            "",                                  # K 採用フラグ（初期値空）
+            "",                                  # L（将来用など、現状不使用なら空）
+            title,                               # M 記事タイトル原文
+            body,                                # N 記事本文原文
         ])
         existing.add(url)
 
