@@ -324,17 +324,178 @@ function getApiKeyFromSheetAndSource_(sheetName, sourceRaw) {
 }
 
 /************************************************************
+ * Gemini 共通設定（リトライ＆ログ）
+ ************************************************************/
+
+// リトライ設定（Python版に揃えた値）
+const GEMINI_JS_MAX_RETRIES = 7; // 最大リトライ回数
+const GEMINI_JS_BASE_DELAY_SEC = 10; // 初回待機（秒）
+const GEMINI_JS_MAX_DELAY_SEC = 120; // 最大待機（秒）
+
+// 乱数ジッター付き指数バックオフ: attempt=0,1,2,... → 待機ミリ秒
+function _expBackoffMs_(attempt) {
+  const baseMs = GEMINI_JS_BASE_DELAY_SEC * 1000;
+  const maxMs = GEMINI_JS_MAX_DELAY_SEC * 1000;
+  let delay = Math.min(maxMs, Math.pow(2, attempt) * baseMs); // 2^attempt * base
+  delay += Math.floor(Math.random() * 1000); // 0〜999ms のジッター
+  return delay;
+}
+
+// Gemini RESTレスポンスから usage を取り出す（snake/camel両対応）
+function _usageFromData_(data) {
+  if (!data) return null;
+  const usage = data.usageMetadata || data.usage_metadata;
+  if (!usage) return null;
+
+  function _get(obj, key, fallback) {
+    return obj && key in obj ? obj[key] : fallback;
+  }
+
+  const promptTokens = _get(
+    usage,
+    "prompt_token_count",
+    _get(usage, "input_token_count", _get(usage, "input_tokens", 0))
+  );
+  const candTokens = _get(
+    usage,
+    "candidates_token_count",
+    _get(usage, "output_token_count", _get(usage, "output_tokens", 0))
+  );
+  const totalTokens = _get(
+    usage,
+    "total_token_count",
+    _get(usage, "total_tokens", (promptTokens || 0) + (candTokens || 0))
+  );
+  const cacheCreate = _get(usage, "cache_creation_input_token_count", 0);
+  const cacheRead = _get(usage, "cache_read_input_token_count", 0);
+
+  return {
+    prompt_token_count: promptTokens || 0,
+    candidates_token_count: candTokens || 0,
+    total_token_count: totalTokens || 0,
+    cache_creation_input_token_count: cacheCreate || 0,
+    cache_read_input_token_count: cacheRead || 0,
+  };
+}
+
+// usage ログ（標準出力＝Apps Script 実行ログ）
+function _logGeminiUsage_(data, usageTag, model) {
+  const u = _usageFromData_(data);
+  if (!u) return;
+  const tag = usageTag || "gen";
+  const m = model || "gemini-2.5-flash";
+  Logger.log(
+    "📊 TOKENS[%s] in=%s out=%s total=%s (cache create/read=%s/%s) model=%s",
+    tag,
+    u.prompt_token_count,
+    u.candidates_token_count,
+    u.total_token_count,
+    u.cache_creation_input_token_count,
+    u.cache_read_input_token_count,
+    m
+  );
+}
+
+// Free tier の「generate_content_free_tier_requests」系 429 を判定
+function _isFreeTierQuotaErrorData_(data) {
+  try {
+    const err = data && data.error;
+    if (!err) return false;
+    const msg = (err.message || "").toString();
+    return msg.indexOf("generate_content_free_tier_requests") !== -1;
+  } catch (e) {
+    return false;
+  }
+}
+
+// 503/429 などリトライ対象かどうか判定（HTTPコード + エラー内容から）
+function _isRetriableError_(httpCode, data) {
+  const err = data && data.error;
+  const status = err && err.status ? String(err.status) : "";
+  const msg = err && err.message ? String(err.message) : "";
+
+  if (httpCode === 503 || httpCode === 500) return true;
+  if (httpCode === 429) return true;
+
+  const lower = (status + " " + msg).toLowerCase();
+  const hints = [
+    "unavailable",
+    "resource_exhausted",
+    "timeout",
+    "temporar",
+    "overload",
+    "server error",
+    "internal",
+  ];
+  return hints.some(function (h) {
+    return lower.indexOf(h) !== -1;
+  });
+}
+
+/************************************************************
+ * Gemini 呼び出しログ用シート出力
+ ************************************************************/
+
+const GEMINI_LOG_SHEET_NAME_PROD = "gemini_logs_prod";
+const GEMINI_LOG_SHEET_NAME_DEV = "gemini_logs_dev";
+
+// usageTag からどのログシートに書くか判定する
+// 例: "prod#row5:E(...)" → "gemini_logs_prod"
+//     "dev#row10:I(...)" → "gemini_logs_dev"
+function _getLogSheetNameForTag_(tag) {
+  if (!tag) return null;
+  const s = String(tag);
+  const sharpIndex = s.indexOf("#");
+  const head = sharpIndex >= 0 ? s.substring(0, sharpIndex) : s;
+
+  if (head === "prod") return GEMINI_LOG_SHEET_NAME_PROD;
+  if (head === "dev") return GEMINI_LOG_SHEET_NAME_DEV;
+
+  // prod/dev 以外（manualInit など）はログを残さない
+  return null;
+}
+
+// 実際にログシートに1行追加する
+function _appendGeminiLog_(level, tag, message) {
+  try {
+    const logSheetName = _getLogSheetNameForTag_(tag);
+    if (!logSheetName) {
+      // prod/dev 以外のタグは無視
+      return;
+    }
+
+    const ss = SpreadsheetApp.getActive();
+    let sh = ss.getSheetByName(logSheetName);
+
+    // 初回のみシート作成 & ヘッダー行
+    if (!sh) {
+      sh = ss.insertSheet(logSheetName);
+      sh.appendRow(["timestamp", "level", "tag", "message"]);
+    }
+
+    sh.appendRow([new Date(), level || "", tag || "", message || ""]);
+  } catch (e) {
+    // ログ書き込み失敗は本体処理に影響させない
+    Logger.log("[gemini-log] failed to append log: " + e);
+  }
+}
+
+/************************************************************
  * 2. Gemini 呼び出し共通
  ************************************************************/
 
-function callGeminiWithKey_(apiKey, prompt) {
+function callGeminiWithKey_(apiKey, prompt, usageTagOpt) {
   if (!apiKey) {
+    Logger.log("[gemini] ERROR: API key not set");
     return "ERROR: API key not set";
   }
 
+  const usageTag = usageTagOpt || "generic";
+  const model = "gemini-2.5-flash";
   const url =
-    "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent" +
-    "?key=" +
+    "https://generativelanguage.googleapis.com/v1beta/models/" +
+    model +
+    ":generateContent?key=" +
     encodeURIComponent(apiKey);
 
   const payload = {
@@ -349,24 +510,214 @@ function callGeminiWithKey_(apiKey, prompt) {
     method: "post",
     contentType: "application/json",
     payload: JSON.stringify(payload),
-    muteHttpExceptions: true,
+    muteHttpExceptions: true, // 非200もレスポンスを返させる
   };
 
-  const res = UrlFetchApp.fetch(url, options);
-  const text = res.getContentText();
+  let lastErrorText = "";
 
-  let data;
-  try {
-    data = JSON.parse(text);
-  } catch (e) {
-    return "ERROR: invalid JSON: " + text;
+  for (let attempt = 0; attempt < GEMINI_JS_MAX_RETRIES; attempt++) {
+    Logger.log(
+      "[gemini-call] try %s/%s tag=%s model=%s prompt_chars=%s",
+      attempt + 1,
+      GEMINI_JS_MAX_RETRIES,
+      usageTag,
+      model,
+      (prompt || "").length
+    );
+
+    _appendGeminiLog_(
+      "INFO",
+      usageTag,
+      "try " +
+        (attempt + 1) +
+        "/" +
+        GEMINI_JS_MAX_RETRIES +
+        " model=" +
+        model +
+        " prompt_chars=" +
+        (prompt || "").length
+    );
+
+    let res;
+    try {
+      res = UrlFetchApp.fetch(url, options);
+    } catch (e) {
+      // ネットワーク例外など
+      lastErrorText = (e && e.toString()) || "fetch error";
+      Logger.log("[gemini] fetch exception: %s", lastErrorText);
+
+      _appendGeminiLog_("ERROR", usageTag, "fetch exception: " + lastErrorText);
+
+      if (attempt === GEMINI_JS_MAX_RETRIES - 1) {
+        return "ERROR: " + lastErrorText;
+      }
+
+      const sleepMs = _expBackoffMs_(attempt);
+      Logger.log(
+        "[gemini] retry after %sms (fetch exception, attempt=%s)",
+        sleepMs,
+        attempt + 1
+      );
+
+      _appendGeminiLog_(
+        "WARN",
+        usageTag,
+        "retry after " +
+          sleepMs +
+          "ms (fetch exception, attempt=" +
+          (attempt + 1) +
+          ")"
+      );
+
+      Utilities.sleep(sleepMs);
+      continue;
+    }
+
+    const code = res.getResponseCode();
+    const text = res.getContentText();
+
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch (e) {
+      lastErrorText = "invalid JSON: " + text.substring(0, 500);
+      Logger.log("[gemini] invalid JSON (code=%s): %s", code, lastErrorText);
+
+      if (attempt === GEMINI_JS_MAX_RETRIES - 1) {
+        return "ERROR: " + lastErrorText;
+      }
+
+      const sleepMs = _expBackoffMs_(attempt);
+      Utilities.sleep(sleepMs);
+      continue;
+    }
+
+    // Free tier の日次上限エラーは即諦める
+    if (_isFreeTierQuotaErrorData_(data)) {
+      const errMsg =
+        (data.error && data.error.message) ||
+        "free tier quota exceeded (generate_content_free_tier_requests)";
+      Logger.log("🚫 [gemini] free tier quota exceeded: %s", errMsg);
+
+      _appendGeminiLog_(
+        "ERROR",
+        usageTag,
+        "free tier quota exceeded: " + errMsg
+      );
+
+      return "ERROR: " + errMsg;
+    }
+
+    // 2xx かつ error 無し → 成功とみなす
+    if (code >= 200 && code < 300 && !(data && data.error)) {
+      try {
+        // usage ログ
+        _logGeminiUsage_(data, usageTag, model);
+      } catch (e) {
+        // usage ログ失敗は致命的ではないので無視
+      }
+
+      let out = "";
+      try {
+        out =
+          (((data.candidates || [])[0] || {}).content.parts || [])[0].text ||
+          "";
+      } catch (e) {
+        out = "";
+      }
+      out = (out || "").trim();
+
+      Logger.log(
+        "[gemini] success tag=%s model=%s len(resp)=%s",
+        usageTag,
+        model,
+        out.length
+      );
+
+      _appendGeminiLog_(
+        "SUCCESS",
+        usageTag,
+        "success model=" + model + " len(resp)=" + out.length
+      );
+
+      return out;
+    }
+
+    // error オブジェクトがあれば詳細ログ
+    if (data && data.error) {
+      const err = data.error;
+      const status = String(err.status || "");
+      const message = String(err.message || "");
+      Logger.log(
+        "[gemini] HTTP %s error status=%s message=%s",
+        code,
+        status,
+        message
+      );
+      lastErrorText = message || "HTTP " + code;
+
+      _appendGeminiLog_(
+        "WARN",
+        usageTag,
+        "HTTP " + code + " error status=" + status + " message=" + message
+      );
+    } else {
+      Logger.log("[gemini] HTTP %s unexpected response body: %s", code, text);
+      lastErrorText = "HTTP " + code;
+
+      _appendGeminiLog_(
+        "WARN",
+        usageTag,
+        "HTTP " + code + " unexpected response: " + text.substring(0, 200)
+      );
+    }
+
+    // リトライ対象か判定
+    const retriable = _isRetriableError_(code, data);
+    if (!retriable || attempt === GEMINI_JS_MAX_RETRIES - 1) {
+      Logger.log(
+        "[gemini] give up (retriable=%s): %s",
+        retriable,
+        lastErrorText
+      );
+
+      _appendGeminiLog_(
+        "ERROR",
+        usageTag,
+        "give up (retriable=" + retriable + "): " + lastErrorText
+      );
+
+      return "ERROR: " + lastErrorText;
+    }
+
+    const sleepMs = _expBackoffMs_(attempt);
+    Logger.log(
+      "⚠️ [gemini] retry %s/%s after %sms (HTTP %s)",
+      attempt + 1,
+      GEMINI_JS_MAX_RETRIES,
+      sleepMs,
+      code
+    );
+
+    _appendGeminiLog_(
+      "WARN",
+      usageTag,
+      "retry " +
+        (attempt + 1) +
+        "/" +
+        GEMINI_JS_MAX_RETRIES +
+        " after " +
+        sleepMs +
+        "ms (HTTP " +
+        code +
+        ")"
+    );
+
+    Utilities.sleep(sleepMs);
   }
 
-  try {
-    return (data.candidates[0].content.parts[0].text || "").trim();
-  } catch (e) {
-    return "ERROR: " + text;
-  }
+  // ここまで来ることはほぼ無い想定
+  return "ERROR: " + (lastErrorText || "Gemini call failed");
 }
 
 /************************************************************
@@ -438,7 +789,8 @@ function processRow_(sheet, row) {
       (urlVal || "") +
       "\n";
 
-    headlineA = callGeminiWithKey_(apiKey, prompt1);
+    const tagE = sheetName + "#row" + row + ":E(headlineA)";
+    headlineA = callGeminiWithKey_(apiKey, prompt1, tagE);
     sheet.getRange(row, colE).setValue(headlineA);
   } else {
     sheet.getRange(row, colE).setValue("");
@@ -449,7 +801,8 @@ function processRow_(sheet, row) {
    ***************/
   if (headlineA) {
     const prompt2 = buildHeadlinePrompt2From_(headlineA);
-    const headlineA2 = callGeminiWithKey_(apiKey, prompt2);
+    const tagF = sheetName + "#row" + row + ":F(headlineA2)";
+    const headlineA2 = callGeminiWithKey_(apiKey, prompt2, tagF);
     sheet.getRange(row, colF).setValue(headlineA2);
   } else {
     sheet.getRange(row, colF).setValue("");
@@ -464,7 +817,8 @@ function processRow_(sheet, row) {
     const prompt3 =
       HEADLINE_PROMPT_3 + "\n\n" + bodyGlossaryRules + "\n" + bodyOnlyBlock;
 
-    const headlineB2 = callGeminiWithKey_(apiKey, prompt3);
+    const tagG = sheetName + "#row" + row + ":G(headlineB2)";
+    const headlineB2 = callGeminiWithKey_(apiKey, prompt3, tagG);
     sheet.getRange(row, colG).setValue(headlineB2);
   } else {
     sheet.getRange(row, colG).setValue("");
@@ -486,11 +840,59 @@ function processRow_(sheet, row) {
     const summaryPrompt =
       SUMMARY_TASK + "\n\n" + bodyGlossaryRules + "\n" + summaryInput;
 
-    const summaryJa = callGeminiWithKey_(apiKey, summaryPrompt);
+    const tagI = sheetName + "#row" + row + ":I(summary)";
+    const summaryJa = callGeminiWithKey_(apiKey, summaryPrompt, tagI);
     sheet.getRange(row, colI).setValue(summaryJa);
   } else {
     sheet.getRange(row, colI).setValue("");
   }
+
+  /********************************************
+   * L列：ステータス判定（詳細エラー + 複数記録）
+   ********************************************/
+  const colL = 12;
+
+  function isError_(val) {
+    return typeof val === "string" && val.indexOf("ERROR:") === 0;
+  }
+
+  // タイトルも本文も無い場合は EMPTY
+  if (!titleRaw && !bodyRaw) {
+    sheet.getRange(row, colL).setValue("EMPTY");
+    return;
+  }
+
+  const vE = sheet.getRange(row, colE).getValue();
+  const vF = sheet.getRange(row, colF).getValue();
+  const vG = sheet.getRange(row, colG).getValue();
+  const vI = sheet.getRange(row, colI).getValue();
+
+  const errors = [];
+
+  if (isError_(vE)) {
+    errors.push("E=" + String(vE));
+  }
+  if (isError_(vF)) {
+    errors.push("F=" + String(vF));
+  }
+  if (isError_(vG)) {
+    errors.push("G=" + String(vG));
+  }
+  if (isError_(vI)) {
+    errors.push("I=" + String(vI));
+  }
+
+  let statusText = "";
+
+  if (errors.length === 0) {
+    statusText = "OK";
+  } else {
+    // NGが複数ある場合は / 区切りで全部記録
+    // 例: NG: E=ERROR: ... / G=ERROR: ...
+    statusText = "NG: " + errors.join(" / ");
+  }
+
+  sheet.getRange(row, colL).setValue(statusText);
 }
 
 /************************************************************
@@ -498,17 +900,270 @@ function processRow_(sheet, row) {
  *   - M列 or N列 が編集されたとき、その行の E〜G を再計算
  ************************************************************/
 
+// prod / dev シート用のログシート内容をクリア（ヘッダー行は残す）
+function _clearLogSheetFor_(sheetName) {
+  const ss = SpreadsheetApp.getActive();
+  let logSheetName = null;
+
+  if (sheetName === "prod") {
+    logSheetName = GEMINI_LOG_SHEET_NAME_PROD;
+  } else if (sheetName === "dev") {
+    logSheetName = GEMINI_LOG_SHEET_NAME_DEV;
+  } else {
+    return; // 対象外
+  }
+
+  const sh = ss.getSheetByName(logSheetName);
+  if (!sh) return;
+
+  const lastRow = sh.getLastRow();
+  const lastCol = sh.getLastColumn() || 1;
+  if (lastRow <= 1) return; // ヘッダーのみ
+
+  // 2行目以降をクリア
+  sh.getRange(2, 1, lastRow - 1, lastCol).clearContent();
+}
+
+const STATUS_PENDING = "PENDING";
+
+function enqueueRowForProcess_(sheet, row) {
+  // ヘッダー行は無視
+  if (row === 1) return;
+
+  const titleRaw = sheet.getRange(row, 13).getValue(); // M列
+  const bodyRaw = sheet.getRange(row, 14).getValue(); // N列
+
+  // タイトルも本文も空なら何もしない
+  if (!titleRaw && !bodyRaw) {
+    return;
+  }
+
+  const statusCell = sheet.getRange(row, STATUS_COL);
+  const statusVal = (statusCell.getValue() || "").toString();
+
+  // すでに OK / NG など何かしら結果が入っている場合、
+  // 上書きして再処理させたいなら常に PENDING にしてよい。
+  // 「一度処理したものは二度とやらない」なら、ここで return してもよい。
+  statusCell.setValue(STATUS_PENDING);
+}
+
+// pythonで操作した時にも動く
+const MAX_ROWS_PER_RUN = 3; // 1回の実行で処理する最大行数
+const STATUS_COL = 12; // L列 (ステータス列の列番号)
+
+function processDirtyRows() {
+  const lock = LockService.getDocumentLock();
+  try {
+    lock.waitLock(30 * 1000);
+
+    const ss = SpreadsheetApp.getActive();
+    const sheetNames = ["prod", "dev"];
+    let remaining = MAX_ROWS_PER_RUN;
+
+    for (let s = 0; s < sheetNames.length; s++) {
+      if (remaining <= 0) break;
+
+      const sheetName = sheetNames[s];
+      const sh = ss.getSheetByName(sheetName);
+      if (!sh) continue;
+
+      const lastRow = sh.getLastRow();
+      if (lastRow < 2) continue;
+
+      const startRow = 2;
+      const numRows = lastRow - 1;
+      const numCols = 14;
+      const values = sh.getRange(startRow, 1, numRows, numCols).getValues();
+
+      for (let i = 0; i < numRows; i++) {
+        if (remaining <= 0) break;
+
+        const rowIndex = startRow + i;
+        const row = values[i];
+
+        const titleRaw = row[13 - 1]; // M列
+        const bodyRaw = row[14 - 1]; // N列
+        const status = (row[STATUS_COL - 1] || "").toString(); // L列
+
+        // M・N が空 → 処理しない
+        if (!titleRaw && !bodyRaw) continue;
+
+        // OK の行はスキップ（再処理させない）
+        if (status.startsWith("OK")) continue;
+
+        // ★ RUNNING の行はスキップ（前回の処理途中で止まった場合）
+        if (status.startsWith("RUNNING")) continue;
+
+        Logger.log(
+          "[processDirtyRows_] processing %s row %s (status=%s)",
+          sheetName,
+          rowIndex,
+          status
+        );
+
+        // ★ 処理開始をマーク
+        sh.getRange(rowIndex, STATUS_COL).setValue("RUNNING");
+
+        // ★ 実際の1行処理
+        processRow_(sh, rowIndex);
+
+        remaining--;
+      }
+    }
+
+    Logger.log(
+      "[processDirtyRows_] done, processed rows=%s",
+      MAX_ROWS_PER_RUN - remaining
+    );
+  } catch (err) {
+    Logger.log("[processDirtyRows_] lock error: " + err);
+  } finally {
+    try {
+      lock.releaseLock();
+    } catch (e2) {}
+  }
+}
+
+// 手で操作した時しか動かない
 function onEditHead(e) {
   const range = e.range;
   const sheet = range.getSheet();
-  const row = range.getRow();
-  const col = range.getColumn();
+  const sheetName = sheet.getName();
 
-  if (row === 1) return; // ヘッダー行は無視
+  // === 1) prod / dev シート以外は一切処理しない ===
+  if (sheetName !== "prod" && sheetName !== "dev") {
+    return;
+  }
 
-  // M列(13) or N列(14) が編集されたときだけ実行
-  if (col === 13 || col === 14) {
-    processRow_(sheet, row);
+  const startRow = range.getRow();
+  const startCol = range.getColumn();
+  const numRows = range.getNumRows();
+  const numCols = range.getNumColumns();
+  const endRow = startRow + numRows - 1;
+  const endCol = startCol + numCols - 1;
+
+  // === 2) A2 以降がクリアされたら、そのシート用ログをクリア ===
+  // 貼り付け・削除の範囲に A列(1) が含まれていて、かつ 2行目以降ならログクリア
+  if (startCol <= 1 && endCol >= 1 && endRow >= 2) {
+    const fromRow = Math.max(2, startRow);
+    const rows = endRow - fromRow + 1;
+    const aValues = sheet.getRange(fromRow, 1, rows, 1).getValues();
+
+    // どこか1つでも A列セルが空になっていたらログクリア（ざっくりなルール）
+    let clearedA = false;
+    for (let i = 0; i < aValues.length; i++) {
+      if (!aValues[i][0]) {
+        clearedA = true;
+        break;
+      }
+    }
+    if (clearedA) {
+      _clearLogSheetFor_(sheetName);
+    }
+    // A列編集時はここで終了（要約・翻訳は走らせない）
+    // ※必要なら、「A列と同時にM/Nも貼った場合も処理したい」ように拡張できます
+  }
+
+  // === 3) M列(13) / N列(14) が範囲にまったく含まれていなければ何もしない ===
+  const touchesM = startCol <= 13 && endCol >= 13;
+  const touchesN = startCol <= 14 && endCol >= 14;
+  if (!touchesM && !touchesN) {
+    return;
+  }
+
+  // === 4) ヘッダー行(1行目)は無視、2行目以降を対象 ===
+  const firstRow = Math.max(2, startRow);
+
+  // === 5) 貼り付け範囲内で M/N 列が含まれる各行を処理 ===
+  for (let r = firstRow; r <= endRow; r++) {
+    // この行で実際に見るのは M(13) と N(14) だけ
+    const titleRaw = sheet.getRange(r, 13).getValue(); // M列
+    const bodyRaw = sheet.getRange(r, 14).getValue(); // N列
+
+    // 両方空なら要約・翻訳処理は走らせない
+    if (!titleRaw && !bodyRaw) {
+      // 必要ならここで E/F/G/I/L を消す:
+      // sheet.getRange(r, 5, 1, 1).clearContent();  // E
+      // sheet.getRange(r, 6, 1, 1).clearContent();  // F
+      // sheet.getRange(r, 7, 1, 1).clearContent();  // G
+      // sheet.getRange(r, 9, 1, 1).clearContent();  // I
+      // sheet.getRange(r, 12, 1, 1).clearContent(); // L
+      continue;
+    }
+
+    // この行は M/N が埋まっているので、1行分処理
+    processRow_(sheet, r);
+  }
+}
+
+function runGeminiBatch() {
+  const lock = LockService.getDocumentLock();
+  try {
+    // 同時実行防止（最大30秒待つ）
+    lock.waitLock(30 * 1000);
+
+    const ss = SpreadsheetApp.getActive();
+    const sheetNames = ["prod", "dev"]; // 対象シート
+    let remaining = MAX_ROWS_PER_RUN;
+
+    for (let s = 0; s < sheetNames.length; s++) {
+      if (remaining <= 0) break;
+
+      const sheetName = sheetNames[s];
+      const sh = ss.getSheetByName(sheetName);
+      if (!sh) continue;
+
+      const lastRow = sh.getLastRow();
+      if (lastRow < 2) continue; // データ無し
+
+      const startRow = 2;
+      const numRows = lastRow - 1;
+      const numCols = 14; // A〜N までを読んでおく
+      const values = sh.getRange(startRow, 1, numRows, numCols).getValues();
+
+      for (let i = 0; i < numRows; i++) {
+        if (remaining <= 0) break;
+
+        const rowIndex = startRow + i;
+        const row = values[i];
+
+        const titleRaw = row[13 - 1]; // M列 (13)
+        const bodyRaw = row[14 - 1]; // N列 (14)
+        const status = (row[STATUS_COL - 1] || "").toString(); // L列
+
+        // タイトルも本文も空 → スキップ
+        if (!titleRaw && !bodyRaw) {
+          continue;
+        }
+
+        // 「PENDING」の行だけ処理対象にする
+        if (status !== STATUS_PENDING) {
+          continue;
+        }
+
+        Logger.log(
+          "[runGeminiBatch] processing %s row %s",
+          sheetName,
+          rowIndex
+        );
+
+        // この行を実際に処理（見出し/要約作成＋L列にOK/NG書き込み）
+        processRow_(sh, rowIndex);
+
+        remaining--;
+      }
+    }
+
+    Logger.log(
+      "[runGeminiBatch] done, processed rows=%s",
+      MAX_ROWS_PER_RUN - remaining
+    );
+  } catch (err) {
+    Logger.log("[runGeminiBatch] lock error: " + err);
+  } finally {
+    try {
+      lock.releaseLock();
+    } catch (e2) {}
   }
 }
 
