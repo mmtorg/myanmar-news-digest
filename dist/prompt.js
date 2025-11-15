@@ -902,7 +902,7 @@ function processRow_(sheet, row, prevStatus) {
  *   - M列 or N列 が編集されたとき、その行の E〜G を再計算
  ************************************************************/
 
-// prod / dev シート用のログシート内容をクリア（ヘッダー行は残す）
+// prod / dev シート用のログシート内容をクリア
 function _clearLogSheetFor_(sheetName) {
   const ss = SpreadsheetApp.getActive();
   let logSheetName = null;
@@ -918,12 +918,9 @@ function _clearLogSheetFor_(sheetName) {
   const sh = ss.getSheetByName(logSheetName);
   if (!sh) return;
 
-  const lastRow = sh.getLastRow();
-  const lastCol = sh.getLastColumn() || 1;
-  if (lastRow <= 1) return; // ヘッダーのみ
-
-  // 2行目以降をクリア
-  sh.getRange(2, 1, lastRow - 1, lastCol).clearContent();
+  // ★シート全体の中身をクリア（ヘッダーも残さない）
+  sh.clearContents();
+  // ※書式も消したければ sh.clear(); に変更
 }
 
 // ミャンマー時間 16:00〜翌 2:30 の間だけ true を返す
@@ -1294,4 +1291,28 @@ function checkAndNotifyAllDoneIfNeeded_() {
   sheetNames.forEach(function (name) {
     checkAndNotifyAllDoneIfNeededForSheet_(name);
   });
+}
+
+/************************************************************
+ * 6. ログシートクリア
+ ************************************************************/
+// スプレッドシート主導（インストール型）の「編集時」トリガー用
+function onEditClearGeminiLogs(e) {
+  const range = e.range;
+  const sheet = range.getSheet();
+  const sheetName = sheet.getName();
+
+  // 対象は prod / dev シートのみ
+  if (sheetName !== "prod" && sheetName !== "dev") return;
+
+  // A2 の変更だけを監視
+  if (range.getRow() !== 2 || range.getColumn() !== 1) return;
+
+  const newValue = range.getValue();
+
+  // 「クリアされた（空になった）」ときだけログシートをクリア
+  if (newValue === "" || newValue === null) {
+    _clearLogSheetFor_(sheetName); // prod or dev に応じてログシート全クリア
+    Logger.log("[onEditClearGeminiLogs] cleared logs for sheet=%s", sheetName);
+  }
 }
