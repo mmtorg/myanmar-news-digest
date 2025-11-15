@@ -993,6 +993,37 @@ function cleanupStaleRunningStatuses_() {
 const MAX_ROWS_PER_RUN = 3; // 1回の実行で処理する最大行数
 const STATUS_COL = 12; // L列 (ステータス列の列番号)
 
+// NG の最大試行回数（これ以上失敗したら「打ち切り完了」とみなす）
+const MAX_RETRY_COUNT = 3;
+
+/************************************************************
+ * メール通知用設定
+ ************************************************************/
+
+// 送信先アドレス
+function getNotifyEmailListForSheet_(sheetName) {
+  const props = PropertiesService.getScriptProperties();
+
+  let raw = "";
+  if (sheetName === "prod") {
+    raw = props.getProperty("NOTIFY_EMAIL_TO_PROD") || "";
+  } else if (sheetName === "dev") {
+    raw = props.getProperty("NOTIFY_EMAIL_TO_DEV") || "";
+  }
+
+  // 空なら空配列を返す
+  if (!raw) return [];
+
+  // カンマ区切り → トリム → 空要素除去
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
+
+// ★件名のベース
+const NOTIFY_EMAIL_SUBJECT_BASE = "MNA 翻訳・要約完了通知";
+
 // ★ 統合版：この関数だけを時間トリガーで動かす
 function processRowsBatch() {
   const lock = LockService.getDocumentLock();
@@ -1055,17 +1086,15 @@ function processRowsBatch() {
         }
 
         // ★ NG の再試行回数チェック
-        const maxRetry = 3;
-        // NG の場合、何回失敗したか取得
         const retryCount = parseRetryCount_(status);
 
-        // すでに 5回以上失敗している行は再試行しない
-        if (retryCount >= maxRetry) {
+        // すでに MAX_RETRY_COUNT 回以上失敗している行は再試行しない
+        if (retryCount >= MAX_RETRY_COUNT) {
           Logger.log(
             "[processRowsBatch] skip row %s (retryCount=%s >= %s)",
             rowIndex,
             retryCount,
-            maxRetry
+            MAX_RETRY_COUNT
           );
           continue;
         }
@@ -1095,6 +1124,9 @@ function processRowsBatch() {
       "[processRowsBatch] done, processed rows=%s",
       MAX_ROWS_PER_RUN - remaining
     );
+
+    // ★ prod / dev それぞれについて、完了していればメール通知
+    checkAndNotifyAllDoneIfNeeded_();
   } catch (err) {
     Logger.log("[processRowsBatch] lock error: " + err);
   } finally {
@@ -1102,4 +1134,164 @@ function processRowsBatch() {
       lock.releaseLock();
     } catch (e2) {}
   }
+}
+
+/************************************************************
+ * 5. 全行完了時のメール通知
+ *
+ *   完了の定義（対象行）:
+ *   - A列が埋まっている
+ *   - M列・N列が両方埋まっている
+ *   - L列が OK または NG(x) かつ x >= MAX_RETRY_COUNT
+ *
+ *   prod / dev それぞれで、
+ *   「対象行のすべてが上記を満たした時点」でメール送信。
+ *   そのときの「最終行のB列の値」をメールに含める。
+ *   同じ最終行(B)まで完了している状態では二重送信しない。
+ ************************************************************/
+
+function checkAndNotifyAllDoneIfNeededForSheet_(sheetName) {
+  const ss = SpreadsheetApp.getActive();
+  const sh = ss.getSheetByName(sheetName);
+  if (!sh) return;
+
+  const lastRow = sh.getLastRow();
+  if (lastRow < 2) {
+    // データ行が無い
+    return;
+  }
+
+  const lastCol = Math.max(STATUS_COL, 14); // 少なくとも L〜N までは読む
+  const numRows = lastRow - 1;
+  const values = sh.getRange(2, 1, numRows, lastCol).getValues();
+
+  let allDone = true;
+  let targetRowCount = 0;
+  let lastTargetRowIndex = 0;
+  let lastTargetBValue = null;
+
+  for (let i = 0; i < numRows; i++) {
+    const row = values[i];
+
+    const colAVal = row[0]; // A列
+    const colBVal = row[1]; // B列（日時）
+    const titleRaw = row[13 - 1]; // M列
+    const bodyRaw = row[14 - 1]; // N列
+    const status = (row[STATUS_COL - 1] || "").toString(); // L列
+
+    // A列が空なら対象外
+    if (!colAVal) {
+      continue;
+    }
+
+    // M・N のどちらかでも空なら対象外（その行は「翻訳・要約対象」ではない）
+    if (!titleRaw || !bodyRaw) {
+      continue;
+    }
+
+    // ここまで来たら対象行
+    targetRowCount++;
+    const absRowIndex = 2 + i;
+    lastTargetRowIndex = absRowIndex;
+    lastTargetBValue = colBVal;
+
+    // 完了かどうか判定
+    let isDone = false;
+
+    if (status.startsWith("OK")) {
+      isDone = true;
+    } else if (status.startsWith("NG(")) {
+      const retryCount = parseRetryCount_(status);
+      if (retryCount >= MAX_RETRY_COUNT) {
+        isDone = true;
+      }
+    }
+
+    if (!isDone) {
+      allDone = false;
+      break;
+    }
+  }
+
+  // 対象行が1つもないなら通知しない
+  if (targetRowCount === 0) {
+    return;
+  }
+
+  // まだ完了していない
+  if (!allDone) {
+    return;
+  }
+
+  // ここまで来たら「そのシートの対象行がすべて完了」状態
+
+  // ─ 同じ「最終行(B)」に対しては二重送信しないためのキーを作成 ─
+  const props = PropertiesService.getScriptProperties();
+  const tz = Session.getScriptTimeZone() || "Asia/Yangon";
+
+  let bStr = "";
+  if (lastTargetBValue instanceof Date) {
+    bStr = Utilities.formatDate(lastTargetBValue, tz, "yyyy-MM-dd HH:mm:ss");
+  } else {
+    bStr = String(lastTargetBValue || "");
+  }
+
+  const notifyKey = sheetName + "#row" + lastTargetRowIndex + "#B=" + bStr;
+  const propName = "LAST_NOTIFIED_KEY_" + sheetName;
+  const alreadyKey = props.getProperty(propName);
+
+  if (alreadyKey === notifyKey) {
+    // この最終行(B)まではすでに通知済み
+    Logger.log(
+      "[notify] sheet=%s already notified for key=%s",
+      sheetName,
+      notifyKey
+    );
+    return;
+  }
+
+  // ─ メール送信先の決定（Script Propertiesから複数取得） ─
+  const emailList = getNotifyEmailListForSheet_(sheetName);
+
+  if (emailList.length === 0) {
+    Logger.log("[notify] no email configured for sheet=" + sheetName);
+    return;
+  }
+
+  // ─ メール件名・本文を先に作る ─
+  const subject = NOTIFY_EMAIL_SUBJECT_BASE + " [" + sheetName + "] " + bStr;
+
+  const ssUrl = ss.getUrl();
+  const body =
+    "シート「" +
+    sheetName +
+    "」で、" +
+    bStr +
+    "分の記事収集が完了しました。\n\n" +
+    "翌 02:30 までにスプレッドシートを更新してください。\n\n" +
+    "スプレッドシートURL:\n" +
+    ssUrl +
+    "\n";
+
+  // ─ 複数アドレスに順次送る ─
+  emailList.forEach(function (emailTo) {
+    GmailApp.sendEmail(emailTo, subject, body);
+    Logger.log(
+      "[notify] sent mail to %s for sheet=%s key=%s",
+      emailTo,
+      sheetName,
+      notifyKey
+    );
+  });
+
+  // 最後に通知した状態を記録
+  props.setProperty(propName, notifyKey);
+}
+
+// prod / dev まとめてチェックするヘルパー
+function checkAndNotifyAllDoneIfNeeded_() {
+  const sheetNames = ["prod", "dev"];
+  sheetNames.forEach(function (name) {
+    checkAndNotifyAllDoneIfNeededForSheet_(name);
+  });
 }
