@@ -1019,7 +1019,7 @@ function getNotifyEmailListForSheet_(sheetName) {
 }
 
 // ★件名のベース
-const NOTIFY_EMAIL_SUBJECT_BASE = "MNA 翻訳・要約完了通知";
+const NOTIFY_EMAIL_SUBJECT_BASE = "【MNA 記事収集完了】";
 
 // ★ 統合版：この関数だけを時間トリガーで動かす
 function processRowsBatch() {
@@ -1256,13 +1256,13 @@ function checkAndNotifyAllDoneIfNeededForSheet_(sheetName) {
   }
 
   // ─ メール件名・本文を先に作る ─
-  const subject = NOTIFY_EMAIL_SUBJECT_BASE + " [" + sheetName + "] " + bStr;
+  const subject = NOTIFY_EMAIL_SUBJECT_BASE + bStr;
 
   const ssUrl = ss.getUrl();
   const body =
     "シート「" +
     sheetName +
-    "」で、" +
+    "」で" +
     bStr +
     "分の記事収集が完了しました。\n\n" +
     "翌 02:30 までにスプレッドシートを更新してください。\n\n" +
