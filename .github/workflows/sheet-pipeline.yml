@@ -1,19 +1,18 @@
 name: Daily Myanmar News Alert Sheet Pipeline
 
 on:
-  # スケジュールは「デフォルトブランチ」でのみ動作します（通常は main）。
-  # => 本番のみスケジュール実行したい要件を満たします。
-  # GitHub Actions の cron は UTC です（MMT = UTC+06:30）
   schedule:
     # 15:50 MMT（= 09:20 UTC）: 前日クリア → 追記
     # 15:50 MMT ≒ 09:20 UTC → 09:17 UTC（= 15:47 MMT, 3分前倒し）
     - cron: "17 9 * * *" # 15:47 MMT（実運用目標: 15:50）
 
-    # 17:50 / 20:50 / 22:50 MMT（= 11:20 / 14:20 / 16:20 UTC）: 追記のみ
+    # 17:50 / 20:50 / 21:50 / 22:50 MMT（= 11:20 / 14:20 / 15:20 / 16:20 UTC）: 追記のみ
     # 17:50 MMT ≒ 11:20 UTC → 11:17 UTC（= 17:47 MMT, 3分前倒し）
     - cron: "17 11 * * *" # 17:47 MMT（実運用目標: 17:50）
     # 20:50 MMT ≒ 14:20 UTC → 14:17 UTC（= 20:47 MMT, 3分前倒し）
     - cron: "17 14 * * *" # 20:47 MMT（実運用目標: 20:50）
+    # 21:50 MMT ≒ 15:20 UTC → 15:17 UTC（= 21:47 MMT, 3分前倒し）
+    - cron: "17 15 * * *" # 21:47 MMT（実運用目標: 21:50）
     # 22:50 MMT ≒ 16:20 UTC → 16:17 UTC（= 22:47 MMT, 3分前倒し）
     - cron: "17 16 * * *" # 22:47 MMT（実運用目標: 22:50）
 
@@ -24,7 +23,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "collect16（15:50回） / collect（17:50/20:50/22:50回） / build-bundle（02:30）"
+        description: "collect16（15:50回） / collect（17:50/20:50/21:50/22:50回） / build-bundle（02:30）"
         type: choice
         required: true
         default: collect16
@@ -119,34 +118,34 @@ jobs:
         run: |
           python sheet_pipeline.py collect-to-sheet --clear-yesterday
 
-      # ★ 15:50 枠の収集完了時にメール通知
-      - name: Notify by email via Python (cron 15:50 MMT)
-        if: ${{ github.event_name == 'schedule' && success() }}
-        run: |
-          set -euo pipefail
-
-          echo "Prev step finished. Sleep 60 minutes before sending email..."
-          sleep 3600  # ← 60 分
-
-          BODY="$(printf '%s\n%s\n%s\n' \
-            '✅ 15:50収集 完了（本番用）' \
-            '・対象シート: 「prod」シートに追記済みです。' \
-            '・17:50 / 20:50 / 22:50 の収集が順次実行予定です。' )"
-          python notify_done.py \
-            --to "${CSV_EMAIL_RECIPIENTS}" \
-            --subject "【MNA 記事収集】15:50収集 完了（本番用）" \
-            --body "$BODY" \
-            --sheet-url "https://docs.google.com/spreadsheets/d/${{ secrets.MNA_SHEET_ID }}/edit"
-        env:
-          GMAIL_CLIENT_ID: ${{ secrets.GMAIL_CLIENT_ID }}
-          GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
-          GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
-          EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
-          CSV_EMAIL_RECIPIENTS: ${{ secrets.CSV_EMAIL_RECIPIENTS }}
+      # ★ 15:50 枠の収集完了時にメール通知（※一時的に無効化）
+      # - name: Notify by email via Python (cron 15:50 MMT)
+      #   if: ${{ github.event_name == 'schedule' && success() }}
+      #   run: |
+      #     set -euo pipefail
+      #
+      #     echo "Prev step finished. Sleep 60 minutes before sending email..."
+      #     sleep 3600  # ← 60 分
+      #
+      #     BODY="$(printf '%s\n%s\n%s\n' \
+      #       '✅ 15:50収集 完了（本番用）' \
+      #       '・対象シート: 「prod」シートに追記済みです。' \
+      #       '・17:50 / 20:50 / 22:50 の収集が順次実行予定です。' )"
+      #     python notify_done.py \
+      #       --to "${CSV_EMAIL_RECIPIENTS}" \
+      #       --subject "【MNA 記事収集】15:50収集 完了（本番用）" \
+      #       --body "$BODY" \
+      #       --sheet-url "https://docs.google.com/spreadsheets/d/${{ secrets.MNA_SHEET_ID }}/edit"
+      #   env:
+      #     GMAIL_CLIENT_ID: ${{ secrets.GMAIL_CLIENT_ID }}
+      #     GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
+      #     GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
+      #     EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
+      #     CSV_EMAIL_RECIPIENTS: ${{ secrets.CSV_EMAIL_RECIPIENTS }}
 
   schedule-collect:
-    # 17:50 / 20:50 / 22:50 枠
-    if: github.event_name == 'schedule' && contains(fromJson('["17 11 * * *","17 14 * * *","17 16 * * *"]'), github.event.schedule)
+    # 17:50 / 20:50 / 21:50 / 22:50 枠
+    if: github.event_name == 'schedule' && contains(fromJson('["17 11 * * *","17 14 * * *","17 15 * * *","17 16 * * *"]'), github.event.schedule)
     runs-on: ubuntu-latest
     environment: production
     env:
@@ -208,43 +207,44 @@ jobs:
           echo "GOOGLE_APPLICATION_CREDENTIALS=$SA_FILE" >> "$GITHUB_ENV"
           echo "GOOGLE_SERVICE_ACCOUNT_FILE=$SA_FILE" >> "$GITHUB_ENV"
 
-      - name: Collect → append to sheet (17:50/20:50/22:50 runs)
+      - name: Collect → append to sheet (17:50/20:50/21:50/22:50 runs)
         run: |
           python sheet_pipeline.py collect-to-sheet
 
-      # ★ 17:50 / 20:50 / 22:50 枠ごとに、collect 完了後にメール通知
-      - name: Notify by email via Python (cron 17:50/20:50/22:50 MMT)
-        if: ${{ github.event_name == 'schedule' && success() }}
-        run: |
-          set -euo pipefail
-
-          echo "Prev step finished. Sleep 40 minutes before sending email..."
-          sleep 2400 # 40分
-
-          # github.event.schedule から MMT 時刻ラベルを決定
-          case "${{ github.event.schedule }}" in
-            "17 11 * * *") SLOT_LABEL="17:50" ;;
-            "17 14 * * *") SLOT_LABEL="20:50" ;;
-            "17 16 * * *") SLOT_LABEL="22:50" ;;
-            *)             SLOT_LABEL="定期収集" ;;
-          esac
-          BODY="$(printf '%s\n%s\n%s\n' \
-            "✅ ${SLOT_LABEL}収集 完了（本番用）" \
-            '・対象シート: 「prod」シートに追記済みです。' \
-            '・翌 02:30 までにスプレッドシートの更新を完了してください。' )"
-          python notify_done.py \
-            --to "${CSV_EMAIL_RECIPIENTS}" \
-            --subject "【MNA 記事収集】${SLOT_LABEL}収集 完了（本番用）" \
-            --body "$BODY" \
-            --sheet-url "https://docs.google.com/spreadsheets/d/${{ secrets.MNA_SHEET_ID }}/edit"
-        env:
-          GMAIL_CLIENT_ID: ${{ secrets.GMAIL_CLIENT_ID }}
-          GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
-          GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
-          # 任意: From 表示名を固定したい場合のみ
-          EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
-          # 受信先（未設定だと --to が空になって失敗）
-          CSV_EMAIL_RECIPIENTS: ${{ secrets.CSV_EMAIL_RECIPIENTS }}
+      # ★ 17:50 / 20:50 / 21:50 / 22:50 枠ごとに、collect 完了後にメール通知（※一時的に無効化）
+      # - name: Notify by email via Python (cron 17:50/20:50/21:50/22:50 MMT)
+      #   if: ${{ github.event_name == 'schedule' && success() }}
+      #   run: |
+      #     set -euo pipefail
+      #
+      #     echo "Prev step finished. Sleep 40 minutes before sending email..."
+      #     sleep 2400 # 40分
+      #
+      #     # github.event.schedule から MMT 時刻ラベルを決定
+      #     case "${{ github.event.schedule }}" in
+      #       "17 11 * * *") SLOT_LABEL="17:50" ;;
+      #       "17 14 * * *") SLOT_LABEL="20:50" ;;
+      #       "17 15 * * *") SLOT_LABEL="21:50" ;;
+      #       "17 16 * * *") SLOT_LABEL="22:50" ;;
+      #       *)             SLOT_LABEL="定期収集" ;;
+      #     esac
+      #     BODY="$(printf '%s\n%s\n%s\n' \
+      #       "✅ ${SLOT_LABEL}収集 完了（本番用）" \
+      #       '・対象シート: 「prod」シートに追記済みです。' \
+      #       '・翌 02:30 までにスプレッドシートの更新を完了してください。' )"
+      #     python notify_done.py \
+      #       --to "${CSV_EMAIL_RECIPIENTS}" \
+      #       --subject "【MNA 記事収集】${SLOT_LABEL}収集 完了（本番用）" \
+      #       --body "$BODY" \
+      #       --sheet-url "https://docs.google.com/spreadsheets/d/${{ secrets.MNA_SHEET_ID }}/edit"
+      #   env:
+      #     GMAIL_CLIENT_ID: ${{ secrets.GMAIL_CLIENT_ID }}
+      #     GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
+      #     GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
+      #     # 任意: From 表示名を固定したい場合のみ
+      #     EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
+      #     # 受信先（未設定だと --to が空になって失敗）
+      #     CSV_EMAIL_RECIPIENTS: ${{ secrets.CSV_EMAIL_RECIPIENTS }}
 
   schedule-build-bundle:
     if: github.event_name == 'schedule' && github.event.schedule == '57 19 * * *'
@@ -489,25 +489,25 @@ jobs:
               ;;
           esac
 
-      # 手動実行でも通知を送れるように追加（collect/collect16 成功時のみ）
-      - name: Notify by email via Python (manual run)
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'notify-email' && success() }}
-        run: |
-          set -euo pipefail
-          BODY="$(printf '%s\n%s\n%s\n' \
-            '✅ 22:50収集 完了（開発用）' \
-            '・対象シート: 「dev」シートに追記済みです。' \
-            '・翌 02:30 までにスプレッドシートの更新を完了してください。' )"
-          python notify_done.py \
-            --to "${CSV_EMAIL_RECIPIENTS}" \
-            --subject "【MNA 記事収集】22:50収集 完了（開発用）" \
-            --body "$BODY" \
-            --sheet-url "https://docs.google.com/spreadsheets/d/${{ secrets.MNA_SHEET_ID }}/edit"
-        env:
-          GMAIL_CLIENT_ID: ${{ secrets.GMAIL_CLIENT_ID }}
-          GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
-          GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
-          EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
+      # 手動実行でも通知を送れるように追加（collect/collect16 成功時のみ）（※一時的に無効化）
+      # - name: Notify by email via Python (manual run)
+      #   if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'notify-email' && success() }}
+      #   run: |
+      #     set -euo pipefail
+      #     BODY="$(printf '%s\n%s\n%s\n' \
+      #       '✅ 22:50収集 完了（開発用）' \
+      #       '・対象シート: 「dev」シートに追記済みです。' \
+      #       '・翌 02:30 までにスプレッドシートの更新を完了してください。' )"
+      #     python notify_done.py \
+      #       --to "${CSV_EMAIL_RECIPIENTS}" \
+      #       --subject "【MNA 記事収集】22:50収集 完了（開発用）" \
+      #       --body "$BODY" \
+      #       --sheet-url "https://docs.google.com/spreadsheets/d/${{ secrets.MNA_SHEET_ID }}/edit"
+      #   env:
+      #     GMAIL_CLIENT_ID: ${{ secrets.GMAIL_CLIENT_ID }}
+      #     GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
+      #     GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
+      #     EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
 
       # === Diagnostics: ランナー環境と bundle の状況を確認（読み取りのみ） ===
       - name: Diagnostics | env + tree
