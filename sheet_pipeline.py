@@ -1149,7 +1149,13 @@ def cmd_build_bundle_from_sheet(args):
                 continue
             delivery    = get(r, "A")  # 日付(A)
             media       = get(r, "C")  # メディア(C)
+            
+            # INTERNAL（エーヤワディ専用）向けタイトル
+            # H列（確定見出し）が空なら、E列（見出し訳案1）をフォールバックとして採用
             title_final = get(r, "H")  # 確定見出し日本語訳(H)
+            if not title_final:
+                title_final = get(r, "E")  # フォールバック: 見出し訳案1(E)
+            
             body_sum    = get(r, "I")  # 本文要約(I)
             url         = get(r, "J")  # URL(J)
             summaries_ayeyar.append({
