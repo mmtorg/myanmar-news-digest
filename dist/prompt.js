@@ -467,10 +467,9 @@ function _appendGeminiLog_(level, tag, message) {
     const ss = SpreadsheetApp.getActive();
     let sh = ss.getSheetByName(logSheetName);
 
-    // 初回のみシート作成 & ヘッダー行
+    // 初回のみシート作成
     if (!sh) {
       sh = ss.insertSheet(logSheetName);
-      sh.appendRow(["timestamp", "level", "tag", "message"]);
     }
 
     sh.appendRow([new Date(), level || "", tag || "", message || ""]);
@@ -1124,6 +1123,8 @@ function processRowsBatch() {
 
     // ★ prod / dev それぞれについて、完了していればメール通知
     checkAndNotifyAllDoneIfNeeded_();
+
+    _cleanupOldGeminiLogs_(); // ← 5分ごとに必ず上詰め＆24時間整理
   } catch (err) {
     Logger.log("[processRowsBatch] lock error: " + err);
   } finally {
@@ -1315,4 +1316,80 @@ function onEditClearGeminiLogs(e) {
     _clearLogSheetFor_(sheetName); // prod or dev に応じてログシート全クリア
     Logger.log("[onEditClearGeminiLogs] cleared logs for sheet=%s", sheetName);
   }
+}
+
+/************************************************************
+ * 24時間より古いログを削除しつつ、値のある行だけ上に詰める（ヘッダー無し版）
+ * 対象シート: gemini_logs_prod / gemini_logs_dev
+ ************************************************************/
+function _cleanupOldGeminiLogs_() {
+  const ss = SpreadsheetApp.getActive();
+  const logSheetNames = [GEMINI_LOG_SHEET_NAME_PROD, GEMINI_LOG_SHEET_NAME_DEV];
+
+  const now = new Date();
+  const cutoffMs = now.getTime() - 12 * 60 * 60 * 1000; // 12時間前
+
+  logSheetNames.forEach(function (logSheetName) {
+    const sh = ss.getSheetByName(logSheetName);
+    if (!sh) return;
+
+    const lastRow = sh.getLastRow();
+    if (lastRow < 1) return; // データ無し
+
+    const numRows = lastRow;
+    const numCols = sh.getLastColumn() || 4; // 念のため自動検出（なければ4）
+
+    const range = sh.getRange(1, 1, numRows, numCols);
+    const values = range.getValues();
+
+    const keptRows = [];
+
+    for (let i = 0; i < numRows; i++) {
+      const row = values[i];
+
+      const ts = row[0];
+      const level = row[1];
+      const tag = row[2];
+      const msg = row[3];
+
+      // 行全体が空ならスキップ
+      const isAllEmpty = !ts && !level && !tag && !msg;
+      if (isAllEmpty) continue;
+
+      // timestamp をパース
+      let tsDate = null;
+      if (ts instanceof Date) {
+        tsDate = ts;
+      } else if (ts) {
+        const parsed = new Date(ts);
+        if (!isNaN(parsed.getTime())) tsDate = parsed;
+      }
+
+      // timestamp 無し or 不明 → 安全側で残す
+      if (!tsDate) {
+        keptRows.push(row);
+        continue;
+      }
+
+      // 24時間以内 → 残す
+      if (tsDate.getTime() >= cutoffMs) {
+        keptRows.push(row);
+      }
+    }
+
+    // 元データ消去（書式は保持）
+    range.clearContent();
+
+    // 上から詰めて書き戻し
+    if (keptRows.length > 0) {
+      sh.getRange(1, 1, keptRows.length, numCols).setValues(keptRows);
+    }
+
+    Logger.log(
+      "[_cleanupOldGeminiLogs_] sheet=%s kept_rows=%s deleted_rows=%s",
+      logSheetName,
+      keptRows.length,
+      numRows - keptRows.length
+    );
+  });
 }
