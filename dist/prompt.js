@@ -986,7 +986,7 @@ function cleanupStaleRunningStatuses_() {
 }
 
 // pythonで操作した時にも動く
-const MAX_ROWS_PER_RUN = 3; // 1回の実行で処理する最大行数
+const MAX_ROWS_PER_RUN = 5; // 1回の実行で処理する最大行数
 const STATUS_COL = 12; // L列 (ステータス列の列番号)
 
 // NG の最大試行回数（これ以上失敗したら「打ち切り完了」とみなす）
