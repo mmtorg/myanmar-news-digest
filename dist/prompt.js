@@ -46,6 +46,14 @@ const COMMON_TRANSLATION_RULES = `
 - 日本円の表記は小数点以下は四捨五入してください（例: 16,500円）。
 - 他のレートは使用禁止。
 - チャット以外の通貨（例：タイの「バーツ」や米ドルなど）には適用しない。換算は行わないこと。
+
+【ミャンマー語の数詞・単位ルール】
+このルールも記事タイトルと本文の翻訳に必ず適用してください。
+- ミャンマー語の「သိန်း」は 10万チャットを表す単位である。
+- 金額が「◯◯ သိန်း」のように書かれている場合は、「◯◯ × 10万チャット」と解釈してから、日本円への換算を行うこと。
+- 例：
+  - 「သိန်း ၅၀」→ 50 × 10万 ＝ 500万チャット
+  - 「သိန်း ၃၀၀၀」→ 3,000 × 10万 ＝ 3億チャット
 `;
 
 // タイトルの出力ルール（TITLE_OUTPUT_RULES 相当）
@@ -797,15 +805,16 @@ function processRow_(sheet, row, prevStatus) {
 
   /***************
    * F列：見出しA' (make_headline_prompt_2_from)
+   * 一時停止中：案2見出しは生成しない
    ***************/
-  if (headlineA) {
-    const prompt2 = buildHeadlinePrompt2From_(headlineA);
-    const tagF = sheetName + "#row" + row + ":F(headlineA2)";
-    const headlineA2 = callGeminiWithKey_(apiKey, prompt2, tagF);
-    sheet.getRange(row, colF).setValue(headlineA2);
-  } else {
-    sheet.getRange(row, colF).setValue("");
-  }
+  // if (headlineA) {
+  //   const prompt2 = buildHeadlinePrompt2From_(headlineA);
+  //   const tagF = sheetName + "#row" + row + ":F(headlineA2)";
+  //   const headlineA2 = callGeminiWithKey_(apiKey, prompt2, tagF);
+  //   sheet.getRange(row, colF).setValue(headlineA2);
+  // } else {
+  //   sheet.getRange(row, colF).setValue("");
+  // }
 
   /********************************************
    * G列：見出しB' (HEADLINE_PROMPT_3 with body only)
@@ -862,7 +871,8 @@ function processRow_(sheet, row, prevStatus) {
   }
 
   const vE = sheet.getRange(row, colE).getValue();
-  const vF = sheet.getRange(row, colF).getValue();
+  // F列（案2）は一時停止中のためステータス判定対象から外す
+  // const vF = sheet.getRange(row, colF).getValue();
   const vG = sheet.getRange(row, colG).getValue();
   const vI = sheet.getRange(row, colI).getValue();
 
@@ -871,9 +881,9 @@ function processRow_(sheet, row, prevStatus) {
   if (isError_(vE)) {
     errors.push("E=" + String(vE));
   }
-  if (isError_(vF)) {
-    errors.push("F=" + String(vF));
-  }
+  // if (isError_(vF)) {
+  //   errors.push("F=" + String(vF));
+  // }
   if (isError_(vG)) {
     errors.push("G=" + String(vG));
   }
