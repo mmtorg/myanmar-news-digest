@@ -1169,16 +1169,22 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
         if not title:
             continue
 
-        body_parts = []
+        # 本文: リード <h3> + <div.entry-content> 直下の <p>
+        body_parts: list[str] = []
         content = soup.select_one("div.entry-content")
         if content:
+            # 見出し（ある場合のみ）
             lead = content.find("h3")
             if lead:
-                body_parts.append(lead.get_text(" ", strip=True))
-            for p in content.select("> p"):
-                t = p.get_text(" ", strip=True)
-                if t:
-                    body_parts.append(t)
+                txt = lead.get_text(" ", strip=True)
+                if txt:
+                    body_parts.append(txt)
+
+            # 直下の <p> だけを取得（CSS の '> p' の代わり）
+            for p in content.find_all("p", recursive=False):
+                txt = p.get_text(" ", strip=True)
+                if txt:
+                    body_parts.append(txt)
 
         body = "\n".join(body_parts)
 
