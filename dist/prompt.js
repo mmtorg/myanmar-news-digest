@@ -336,9 +336,9 @@ function getApiKeyFromSheetAndSource_(sheetName, sourceRaw) {
  ************************************************************/
 
 // リトライ設定（少し控えめに）
-const GEMINI_JS_MAX_RETRIES = 4; // 7 → 4 に減らす
-const GEMINI_JS_BASE_DELAY_SEC = 5; // 10 → 5 に短縮
-const GEMINI_JS_MAX_DELAY_SEC = 60; // 120 → 60 に短縮
+const GEMINI_JS_MAX_RETRIES = 3; // 4 → 3
+const GEMINI_JS_BASE_DELAY_SEC = 8; // 5 → 8
+const GEMINI_JS_MAX_DELAY_SEC = 90; // 60 → 90
 
 // 乱数ジッター付き指数バックオフ: attempt=0,1,2,... → 待機ミリ秒
 function _expBackoffMs_(attempt) {
