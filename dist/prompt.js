@@ -374,6 +374,9 @@ const SOURCE_KEY_BASE_MAP = {
   "myanmar now": "MYANMARNOW",
   dvb: "DVB",
   irrawaddy: "IRRAWADDY",
+  "global new light of myanmar": "GNLM",
+  "global new light": "GNLM",
+  gnlm: "GNLM",
 };
 
 const DEFAULT_BASE_KEY = "MIZZIMA"; // マップにない場合のフォールバック
@@ -1407,7 +1410,7 @@ function onEditClearGeminiLogs(e) {
 }
 
 /************************************************************
- * 24時間より古いログを削除しつつ、値のある行だけ上に詰める（ヘッダー無し版）
+ * 12時間より古いログを削除しつつ、値のある行だけ上に詰める（ヘッダー無し版）
  * 対象シート: gemini_logs_prod / gemini_logs_dev
  ************************************************************/
 function _cleanupOldGeminiLogs_() {

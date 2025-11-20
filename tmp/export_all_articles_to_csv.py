@@ -1070,6 +1070,145 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
 
     return results
 
+# ===== Global New Light Of Myanmar (GNLM) =====
+def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List[Dict]:
+    """
+    Global New Light Of Myanmar (GNLM) 英語版
+    - national / business / local-news の各カテゴリページから
+      「カテゴリ一覧上の日付」が target_date_mmt の記事URLを集める
+    - 各記事ページから meta:published_time を MMT に変換して日付確認
+    - タイトル / 本文を抽出して返す（キーワード絞り込みなし）
+    戻り値: list[dict] {source, title, url, date(ISO str, MMT), body}
+    """
+    BASE_CATEGORIES = [
+        "https://www.gnlm.com.mm/category/national/",
+        "https://www.gnlm.com.mm/category/business/",
+        "https://www.gnlm.com.mm/category/local-news/",
+    ]
+
+    session = requests.Session()
+    candidate_urls: set[str] = set()
+
+    # --- 1) カテゴリ一覧から「対象日付の記事URL」を集める ---
+    for base_url in BASE_CATEGORIES:
+        for page in range(1, max_pages + 1):
+            url = base_url if page == 1 else f"{base_url}page/{page}/"
+            try:
+                res = session.get(url, timeout=10)
+                if res.status_code != 200 or not res.content:
+                    print(f"[gnlm] list fail {url}: HTTP {res.status_code}")
+                    break
+                soup = BeautifulSoup(res.content, "html.parser")
+            except Exception as e:
+                print(f"[gnlm] list EXC {url}: {e}")
+                break
+
+            # <article class="col-md-6  archives-page"> ... </article>
+            articles = soup.select("article.archives-page, article.col-md-6.archives-page")
+            if not articles:
+                # 一覧に記事が無ければそのカテゴリはここで終了
+                print(f"[gnlm] no article blocks on {url}")
+                break
+
+            for art in articles:
+                # 日付: <div class='post-date'><span><i ...></i>November 19, 2025</span></div>
+                date_span = art.select_one("div.post-date span")
+                if not date_span:
+                    continue
+                date_text = (date_span.get_text(" ", strip=True) or "").strip()
+                try:
+                    d = _parse_category_date_text(date_text)
+                except Exception:
+                    # 期待フォーマットでなければスキップ
+                    continue
+                if d != target_date_mmt:
+                    continue
+
+                # タイトルリンク: <h4 class="post-title"><a href="...">Title</a></h4>
+                a = art.select_one("h4.post-title a[href]")
+                if not a:
+                    continue
+                href = (a.get("href") or "").strip()
+                if not href:
+                    continue
+                candidate_urls.add(href)
+
+    if not candidate_urls:
+        print(f"[gnlm] no articles for {target_date_mmt}")
+        return []
+
+    # --- 2) 各記事ページから詳細を取得 ---
+    results: List[Dict] = []
+    for url in candidate_urls:
+        try:
+            res = fetch_with_retry(url)
+            soup = BeautifulSoup(res.content, "html.parser")
+        except Exception as e:
+            print(f"[gnlm] article fetch fail {url}: {e}")
+            continue
+
+        # 発行日: <meta property="article:published_time" content="2025-11-19T07:42:51+06:30" />
+        try:
+            dt_date = _article_date_from_meta_mmt(soup)
+        except Exception:
+            dt_date = None
+        if not dt_date or dt_date != target_date_mmt:
+            # 一覧の日付と meta の日付がズレている・取れない場合はスキップ
+            continue
+
+        # タイトル:
+        # 1) og:title
+        # 2) <title> ... - Global New Light Of Myanmar</title> からサイト名サフィックスを削る
+        title = ""
+        og = soup.find("meta", attrs={"property": "og:title"})
+        if og and og.get("content"):
+            title = og["content"].strip()
+        if not title:
+            t = soup.find("title")
+            if t and t.get_text(strip=True):
+                title = t.get_text(strip=True)
+                # "- Global New Light Of Myanmar" を取る
+                title = re.sub(r"\s*-\s*Global New Light Of Myanmar\s*$", "", title).strip()
+
+        if not title:
+            print(f"[gnlm] no title: {url}")
+            continue
+
+        # 本文: entry-content 内の <h3> + <p> を中心に、fallback で全 <p> も拾う
+        parts: List[str] = []
+        entry = soup.select_one("div.entry-content") or soup.select_one("div.entry-content.mt-2")
+        if entry:
+            # 先頭リード文が h3 なら先に拾う
+            h3 = entry.find("h3")
+            if h3 and h3.get_text(strip=True):
+                parts.append(h3.get_text(strip=True).strip())
+
+        # 既存ヘルパーで汎用 <p> 抽出（entry-content / node-content / article / 全p）
+        paragraphs = extract_paragraphs_with_wait(soup)
+        for p in paragraphs:
+            txt = p.get_text(" ", strip=True)
+            if not txt:
+                continue
+            parts.append(txt)
+
+        body_text = "\n".join(dict.fromkeys(parts))  # 重複行を簡易的に除去
+        body_text = unicodedata.normalize("NFC", body_text or "")
+
+        if not body_text:
+            print(f"[gnlm] empty body: {url}")
+            continue
+
+        results.append(
+            {
+                "source": "Global New Light of Myanmar",
+                "title": unicodedata.normalize("NFC", title),
+                "url": url,
+                "date": target_date_mmt.isoformat(),
+                "body": body_text,
+            }
+        )
+
+    return results
 
 # ===== 単体翻訳（既存プロンプト流用） =====
 def translate_title_only(item: Dict, *, model: str = "gemini-2.5-flash") -> str:
