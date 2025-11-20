@@ -1093,6 +1093,9 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
         except Exception:
             return ""
 
+    # ★ ここで一度だけ pooled session を作る（他メディアと同じパターン）
+    sess = _make_pooled_session()
+
     collected_urls: set[str] = set()
 
     # ---- 一覧ページから対象日の URL を集める ----
@@ -1100,7 +1103,10 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
         for page in range(1, max_pages + 1):
             list_url = base if page == 1 else f"{base}page/{page}/"
             try:
-                res = fetch_with_retry(list_url)  # 既存のリトライ付き fetch
+                # ★ fetch_with_retry は使わず、ブラウザっぽいセッションで直接叩く
+                res = sess.get(list_url, timeout=10)
+                if res.status_code != 200 or not (res.text or "").strip():
+                    raise Exception(f"status={res.status_code}")
             except Exception as e:
                 print(f"[gnlm] list fetch failed: {e} url={list_url}")
                 break
@@ -1135,7 +1141,7 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
 
                 # 日付一致 → URL を取得
                 a = art.select_one("h4.post-title a[href]")
-                if a and a["href"]:
+                if a and a.get("href"):
                     collected_urls.add(a["href"])
 
             if stop_paging:
@@ -1146,7 +1152,10 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
 
     for url in sorted(collected_urls):
         try:
-            res = fetch_with_retry(url)
+            # ★ ここも同じセッションで取得
+            res = sess.get(url, timeout=10)
+            if res.status_code != 200 or not (res.text or "").strip():
+                raise Exception(f"status={res.status_code}")
         except Exception as e:
             print(f"[gnlm] article fetch failed: {e} url={url}")
             continue
