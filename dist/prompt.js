@@ -418,7 +418,7 @@ function getApiKeyFromSheetAndSource_(sheetName, sourceRaw) {
  ************************************************************/
 
 // リトライ設定（少し控えめに）
-const GEMINI_JS_MAX_RETRIES = 3; // 4 → 3
+const GEMINI_JS_MAX_RETRIES = 2; // 3 → 2
 const GEMINI_JS_BASE_DELAY_SEC = 8; // 5 → 8
 const GEMINI_JS_MAX_DELAY_SEC = 90; // 60 → 90
 
