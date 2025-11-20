@@ -72,6 +72,13 @@ ${TITLE_OUTPUT_RULES}
 自然で簡潔な日本語見出しに翻訳してください。
 固有名詞は一般的な日本語表記を優先し、
 意訳しすぎず要点を保ち、記号の乱用は避けてください。
+【追加要件】
+- 直訳ではなく、ニュース見出しとして自然な日本語にする
+- 30文字以内で要点を端的に
+- 主語・動作を明確に
+- 重複語を避ける
+- 報道機関の見出し調を模倣する（主語と動作を明確に／冗長や過剰な修飾を削る）
+- 「〜と述べた」「〜が行われた」などの曖昧・婉曲表現は避ける
 `;
 
 // HEADLINE_PROMPT_3：本文を読んで作る見出し（B/B’）
@@ -133,6 +140,75 @@ ${COMMON_TRANSLATION_RULES}
 - 思考用の手順（Step 1/2/3、Q1/Q2、→ など）は出力に含めないこと。
 - 本文要約の合計は最大500文字以内に収める。超えそうな場合は重要情報を優先して削る（日時・主体・行為・規模・結果を優先）。
 `;
+
+// 3タスク（見出しA / 見出しB' / 本文要約）を1回で投げるまとめプロンプト
+function buildMultiTaskPromptForRow_(params) {
+  const {
+    titleRaw,
+    bodyRaw,
+    sourceVal,
+    urlVal,
+    titleGlossaryRules,
+    bodyGlossaryRules,
+  } = params;
+
+  return `
+以下は1つのニュース記事です。
+あなたはこの1記事から、次の3つの結果を同時に生成してください。
+
+[記事タイトル]
+${titleRaw || ""}
+
+[記事本文]
+${bodyRaw || ""}
+
+====================
+[Task1: 見出しA（タイトル翻訳ベース）]
+- 記事タイトルをインプットとしてください。
+- 次のプロンプトとルールに従って、日本語見出しAを1行で作成してください。
+--- HEADLINE_PROMPT_1 ---
+${HEADLINE_PROMPT_1}
+-------------------------
+【タイトル用 用語固定ルール】
+${titleGlossaryRules || "(なし)"}
+
+====================
+[Task2: 見出しB'（本文を読んで作る見出し）]
+- 記事本文をインプットとしてください。
+- 次のプロンプトとルールに従って、日本語見出しB'を1行で作成してください。
+--- HEADLINE_PROMPT_3 ---
+${HEADLINE_PROMPT_3}
+---------------------------
+【本文用 用語固定ルール】
+${bodyGlossaryRules || "(なし)"}
+本文を主な根拠としつつ、必要であればタイトルも補助情報として用いて構いません。
+
+====================
+[Task3: 本文要約]
+- 記事本文をインプットとしてください。
+- 次のプロンプトとルールに従って、本文要約を作成してください。
+--- SUMMARY_TASK ---
+${SUMMARY_TASK}
+--------------------
+【本文用 用語固定ルール】
+${bodyGlossaryRules || "(なし)"}
+
+====================
+【最終出力フォーマット（必須）】
+
+3つのタスク結果だけを含む JSON オブジェクトを、1行で出力してください。
+
+{
+  "headlineA": "ここにTask1の見出しAを入れる",
+  "headlineBPrime": "ここにTask2の見出しB'を入れる",
+  "summary": "ここにTask3の本文要約を入れる"
+}
+
+制約:
+- 上記の JSON 1行 以外の文字（解説・ラベル・マークダウンなど）は一切出力しないこと。
+- 改行やタブを含めず、1行の JSON 文字列として出力すること。
+`;
+}
 
 /************************************************************
  * スプレッドシート用語集
@@ -779,81 +855,61 @@ function processRow_(sheet, row, prevStatus) {
   const sheetName = sheet.getName();
   const apiKey = getApiKeyFromSheetAndSource_(sheetName, sourceVal);
 
-  /***************
-   * E列：見出しA (HEADLINE_PROMPT_1)
-   ***************/
+  /********************************************
+   * E / G / I を 1回の Gemini 呼び出しでまとめて生成
+   ********************************************/
   let headlineA = "";
-  if (titleRaw) {
-    const prompt1 =
-      HEADLINE_PROMPT_1 +
-      "\n\n" +
-      titleGlossaryRules +
-      "\n原題: " +
-      titleRaw +
-      "\nsource: " +
-      (sourceVal || "") +
-      "\nurl: " +
-      (urlVal || "") +
-      "\n";
+  let headlineB2 = "";
+  let summaryJa = "";
 
-    const tagE = sheetName + "#row" + row + ":E(headlineA)";
-    headlineA = callGeminiWithKey_(apiKey, prompt1, tagE);
-    sheet.getRange(row, colE).setValue(headlineA);
-  } else {
-    sheet.getRange(row, colE).setValue("");
+  if (titleRaw || bodyRaw) {
+    const multiParams = {
+      titleRaw: titleRaw || "",
+      bodyRaw: bodyRaw || "",
+      sourceVal: sourceVal || "",
+      urlVal: urlVal || "",
+      titleGlossaryRules: titleGlossaryRules || "",
+      bodyGlossaryRules: bodyGlossaryRules || "",
+    };
+
+    const multiPrompt = buildMultiTaskPromptForRow_(multiParams);
+    const tagMulti = sheetName + "#row" + row + ":EGI(multi)";
+
+    const resp = callGeminiWithKey_(apiKey, multiPrompt, tagMulti);
+
+    if (typeof resp === "string" && resp.indexOf("ERROR:") === 0) {
+      // callGeminiWithKey_ 自体がエラーを返した場合 → そのまま3列とも同じエラー扱い
+      headlineA = resp;
+      headlineB2 = resp;
+      summaryJa = resp;
+    } else {
+      try {
+        const obj = JSON.parse(resp);
+        headlineA = (obj.headlineA || "").toString().trim();
+        headlineB2 = (obj.headlineBPrime || obj.headlineB || "")
+          .toString()
+          .trim();
+        summaryJa = (obj.summary || "").toString().trim();
+
+        // 念のため空文字対策
+        headlineA = headlineA || "";
+        headlineB2 = headlineB2 || "";
+        summaryJa = summaryJa || "";
+      } catch (e) {
+        const errMsg =
+          "ERROR: invalid JSON from Gemini: " + String(resp).substring(0, 200);
+        headlineA = errMsg;
+        headlineB2 = errMsg;
+        summaryJa = errMsg;
+      }
+    }
   }
 
-  /***************
-   * F列：見出しA' (make_headline_prompt_2_from)
-   * 一時停止中：案2見出しは生成しない
-   ***************/
-  // if (headlineA) {
-  //   const prompt2 = buildHeadlinePrompt2From_(headlineA);
-  //   const tagF = sheetName + "#row" + row + ":F(headlineA2)";
-  //   const headlineA2 = callGeminiWithKey_(apiKey, prompt2, tagF);
-  //   sheet.getRange(row, colF).setValue(headlineA2);
-  // } else {
-  //   sheet.getRange(row, colF).setValue("");
-  // }
-
-  /********************************************
-   * G列：見出しB' (HEADLINE_PROMPT_3 with body only)
-   ********************************************/
-  if (bodyRaw) {
-    const bodyOnlyBlock = "【本文】\n" + bodyRaw + "\n";
-
-    const prompt3 =
-      HEADLINE_PROMPT_3 + "\n\n" + bodyGlossaryRules + "\n" + bodyOnlyBlock;
-
-    const tagG = sheetName + "#row" + row + ":G(headlineB2)";
-    const headlineB2 = callGeminiWithKey_(apiKey, prompt3, tagG);
-    sheet.getRange(row, colG).setValue(headlineB2);
-  } else {
-    sheet.getRange(row, colG).setValue("");
-  }
-
-  /********************************************
-   * I列：本文要約（STEP3_TASK）
-   ********************************************/
-  if (bodyRaw) {
-    const summaryInput =
-      "入力データ：\n" +
-      "###\n[記事タイトル]\n###\n" +
-      (titleRaw || "") +
-      "\n\n" +
-      "[記事本文]\n###\n" +
-      (bodyRaw || "") +
-      "\n###\n";
-
-    const summaryPrompt =
-      SUMMARY_TASK + "\n\n" + bodyGlossaryRules + "\n" + summaryInput;
-
-    const tagI = sheetName + "#row" + row + ":I(summary)";
-    const summaryJa = callGeminiWithKey_(apiKey, summaryPrompt, tagI);
-    sheet.getRange(row, colI).setValue(summaryJa);
-  } else {
-    sheet.getRange(row, colI).setValue("");
-  }
+  // シートに書き込み
+  sheet.getRange(row, colE).setValue(headlineA); // 見出しA
+  // F列（見出しA'）は従来どおり一時停止のまま
+  sheet.getRange(row, colG).setValue(headlineB2); // 見出しB'
+  sheet.getRange(row, colI).setValue(summaryJa); // 本文要約
 
   /********************************************
    * L列：ステータス判定（詳細エラー + 複数記録）
