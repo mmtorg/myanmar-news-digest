@@ -196,7 +196,7 @@ ${bodyGlossaryRules || "(なし)"}
 ====================
 【最終出力フォーマット（必須）】
 
-3つのタスク結果だけを含む JSON オブジェクトを、1行で出力してください。
+3つのタスク結果だけを含む JSON オブジェクトを 1 つだけ出力してください。
 
 {
   "headlineA": "ここにTask1の見出しAを入れる",
@@ -205,8 +205,11 @@ ${bodyGlossaryRules || "(なし)"}
 }
 
 制約:
-- 上記の JSON 1行 以外の文字（解説・ラベル・マークダウンなど）は一切出力しないこと。
-- 改行やタブを含めず、1行の JSON 文字列として出力すること。
+- 上記の JSON オブジェクト以外の文字（解説・ラベル・マークダウンなど）は一切出力しないこと。
+- 特に、\`\`\`json 〜 \`\`\` のようなコードブロックで囲まず
+  純粋な JSON テキストのみを出力すること。
+- JSON 全体としては 1 つのオブジェクトだけを出力すればよい。summary の値の中では、
+  「【要約】」「[見出し]」「・箇条書き」などのために改行（\n）を自由に使ってよい。
 `;
 }
 
@@ -587,6 +590,11 @@ function callGeminiWithKey_(apiKey, prompt, usageTagOpt) {
         parts: [{ text: prompt }],
       },
     ],
+    generationConfig: {
+      response_mime_type: "application/json",
+      // 必要なら温度も指定
+      // temperature: 0.1,
+    },
   };
 
   const options = {
@@ -884,14 +892,28 @@ function processRow_(sheet, row, prevStatus) {
       summaryJa = resp;
     } else {
       try {
-        const obj = JSON.parse(resp);
+        let cleaned = (resp || "").trim();
+
+        // もし ``` で始まっていたら、コードブロックを剥がす
+        if (cleaned.startsWith("```")) {
+          // 先頭の ```json / ``` を削除
+          cleaned = cleaned.replace(/^```[a-zA-Z]*\s*/, "");
+          // 最後の ``` 以降を削る
+          const lastFence = cleaned.lastIndexOf("```");
+          if (lastFence !== -1) {
+            cleaned = cleaned.substring(0, lastFence);
+          }
+          cleaned = cleaned.trim();
+        }
+
+        const obj = JSON.parse(cleaned);
+
         headlineA = (obj.headlineA || "").toString().trim();
         headlineB2 = (obj.headlineBPrime || obj.headlineB || "")
           .toString()
           .trim();
         summaryJa = (obj.summary || "").toString().trim();
 
-        // 念のため空文字対策
         headlineA = headlineA || "";
         headlineB2 = headlineB2 || "";
         summaryJa = summaryJa || "";
