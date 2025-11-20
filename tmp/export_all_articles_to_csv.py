@@ -47,6 +47,7 @@ import json
 import requests
 from bs4 import BeautifulSoup
 from dateutil.parser import parse as parse_date
+from curl_cffi.requests import Session as CurlSession
 
 # --- 添付コード（fetch_articles.py）から利用する関数/定数 ---
 from fetch_articles import (
@@ -1075,7 +1076,6 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
     """
     Global New Light of Myanmar の National / Business / Local News から
     対象MMT日付の記事を取得（キーワード絞り込みなし）。
-    返り値: list[dict] {source, title, url, date(ISO str, MMT), body}
     """
 
     BASE_CATEGORIES = [
@@ -1093,28 +1093,26 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
         except Exception:
             return ""
 
-    # ★ ここで一度だけ pooled session を作る（他メディアと同じパターン）
-    sess = _make_pooled_session()
+    # ★ ここを curl_cffi に変更（最重要）
+    sess = CurlSession(impersonate="chrome")
 
     collected_urls: set[str] = set()
 
-    # ---- 一覧ページから対象日の URL を集める ----
+    # ---- 一覧ページ ----
     for base in BASE_CATEGORIES:
         for page in range(1, max_pages + 1):
             list_url = base if page == 1 else f"{base}page/{page}/"
             try:
-                # ★ fetch_with_retry は使わず、ブラウザっぽいセッションで直接叩く
-                res = sess.get(list_url, timeout=10)
-                if res.status_code != 200 or not (res.text or "").strip():
+                res = sess.get(list_url, timeout=20)
+                if res.status_code != 200 or not res.text.strip():
                     raise Exception(f"status={res.status_code}")
             except Exception as e:
                 print(f"[gnlm] list fetch failed: {e} url={list_url}")
                 break
 
-            soup = BeautifulSoup(res.content, "html.parser")
+            soup = BeautifulSoup(res.text, "html.parser")
             articles = soup.select("article.archives-page")
             if not articles:
-                # これ以上ページがないと判断
                 break
 
             stop_paging = False
@@ -1124,22 +1122,20 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
                 if not date_span:
                     continue
 
-                date_text = (date_span.get_text(strip=True) or "")
                 try:
-                    d = datetime.strptime(date_text, "%B %d, %Y").date()
-                except ValueError:
-                    # 想定外フォーマットはスキップ
+                    d = datetime.strptime(
+                        date_span.get_text(strip=True),
+                        "%B %d, %Y"
+                    ).date()
+                except:
                     continue
 
                 if d > target_date_mmt:
-                    # 今日より新しい（将来日付）は無視して続行
                     continue
                 elif d < target_date_mmt:
-                    # このページ以下はすべて過去日付とみなして打ち切り
                     stop_paging = True
                     break
 
-                # 日付一致 → URL を取得
                 a = art.select_one("h4.post-title a[href]")
                 if a and a.get("href"):
                     collected_urls.add(a["href"])
@@ -1147,25 +1143,22 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
             if stop_paging:
                 break
 
-    # ---- 個別記事ページからタイトル・本文を取得 ----
-    out: List[Dict] = []
+    # ---- 個別記事 ----
+    out = []
 
     for url in sorted(collected_urls):
         try:
-            # ★ ここも同じセッションで取得
-            res = sess.get(url, timeout=10)
-            if res.status_code != 200 or not (res.text or "").strip():
+            res = sess.get(url, timeout=20)
+            if res.status_code != 200 or not res.text.strip():
                 raise Exception(f"status={res.status_code}")
         except Exception as e:
             print(f"[gnlm] article fetch failed: {e} url={url}")
             continue
 
-        soup = BeautifulSoup(res.content, "html.parser")
+        soup = BeautifulSoup(res.text, "html.parser")
 
-        # 日付: 個別記事ページの meta から取れるならそれを優先
         art_date = _article_date_from_meta_mmt(soup) or target_date_mmt
 
-        # タイトル
         title = _extract_title(soup)
         if not title:
             h1 = soup.select_one("header#article-title h1.entry-title")
@@ -1176,32 +1169,26 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
         if not title:
             continue
 
-        # 本文: リード <h3> + <div.entry-content> 直下の <p>
-        body_parts: list[str] = []
+        body_parts = []
         content = soup.select_one("div.entry-content")
         if content:
             lead = content.find("h3")
             if lead:
-                txt = lead.get_text(" ", strip=True)
-                if txt:
-                    body_parts.append(txt)
-
+                body_parts.append(lead.get_text(" ", strip=True))
             for p in content.select("> p"):
-                txt = p.get_text(" ", strip=True)
-                if txt:
-                    body_parts.append(txt)
+                t = p.get_text(" ", strip=True)
+                if t:
+                    body_parts.append(t)
 
-        body = "\n".join(body_parts).strip()
+        body = "\n".join(body_parts)
 
-        out.append(
-            {
-                "source": "Global New Light of Myanmar",
-                "title": unicodedata.normalize("NFC", title),
-                "url": url,
-                "date": art_date.isoformat(),  # MMT 日付
-                "body": body,
-            }
-        )
+        out.append({
+            "source": "Global New Light of Myanmar",
+            "title": unicodedata.normalize("NFC", title),
+            "url": url,
+            "date": art_date.isoformat(),
+            "body": body,
+        })
 
     return out
 
