@@ -1174,17 +1174,30 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
         content = soup.select_one("div.entry-content")
         if content:
             # 見出し（ある場合のみ）
-            lead = content.find("h3")
+            lead = content.find("h3", recursive=False)
             if lead:
                 txt = lead.get_text(" ", strip=True)
                 if txt:
                     body_parts.append(txt)
 
-            # 直下の <p> だけを取得（CSS の '> p' の代わり）
-            for p in content.find_all("p", recursive=False):
-                txt = p.get_text(" ", strip=True)
-                if txt:
-                    body_parts.append(txt)
+            # --- ここから Related Posts 除去ロジック ---
+            # Related Posts に遭遇したら本文抽出を停止
+            for child in content.children:
+                # ノードがタグ以外なら無視
+                if not getattr(child, "name", None):
+                    continue
+
+                # Related Posts 開始の h2/h3 を検知
+                if child.name in ("h2", "h3"):
+                    label = child.get_text(" ", strip=True)
+                    if re.match(r"related\s+posts?:?", label, re.I):
+                        break
+
+                # 通常の本文段落だけ確保
+                if child.name == "p":
+                    txt = child.get_text(" ", strip=True)
+                    if txt:
+                        body_parts.append(txt)
 
         body = "\n".join(body_parts)
 
