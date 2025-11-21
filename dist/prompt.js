@@ -401,7 +401,7 @@ function normalizeSourceName_(s) {
 }
 
 // シート名 & メディア名から API キーを取得
-function getApiKeyFromSheetAndSource_(sheetName, sourceRaw) {
+function getApiKeyFromSheetAndSource_(sheetName, sourceRaw, usageTagOpt) {
   const scriptProps = PropertiesService.getScriptProperties();
 
   const prefix = SHEET_KEY_PREFIX_MAP[sheetName] || DEFAULT_PREFIX;
@@ -411,6 +411,23 @@ function getApiKeyFromSheetAndSource_(sheetName, sourceRaw) {
 
   const propName = prefix + baseKey;
   const apiKey = scriptProps.getProperty(propName);
+
+  // ★ ここで「どのキー名を使ったか」をログ出力（値そのものは出さない）
+  const tag = usageTagOpt || sheetName || "unknown";
+  const msg =
+    "use apiKeyProp=" +
+    propName +
+    " (baseKey=" +
+    baseKey +
+    ", sourceRaw=" +
+    sourceRaw +
+    ", norm=" +
+    norm +
+    ")";
+
+  Logger.log("[gemini-key] " + msg);
+  _appendGeminiLog_("INFO", tag, msg);
+
   return apiKey || null;
 }
 
@@ -865,7 +882,6 @@ function processRow_(sheet, row, prevStatus) {
   const bodyGlossaryRules = regionRulesTitle + regionRulesBody;
 
   const sheetName = sheet.getName();
-  const apiKey = getApiKeyFromSheetAndSource_(sheetName, sourceVal);
 
   /********************************************
    * E / G / I を 1回の Gemini 呼び出しでまとめて生成
@@ -886,6 +902,9 @@ function processRow_(sheet, row, prevStatus) {
 
     const multiPrompt = buildMultiTaskPromptForRow_(multiParams);
     const tagMulti = sheetName + "#row" + row + ":EGI(multi)";
+
+    // ★ tagMulti を渡して APIキー名ログも紐付ける
+    const apiKey = getApiKeyFromSheetAndSource_(sheetName, sourceVal, tagMulti);
 
     const resp = callGeminiWithKey_(apiKey, multiPrompt, tagMulti);
 
