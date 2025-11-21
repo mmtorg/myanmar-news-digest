@@ -699,6 +699,7 @@ SOURCE_KEY_ENV_MAP: dict[str, str] = {
     "global new light of myanmar": "GEMINI_API_KEY_GNLM",
     "global new light": "GEMINI_API_KEY_GNLM",
     "gnlm": "GEMINI_API_KEY_GNLM",
+    "global new light of myanmar (国営紙)": "GEMINI_API_KEY_GNLM",
 }
 
 _SPACE_RE = re.compile(r"\s+")

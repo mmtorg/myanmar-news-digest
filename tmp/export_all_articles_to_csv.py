@@ -1237,7 +1237,7 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
 
         out.append(
             {
-                "source": "Global New Light of Myanmar",
+                "source": "Global New Light Of Myanmar (国営紙)",
                 "title": unicodedata.normalize("NFC", title),
                 "url": url,
                 "date": art_date.isoformat(),
