@@ -63,6 +63,7 @@ jobs:
       GEMINI_API_KEY_KHITTHIT: ${{ secrets.GEMINI_API_KEY_KHITTHIT }}
       GEMINI_API_KEY_MYANMARNOW: ${{ secrets.GEMINI_API_KEY_MYANMARNOW }}
       GEMINI_API_KEY_DVB: ${{ secrets.GEMINI_API_KEY_DVB }}
+      GEMINI_API_KEY_GNLM: ${{ secrets.GEMINI_API_KEY_GNLM }}
       GEMINI_REQS_PER_MIN: 6
       GEMINI_MIN_INTERVAL_SEC: 2.5
       GEMINI_JITTER_SEC: 0.5
@@ -156,6 +157,7 @@ jobs:
       GEMINI_API_KEY_KHITTHIT: ${{ secrets.GEMINI_API_KEY_KHITTHIT }}
       GEMINI_API_KEY_MYANMARNOW: ${{ secrets.GEMINI_API_KEY_MYANMARNOW }}
       GEMINI_API_KEY_DVB: ${{ secrets.GEMINI_API_KEY_DVB }}
+      GEMINI_API_KEY_GNLM: ${{ secrets.GEMINI_API_KEY_GNLM }}
       GEMINI_REQS_PER_MIN: 6
       GEMINI_MIN_INTERVAL_SEC: 2.5
       GEMINI_JITTER_SEC: 0.5
@@ -258,6 +260,7 @@ jobs:
       GEMINI_API_KEY_KHITTHIT: ${{ secrets.GEMINI_API_KEY_KHITTHIT }}
       GEMINI_API_KEY_MYANMARNOW: ${{ secrets.GEMINI_API_KEY_MYANMARNOW }}
       GEMINI_API_KEY_DVB: ${{ secrets.GEMINI_API_KEY_DVB }}
+      GEMINI_API_KEY_GNLM: ${{ secrets.GEMINI_API_KEY_GNLM }}
       GEMINI_REQS_PER_MIN: 6
       GEMINI_MIN_INTERVAL_SEC: 2.5
       GEMINI_JITTER_SEC: 0.5
@@ -424,6 +427,7 @@ jobs:
               echo "GEMINI_API_KEY_KHITTHIT=${{ secrets.GEMINI_API_TEST_KEY_KHITTHIT }}";
               echo "GEMINI_API_KEY_MYANMARNOW=${{ secrets.GEMINI_API_TEST_KEY_MYANMARNOW }}";
               echo "GEMINI_API_KEY_DVB=${{ secrets.GEMINI_API_TEST_KEY_DVB }}";
+              echo "GEMINI_API_TEST_KEY_GNLM=${{ secrets.GEMINI_API_TEST_KEY_GNLM }}";
               echo "GEMINI_API_SUMMARY_KEY=${{ secrets.GEMINI_API_TEST_SUMMARY_KEY }}";
               echo "GEMINI_API_DEDUPE_KEY=${{ secrets.GEMINI_API_TEST_DEDUPE_KEY }}";
               echo "GEMINI_API_FULLTEXT_KEY=${{ secrets.GEMINI_API_TEST_FULLTEXT_KEY }}";
@@ -438,6 +442,7 @@ jobs:
               echo "GEMINI_API_KEY_KHITTHIT=${{ secrets.GEMINI_API_KEY_KHITTHIT }}";
               echo "GEMINI_API_KEY_MYANMARNOW=${{ secrets.GEMINI_API_KEY_MYANMARNOW }}";
               echo "GEMINI_API_KEY_DVB=${{ secrets.GEMINI_API_KEY_DVB }}";
+              echo "GEMINI_API_KEY_GNLM=${{ secrets.GEMINI_API_KEY_GNLM }}";
               echo "GEMINI_API_SUMMARY_KEY=${{ secrets.GEMINI_API_SUMMARY_KEY }}";
               echo "GEMINI_API_DEDUPE_KEY=${{ secrets.GEMINI_API_DEDUPE_KEY }}";
               echo "GEMINI_API_FULLTEXT_KEY=${{ secrets.GEMINI_API_FULLTEXT_KEY }}";

@@ -47,6 +47,7 @@ import json
 import requests
 from bs4 import BeautifulSoup
 from dateutil.parser import parse as parse_date
+from curl_cffi.requests import Session as CurlSession
 
 # --- 添付コード（fetch_articles.py）から利用する関数/定数 ---
 from fetch_articles import (
@@ -1070,6 +1071,181 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
 
     return results
 
+# ===== Global New Light Of Myanmar (GNLM) =====
+def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List[Dict]:
+    """
+    Global New Light of Myanmar の National / Business / Local News から
+    対象MMT日付の記事を取得（キーワード絞り込みなし）。
+    """
+    from curl_cffi.requests import Session as CurlSession
+
+    BASE_CATEGORIES = [
+        "https://www.gnlm.com.mm/category/national/",
+        "https://www.gnlm.com.mm/category/business/",
+        "https://www.gnlm.com.mm/category/local-news/",
+    ]
+
+    def _title_from_slug(u: str) -> str:
+        try:
+            from urllib.parse import urlparse, unquote
+            seg = urlparse(u).path.rstrip("/").split("/")[-1]
+            seg = unquote(seg).replace("-", " ")
+            return unicodedata.normalize("NFC", seg)
+        except Exception:
+            return ""
+
+    # ★ curl_cffi セッション（最重要）
+    sess = CurlSession(impersonate="chrome")
+
+    collected_urls: set[str] = set()
+
+    # ---- 一覧ページ ----
+    for base in BASE_CATEGORIES:
+        for page in range(1, max_pages + 1):
+            list_url = base if page == 1 else f"{base}page/{page}/"
+
+            # A: curl_cffi
+            try:
+                res = sess.get(list_url, timeout=20)
+                if res.status_code != 200 or not res.text.strip():
+                    raise Exception(f"status={res.status_code}")
+            except Exception as e:
+                print(f"[gnlm] curl_cffi list fetch failed: {e} url={list_url}")
+
+                # B: cloudscraper fallback
+                try:
+                    import cloudscraper
+
+                    scraper = cloudscraper.create_scraper(
+                        browser={
+                            "browser": "chrome",
+                            "platform": "windows",
+                            "desktop": True,
+                        }
+                    )
+                    res = scraper.get(list_url, timeout=20)
+                    if res.status_code != 200 or not res.text.strip():
+                        raise Exception(f"status={res.status_code}")
+                except Exception as e2:
+                    print(f"[gnlm] cloudscraper list fetch failed: {e2} url={list_url}")
+                    break  # このカテゴリは諦める
+
+            soup = BeautifulSoup(res.text, "html.parser")
+            articles = soup.select("article.archives-page")
+            if not articles:
+                break
+
+            stop_paging = False
+
+            for art in articles:
+                date_span = art.select_one("div.post-date span")
+                if not date_span:
+                    continue
+
+                try:
+                    d = datetime.strptime(
+                        date_span.get_text(strip=True),
+                        "%B %d, %Y",
+                    ).date()
+                except Exception:
+                    continue
+
+                if d > target_date_mmt:
+                    continue
+                elif d < target_date_mmt:
+                    stop_paging = True
+                    break
+
+                a = art.select_one("h4.post-title a[href]")
+                if a and a.get("href"):
+                    collected_urls.add(a["href"])
+
+            if stop_paging:
+                break
+
+    # ---- 個別記事 ----
+    out: list[Dict] = []
+
+    for url in sorted(collected_urls):
+        # A: curl_cffi
+        try:
+            res = sess.get(url, timeout=20)
+            if res.status_code != 200 or not res.text.strip():
+                raise Exception(f"status={res.status_code}")
+        except Exception as e:
+            print(f"[gnlm] curl_cffi article fetch failed: {e} url={url}")
+
+            # B: cloudscraper fallback
+            try:
+                import cloudscraper
+
+                scraper = cloudscraper.create_scraper(
+                    browser={
+                        "browser": "chrome",
+                        "platform": "windows",
+                        "desktop": True,
+                    }
+                )
+                res = scraper.get(url, timeout=20)
+                if res.status_code != 200 or not res.text.strip():
+                    raise Exception(f"status={res.status_code}")
+            except Exception as e2:
+                print(f"[gnlm] cloudscraper article fetch failed: {e2} url={url}")
+                continue
+
+        soup = BeautifulSoup(res.text, "html.parser")
+
+        art_date = _article_date_from_meta_mmt(soup) or target_date_mmt
+
+        title = _extract_title(soup)
+        if not title:
+            h1 = soup.select_one("header#article-title h1.entry-title")
+            if h1:
+                title = h1.get_text(strip=True)
+        if not title:
+            title = _title_from_slug(url)
+        if not title:
+            continue
+
+        # 本文: リード <h3> + <div.entry-content> 直下の <p>
+        body_parts: list[str] = []
+        content = soup.select_one("div.entry-content")
+        if content:
+            # 見出し（ある場合のみ）
+            lead = content.find("h3", recursive=False)
+            if lead:
+                txt = lead.get_text(" ", strip=True)
+                if txt:
+                    body_parts.append(txt)
+
+            # Related Posts に遭遇したら本文抽出を停止
+            for child in content.children:
+                if not getattr(child, "name", None):
+                    continue
+
+                if child.name in ("h2", "h3"):
+                    label = child.get_text(" ", strip=True)
+                    if re.match(r"related\s+posts?:?", label, re.I):
+                        break
+
+                if child.name == "p":
+                    txt = child.get_text(" ", strip=True)
+                    if txt:
+                        body_parts.append(txt)
+
+        body = "\n".join(body_parts)
+
+        out.append(
+            {
+                "source": "Global New Light Of Myanmar (国営紙)",
+                "title": unicodedata.normalize("NFC", title),
+                "url": url,
+                "date": art_date.isoformat(),
+                "body": body,
+            }
+        )
+
+    return deduplicate_by_url(out)
 
 # ===== 単体翻訳（既存プロンプト流用） =====
 def translate_title_only(item: Dict, *, model: str = "gemini-2.5-flash") -> str:

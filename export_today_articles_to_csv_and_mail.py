@@ -53,6 +53,7 @@ from tmp.export_all_articles_to_csv import (
     collect_dvb_all_for_date,
     collect_irrawaddy_all_for_date,
     collect_myanmar_now_mm_all_for_date,
+    collect_gnlm_all_for_date,
     translate_titles_in_batch,
     translate_title_only,
     RateLimiter,
@@ -193,6 +194,8 @@ def main(argv=None) -> int:
     all_rows.extend(collect_mizzima_all_for_date(today_mmt, max_pages=3))
     # Myanmar Now (mm) — 今日分（フィルタなし）
     all_rows.extend(collect_myanmar_now_mm_all_for_date(today_mmt, max_pages=3))
+    # GNLM — 今日分（フィルタなし）
+    all_rows.extend(collect_gnlm_all_for_date(today_mmt, max_pages=3))
 
     # URL重複は既存関数で除去
     all_rows = deduplicate_by_url(all_rows)
