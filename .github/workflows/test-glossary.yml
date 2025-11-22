@@ -80,7 +80,7 @@ jobs:
                   # fetch_articles が参照しそうな認証変数も網羅
                   sa = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON") or ""
                   if sa:
-                      os.environ.setdefault("GOOGLE_CREDENTIALS_JSON", sa)
+                      os.environ.setdefault("GOOGLE_SERVICE_ACCOUNT_JSON", sa)
                       os.environ.setdefault("GOOGLE_APPLICATION_CREDENTIALS_JSON", sa)
 
                   # タブ名の別名も埋めておく（実装差異を吸収）
@@ -250,7 +250,7 @@ jobs:
 #             SHEET_NAME: "regions"
 #             SHOW_ENTRIES: ${{ inputs.show_entries }}
 #             GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-#             GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+#             GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
 #             MNA_SHEET_ID: ${{ inputs.sheet_id != '' && inputs.sheet_id || secrets.MNA_SHEET_ID }}
 #             MNA_REGION_SHEET_NAME: "regions"
 #             # 既存ファイルで使われてる
@@ -292,7 +292,7 @@ jobs:
 #                   # fetch_articles 側が参照しうる環境変数名を**全部**埋めておく（片方しか見ない実装対策）
 #                   sa = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON") or ""
 #                   if sa:
-#                       os.environ.setdefault("GOOGLE_CREDENTIALS_JSON", sa)           # 別名
+#                       os.environ.setdefault("GOOGLE_SERVICE_ACCOUNT_JSON", sa)           # 別名
 #                       os.environ.setdefault("GOOGLE_APPLICATION_CREDENTIALS_JSON", sa) # 念のため
 
 #                   # タブ名も複数候補で上書き（実装差異を吸収）

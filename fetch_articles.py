@@ -3280,9 +3280,9 @@ def _load_region_glossary_gsheet(sheet_key: str | None, worksheet_name: str = "r
         import os, json
         import gspread
         from google.oauth2.service_account import Credentials
-        creds_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
+        creds_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
         if not creds_json:
-            print("[region-glossary] skip: GOOGLE_CREDENTIALS_JSON not set")
+            print("[region-glossary] skip: GOOGLE_SERVICE_ACCOUNT_JSON not set")
             return []
         creds_info = json.loads(creds_json)
         scopes = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
