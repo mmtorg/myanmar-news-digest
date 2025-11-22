@@ -426,6 +426,9 @@ const SOURCE_KEY_BASE_MAP = {
   "global new light": "GNLM",
   gnlm: "GNLM",
   "global new light of myanmar (国営紙)": "GNLM",
+  "news eleven": "NEWSELEVEN",
+  "news eleven burmese": "NEWSELEVEN",
+  newseleven: "NEWSELEVEN",
 };
 
 const DEFAULT_BASE_KEY = "MIZZIMA"; // マップにない場合のフォールバック
