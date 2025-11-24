@@ -1112,9 +1112,11 @@ def cmd_build_bundle_from_sheet(args):
         logging.info("[bundle] no summaries selected (K='a')")
         print("no summaries selected (K='a')"); return
 
-    # ③ summaries 構築
+    # ③ summaries 構築 + bodies.json 構築
     with _timeit("build-bundle:construct", selected=len(selected_rows)):
         summaries = []
+        bodies: dict[str, dict] = {}  # ← 追加
+
         for r in selected_rows:
             delivery    = get(r, "A") # 日付(A)
             media       = get(r, "C") # メディア(C)
@@ -1131,6 +1133,19 @@ def cmd_build_bundle_from_sheet(args):
                 "is_ayeyar": is_ay,
                 "date_mmt": delivery,
             })
+            
+            # ★ ここから bodies.json 用のデータをシートから構築 ★
+            body_raw   = get(r, "N")            # N列: 本文原文
+            if not (url and body_raw):
+                continue
+
+            # タイトル: H が空なら M（タイトル原文）をフォールバック
+            title_body = get(r, "H") or get(r, "M")
+            bodies[url] = {
+                "source": media,
+                "title": unicodedata.normalize("NFC", title_body),
+                "body":  body_raw,
+            }
 
     out_dir = os.path.abspath(args.bundle_dir)
 
@@ -1264,6 +1279,10 @@ def cmd_build_bundle_from_sheet(args):
         with open(os.path.join(out_dir, "attachment_name.txt"), "w", encoding="utf-8") as f:
             f.write(attachment_name)
         logging.info(f"[bundle] wrote business PDF: {attachment_name} ({len(pdf_bytes)} bytes)")
+
+    # ⑤ bodies.json の書き出し
+    if bodies:
+        _save_bodies_cache(out_dir, bodies)
 
     try:
         _make_business_pdf_from_summaries(summaries, meta["date_mmt"], out_dir)
