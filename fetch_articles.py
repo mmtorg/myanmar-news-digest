@@ -747,20 +747,49 @@ def extract_body_mail_pdf_scoped(url: str, soup) -> str:
         t = (a.get_text(strip=True) or "")
         if t.startswith("#"):
             a.decompose()
+            
+    # ==== GNLM 専用：<br> を改行に変換 =====
+    hostname = urlparse(url).hostname or ""
+    is_gnlm = "gnlm.com.mm" in hostname.lower()
+    
+    if is_gnlm:
+        # <br> を <br><p> のように分割せず、単純に改行へ
+        for br in root.find_all("br"):
+            br.replace_with("\n")
 
+    # ==== <p> 抽出ロジック（既存） =====
     # <p> から本文を構築（タグ雲行／WPコメント定型は除外）
-    ps = root.select("p") or root.find_all("p")
-    lines = []
     for p in ps:
-        t = p.get_text(strip=True)
-        if not t: continue
-        if "Save my name, email, and website" in t: continue
-        if _re.match(r'^(?:[#＃][^\s#]+(?:\s+|$)){3,}$', t): continue
-        t = _re.sub(r"\s+", " ", t).strip()
+        # GNLM 専用：separator="\n" にする（<br> を上で改行化済み）
+        if is_gnlm:
+            t = p.get_text("\n", strip=True)
+        else:
+            t = p.get_text(strip=True)
+
+        if not t:
+            continue
+
+        # 既存の除外ロジック
+        if "Save my name, email, and website" in t: 
+            continue
+        if _re.match(r'^(?:[#＃][^\s#]+(?:\s+|$)){3,}$', t): 
+            continue
+
+        # GNLM は改行は維持しつつ、他は圧縮
+        if is_gnlm:
+            # 複数空白は縮めるが、改行は残す
+            t = "\n".join(
+                _re.sub(r"\s+", " ", seg).strip()
+                for seg in t.split("\n")
+            )
+        else:
+            # 従来ロジック
+            t = _re.sub(r"\s+", " ", t).strip()
+
         if t:
             lines.append(_uni.normalize("NFC", t))
-    return "\n".join(lines).strip()
 
+    return "\n".join(lines).strip()
 
 def _ensure_meta_dates(url_to_meta: dict, date_mmt_iso: str):
     """
@@ -3132,7 +3161,7 @@ PROMPT_CURRENCY_RULES = (
     "【通貨換算ルール】\n"
     "このルールも記事タイトルと本文の翻訳に必ず適用してください。\n"
     "ミャンマー通貨「チャット（Kyat、ကျပ်）」が出てきた場合は、日本円に換算して併記してください。\n"
-    "- 換算レートは 1チャット = 0.037円 を必ず使用すること。\n"
+    "- 換算レートは 1チャット = 0.039円 を必ず使用すること。\n"
     "- 記事中にチャットが出た場合は必ず「◯チャット（約◯円）」の形式に翻訳してください。\n"
     "- 日本円の表記は小数点以下は四捨五入してください（例: 16,500円）。\n"
     "- 他のレートは使用禁止。\n"
@@ -3280,9 +3309,9 @@ def _load_region_glossary_gsheet(sheet_key: str | None, worksheet_name: str = "r
         import os, json
         import gspread
         from google.oauth2.service_account import Credentials
-        creds_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
+        creds_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
         if not creds_json:
-            print("[region-glossary] skip: GOOGLE_CREDENTIALS_JSON not set")
+            print("[region-glossary] skip: GOOGLE_SERVICE_ACCOUNT_JSON not set")
             return []
         creds_info = json.loads(creds_json)
         scopes = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
@@ -4014,193 +4043,65 @@ def build_combined_pdf_for_business(translated_items, out_path=None):
             return s
         return re.sub(rf"([A-Za-z0-9]) ([{_CJK_RANGE}])", rf"\1{NBSP}\2", s)
 
+    # ===== 正規化ユーティリティ（不自然改行の抑止：改行は保持しつつ英語フレーズだけ保護） =====
+    _ZW_RE = re.compile(r"[\u200b\u200c\u200d\ufeff]")
+
     def _normalize_text_for_pdf(text: str) -> str:
-        """
-        段落の空行は残しつつ、段落内の“ソフト改行”を結合する。
-        - 空行(=改行のみ)で段落を区切り
-        - 段落内部は行末が句点類で終わらない限り、改行を削除して連結
-        """
         import re
         if not text:
             return ""
 
-        # 改行正規化
+        # 改行の正規化のみ
         t = text.replace("\r\n", "\n").replace("\r", "\n")
 
-        # ゼロ幅文字の除去（既存の _ZW_RE を使う）
+        # ゼロ幅文字の除去
         t = _ZW_RE.sub("", t)
 
-        # 単発改行だけを文脈に応じて結合（段落 \n\n は対象外）
-        s = t  # 置換の基準スナップショット
-        BULLETS = "・●○■□◆◇▶▷•*-–—"
-
-        def _soft_join(m):
-            i = m.start()                     # 改行の位置
-            left  = s[i-1] if i > 0 else ""   # 左隣の1文字
-            right = s[i+1] if i+1 < len(s) else ""  # 右隣の1文字
-
-            # 箇条書きが次行先頭なら改行は保持
-            if right and right in BULLETS:
-                return "\n"
-
-            # 英数→英数はスペースで結合（"(YA)\nmember" → "(YA) member"）
-            if re.match(r"[A-Za-z0-9\)\]]", left) and re.match(r"[A-Za-z0-9\(\[]", right):
-                return " "
-
-            # それ以外（CJK含む）は無空白で結合
-            return ""
-
-        t = _SOFT_BREAK_RE.sub(_soft_join, s)
-        
-        # ===== 半角括弧を全角に統一し、括弧のまわりの“折り返し可能な空白”を除去（URLは除外） =====
+        # URL を避けるためのパターン
         _URL_RE = re.compile(r"https?://\S+")
 
-        def _convert_paren_outside_urls(text: str) -> str:
-            def _conv(chunk: str) -> str:
-                # 1) 半角→全角
-                chunk = chunk.replace("(", "（").replace(")", "）")
-                # 2) 「語 + 空白 + （」を「語 + （」へ（空白を削除）
-                chunk = re.sub(r"(?<=\S) （", "（", chunk)
-                # 3) 「） + 空白 + 語」を「） + 語」へ（空白を削除）
-                chunk = re.sub(r"） (?=\S)", "）", chunk)
-                return chunk
+        # Proper 名詞定義（先頭大文字）
+        _PROPER = r"[A-Z][A-Za-z0-9&\.\-]{1,20}"
 
-            out = []
-            last = 0
-            for m in _URL_RE.finditer(text):
-                out.append(_conv(text[last:m.start()]))  # URLの手前は変換
-                out.append(m.group(0))                   # URL本体はそのまま
-                last = m.end()
-            out.append(_conv(text[last:]))               # 末尾
-            return "".join(out)
+        # 前置詞・接続詞（改行が起きやすいもの）
+        _PREP = r"(?:for|of|and|the|in|on|at|by|from|to|with|without|against|between)"
 
-        t = _convert_paren_outside_urls(t)
-        
-        # 行頭禁則（開きカッコの直前のスペースを NBSP に変換して改行禁止）
-        t = re.sub(r"(?<=\S) (?=[\(\（\[\【])", "\u00A0", t)  # \u00A0 = NBSP
-        
-        # --- ① 英数字同士の単発改行を NBSP でブリッジ（段落改行は温存）---
-        # 例: "Finance\nUncovered" / "No\n Vote" / "Paka\nPha"
-        t = re.sub(r"(?<=[A-Za-z0-9])\n\s*(?=[A-Za-z0-9])", "\u00A0", t)
-
-        # --- ② スペースで挟まれたハイフンを改行禁止に ---
-        # 例: "Zero - Column - 5 -)" → "Zero - Column - 5 -)"
-        t = t.replace(" - ", "\u00A0-\u00A0")
-
-        # --- ③ 数字の直後に来る '‐-)' を改行不可ハイフンに置換 ---
-        # 例: "5-)" の '-' を U+2011 (NON-BREAKING HYPHEN) に
-        t = re.sub(r"(?<=\d)-(?=\))", "\u2011", t)
-        
-        # 英語の大文字始まり 2〜3語は語間を NBSP にして分断を防止（URLは対象外）
-        _PROPER_RE = re.compile(
-            r'\b([A-Z][A-Za-z0-9&\.\-]{1,20})\s+([A-Z][A-Za-z0-9&\.\-]{1,20})(?:\s+([A-Z][A-Za-z0-9&\.\-]{1,20}))?\b'
+        # Proper + PREP + Proper （Data for Myanmar）
+        pat_prep = re.compile(
+            rf"\b({_PROPER})\s+({_PREP})\s+({_PROPER})\b",
+            re.IGNORECASE,
         )
-        _place = {}
-        def _stash(m):
-            k = f"__URL{len(_place)}__"
-            _place[k] = m.group(0)
-            return k
-        _work = _URL_RE.sub(_stash, t)  # URLは退避して対象外に
-        _work = _PROPER_RE.sub(lambda m: "\u00A0".join([w for w in m.group(0).split(' ') if w]), _work)
-        for k, v in _place.items():
-            _work = _work.replace(k, v)
-        t = _work
 
-        # 段落で分割（連続する空行を1つの区切りとみなす）
-        paras = re.split(r"\n\s*\n", t.strip(), flags=re.MULTILINE)
-        cleaned_paras = []
+        # Proper Proper Proper / Proper Proper
+        _PATTERNS = [
+            re.compile(rf"\b{_PROPER}\s+{_PROPER}\s+{_PROPER}\b"),
+            re.compile(rf"\b{_PROPER}\s+{_PROPER}\b"),
+        ]
 
-        # 文末とみなす文字（これで終わっていれば改行を維持）、カッコ/角カッコは“文末記号”ではないため除外
-        SENT_END = r"[。．\.！？!?…」』]"
+        def _protect_chunk(chunk: str) -> str:
+            # PREP パターンを先に NBSP でつないで保護
+            chunk = pat_prep.sub(
+                lambda m: f"{m.group(1)}\u00A0{m.group(2)}\u00A0{m.group(3)}",
+                chunk,
+            )
+            # 残りの Proper2 / Proper3 語も NBSP 化
+            for pat in _PATTERNS:
+                chunk = pat.sub(
+                    lambda m: "\u00A0".join(m.group(0).split(" ")),
+                    chunk,
+                )
+            return chunk
 
-        for p in paras:
-            # 行単位に分割（空行はこの段階では存在しない前提）
-            lines = [ln.strip() for ln in p.split("\n") if ln.strip() != ""]
-            if not lines:
-                continue
+        # URL を避けながら NBSP 保護を適用
+        out = []
+        last = 0
+        for m in _URL_RE.finditer(t):
+            out.append(_protect_chunk(t[last:m.start()]))  # URL の前
+            out.append(m.group(0))                         # URL 本体
+            last = m.end()
+        out.append(_protect_chunk(t[last:]))               # 最後の部分
 
-            buf = lines[0]
-            for ln in lines[1:]:
-                # 直前が文末記号で終わるなら改行維持（=新しい文として連結）
-                if re.search(SENT_END + r"$", buf):
-                    buf = buf + "\n" + ln
-                else:
-                    # それ以外は“ソフト改行”とみなし、改行を削除して結合
-                    # （日本語なのでスペースは挟まない）
-                    buf = buf + ln
-            cleaned_paras.append(buf)
-
-        # 段落間は空行1つ（= \n\n）で接続
-        return "\n\n".join(cleaned_paras)
-
-    # ===== 正規化ユーティリティ（不自然改行の抑止） =====
-    _ZW_RE = re.compile(r"[\u200b\u200c\u200d\ufeff]")
-    _SOFT_BREAK_RE = re.compile(r"(?<!\n)\n(?!\n)")
-
-    def _normalize_text_for_pdf(text: str) -> str:
-        """
-        段落の空行は残しつつ、段落内の“ソフト改行”を結合する。
-        - 空行(=改行のみ)で段落を区切り
-        - 段落内部は行末が句点類で終わらない限り、改行を削除して連結
-        """
-        import re
-        if not text:
-            return ""
-
-        # 改行正規化
-        t = text.replace("\r\n", "\n").replace("\r", "\n")
-        
-        # ゼロ幅文字の除去（既存の _ZW_RE を使う）
-        t = _ZW_RE.sub("", t)
-        
-        # 単発改行だけを文脈に応じて結合（段落 \n\n は対象外）
-        s = t  # 置換の基準スナップショット
-        BULLETS = "・●○■□◆◇▶▷•*-–—"
-
-        def _soft_join(m):
-            i = m.start()                     # 改行の位置
-            left  = s[i-1] if i > 0 else ""   # 左隣の1文字
-            right = s[i+1] if i+1 < len(s) else ""  # 右隣の1文字
-
-            # 箇条書きが次行先頭なら改行は保持
-            if right and right in BULLETS:
-                return "\n"
-
-            # 英数→英数はスペースで結合（"(YA)\nmember" → "(YA) member"）
-            if re.match(r"[A-Za-z0-9\)\]]", left) and re.match(r"[A-Za-z0-9\(\[]", right):
-                return " "
-
-            # それ以外（CJK含む）は無空白で結合
-            return ""
-
-        t = _SOFT_BREAK_RE.sub(_soft_join, s)
-
-        # 段落で分割（連続する空行を1つの区切りとみなす）
-        paras = re.split(r"\n\s*\n", t.strip(), flags=re.MULTILINE)
-        cleaned_paras = []
-
-        # 文末とみなす文字（これで終わっていれば改行を維持）、カッコ/角カッコは“文末記号”ではないため除外
-        SENT_END = r"[。．\.！？!?…」』]"
-
-        for p in paras:
-            # 行単位に分割（空行はこの段階では存在しない前提）
-            lines = [ln.strip() for ln in p.split("\n") if ln.strip() != ""]
-            if not lines:
-                continue
-
-            buf = lines[0]
-            for ln in lines[1:]:
-                # 直前が文末記号で終わるなら改行維持（=新しい文として連結）
-                if re.search(SENT_END + r"$", buf):
-                    buf = buf + "\n" + ln
-                else:
-                    # それ以外は“ソフト改行”とみなし、改行を削除して結合
-                    # （日本語なのでスペースは挟まない）
-                    buf = buf + ln
-            cleaned_paras.append(buf)
-
-        # 段落間は空行1つ（= \n\n）で接続
-        return "\n\n".join(cleaned_paras)
+        return "".join(out)
 
     # ===== PDFユーティリティ =====
     def _epw(pdf):  # effective page width
