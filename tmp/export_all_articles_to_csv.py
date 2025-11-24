@@ -1211,14 +1211,23 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
         body_parts: list[str] = []
         content = soup.select_one("div.entry-content")
         if content:
-            # 見出し（ある場合のみ）
+            # 1) GNLM 専用: <br> を改行に変換
+            for br in content.find_all("br"):
+                br.replace_with("\n")
+
+            # 2) 見出し（ある場合のみ）: 改行を維持しつつ空白だけ圧縮
             lead = content.find("h3", recursive=False)
             if lead:
-                txt = lead.get_text(" ", strip=True)
+                txt = lead.get_text("\n", strip=True)  # ここで改行を拾う
                 if txt:
-                    body_parts.append(txt)
+                    txt = "\n".join(
+                        re.sub(r"\s+", " ", seg).strip()
+                        for seg in txt.split("\n")
+                    )
+                    if txt:
+                        body_parts.append(txt)
 
-            # Related Posts に遭遇したら本文抽出を停止
+            # 3) Related Posts に遭遇したら本文抽出を停止
             for child in content.children:
                 if not getattr(child, "name", None):
                     continue
@@ -1229,9 +1238,15 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
                         break
 
                 if child.name == "p":
-                    txt = child.get_text(" ", strip=True)
+                    # GNLM 専用: <p> 内の改行を維持
+                    txt = child.get_text("\n", strip=True)
                     if txt:
-                        body_parts.append(txt)
+                        txt = "\n".join(
+                            re.sub(r"\s+", " ", seg).strip()
+                            for seg in txt.split("\n")
+                        )
+                        if txt:
+                            body_parts.append(txt)
 
         body = "\n".join(body_parts)
 
