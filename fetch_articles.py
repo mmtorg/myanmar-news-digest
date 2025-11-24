@@ -4139,68 +4139,19 @@ def build_combined_pdf_for_business(translated_items, out_path=None):
 
     def _normalize_text_for_pdf(text: str) -> str:
         """
-        段落の空行は残しつつ、段落内の“ソフト改行”を結合する。
-        - 空行(=改行のみ)で段落を区切り
-        - 段落内部は行末が句点類で終わらない限り、改行を削除して連結
+        PDF用：改行をそのまま保持し、ゼロ幅文字だけ除去する。
+        余計なソフト改行結合・NBSP置換は行わない。
         """
-        import re
         if not text:
             return ""
 
-        # 改行正規化
+        # 改行正規化のみ
         t = text.replace("\r\n", "\n").replace("\r", "\n")
-        
-        # ゼロ幅文字の除去（既存の _ZW_RE を使う）
+
+        # ゼロ幅文字のみ除去
         t = _ZW_RE.sub("", t)
-        
-        # 単発改行だけを文脈に応じて結合（段落 \n\n は対象外）
-        s = t  # 置換の基準スナップショット
-        BULLETS = "・●○■□◆◇▶▷•*-–—"
 
-        def _soft_join(m):
-            i = m.start()                     # 改行の位置
-            left  = s[i-1] if i > 0 else ""   # 左隣の1文字
-            right = s[i+1] if i+1 < len(s) else ""  # 右隣の1文字
-
-            # 箇条書きが次行先頭なら改行は保持
-            if right and right in BULLETS:
-                return "\n"
-
-            # 英数→英数はスペースで結合（"(YA)\nmember" → "(YA) member"）
-            if re.match(r"[A-Za-z0-9\)\]]", left) and re.match(r"[A-Za-z0-9\(\[]", right):
-                return " "
-
-            # それ以外（CJK含む）は無空白で結合
-            return ""
-
-        t = _SOFT_BREAK_RE.sub(_soft_join, s)
-
-        # 段落で分割（連続する空行を1つの区切りとみなす）
-        paras = re.split(r"\n\s*\n", t.strip(), flags=re.MULTILINE)
-        cleaned_paras = []
-
-        # 文末とみなす文字（これで終わっていれば改行を維持）、カッコ/角カッコは“文末記号”ではないため除外
-        SENT_END = r"[。．\.！？!?…」』]"
-
-        for p in paras:
-            # 行単位に分割（空行はこの段階では存在しない前提）
-            lines = [ln.strip() for ln in p.split("\n") if ln.strip() != ""]
-            if not lines:
-                continue
-
-            buf = lines[0]
-            for ln in lines[1:]:
-                # 直前が文末記号で終わるなら改行維持（=新しい文として連結）
-                if re.search(SENT_END + r"$", buf):
-                    buf = buf + "\n" + ln
-                else:
-                    # それ以外は“ソフト改行”とみなし、改行を削除して結合
-                    # （日本語なのでスペースは挟まない）
-                    buf = buf + ln
-            cleaned_paras.append(buf)
-
-        # 段落間は空行1つ（= \n\n）で接続
-        return "\n\n".join(cleaned_paras)
+        return t
 
     # ===== PDFユーティリティ =====
     def _epw(pdf):  # effective page width
