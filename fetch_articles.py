@@ -747,20 +747,49 @@ def extract_body_mail_pdf_scoped(url: str, soup) -> str:
         t = (a.get_text(strip=True) or "")
         if t.startswith("#"):
             a.decompose()
+            
+    # ==== GNLM 専用：<br> を改行に変換 =====
+    hostname = urlparse(url).hostname or ""
+    is_gnlm = "gnlm.com.mm" in hostname.lower()
+    
+    if is_gnlm:
+        # <br> を <br><p> のように分割せず、単純に改行へ
+        for br in root.find_all("br"):
+            br.replace_with("\n")
 
+    # ==== <p> 抽出ロジック（既存） =====
     # <p> から本文を構築（タグ雲行／WPコメント定型は除外）
-    ps = root.select("p") or root.find_all("p")
-    lines = []
     for p in ps:
-        t = p.get_text(strip=True)
-        if not t: continue
-        if "Save my name, email, and website" in t: continue
-        if _re.match(r'^(?:[#＃][^\s#]+(?:\s+|$)){3,}$', t): continue
-        t = _re.sub(r"\s+", " ", t).strip()
+        # GNLM 専用：separator="\n" にする（<br> を上で改行化済み）
+        if is_gnlm:
+            t = p.get_text("\n", strip=True)
+        else:
+            t = p.get_text(strip=True)
+
+        if not t:
+            continue
+
+        # 既存の除外ロジック
+        if "Save my name, email, and website" in t: 
+            continue
+        if _re.match(r'^(?:[#＃][^\s#]+(?:\s+|$)){3,}$', t): 
+            continue
+
+        # GNLM は改行は維持しつつ、他は圧縮
+        if is_gnlm:
+            # 複数空白は縮めるが、改行は残す
+            t = "\n".join(
+                _re.sub(r"\s+", " ", seg).strip()
+                for seg in t.split("\n")
+            )
+        else:
+            # 従来ロジック
+            t = _re.sub(r"\s+", " ", t).strip()
+
         if t:
             lines.append(_uni.normalize("NFC", t))
-    return "\n".join(lines).strip()
 
+    return "\n".join(lines).strip()
 
 def _ensure_meta_dates(url_to_meta: dict, date_mmt_iso: str):
     """
