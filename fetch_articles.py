@@ -4014,25 +4014,65 @@ def build_combined_pdf_for_business(translated_items, out_path=None):
             return s
         return re.sub(rf"([A-Za-z0-9]) ([{_CJK_RANGE}])", rf"\1{NBSP}\2", s)
 
-    # ===== 正規化ユーティリティ（不自然改行の抑止） =====
+    # ===== 正規化ユーティリティ（不自然改行の抑止：改行は保持しつつ英語フレーズだけ保護） =====
     _ZW_RE = re.compile(r"[\u200b\u200c\u200d\ufeff]")
-    _SOFT_BREAK_RE = re.compile(r"(?<!\n)\n(?!\n)")
 
     def _normalize_text_for_pdf(text: str) -> str:
-        """
-        PDF用：改行をそのまま保持し、ゼロ幅文字だけ除去する。
-        余計なソフト改行結合・NBSP置換は行わない。
-        """
+        import re
         if not text:
             return ""
 
-        # 改行正規化のみ
+        # 改行の正規化のみ
         t = text.replace("\r\n", "\n").replace("\r", "\n")
 
-        # ゼロ幅文字のみ除去
+        # ゼロ幅文字の除去
         t = _ZW_RE.sub("", t)
 
-        return t
+        # URL を避けるためのパターン
+        _URL_RE = re.compile(r"https?://\S+")
+
+        # Proper 名詞定義（先頭大文字）
+        _PROPER = r"[A-Z][A-Za-z0-9&\.\-]{1,20}"
+
+        # 前置詞・接続詞（改行が起きやすいもの）
+        _PREP = r"(?:for|of|and|the|in|on|at|by|from|to|with|without|against|between)"
+
+        # Proper + PREP + Proper （Data for Myanmar）
+        pat_prep = re.compile(
+            rf"\b({_PROPER})\s+({_PREP})\s+({_PROPER})\b",
+            re.IGNORECASE,
+        )
+
+        # Proper Proper Proper / Proper Proper
+        _PATTERNS = [
+            re.compile(rf"\b{_PROPER}\s+{_PROPER}\s+{_PROPER}\b"),
+            re.compile(rf"\b{_PROPER}\s+{_PROPER}\b"),
+        ]
+
+        def _protect_chunk(chunk: str) -> str:
+            # PREP パターンを先に NBSP でつないで保護
+            chunk = pat_prep.sub(
+                lambda m: f"{m.group(1)}\u00A0{m.group(2)}\u00A0{m.group(3)}",
+                chunk,
+            )
+            # 残りの Proper2 / Proper3 語も NBSP 化
+            for pat in _PATTERNS:
+                chunk = pat.sub(
+                    lambda m: "\u00A0".join(m.group(0).split(" ")),
+                    chunk,
+                )
+            return chunk
+
+        # URL を避けながら NBSP 保護を適用
+        out = []
+        last = 0
+        for m in _URL_RE.finditer(t):
+            out.append(_protect_chunk(t[last:m.start()]))  # URL の前
+            out.append(m.group(0))                         # URL 本体
+            last = m.end()
+        out.append(_protect_chunk(t[last:]))               # 最後の部分
+
+        return "".join(out)
 
     # ===== PDFユーティリティ =====
     def _epw(pdf):  # effective page width
