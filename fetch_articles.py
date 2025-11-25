@@ -580,6 +580,9 @@ AYEYARWADY_KEYWORDS = [
     "Ayeyarwady Region",
     "Ayeyarwady region",
     "ayeyarwady region",
+    "Ayeyawady Region",
+    "Ayeyawady region",
+    "ayeyawady region",
 ]
 AYEYARWADY_KEYWORDS = [unicodedata.normalize("NFC", kw) for kw in AYEYARWADY_KEYWORDS]
 
