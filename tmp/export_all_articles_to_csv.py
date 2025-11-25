@@ -163,7 +163,7 @@ def collect_popular_all_for_date(
     """
     rss_url = "https://www.popularmyanmar.com/feed/"
 
-    session = requests.Session()
+    session = _make_pooled_session()
     try:
         res = session.get(rss_url, timeout=15)
         res.raise_for_status()
