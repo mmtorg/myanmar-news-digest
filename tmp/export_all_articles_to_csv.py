@@ -116,6 +116,184 @@ def collect_bbc_all_for_date(target_date_mmt: date) -> List[Dict]:
             continue
     return out
 
+# ===== Popular Myanmar (Popular News Journal; RSS + HTML) =====
+# Popular Myanmar で収集対象とするカテゴリ（小文字で列挙）
+# 例: Movies と Sports を収集したい場合 → {"movies", "sports"}
+POPULAR_ALLOWED_CATEGORIES: set[str] = set([
+    # "movies",
+    # "news",
+    # "sports",
+])
+
+def _extract_popular_category(soup: BeautifulSoup) -> str:
+    """
+    PopularMyanmar のカテゴリテキストを 1 つ返す。
+    例:
+      <ul class="td-category">
+        <li class="entry-category">
+          <a href="https://www.popularmyanmar.com/app/movies/">Movies</a>
+        </li>
+      </ul>
+    """
+    cat_a = soup.select_one("ul.td-category li.entry-category a")
+    if not cat_a:
+        cat_a = soup.select_one("ul.td-category a")
+    if not cat_a:
+        return ""
+    txt = cat_a.get_text(strip=True)
+    if not txt:
+        return ""
+    try:
+        return unicodedata.normalize("NFC", txt)
+    except Exception:
+        return txt
+
+def collect_popular_all_for_date(
+    target_date_mmt: date,
+    *,
+    debug: bool = False,
+) -> List[Dict]:
+    """
+    Popular Myanmar（Popular News Journal）の WordPress RSS から
+    対象 MMT 日付の記事を収集する。
+
+    - RSS で当日記事の URL を一覧取得
+    - 各記事 HTML からタイトル / 本文 / カテゴリを抽出
+    - POPULAR_ALLOWED_CATEGORIES が空でなければ、そのカテゴリのみ収集
+    """
+    rss_url = "https://www.popularmyanmar.com/feed/"
+
+    session = requests.Session()
+    try:
+        res = session.get(rss_url, timeout=15)
+        res.raise_for_status()
+    except Exception as e:
+        print(f"[popular] RSS取得失敗: {e}")
+        return []
+
+    soup = BeautifulSoup(res.content, "xml")
+
+    # --- RSS → 当日記事URL抽出 ---
+    candidates: List[Dict] = []
+    for item in soup.find_all("item"):
+        pub_tag = item.find("pubDate")
+        link_tag = item.find("link")
+        if not (pub_tag and link_tag):
+            continue
+
+        pub_raw = (pub_tag.text or "").strip()
+        url = (link_tag.text or "").strip()
+        if not url:
+            continue
+
+        try:
+            dt = parse_date(pub_raw).astimezone(MMT)
+        except Exception:
+            continue
+
+        if dt.date() != target_date_mmt:
+            continue
+
+        candidates.append({"url": url})
+
+    if debug:
+        print(f"[popular] RSS candidates for {target_date_mmt}: {len(candidates)}")
+
+    results: List[Dict] = []
+
+    for item in candidates:
+        url = item["url"]
+
+        # --- 記事 HTML 取得（既存の retry ユーティリティを使用） ---
+        try:
+            res = fetch_with_retry(url)
+        except Exception as e:
+            print(f"[popular] article fetch fail {url}: {e}")
+            continue
+
+        html = getattr(res, "content", None) or getattr(res, "text", "")
+        article = BeautifulSoup(html, "html.parser")
+
+        # --- タイトル抽出: og:title → h1.entry-title → <title> ---
+        title = ""
+        og = article.find("meta", attrs={"property": "og:title"})
+        if og and og.get("content"):
+            title = og["content"].strip()
+
+        if not title:
+            h1 = article.select_one("h1.entry-title") or article.find("h1")
+            if h1:
+                title = h1.get_text(strip=True)
+
+        if not title and article.title:
+            title = article.title.get_text(strip=True)
+
+        title = unicodedata.normalize("NFC", title or "")
+        if not title:
+            if debug:
+                print(f"[popular] skip empty title: {url}")
+            continue
+
+        # --- カテゴリ抽出 ---
+        category = _extract_popular_category(article)
+        category_norm = unicodedata.normalize("NFC", category or "").lower()
+
+        # ★ 複数カテゴリ対応のフィルタリング ★
+        if POPULAR_ALLOWED_CATEGORIES:
+            if not category_norm or category_norm not in POPULAR_ALLOWED_CATEGORIES:
+                if debug:
+                    print(
+                        f"[popular] skip by category: '{category}' (allowed={POPULAR_ALLOWED_CATEGORIES}) url={url}"
+                    )
+                continue
+
+        # --- 本文抽出 ---
+        host = article.select_one("div.td-post-content") or article
+        paragraphs = host.find_all("p")
+
+        parts: List[str] = []
+        for p in paragraphs:
+            text = p.get_text(" ", strip=True)
+            if text:
+                text = re.sub(r"\s+", " ", text)
+                parts.append(text)
+
+        body = "\n".join(parts).strip()
+
+        # fallback: 共通の段落抽出ユーティリティを使用
+        if not body:
+            paras = extract_paragraphs_with_wait(article)
+            body = "\n".join(
+                re.sub(r"\s+", " ", p.get_text(" ", strip=True))
+                for p in paras
+                if p.get_text(strip=True)
+            ).strip()
+
+        body = unicodedata.normalize("NFC", body or "")
+        if not body:
+            if debug:
+                print(f"[popular] skip empty body: {url}")
+            continue
+
+        results.append(
+            {
+                "source": "Popular Myanmar",
+                "title": title,
+                "url": url,
+                "date": target_date_mmt.isoformat(),
+                "body": body,
+            }
+        )
+
+    # --- URL 重複除去（fetch_articles のユーティリティ利用） ---
+    if results:
+        before = len(results)
+        results = deduplicate_by_url(results)
+        if debug and before != len(results):
+            print(f"[popular] dedup: {before} -> {len(results)}")
+
+    return results
+
 from requests.adapters import HTTPAdapter
 def _make_pooled_session() -> requests.Session:
     """
