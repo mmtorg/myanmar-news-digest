@@ -618,7 +618,8 @@ try:
         collect_khitthit_all_for_date,
         collect_myanmar_now_mm_all_for_date,
         collect_dvb_all_for_date,
-        collect_gnlm_all_for_date
+        collect_gnlm_all_for_date,
+        collect_popular_all_for_date,
     )
     collectors_loaded = True
 except Exception as e:
@@ -918,6 +919,7 @@ def _collect_all_for(target_date_mmt: date) -> List[Dict]:
         (collect_dvb_all_for_date, {}),
         (collect_myanmar_now_mm_all_for_date, {"max_pages": 3}),
         (collect_gnlm_all_for_date, {"max_pages": 3}),
+        (collect_popular_all_for_date, {}),
     ]:
         name = fn.__name__.replace("_all_for_date", "")
         try:
