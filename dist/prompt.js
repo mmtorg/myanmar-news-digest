@@ -1622,6 +1622,10 @@ function logRegionUsageForRow_(sheet, row, ctx) {
   entriesTitle.forEach(function (e) {
     const ja = e.ja_headline || e.ja || "";
     const used = ja && headlineA && headlineA.indexOf(ja) !== -1;
+
+    // ★ 出力で使われていないものはログしない
+    if (!used) return;
+
     logSheet.appendRow([
       now,
       sheetName,
@@ -1633,17 +1637,20 @@ function logRegionUsageForRow_(sheet, row, ctx) {
       e.mm || "",
       e.en || "",
       ja,
-      used,
-      used ? ja : "",
+      true, // used_in_output は必ず TRUE
+      ja, // output_ja は常に ja
       "",
     ]);
   });
-
   // 本文用：見出しB' + 要約 に dict_ja が含まれているか
   const blob = (headlineB2 || "") + "\n" + (summaryJa || "");
   entriesBody.forEach(function (e) {
     const ja = e.ja_body || e.ja || "";
     const used = ja && blob.indexOf(ja) !== -1;
+
+    // ★ 出力で使われていないものはログしない
+    if (!used) return;
+
     logSheet.appendRow([
       now,
       sheetName,
@@ -1655,11 +1662,15 @@ function logRegionUsageForRow_(sheet, row, ctx) {
       e.mm || "",
       e.en || "",
       ja,
-      used,
-      used ? ja : "",
+      true, // used_in_output は必ず TRUE
+      ja, // output_ja は常に ja
       "",
     ]);
   });
+
+  // ★ unknown 判定でも使う日本語出力のかたまり
+  const blobTitleJa = headlineA || "";
+  const blobBodyJa = (headlineB2 || "") + "\n" + (summaryJa || "");
 
   // --- unknown（regions にない地名）を 1 回の呼び出しで検出 ---
   const unknownList = detectUnknownRegionsForArticle_(
@@ -1676,6 +1687,18 @@ function logRegionUsageForRow_(sheet, row, ctx) {
     const part = (item.part || "").toString().toLowerCase();
     const normalizedPart = part === "title" ? "title" : "body"; // 不正値は body 扱い
 
+    const jaOut = (item.ja || "").toString();
+    let used = false;
+    if (jaOut) {
+      if (normalizedPart === "title") {
+        // タイトル用: headlineA の中に含まれているか
+        used = blobTitleJa.indexOf(jaOut) !== -1;
+      } else {
+        // 本文用: 見出しB' + 要約 の中に含まれているか
+        used = blobBodyJa.indexOf(jaOut) !== -1;
+      }
+    }
+
     logSheet.appendRow([
       now,
       sheetName,
@@ -1687,8 +1710,8 @@ function logRegionUsageForRow_(sheet, row, ctx) {
       item.src || "", // mm 列に原文を入れてしまう
       "", // en は不明なので空
       "", // dict_ja は無し
-      "", // used_in_output は N/A
-      item.ja || "", // output_ja に訳語
+      used, // ★ used_in_output を TRUE / FALSE で記録
+      jaOut, // output_ja は常に jaOut
       "",
     ]);
   });
@@ -1740,7 +1763,7 @@ function detectUnknownRegionsForArticle_(
     "あなたは対訳ペアから地名の対応を抽出するツールです。",
     "",
     "与えられた原文タイトル・本文と、その日本語タイトル・本文から、",
-    "regions 用語集には載っていない地名のみを抽出してください。",
+    "regions 用語集には載っていないミャンマー国内の地名のみを抽出してください。",
     "",
     "出力は JSON 配列1つのみとし、フォーマットは次の通りです（日本語以外は英数字）：",
     '[{"part":"titleまたはbody","src":"...元の地名...","ja":"...日本語訳..."}]',
