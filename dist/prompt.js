@@ -1002,6 +1002,17 @@ function processRow_(sheet, row, prevStatus) {
     }
   }
 
+  // ★ここで地域名ログを出す
+  logRegionUsageForRow_(sheet, row, {
+    sourceVal,
+    urlVal,
+    titleRaw,
+    bodyRaw,
+    headlineA,
+    headlineB2,
+    summaryJa,
+  });
+
   // シートに書き込み
   sheet.getRange(row, colE).setValue(headlineA); // 見出しA
   // F列（見出しA'）は従来どおり一時停止のまま
@@ -1555,4 +1566,229 @@ function _cleanupOldGeminiLogs_() {
       numRows - keptRows.length
     );
   });
+}
+
+/************************************************************
+ * 地名ログ出力用
+ ************************************************************/
+function openRegionLogSheet_() {
+  const ss = SpreadsheetApp.getActive();
+  const name = "region_logs";
+  let sh = ss.getSheetByName(name);
+  if (!sh) {
+    sh = ss.insertSheet(name);
+    sh.appendRow([
+      "timestamp",
+      "sheet",
+      "row",
+      "source",
+      "url",
+      "part",
+      "type",
+      "mm",
+      "en",
+      "dict_ja",
+      "used_in_output",
+      "output_ja",
+      "note",
+    ]);
+  }
+  return sh;
+}
+
+function logRegionUsageForRow_(sheet, row, ctx) {
+  const logSheet = openRegionLogSheet_();
+  const entriesAll = loadRegionGlossary_();
+
+  const sheetName = sheet.getName();
+  const {
+    sourceVal,
+    urlVal,
+    titleRaw,
+    bodyRaw,
+    headlineA,
+    headlineB2,
+    summaryJa,
+  } = ctx;
+
+  const now = new Date();
+
+  // タイトル／本文それぞれで regions マッチ（既知地名）
+  const entriesTitle = selectRegionEntriesForText_(titleRaw || "", entriesAll);
+  const entriesBody = selectRegionEntriesForText_(bodyRaw || "", entriesAll);
+
+  // --- known（regions にある地名）をログ ---
+  // タイトル用：見出しA に dict_ja が含まれているか
+  entriesTitle.forEach(function (e) {
+    const ja = e.ja_headline || e.ja || "";
+    const used = ja && headlineA && headlineA.indexOf(ja) !== -1;
+    logSheet.appendRow([
+      now,
+      sheetName,
+      row,
+      sourceVal,
+      urlVal,
+      "title", // part
+      "known", // type
+      e.mm || "",
+      e.en || "",
+      ja,
+      used,
+      used ? ja : "",
+      "",
+    ]);
+  });
+
+  // 本文用：見出しB' + 要約 に dict_ja が含まれているか
+  const blob = (headlineB2 || "") + "\n" + (summaryJa || "");
+  entriesBody.forEach(function (e) {
+    const ja = e.ja_body || e.ja || "";
+    const used = ja && blob.indexOf(ja) !== -1;
+    logSheet.appendRow([
+      now,
+      sheetName,
+      row,
+      sourceVal,
+      urlVal,
+      "body",
+      "known",
+      e.mm || "",
+      e.en || "",
+      ja,
+      used,
+      used ? ja : "",
+      "",
+    ]);
+  });
+
+  // --- unknown（regions にない地名）を 1 回の呼び出しで検出 ---
+  const unknownList = detectUnknownRegionsForArticle_(
+    titleRaw || "",
+    bodyRaw || "",
+    headlineA || "",
+    headlineB2 || "",
+    summaryJa || "",
+    entriesTitle,
+    entriesBody
+  );
+
+  unknownList.forEach(function (item) {
+    const part = (item.part || "").toString().toLowerCase();
+    const normalizedPart = part === "title" ? "title" : "body"; // 不正値は body 扱い
+
+    logSheet.appendRow([
+      now,
+      sheetName,
+      row,
+      sourceVal,
+      urlVal,
+      normalizedPart, // part
+      "unknown", // type
+      item.src || "", // mm 列に原文を入れてしまう
+      "", // en は不明なので空
+      "", // dict_ja は無し
+      "", // used_in_output は N/A
+      item.ja || "", // output_ja に訳語
+      "",
+    ]);
+  });
+}
+
+function getRegionLogApiKey_() {
+  const props = PropertiesService.getScriptProperties();
+  const v = props.getProperty("GEMINI_API_KEY_REGION_LOG");
+  return v || ""; // 空なら呼び出し側でフォールバック
+}
+
+// 記事単位で未知地名を検出する関数
+function detectUnknownRegionsForArticle_(
+  titleRaw,
+  bodyRaw,
+  headlineA,
+  headlineB2,
+  summaryJa,
+  knownEntriesTitle,
+  knownEntriesBody
+) {
+  const apiKey = getRegionLogApiKey_();
+  if (!apiKey) return []; // ログ専用キーが無ければスキップ
+
+  // 原文 or 出力どちらも何も無ければスキップ
+  if (!(titleRaw || bodyRaw)) return [];
+  if (!(headlineA || headlineB2 || summaryJa)) return [];
+
+  // 既知エントリ(mm/en)をマージ＋重複除去
+  const allKnown = []
+    .concat(knownEntriesTitle || [], knownEntriesBody || [])
+    .filter(Boolean);
+
+  const seen = {};
+  const knownList = [];
+  allKnown.forEach(function (e) {
+    const mm = e.mm || "";
+    const en = e.en || "";
+    const key = mm + "|" + en;
+    if (seen[key]) return;
+    seen[key] = true;
+    knownList.push({ mm: mm, en: en });
+  });
+
+  // 本文側日本語（見出しB' + 要約）
+  const bodyJa = [headlineB2 || "", summaryJa || ""].join("\n").trim();
+
+  const prompt = [
+    "あなたは対訳ペアから地名の対応を抽出するツールです。",
+    "",
+    "与えられた原文タイトル・本文と、その日本語タイトル・本文から、",
+    "regions 用語集には載っていない地名のみを抽出してください。",
+    "",
+    "出力は JSON 配列1つのみとし、フォーマットは次の通りです（日本語以外は英数字）：",
+    '[{"part":"titleまたはbody","src":"...元の地名...","ja":"...日本語訳..."}]',
+    "",
+    "制約:",
+    "- regions 用語集に含まれている mm/en は抽出しないこと",
+    "- 「src」は原文（ミャンマー語または英語）側の地名をそのまま出すこと",
+    "- 「ja」は対応する日本語訳をできるだけ短く自然な形で出すこと",
+    "- 地名以外（人名・肩書き・一般名詞など）は含めないこと",
+    "",
+    "【既知の地名（regionsに既に存在）】",
+    JSON.stringify(knownList),
+    "",
+    "【原文タイトル】",
+    titleRaw || "(なし)",
+    "",
+    "【原文本文】",
+    bodyRaw || "(なし)",
+    "",
+    "【日本語タイトル】",
+    headlineA || "(なし)",
+    "",
+    "【日本語本文（見出しB' + 要約）】",
+    bodyJa || "(なし)",
+  ].join("\n");
+
+  const resp = callGeminiWithKey_(apiKey, prompt, "regionlog#article");
+  if (typeof resp !== "string" || resp.indexOf("ERROR:") === 0) return [];
+
+  let cleaned = resp.trim();
+  // ```json ... ``` のガード
+  if (cleaned.startsWith("```")) {
+    cleaned = cleaned.replace(/^```[a-zA-Z]*\s*/, "");
+    const last = cleaned.lastIndexOf("```");
+    if (last !== -1) cleaned = cleaned.substring(0, last);
+    cleaned = cleaned.trim();
+  }
+
+  try {
+    const arr = JSON.parse(cleaned);
+    if (!Array.isArray(arr)) return [];
+    // part が title/body のものだけ返す
+    return arr.filter(function (item) {
+      if (!item || typeof item !== "object") return false;
+      const p = (item.part || "").toString().toLowerCase();
+      return p === "title" || p === "body";
+    });
+  } catch (e) {
+    return [];
+  }
 }
