@@ -1587,7 +1587,6 @@ function openRegionLogSheet_() {
       "type",
       "mm",
       "en",
-      "dict_ja",
       "used_in_output",
       "output_ja",
       "note",
@@ -1672,13 +1671,12 @@ function logRegionUsageForRow_(sheet, row, ctx) {
       row,
       sourceVal,
       urlVal,
-      "title", // part
-      "known", // type
-      mmOut, // mm
-      enOut, // en
-      ja, // dict_ja
-      true, // used_in_output は必ず TRUE
-      ja, // output_ja は常に ja
+      "title",
+      "known",
+      mmOut,
+      enOut,
+      true, // used_in_output
+      ja, // output_ja
       "",
     ]);
   });
@@ -1735,9 +1733,8 @@ function logRegionUsageForRow_(sheet, row, ctx) {
       urlVal,
       "body",
       "known",
-      mmOut, // mm
-      enOut, // en
-      ja, // dict_ja
+      mmOut,
+      enOut,
       true, // used_in_output
       ja, // output_ja
       "",
@@ -1780,13 +1777,12 @@ function logRegionUsageForRow_(sheet, row, ctx) {
       row,
       sourceVal,
       urlVal,
-      normalizedPart, // part
-      "unknown", // type
-      item.src || "", // mm 列に原文を入れてしまう（unknown は両言語区別困難なので現状このまま）
-      "", // en は不明なので空
-      "", // dict_ja は無し
-      used, // used_in_output を TRUE / FALSE で記録
-      jaOut, // output_ja は常に jaOut
+      normalizedPart,
+      "unknown",
+      item.src || "",
+      "",
+      used, // used_in_output
+      jaOut, // output_ja
       "",
     ]);
   });
