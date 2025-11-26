@@ -1613,6 +1613,10 @@ function logRegionUsageForRow_(sheet, row, ctx) {
 
   const now = new Date();
 
+  // 判定用：元テキスト
+  const titleText = (titleRaw || "").toString();
+  const bodyText = (bodyRaw || "").toString();
+
   // タイトル／本文それぞれで regions マッチ（既知地名）
   const entriesTitle = selectRegionEntriesForText_(titleRaw || "", entriesAll);
   const entriesBody = selectRegionEntriesForText_(bodyRaw || "", entriesAll);
@@ -1623,8 +1627,44 @@ function logRegionUsageForRow_(sheet, row, ctx) {
     const ja = e.ja_headline || e.ja || "";
     const used = ja && headlineA && headlineA.indexOf(ja) !== -1;
 
-    // ★ 出力で使われていないものはログしない
+    // 出力で使われていないものはログしない
     if (!used) return;
+
+    const mm = e.mm || "";
+    const en = e.en || "";
+
+    // この記事タイトルで mm / en のどちらが実際に出ているかを判定
+    let mmHit = false;
+    let enHit = false;
+
+    if (mm) {
+      if (titleText.indexOf(mm) !== -1) {
+        mmHit = true;
+      }
+    }
+    if (en) {
+      // 英語は単語境界で判定
+      const re = new RegExp("\\b" + escapeRegExp_(en) + "\\b", "i");
+      if (re.test(titleText)) {
+        enHit = true;
+      }
+    }
+
+    // ログに書き込む mm / en を決定
+    let mmOut = "";
+    let enOut = "";
+    if (mmHit && !enHit) {
+      mmOut = mm;
+    } else if (enHit && !mmHit) {
+      enOut = en;
+    } else if (mmHit && enHit) {
+      // 両方出ているケースは、とりあえず mm を優先
+      mmOut = mm;
+    } else {
+      // 念のため、どちらも検出できない場合は従来通り両方入れておく
+      mmOut = mm;
+      enOut = en;
+    }
 
     logSheet.appendRow([
       now,
@@ -1634,22 +1674,58 @@ function logRegionUsageForRow_(sheet, row, ctx) {
       urlVal,
       "title", // part
       "known", // type
-      e.mm || "",
-      e.en || "",
-      ja,
+      mmOut, // mm
+      enOut, // en
+      ja, // dict_ja
       true, // used_in_output は必ず TRUE
       ja, // output_ja は常に ja
       "",
     ]);
   });
-  // 本文用：見出しB' + 要約 に dict_ja が含まれているか
-  const blob = (headlineB2 || "") + "\n" + (summaryJa || "");
+
+  // 本文用：見出しB' + 要約 に dict_ja が含まれているか（日本語側のかたまり）
+  const blobBodyJa = (headlineB2 || "") + "\n" + (summaryJa || "");
+
   entriesBody.forEach(function (e) {
     const ja = e.ja_body || e.ja || "";
-    const used = ja && blob.indexOf(ja) !== -1;
+    const used = ja && blobBodyJa.indexOf(ja) !== -1;
 
-    // ★ 出力で使われていないものはログしない
+    // 出力で使われていないものはログしない
     if (!used) return;
+
+    const mm = e.mm || "";
+    const en = e.en || "";
+
+    // この記事本文(bodyText)で mm / en のどちらが出ているかを判定
+    let mmHit = false;
+    let enHit = false;
+
+    if (mm) {
+      if (bodyText.indexOf(mm) !== -1) {
+        mmHit = true;
+      }
+    }
+    if (en) {
+      const re = new RegExp("\\b" + escapeRegExp_(en) + "\\b", "i");
+      if (re.test(bodyText)) {
+        enHit = true;
+      }
+    }
+
+    let mmOut = "";
+    let enOut = "";
+    if (mmHit && !enHit) {
+      mmOut = mm;
+    } else if (enHit && !mmHit) {
+      enOut = en;
+    } else if (mmHit && enHit) {
+      // 両方出ている場合は mm を優先
+      mmOut = mm;
+    } else {
+      // 念のため両方なしのときは元の値をそのまま入れておく
+      mmOut = mm;
+      enOut = en;
+    }
 
     logSheet.appendRow([
       now,
@@ -1659,18 +1735,17 @@ function logRegionUsageForRow_(sheet, row, ctx) {
       urlVal,
       "body",
       "known",
-      e.mm || "",
-      e.en || "",
-      ja,
-      true, // used_in_output は必ず TRUE
-      ja, // output_ja は常に ja
+      mmOut, // mm
+      enOut, // en
+      ja, // dict_ja
+      true, // used_in_output
+      ja, // output_ja
       "",
     ]);
   });
 
   // ★ unknown 判定でも使う日本語出力のかたまり
   const blobTitleJa = headlineA || "";
-  const blobBodyJa = (headlineB2 || "") + "\n" + (summaryJa || "");
 
   // --- unknown（regions にない地名）を 1 回の呼び出しで検出 ---
   const unknownList = detectUnknownRegionsForArticle_(
@@ -1707,10 +1782,10 @@ function logRegionUsageForRow_(sheet, row, ctx) {
       urlVal,
       normalizedPart, // part
       "unknown", // type
-      item.src || "", // mm 列に原文を入れてしまう
+      item.src || "", // mm 列に原文を入れてしまう（unknown は両言語区別困難なので現状このまま）
       "", // en は不明なので空
       "", // dict_ja は無し
-      used, // ★ used_in_output を TRUE / FALSE で記録
+      used, // used_in_output を TRUE / FALSE で記録
       jaOut, // output_ja は常に jaOut
       "",
     ]);
