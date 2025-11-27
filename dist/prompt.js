@@ -1571,12 +1571,26 @@ function _cleanupOldGeminiLogs_() {
 /************************************************************
  * 地名ログ出力用
  ************************************************************/
+// 地名ログを書き出す先のスプレッドシートを取得
+function getRegionLogSpreadsheet_() {
+  const props = PropertiesService.getScriptProperties();
+  const logId = props.getProperty("REGION_LOG_SPREADSHEET_ID");
+
+  // 設定されていれば、そのスプレッドシートに書き出す
+  return SpreadsheetApp.openById(logId);
+}
+
 function openRegionLogSheet_() {
-  const ss = SpreadsheetApp.getActive();
+  // ★ ここで別のログ用スプレッドシートを開く
+  const ss = getRegionLogSpreadsheet_();
   const name = "region_logs";
   let sh = ss.getSheetByName(name);
   if (!sh) {
     sh = ss.insertSheet(name);
+  }
+
+  // ★ ヘッダー行がまだ何も無い場合だけ、ヘッダーを追加
+  if (sh.getLastRow() === 0) {
     sh.appendRow([
       "timestamp",
       "sheet",
