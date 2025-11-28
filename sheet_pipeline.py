@@ -498,17 +498,28 @@ STEP3_TASK = (
     "- 個別記事の本文のみを対象とし、メディア説明やページ全体の解説は不要です。\n"
     "- レスポンスでは要約のみを返してください、それ以外の文言は不要です。\n\n"
     "本文要約の出力条件：\n"
-    "- 1行目は`【要約】`とだけしてください。\n"
+    "- 1行目は`【要約】`とだけ書いてください。\n"
     "- 2行目以降が全て空行になってはいけません。\n"
     "- 見出しや箇条書きを適切に使って整理してください。\n"
-    "- 見出しや箇条書きにはマークダウン記号（#, *, - など）を使わず、単純なテキストとして出力してください。\n"
-    "- 見出しは `[ ]` で囲んでください。\n"
-    "- 空行は作らないでください。\n"
-    "- 特殊記号は使わないでください（全体をHTMLとして送信するわけではないため）。\n"
+    "- 見出しや箇条書きにはマークダウン記号（#, *, - など）を使わず、単純なテキストだけで書いてください。\n"
+    "- 見出しは `[見出し名]` の形式で出力してください。\n"
+    "\n"
+    "【空行ルール（必ず守ること）】\n"
+    "- `【要約】` の直後には空行を入れずに本文または見出しを続けてください。\n"
+    "- 見出し `[見出し名]` の直後には空行を入れず、次の行から本文を続けてください。\n"
+    "- 以下の2つのケースに限り、段落間に「1行だけ」空行を入れてください：\n"
+    "  1) 見出しブロック（`[見出し]`＋本文）と次の見出しブロックの間（例：`[A]` → 本文A → 空行 → `[B]`）。\n"
+    "  2) 本文が箇条書きではなく文章段落として複数ある場合の段落同士の間（例： 段落1 → 空行 → 段落2）。\n"
+    "- 箇条書き（・）同士の間には空行を入れないでください（行を詰めて連続させる）。\n"
+    "- 空行を2行以上連続させないこと（必ず1行だけ）。\n"
+    "- 上記以外では空行を作らないでください。\n"
+    "\n"
+    "【その他のルール】\n"
     "- 箇条書きは`・`を使ってください。\n"
-    "- 「【要約】」は1回だけ書き、途中や本文の末尾には繰り返さないでください。\n"
-    "- 思考用の手順（Step 1/2/3、Q1/Q2、→ など）は出力に含めないこと。\n"
-    "- 本文要約の合計は最大500文字以内に収める。超えそうな場合は重要情報を優先して削る（日時・主体・行為・規模・結果を優先）。\n\n"
+    "- 特殊記号は使わないでください（全体をHTMLとして送信するわけではないため）。\n"
+    "- 「【要約】」は冒頭の1回のみ使用してください。\n"
+    "- 思考手順（Step1/2、Q1/Q2、→ など）は出力に含めないでください。\n"
+    "- 要約全体は最大500文字以内。重要情報（日時／主体／行為／規模／結果）を優先してください。\n"
 )
 
 def _build_summary_prompt(item: dict, *, body_max: int) -> str:
@@ -912,14 +923,14 @@ def _collect_all_for(target_date_mmt: date) -> List[Dict]:
         raise SystemExit("収集関数の読み込み失敗。export_all_articles_to_csv.py を配置してください。")
     items: List[Dict] = []
     for fn, kwargs in [
-        (collect_mizzima_all_for_date, {"max_pages": 3}),
+        # (collect_mizzima_all_for_date, {"max_pages": 3}),
         (collect_bbc_all_for_date, {}),
-        (collect_irrawaddy_all_for_date, {}),
-        (collect_khitthit_all_for_date, {"max_pages": 5}),
-        (collect_dvb_all_for_date, {}),
-        (collect_myanmar_now_mm_all_for_date, {"max_pages": 3}),
-        (collect_gnlm_all_for_date, {"max_pages": 3}),
-        (collect_popular_all_for_date, {}),
+        # (collect_irrawaddy_all_for_date, {}),
+        # (collect_khitthit_all_for_date, {"max_pages": 5}),
+        # (collect_dvb_all_for_date, {}),
+        # (collect_myanmar_now_mm_all_for_date, {"max_pages": 3}),
+        # (collect_gnlm_all_for_date, {"max_pages": 3}),
+        # (collect_popular_all_for_date, {}),
     ]:
         name = fn.__name__.replace("_all_for_date", "")
         try:
@@ -1010,7 +1021,9 @@ def _keep_only_rows_of_date(date_str: str) -> int:
 # ===== Gemini を呼ばずに E=タイトル原文, F=本文原文 を書き出す版 =====
 def cmd_collect_to_sheet(args):
     now_mmt = datetime.now(MMT)
-    target = now_mmt.date()
+
+    # ★ 一時テスト用：「今日」ではなく「昨日」の記事を対象にする
+    target = (now_mmt - timedelta(days=1)).date()
     
     logging.info(
         f"[collect] start target_date_mmt={target.isoformat()} "
