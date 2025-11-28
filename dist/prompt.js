@@ -1785,6 +1785,23 @@ function logRegionUsageForRow_(sheet, row, ctx) {
       }
     }
 
+    // ★ ここから追加：src を mm / en に振り分ける
+    const src = (item.src || "").toString();
+
+    let mmOut = "";
+    let enOut = "";
+
+    if (src) {
+      // ビルマ文字を含んでいるかどうかで判定
+      if (/[က-႟]/.test(src)) {
+        // ミャンマー語とみなして mm 列へ
+        mmOut = src;
+      } else {
+        // それ以外は英語（ローマ字等）とみなして en 列へ
+        enOut = src;
+      }
+    }
+
     logSheet.appendRow([
       now,
       sheetName,
@@ -1793,8 +1810,8 @@ function logRegionUsageForRow_(sheet, row, ctx) {
       urlVal,
       normalizedPart,
       "unknown",
-      item.src || "",
-      "",
+      mmOut, // ← ミャンマー語ならここ
+      enOut, // ← 英語ならここ
       used, // used_in_output
       jaOut, // output_ja
       "",
