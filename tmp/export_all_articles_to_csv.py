@@ -75,9 +75,98 @@ def daterange_mmt(start: date, end: date) -> Iterable[date]:
         yield cur
         cur += timedelta(days=1)
 
-# ===== BBC Burmese (RSS) =====
+# ===== BBC Burmese (RSS + 本文取得) =====
+def _bbc_fetch_html_with_bot_bypass(
+    url: str,
+    *,
+    session: requests.Session | None = None,
+    timeout: int = 15,
+) -> str:
+    """
+    BBC Burmese の記事 HTML を取得するためのフェッチャ。
+    - まず curl_cffi (Chrome 指紋) を試し、
+    - 失敗したら通常の requests.Session で再トライする。
+    """
+    last_err: Exception | None = None
+
+    # 1) curl_cffi (あれば優先利用)
+    curl_requests = None
+    try:
+        from curl_cffi import requests as curl_requests  # type: ignore
+    except Exception:
+        curl_requests = None
+
+    if curl_requests is not None:
+        try:
+            r = curl_requests.get(
+                url,
+                timeout=timeout,
+                impersonate="chrome",  # Chrome ブラウザを偽装
+            )
+            if r.status_code == 200 and r.text.strip():
+                return r.text
+        except Exception as e:
+            last_err = e
+
+    # 2) 通常の requests (Session が渡されていればそれを利用)
+    sess = session or requests.Session()
+    headers = {
+        # 少しまともなブラウザ UA を名乗っておく
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0 Safari/537.36"
+        ),
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+
+    try:
+        r2 = sess.get(url, headers=headers, timeout=timeout)
+        r2.raise_for_status()
+        if r2.text.strip():
+            return r2.text
+    except Exception as e:
+        last_err = e
+
+    raise RuntimeError(f"[bbc] failed to fetch article html: {last_err} | {url}")
+
+def _bbc_extract_body(html: str) -> str:
+    """
+    BBC Burmese の記事 HTML から本文のみを抜き出す。
+    fetch_articles.py 側の BBC ロジックと同じ構造を意識した実装。
+    """
+    soup = BeautifulSoup(html, "html.parser")
+
+    # 署名・おすすめ記事・ヘッダ／ナビ／フッタなどのノイズを削除
+    for node in soup.select(
+        'section[role="region"][aria-labelledby="article-byline"]'
+    ):
+        node.decompose()
+    for node in soup.select(
+        'section[data-e2e="recommendations-heading"][role="region"]'
+    ):
+        node.decompose()
+    for node in soup.select(
+        'header[role="banner"], nav[role="navigation"], '
+        'footer[role="contentinfo"], aside'
+    ):
+        node.decompose()
+
+    # 本文は main[role="main"] 内の <p> を中心に拾う
+    main = soup.select_one('main[role="main"]') or soup
+    paragraphs = [p.get_text(strip=True) for p in main.find_all("p")]
+    paragraphs = [t for t in paragraphs if t]
+
+    body_text = "\n".join(paragraphs)
+    body_text = unicodedata.normalize("NFC", body_text or "").strip()
+    return body_text
+
 def collect_bbc_all_for_date(target_date_mmt: date) -> List[Dict]:
-    """RSSをUTC→MMT換算し、対象日一致のみ返す（キーワード絞り込みなし）"""
+    """
+    BBC Burmese:
+      - RSS を UTC → MMT に変換し、対象 MMT 日付のみ通す
+      - 各記事ページを bot 対策付きでフェッチし、本文も取得して返す
+    """
     rss_url = "https://feeds.bbci.co.uk/burmese/rss.xml"
     session = _make_pooled_session()
     try:
@@ -89,31 +178,52 @@ def collect_bbc_all_for_date(target_date_mmt: date) -> List[Dict]:
 
     soup = BeautifulSoup(res.content, "xml")
     out: List[Dict] = []
+
     for item in soup.find_all("item"):
         pub_date_tag = item.find("pubDate")
         link_tag = item.find("link")
         title_tag = item.find("title")
         if not (pub_date_tag and link_tag and title_tag):
             continue
+
         try:
             pub_dt = parse_date(pub_date_tag.text).astimezone(MMT)
             if pub_dt.date() != target_date_mmt:
                 continue
-            title = unicodedata.normalize("NFC", (title_tag.text or "").strip())
+
+            title = unicodedata.normalize(
+                "NFC", (title_tag.text or "").strip()
+            )
             url = (link_tag.text or "").strip()
             if not (title and url):
                 continue
+
+            # ---- ここから本文取得（bot 対策付き） ----
+            body = ""
+            try:
+                html = _bbc_fetch_html_with_bot_bypass(
+                    url,
+                    session=session,
+                )
+                body = _bbc_extract_body(html)
+            except Exception as e:
+                # 本文取得失敗時はログを出しつつ空文字のまま
+                print(f"[bbc] 本文取得失敗: {e}")
+                body = ""
+
             out.append(
                 {
                     "source": "BBC Burmese",
                     "title": title,
                     "url": url,
                     "date": target_date_mmt.isoformat(),
-                    "body": "",
+                    "body": body,
                 }
             )
-        except Exception:
+        except Exception as e:
+            print(f"[bbc] item parse error: {e}")
             continue
+
     return out
 
 from requests.adapters import HTTPAdapter

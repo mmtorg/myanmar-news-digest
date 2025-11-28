@@ -38,6 +38,39 @@ const COMMON_TRANSLATION_RULES = `
 - 犯罪容疑や法律違反に対する文脈の場合は「逮捕」とする。
 - 犯罪容疑や法律違反に基づかない文脈の場合は「拘束」とする。
 
+【選挙に関する翻訳ルール】
+
+1. 記者の叙述・地の文で「選挙」に否定的・価値判断的な修飾語が付く場合、
+   それらの修飾語は翻訳で除去し、訳語は常に「選挙」とする。
+
+   - 対象とする修飾語の例（限定せず、同種の語も含む）：
+       ・軍事政権／国軍／軍評議会など主体を主語化した修飾
+       ・偽りの／偽装／不正な／不当な／信頼できない／不透明な 等の価値判断語
+       ・特定勢力による、特定集団による などの政治的ラベリング
+       ・評価・批判・主張のニュアンスを直接付与する語（例：やらせの、正統性のない等）
+
+   → 上記に該当する場合は、修飾語を削除し「選挙」のみで翻訳する。
+
+   例：
+     「軍事政権による不正な選挙」 → 「選挙」
+     「国軍が主導する偽装選挙」 → 「選挙」
+
+2. **ただし、以下の“引用・発言”は例外とし、修飾語を削除しない：**
+   - デモ参加者、団体、市民などの掲げるスローガン
+   - 当事者の発言や声明など、引用符内の文
+   - 報道対象者の主張・批判を紹介する文脈
+
+   → 原文の修飾語・ニュアンスを保持して翻訳する。
+
+   例：
+     スローガン：「偽りの選挙は不要」→ そのまま保持
+     団体声明：「軍評議会による選挙は民主的でない」→ そのまま保持
+
+3. 引用か地の文か判断が難しい場合：
+   - 引用符（" " / 「 」 / 『 』）内 → 残す
+   - 明確に誰かの“述べた内容”とわかる場合 → 残す
+   - それ以外（記者による記述の可能性が高い） → 削除する
+
 【通貨換算ルール】
 このルールも記事タイトルと本文の翻訳に必ず適用してください。
 ミャンマー通貨「チャット（Kyat、ကျပ်）」が出てきた場合は、日本円に換算して併記してください。
@@ -176,17 +209,32 @@ ${COMMON_TRANSLATION_RULES}
 - レスポンスでは要約のみを返してください、それ以外の文言は不要です。
 
 本文要約の出力条件：
-- 1行目は\`【要約】\`とだけしてください。
+- 1行目は\`【要約】\`とだけ書いてください。
 - 2行目以降が全て空行になってはいけません。
 - 見出しや箇条書きを適切に使って整理してください。
-- 見出しや箇条書きにはマークダウン記号（#, *, - など）を使わず、単純なテキストとして出力してください。
-- 見出しは \`[ ]\` で囲んでください。
-- 空行は作らないでください。
-- 特殊記号は使わないでください（全体をHTMLとして送信するわけではないため）。
-- 箇条書きは\`・\`を使ってください。
-- 「【要約】」は1回だけ書き、途中や本文の末尾には繰り返さないでください。
-- 思考用の手順（Step 1/2/3、Q1/Q2、→ など）は出力に含めないこと。
-- 本文要約の合計は最大500文字以内に収める。超えそうな場合は重要情報を優先して削る（日時・主体・行為・規模・結果を優先）。
+- 見出しや箇条書きにはマークダウン記号（#, *, -）を使わず、単純なテキストだけで書いてください。
+- 見出しは \`\[見出し名\]\` の形式で出力してください。
+
+【空行ルール（必ず守ること）】
+- \`【要約】\` の直後には空行を入れずに本文または見出しを続けてください。
+- 見出し \`\[見出し名\]\` の直後には空行を入れず、次の行から本文を続けてください。
+
+- 以下の2つのケースに限り、段落間に「1行だけ」空行を入れてください：
+  1) 見出しブロック（\`\[見出し\]\`＋本文）と次の見出しブロックの間  
+     （例： \`\[A\]\` → 本文A → 空行 → \`\[B\]\`）
+  2) 本文が箇条書きではなく文章段落として複数ある場合の段落同士の間  
+     （例： 段落1 → 空行 → 段落2）
+
+- 箇条書き（・）同士の間には空行を入れないでください（行を詰めて連続させる）。
+- 空行を2行以上連続させないこと（必ず1行だけ）。
+- 上記以外では空行を作らないでください。
+
+【その他のルール】
+- 箇条書きは \`・\` を使ってください。
+- 特殊記号は使わないでください。
+- 「【要約】」は冒頭の1回のみ使用してください。
+- 思考手順（Step1/2、Q1/Q2、→ など）は出力に含めないでください。
+- 要約全体は最大500字以内。重要情報（日時／主体／行為／規模／結果）を優先してください。
 `;
 
 // 3タスク（見出しA / 見出しB' / 本文要約）を1回で投げるまとめプロンプト
@@ -1002,6 +1050,17 @@ function processRow_(sheet, row, prevStatus) {
     }
   }
 
+  // ★ここで地域名ログを出す
+  logRegionUsageForRow_(sheet, row, {
+    sourceVal,
+    urlVal,
+    titleRaw,
+    bodyRaw,
+    headlineA,
+    headlineB2,
+    summaryJa,
+  });
+
   // シートに書き込み
   sheet.getRange(row, colE).setValue(headlineA); // 見出しA
   // F列（見出しA'）は従来どおり一時停止のまま
@@ -1555,4 +1614,354 @@ function _cleanupOldGeminiLogs_() {
       numRows - keptRows.length
     );
   });
+}
+
+/************************************************************
+ * 地名ログ出力用
+ ************************************************************/
+// 地名ログを書き出す先のスプレッドシートを取得
+function getRegionLogSpreadsheet_() {
+  const props = PropertiesService.getScriptProperties();
+  const logId = props.getProperty("REGION_LOG_SPREADSHEET_ID");
+
+  // 設定されていれば、そのスプレッドシートに書き出す
+  return SpreadsheetApp.openById(logId);
+}
+
+function openRegionLogSheet_() {
+  // ★ ここで別のログ用スプレッドシートを開く
+  const ss = getRegionLogSpreadsheet_();
+  const name = "region_logs";
+  let sh = ss.getSheetByName(name);
+  if (!sh) {
+    sh = ss.insertSheet(name);
+  }
+
+  // ★ ヘッダー行がまだ何も無い場合だけ、ヘッダーを追加
+  if (sh.getLastRow() === 0) {
+    sh.appendRow([
+      "timestamp",
+      "sheet",
+      "row",
+      "source",
+      "url",
+      "part",
+      "type",
+      "mm",
+      "en",
+      "used_in_output",
+      "output_ja",
+      "note",
+    ]);
+  }
+  return sh;
+}
+
+function logRegionUsageForRow_(sheet, row, ctx) {
+  const logSheet = openRegionLogSheet_();
+  const entriesAll = loadRegionGlossary_();
+
+  const sheetName = sheet.getName();
+  const {
+    sourceVal,
+    urlVal,
+    titleRaw,
+    bodyRaw,
+    headlineA,
+    headlineB2,
+    summaryJa,
+  } = ctx;
+
+  const now = new Date();
+
+  // 判定用：元テキスト
+  const titleText = (titleRaw || "").toString();
+  const bodyText = (bodyRaw || "").toString();
+
+  // タイトル／本文それぞれで regions マッチ（既知地名）
+  const entriesTitle = selectRegionEntriesForText_(titleRaw || "", entriesAll);
+  const entriesBody = selectRegionEntriesForText_(bodyRaw || "", entriesAll);
+
+  // --- known（regions にある地名）をログ ---
+  // タイトル用：見出しA に dict_ja が含まれているか
+  entriesTitle.forEach(function (e) {
+    const ja = e.ja_headline || e.ja || "";
+    const used = ja && headlineA && headlineA.indexOf(ja) !== -1;
+
+    // 出力で使われていないものはログしない
+    if (!used) return;
+
+    const mm = e.mm || "";
+    const en = e.en || "";
+
+    // この記事タイトルで mm / en のどちらが実際に出ているかを判定
+    let mmHit = false;
+    let enHit = false;
+
+    if (mm) {
+      if (titleText.indexOf(mm) !== -1) {
+        mmHit = true;
+      }
+    }
+    if (en) {
+      // 英語は単語境界で判定
+      const re = new RegExp("\\b" + escapeRegExp_(en) + "\\b", "i");
+      if (re.test(titleText)) {
+        enHit = true;
+      }
+    }
+
+    // ログに書き込む mm / en を決定
+    let mmOut = "";
+    let enOut = "";
+    if (mmHit && !enHit) {
+      mmOut = mm;
+    } else if (enHit && !mmHit) {
+      enOut = en;
+    } else if (mmHit && enHit) {
+      // 両方出ているケースは、とりあえず mm を優先
+      mmOut = mm;
+    } else {
+      // 念のため、どちらも検出できない場合は従来通り両方入れておく
+      mmOut = mm;
+      enOut = en;
+    }
+
+    logSheet.appendRow([
+      now,
+      sheetName,
+      row,
+      sourceVal,
+      urlVal,
+      "title",
+      "known",
+      mmOut,
+      enOut,
+      true, // used_in_output
+      ja, // output_ja
+      "",
+    ]);
+  });
+
+  // 本文用：見出しB' + 要約 に dict_ja が含まれているか（日本語側のかたまり）
+  const blobBodyJa = (headlineB2 || "") + "\n" + (summaryJa || "");
+
+  entriesBody.forEach(function (e) {
+    const ja = e.ja_body || e.ja || "";
+    const used = ja && blobBodyJa.indexOf(ja) !== -1;
+
+    // 出力で使われていないものはログしない
+    if (!used) return;
+
+    const mm = e.mm || "";
+    const en = e.en || "";
+
+    // この記事本文(bodyText)で mm / en のどちらが出ているかを判定
+    let mmHit = false;
+    let enHit = false;
+
+    if (mm) {
+      if (bodyText.indexOf(mm) !== -1) {
+        mmHit = true;
+      }
+    }
+    if (en) {
+      const re = new RegExp("\\b" + escapeRegExp_(en) + "\\b", "i");
+      if (re.test(bodyText)) {
+        enHit = true;
+      }
+    }
+
+    let mmOut = "";
+    let enOut = "";
+    if (mmHit && !enHit) {
+      mmOut = mm;
+    } else if (enHit && !mmHit) {
+      enOut = en;
+    } else if (mmHit && enHit) {
+      // 両方出ている場合は mm を優先
+      mmOut = mm;
+    } else {
+      // 念のため両方なしのときは元の値をそのまま入れておく
+      mmOut = mm;
+      enOut = en;
+    }
+
+    logSheet.appendRow([
+      now,
+      sheetName,
+      row,
+      sourceVal,
+      urlVal,
+      "body",
+      "known",
+      mmOut,
+      enOut,
+      true, // used_in_output
+      ja, // output_ja
+      "",
+    ]);
+  });
+
+  // ★ unknown 判定でも使う日本語出力のかたまり
+  const blobTitleJa = headlineA || "";
+
+  // --- unknown（regions にない地名）を 1 回の呼び出しで検出 ---
+  const unknownList = detectUnknownRegionsForArticle_(
+    titleRaw || "",
+    bodyRaw || "",
+    headlineA || "",
+    headlineB2 || "",
+    summaryJa || "",
+    entriesTitle,
+    entriesBody
+  );
+
+  unknownList.forEach(function (item) {
+    const part = (item.part || "").toString().toLowerCase();
+    const normalizedPart = part === "title" ? "title" : "body"; // 不正値は body 扱い
+
+    const jaOut = (item.ja || "").toString();
+    let used = false;
+    if (jaOut) {
+      if (normalizedPart === "title") {
+        // タイトル用: headlineA の中に含まれているか
+        used = blobTitleJa.indexOf(jaOut) !== -1;
+      } else {
+        // 本文用: 見出しB' + 要約 の中に含まれているか
+        used = blobBodyJa.indexOf(jaOut) !== -1;
+      }
+    }
+
+    // ★ ここから追加：src を mm / en に振り分ける
+    const src = (item.src || "").toString();
+
+    let mmOut = "";
+    let enOut = "";
+
+    if (src) {
+      // ビルマ文字を含んでいるかどうかで判定
+      if (/[က-႟]/.test(src)) {
+        // ミャンマー語とみなして mm 列へ
+        mmOut = src;
+      } else {
+        // それ以外は英語（ローマ字等）とみなして en 列へ
+        enOut = src;
+      }
+    }
+
+    logSheet.appendRow([
+      now,
+      sheetName,
+      row,
+      sourceVal,
+      urlVal,
+      normalizedPart,
+      "unknown",
+      mmOut, // ← ミャンマー語ならここ
+      enOut, // ← 英語ならここ
+      used, // used_in_output
+      jaOut, // output_ja
+      "",
+    ]);
+  });
+}
+
+function getRegionLogApiKey_() {
+  const props = PropertiesService.getScriptProperties();
+  const v = props.getProperty("GEMINI_API_KEY_REGION_LOG");
+  return v || ""; // 空なら呼び出し側でフォールバック
+}
+
+// 記事単位で未知地名を検出する関数
+function detectUnknownRegionsForArticle_(
+  titleRaw,
+  bodyRaw,
+  headlineA,
+  headlineB2,
+  summaryJa,
+  knownEntriesTitle,
+  knownEntriesBody
+) {
+  const apiKey = getRegionLogApiKey_();
+  if (!apiKey) return []; // ログ専用キーが無ければスキップ
+
+  // 原文 or 出力どちらも何も無ければスキップ
+  if (!(titleRaw || bodyRaw)) return [];
+  if (!(headlineA || headlineB2 || summaryJa)) return [];
+
+  // 既知エントリ(mm/en)をマージ＋重複除去
+  const allKnown = []
+    .concat(knownEntriesTitle || [], knownEntriesBody || [])
+    .filter(Boolean);
+
+  const seen = {};
+  const knownList = [];
+  allKnown.forEach(function (e) {
+    const mm = e.mm || "";
+    const en = e.en || "";
+    const key = mm + "|" + en;
+    if (seen[key]) return;
+    seen[key] = true;
+    knownList.push({ mm: mm, en: en });
+  });
+
+  // 本文側日本語（見出しB' + 要約）
+  const bodyJa = [headlineB2 || "", summaryJa || ""].join("\n").trim();
+
+  const prompt = [
+    "あなたは対訳ペアから地名の対応を抽出するツールです。",
+    "",
+    "与えられた原文タイトル・本文と、その日本語タイトル・本文から、",
+    "regions 用語集には載っていないミャンマー国内の地名のみを抽出してください。",
+    "",
+    "出力は JSON 配列1つのみとし、フォーマットは次の通りです（日本語以外は英数字）：",
+    '[{"part":"titleまたはbody","src":"...元の地名...","ja":"...日本語訳..."}]',
+    "",
+    "制約:",
+    "- regions 用語集に含まれている mm/en は抽出しないこと",
+    "- 「src」は原文（ミャンマー語または英語）側の地名をそのまま出すこと",
+    "- 「ja」は対応する日本語訳をできるだけ短く自然な形で出すこと",
+    "- 地名以外（人名・肩書き・一般名詞など）は含めないこと",
+    "",
+    "【既知の地名（regionsに既に存在）】",
+    JSON.stringify(knownList),
+    "",
+    "【原文タイトル】",
+    titleRaw || "(なし)",
+    "",
+    "【原文本文】",
+    bodyRaw || "(なし)",
+    "",
+    "【日本語タイトル】",
+    headlineA || "(なし)",
+    "",
+    "【日本語本文（見出しB' + 要約）】",
+    bodyJa || "(なし)",
+  ].join("\n");
+
+  const resp = callGeminiWithKey_(apiKey, prompt, "regionlog#article");
+  if (typeof resp !== "string" || resp.indexOf("ERROR:") === 0) return [];
+
+  let cleaned = resp.trim();
+  // ```json ... ``` のガード
+  if (cleaned.startsWith("```")) {
+    cleaned = cleaned.replace(/^```[a-zA-Z]*\s*/, "");
+    const last = cleaned.lastIndexOf("```");
+    if (last !== -1) cleaned = cleaned.substring(0, last);
+    cleaned = cleaned.trim();
+  }
+
+  try {
+    const arr = JSON.parse(cleaned);
+    if (!Array.isArray(arr)) return [];
+    // part が title/body のものだけ返す
+    return arr.filter(function (item) {
+      if (!item || typeof item !== "object") return false;
+      const p = (item.part || "").toString().toLowerCase();
+      return p === "title" || p === "body";
+    });
+  } catch (e) {
+    return [];
+  }
 }
