@@ -45,7 +45,7 @@ from collections import deque
 import re
 import json
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 from dateutil.parser import parse as parse_date
 from curl_cffi.requests import Session as CurlSession
 
@@ -1182,6 +1182,35 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
     return results
 
 # ===== Global New Light Of Myanmar (GNLM) =====
+def _gnlm_div_looks_like_paragraph(node: Tag) -> bool:
+    if not isinstance(node, Tag) or node.name != "div":
+        return False
+
+    classes = " ".join(node.get("class", [])) if node.get("class") else ""
+    # 共有ボタン・関連記事・ギャラリーなどは除外
+    noise_keywords = ["sharing", "share", "related", "gallery", "crp_related"]
+    if any(k in classes for k in noise_keywords):
+        return False
+
+    # ブロック要素を子に持つ div は段落扱いしない
+    if node.find(
+        [
+            "h1", "h2", "h3", "h4", "h5", "h6",
+            "ul", "ol", "table", "figure",
+            "section", "article", "nav", "aside",
+        ]
+    ):
+        return False
+
+    txt = node.get_text(" ", strip=True)
+    # あまりに短いもの・単語 1 個っぽいものは除外（ボタンなどを避ける）
+    if len(txt) < 40:
+        return False
+    if " " not in txt:
+        return False
+
+    return True
+
 def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List[Dict]:
     """
     Global New Light of Myanmar の National / Business / Local News から
@@ -1325,10 +1354,10 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
             for br in content.find_all("br"):
                 br.replace_with("\n")
 
-            # 2) 見出し（ある場合のみ）: 改行を維持しつつ空白だけ圧縮
+            # 2) 見出し（ある場合のみ）
             lead = content.find("h3", recursive=False)
             if lead:
-                txt = lead.get_text("\n", strip=True)  # ここで改行を拾う
+                txt = lead.get_text("\n", strip=True)
                 if txt:
                     txt = "\n".join(
                         re.sub(r"\s+", " ", seg).strip()
@@ -1337,10 +1366,16 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
                     if txt:
                         body_parts.append(txt)
 
-            # 3) Related Posts に遭遇したら本文抽出を停止
+            # 3) 直下の <p> をこれまで通り抽出
             for child in content.children:
                 if not getattr(child, "name", None):
                     continue
+
+                # 共有ボタンコンテナなどが出てきたら本文終端とみなす（追加のガード）
+                if child.name == "div":
+                    classes = " ".join(child.get("class", [])) if child.get("class") else ""
+                    if any(k in classes for k in ["sharing", "share", "crp_related"]):
+                        break
 
                 if child.name in ("h2", "h3"):
                     label = child.get_text(" ", strip=True)
@@ -1348,7 +1383,6 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
                         break
 
                 if child.name == "p":
-                    # GNLM 専用: <p> 内の改行を維持
                     txt = child.get_text("\n", strip=True)
                     if txt:
                         txt = "\n".join(
@@ -1358,7 +1392,7 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
                         if txt:
                             body_parts.append(txt)
 
-            # ★ 直下の <p> で何も拾えなかった場合のフォールバック ★
+            # ★ 直下の <p> で何も拾えなかった場合のフォールバック（既存）
             if not body_parts:
                 for p in content.find_all("p"):
                     txt = p.get_text("\n", strip=True)
@@ -1370,6 +1404,24 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
                     )
                     if txt:
                         body_parts.append(txt)
+
+            # ★ 追加: 段落っぽい <div> も安全なものだけ本文に足す ★
+            extra_div_parts: list[str] = []
+            for child in content.children:
+                if _gnlm_div_looks_like_paragraph(child):
+                    txt = child.get_text("\n", strip=True)
+                    txt = "\n".join(
+                        re.sub(r"\s+", " ", seg).strip()
+                        for seg in txt.split("\n")
+                    )
+                    if txt:
+                        extra_div_parts.append(txt)
+
+            # <div> が既存の body_parts と完全重複するケースは少ないはずですが、
+            # 念のため重複を避けて追加
+            for txt in extra_div_parts:
+                if txt not in body_parts:
+                    body_parts.append(txt)
 
         body = "\n".join(body_parts)
 
