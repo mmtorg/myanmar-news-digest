@@ -1358,6 +1358,19 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
                         if txt:
                             body_parts.append(txt)
 
+            # ★ 直下の <p> で何も拾えなかった場合のフォールバック ★
+            if not body_parts:
+                for p in content.find_all("p"):
+                    txt = p.get_text("\n", strip=True)
+                    if not txt:
+                        continue
+                    txt = "\n".join(
+                        re.sub(r"\s+", " ", seg).strip()
+                        for seg in txt.split("\n")
+                    )
+                    if txt:
+                        body_parts.append(txt)
+
         body = "\n".join(body_parts)
 
         out.append(
