@@ -4628,13 +4628,21 @@ if __name__ == "__main__":
         # 実際の配信日（MMT）で統一
         delivery_date_mmt = get_today_date_mmt()
 
+        def _is_business_limited_summary(s: dict) -> bool:
+            """
+            シート C列（メディア）が '(Businessプラン限定)' など、
+            Businessプラン限定記事であるかどうかを判定する。
+            """
+            src = (s.get("source") or "")
+            return "Businessプラン限定" in src
+
         def _send_one(env_name: str):
             """単一宛先へ送信（INTERNAL はエーヤワディ専用サマリ、それ以外は bundle の summaries を使用）"""
             if not (os.getenv(env_name, "").strip()):
                 return  # 宛先未設定はスキップ
 
-            is_trial = (env_name == "TRIAL_EMAIL_RECIPIENTS")
-            is_lite  = (env_name == "LITE_EMAIL_RECIPIENTS")
+            is_trial    = (env_name == "TRIAL_EMAIL_RECIPIENTS")
+            is_lite     = (env_name == "LITE_EMAIL_RECIPIENTS")
             is_internal = (env_name == "INTERNAL_EMAIL_RECIPIENTS")
 
             # 添付の扱い：Liteはなし／他は bundle のPDF（従来仕様踏襲）
@@ -4649,8 +4657,19 @@ if __name__ == "__main__":
             else:
                 attachment_name = None
 
-            # 本文データの選択
-            summaries_for_mail = summaries_ayeyar_loaded if is_internal else summaries_loaded
+            # ベースとなる本文データ（INTERNAL=エーヤワディ専用、それ以外=全体）
+            base_summaries = summaries_ayeyar_loaded if is_internal else summaries_loaded
+
+            # Businessプラン限定記事は BUSINESS / TRIAL 宛てのみに残し、
+            # それ以外の宛先（LITE, INTERNAL 等）からは除外する
+            if env_name in ("BUSINESS_EMAIL_RECIPIENTS", "TRIAL_EMAIL_RECIPIENTS"):
+                summaries_for_mail = base_summaries
+            else:
+                summaries_for_mail = [
+                    s for s in base_summaries
+                    if not _is_business_limited_summary(s)
+                ]
+
             if not summaries_for_mail:
                 print(f"[send] {env_name}: 対象記事なしのためスキップ")
                 return
