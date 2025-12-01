@@ -1600,7 +1600,7 @@ def collect_popular_all_for_date(
 
         results.append(
             {
-                "source": "Popular Myanmar",
+                "source": "Popular Myanmar (国軍系メディア)",
                 "title": title,
                 "url": url,
                 "date": target_date_mmt.isoformat(),
