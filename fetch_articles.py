@@ -3689,8 +3689,15 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
     # Business 向け全文翻訳では本文を途中で切らずにほぼ全量翻訳したい。
     # Gemini Flash の安全コンテキスト上限を考慮し、上限を 100,000 文字に引き上げ。
     FULLTEXT_MAX_CHARS = 100_000
-    BATCH = TRANSLATION_BATCH_SIZE  # 既定=2（= 2件まとめ）
-    WAIT  = 60                      # 要約と同じ 1 分待機
+
+    # 既定バッチサイズ（= 2 件まとめ）
+    BASE_BATCH = TRANSLATION_BATCH_SIZE  # 通常は 2
+
+    # 要約と同じ 1 分待機
+    WAIT = 60
+
+    # 「本文がこの文字数を超えて長い記事が混ざっていたら 1 本ずつに落とす」ための閾値
+    LONG_FULLTEXT_THRESHOLD = 4000
 
     # --- ローカル import（この関数だけが使うもの） ---
     import re, json, time, unicodedata
@@ -3955,10 +3962,18 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
         body_compact = trim_by_chars(compact_body(body_src), FULLTEXT_MAX_CHARS)
         prepared.append({"url": u, "title": title_src, "body": body_compact})
 
+    # --- 1.5) バッチサイズを本文長で調整 ---
+    # デフォルトは 2 件まとめだが、長文記事が 1 本でもあれば 1 件ずつ投げる
+    batch_size = BASE_BATCH
+    if any(len(p["body"]) > LONG_FULLTEXT_THRESHOLD for p in prepared):
+        batch_size = 1
+
+    print(f"[fulltext] using batch_size={batch_size} for {len(prepared)} articles")
+
     # --- 2) まとめ翻訳（JSON配列で返答） ---
     results = []
-    for i in range(0, len(prepared), BATCH):
-        batch = prepared[i:i+BATCH]
+    for i in range(0, len(prepared), batch_size):
+        batch = prepared[i:i+batch_size]
         input_array = [{"url": b["url"], "body": b["body"]} for b in batch]
 
         # 文字列の隣接連結と + の混在での解析エラーを避けるため、配列で組み立て        
@@ -4018,7 +4033,7 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
                 time.sleep(0.6)
 
         time.sleep(0.6)  # バッチ内マイクロスリープ（要約と合わせる）
-        if i + BATCH < len(prepared):
+        if i + batch_size < len(prepared):
             print(f"🕒 Waiting {WAIT} seconds before next fulltext batch …")
             time.sleep(WAIT)  # バッチ間 1 分待機（要約と合わせる）
 
