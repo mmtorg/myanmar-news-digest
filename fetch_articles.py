@@ -3345,13 +3345,23 @@ def _load_region_glossary_gsheet(sheet_key: str | None, worksheet_name: str = "r
         import os, json
         import gspread
         from google.oauth2.service_account import Credentials
-        creds_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
-        if not creds_json:
-            print("[region-glossary] skip: GOOGLE_SERVICE_ACCOUNT_JSON not set")
-            return []
-        creds_info = json.loads(creds_json)
+
         scopes = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
-        creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
+
+        # 1) ファイル優先（GOOGLE_SERVICE_ACCOUNT_FILE / GOOGLE_APPLICATION_CREDENTIALS）
+        file = (os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE")
+                or os.getenv("GOOGLE_APPLICATION_CREDENTIALS") or "").strip()
+        if file:
+            creds = Credentials.from_service_account_file(file, scopes=scopes)
+        else:
+            # 2) 最後の手段として JSON 文字列
+            creds_json = (os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON") or "").strip()
+            if not creds_json:
+                print("[region-glossary] skip: no SA credential for region-glossary")
+                return []
+            creds_info = json.loads(creds_json)
+            creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
+
         client = gspread.authorize(creds)
         ws = client.open_by_key(sheet_key).worksheet(worksheet_name)
         values = ws.get("A:D") or []
@@ -3368,7 +3378,15 @@ def _load_region_glossary_gsheet(sheet_key: str | None, worksheet_name: str = "r
             if not (mm or en or ja_body or ja_head):
                 continue
             ja = ja_head or ja_body  # 既存呼び出しの後方互換
-            out.append({"mm": mm, "en": en, "ja": ja, "ja_body": ja_body, "ja_headline": ja_head})
+            out.append(
+                {
+                    "mm": mm,
+                    "en": en,
+                    "ja": ja,
+                    "ja_body": ja_body,
+                    "ja_headline": ja_head,
+                }
+            )
         print(f"[region-glossary] loaded {len(out)} entries from A:D of '{worksheet_name}'")
         return out
     except Exception as e:
