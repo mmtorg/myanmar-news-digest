@@ -16,14 +16,14 @@ on:
     # 22:50 MMT ≒ 16:20 UTC → 16:17 UTC（= 22:47 MMT, 3分前倒し）
     - cron: "17 16 * * *" # 22:47 MMT（実運用目標: 22:50）
 
-    # 02:30 MMT（= 20:00 UTC 前日）: bundle生成
-    # 02:30 MMT（翌日）≒ 20:00 UTC（前日）→ 19:57 UTC（= 02:27 MMT, 3分前倒し）
-    - cron: "57 19 * * *" # 02:27 MMT（実運用目標: 02:30）
+    # 02:00 MMT（= 19:30 UTC 前日）: bundle生成
+    # 02:00 MMT（翌日）≒ 19:30 UTC（前日）→ 19:27 UTC（= 01:57 MMT, 3分前倒し）
+    - cron: "27 19 * * *" # 01:57 MMT（実運用目標: 02:00）
 
   workflow_dispatch:
     inputs:
       mode:
-        description: "collect16（15:50回） / collect（17:50/20:50/21:50/22:50回） / build-bundle（02:30）"
+        description: "collect16（15:50回） / collect（17:50/20:50/21:50/22:50回） / build-bundle（02:00）"
         type: choice
         required: true
         default: collect16
@@ -233,7 +233,7 @@ jobs:
       #     BODY="$(printf '%s\n%s\n%s\n' \
       #       "✅ ${SLOT_LABEL}収集 完了（本番用）" \
       #       '・対象シート: 「prod」シートに追記済みです。' \
-      #       '・翌 02:30 までにスプレッドシートの更新を完了してください。' )"
+      #       '・翌 02:00 までにスプレッドシートの更新を完了してください。' )"
       #     python notify_done.py \
       #       --to "${CSV_EMAIL_RECIPIENTS}" \
       #       --subject "【MNA 記事収集】${SLOT_LABEL}収集 完了（本番用）" \
@@ -249,7 +249,7 @@ jobs:
       #     CSV_EMAIL_RECIPIENTS: ${{ secrets.CSV_EMAIL_RECIPIENTS }}
 
   schedule-build-bundle:
-    if: github.event_name == 'schedule' && github.event.schedule == '57 19 * * *'
+    if: github.event_name == 'schedule' && github.event.schedule == '27 19 * * *'
     runs-on: ubuntu-latest
     environment: production
     env:
@@ -502,7 +502,7 @@ jobs:
       #     BODY="$(printf '%s\n%s\n%s\n' \
       #       '✅ 22:50収集 完了（開発用）' \
       #       '・対象シート: 「dev」シートに追記済みです。' \
-      #       '・翌 02:30 までにスプレッドシートの更新を完了してください。' )"
+      #       '・翌 02:00 までにスプレッドシートの更新を完了してください。' )"
       #     python notify_done.py \
       #       --to "${CSV_EMAIL_RECIPIENTS}" \
       #       --subject "【MNA 記事収集】22:50収集 完了（開発用）" \
