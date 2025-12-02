@@ -3708,9 +3708,6 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
     # Gemini Flash の安全コンテキスト上限を考慮し、上限を 100,000 文字に引き上げ。
     FULLTEXT_MAX_CHARS = 100_000
 
-    # 既定バッチサイズ（= 2 件まとめ）
-    BASE_BATCH = TRANSLATION_BATCH_SIZE  # 通常は 2
-
     # 要約と同じ 1 分待機
     WAIT = 60
 
@@ -3980,21 +3977,31 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
         body_compact = trim_by_chars(compact_body(body_src), FULLTEXT_MAX_CHARS)
         prepared.append({"url": u, "title": title_src, "body": body_compact})
 
-    # --- 1.5) バッチサイズを本文長で調整 ---
-    # デフォルトは 2 件まとめだが、長文記事が 1 本でもあれば 1 件ずつ投げる
-    batch_size = BASE_BATCH
-    if any(len(p["body"]) > LONG_FULLTEXT_THRESHOLD for p in prepared):
-        batch_size = 1
-
-    print(f"[fulltext] using batch_size={batch_size} for {len(prepared)} articles")
-
-    # --- 2) まとめ翻訳（JSON配列で返答） ---
+    # --- 2) まとめ翻訳（長文だけ単独バッチ） ---
     results = []
-    for i in range(0, len(prepared), batch_size):
-        batch = prepared[i:i+batch_size]
-        input_array = [{"url": b["url"], "body": b["body"]} for b in batch]
+    i = 0
+    n = len(prepared)
+    while i < n:
+        current = prepared[i]
 
-        # 文字列の隣接連結と + の混在での解析エラーを避けるため、配列で組み立て        
+        # 5000文字超えならその記事だけ単独バッチ
+        if len(current["body"]) > LONG_FULLTEXT_THRESHOLD:
+            batch = [current]
+            effective_batch_size = 1
+        else:
+            # 短めの記事どうしなら 2本まとめる
+            if (
+                i + 1 < n
+                and len(prepared[i + 1]["body"]) <= LONG_FULLTEXT_THRESHOLD
+            ):
+                batch = [current, prepared[i + 1]]
+                effective_batch_size = 2
+            else:
+                # 最後の1本だけ残った場合など
+                batch = [current]
+                effective_batch_size = 1
+
+        input_array = [{"url": b["url"], "body": b["body"]} for b in batch]
         prompt = _build_fulltext_prompt(input_array)
 
         precheck_sleep(rough_token_estimate(prompt), tag="fulltext-batch")
@@ -4018,13 +4025,11 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
                 x = url_to_res.get(b["url"]) or {}
                 body_src = b["body"]
                 body_ja = (x.get("body_ja") or body_src).strip()
-                # 《最終置換》terms グロッサリを本文用（body_ja）で適用
                 body_ja = _apply_term_glossary_to_output(body_ja, src=body_src, prefer="body_ja")
                 results.append({"url": b["url"], "body_ja": body_ja})
         except Exception as e:
             print("🛑 fulltext batch failed:", e)
             for b in batch:
-                # 失敗フォールバック時も用語表の最終置換を適用
                 bj = _apply_term_glossary_to_output(b["body"], src=b["body"], prefer="body_ja")
                 results.append({"url": b["url"], "body_ja": bj})
 
@@ -4037,23 +4042,21 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
             body = item.get("body_ja") or ""
             if _needs_retry_untranslated(body):
                 print(f"[warn] fulltext seems untranslated (no Japanese detected): {url}")
-                # 元の生本文（整形前）を取り出す
                 raw_body = (url_to_source_title_body.get(url, {}) or {}).get("body") or body
                 fixed = _single_fulltext_retry(url, raw_body, max_chars=FULLTEXT_MAX_CHARS)
-                # 最終採用条件：日本語が含まれていればOK
                 if fixed and _contains_cjk(fixed):
-                    # 再取得結果にも terms を本文用で最終置換（地域名はプロンプトで強制済み）
                     results[j]["body_ja"] = _apply_term_glossary_to_output(
                         fixed, src=raw_body, prefer="body_ja"
                     )
                     print(f"[ok] repaired untranslated fulltext via single retry: {url}")
-                # 呼びすぎ回避の小休止（要約と同じ運用）
                 time.sleep(0.6)
 
-        time.sleep(0.6)  # バッチ内マイクロスリープ（要約と合わせる）
-        if i + batch_size < len(prepared):
+        time.sleep(0.6)  # バッチ内マイクロスリープ
+
+        i += effective_batch_size
+        if i < n:
             print(f"🕒 Waiting {WAIT} seconds before next fulltext batch …")
-            time.sleep(WAIT)  # バッチ間 1 分待機（要約と合わせる）
+            time.sleep(WAIT)
 
     # --- 3) 入力順で並べ直し ---
     url_to_item = {x["url"]: x for x in results}
