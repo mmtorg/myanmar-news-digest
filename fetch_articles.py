@@ -3697,7 +3697,7 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
     WAIT = 60
 
     # 「本文がこの文字数を超えて長い記事が混ざっていたら 1 本ずつに落とす」ための閾値
-    LONG_FULLTEXT_THRESHOLD = 4000
+    LONG_FULLTEXT_THRESHOLD = 5000
 
     # --- ローカル import（この関数だけが使うもの） ---
     import re, json, time, unicodedata
