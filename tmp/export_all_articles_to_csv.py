@@ -1617,6 +1617,135 @@ def collect_popular_all_for_date(
 
     return results
 
+# ===== Frontier Myanmar (RSS + HTML) =====
+def collect_frontier_all_for_date(
+    target_date_mmt: date,
+    *,
+    debug: bool = False,
+) -> List[Dict]:
+    """
+    Frontier Myanmar の英語版 RSS から、
+    対象 MMT 日付の記事を収集する。
+
+    - RSS で当日記事の URL / タイトルを取得
+    - 各記事 HTML からタイトル / 本文を可能な範囲で抽出
+    """
+    feed_url = "https://www.frontiermyanmar.net/en/feed/"
+
+    session = _make_pooled_session()
+    try:
+        res = session.get(feed_url, timeout=15)
+        res.raise_for_status()
+    except Exception as e:
+        print(f"[frontier] RSS取得失敗: {e}")
+        return []
+
+    soup = BeautifulSoup(res.content, "xml")
+
+    candidates: List[Dict] = []
+    for item in soup.find_all("item"):
+        pub_tag = item.find("pubDate")
+        link_tag = item.find("link")
+        title_tag = item.find("title")
+        if not (pub_tag and link_tag and title_tag):
+            continue
+
+        pub_raw = (pub_tag.text or "").strip()
+        url = (link_tag.text or "").strip()
+        title_raw = (title_tag.text or "").strip()
+        if not url:
+            continue
+
+        try:
+            dt = parse_date(pub_raw).astimezone(MMT)
+        except Exception:
+            continue
+
+        if dt.date() != target_date_mmt:
+            continue
+
+        title = unicodedata.normalize("NFC", title_raw)
+        candidates.append(
+            {
+                "url": url,
+                "title": title,
+                "date": dt.isoformat(),
+            }
+        )
+
+    if debug:
+        print(f"[frontier] RSS candidates for {target_date_mmt}: {len(candidates)}")
+
+    results: List[Dict] = []
+
+    for item in candidates:
+        url = item["url"]
+        title = item["title"]
+        art_date_iso = item["date"]
+
+        body = ""
+        try:
+            res = session.get(url, timeout=15)
+            html = getattr(res, "content", None) or getattr(res, "text", "")
+            article = BeautifulSoup(html, "html.parser")
+
+            # og:title / h1 / <title> でタイトルを上書き（あれば）
+            og = article.find("meta", attrs={"property": "og:title"})
+            if og and og.get("content"):
+                title = unicodedata.normalize("NFC", og["content"].strip()) or title
+            else:
+                h1 = article.find("h1")
+                if h1:
+                    title = unicodedata.normalize("NFC", h1.get_text(strip=True)) or title
+                elif article.title:
+                    title = unicodedata.normalize(
+                        "NFC", article.title.get_text(strip=True)
+                    ) or title
+
+            # 本文抽出（ざっくり）
+            host = (
+                article.find("div", class_=re.compile("entry-content", re.I))
+                or article.find("article")
+                or article
+            )
+
+            parts: List[str] = []
+            for p in host.find_all(["p", "h2", "h3", "li"]):
+                text = p.get_text(" ", strip=True)
+                if not text:
+                    continue
+                # 余計な空白をつぶす
+                text = re.sub(r"\s+", " ", text)
+                parts.append(text)
+
+            body = "\n".join(parts).strip()
+
+            # fallback: 共通の段落抽出ユーティリティ
+            if not body:
+                paras = extract_paragraphs_with_wait(article)
+                body = "\n".join(
+                    re.sub(r"\s+", " ", p.get_text(" ", strip=True))
+                    for p in paras
+                    if p.get_text(strip=True)
+                ).strip()
+
+        except Exception as e:
+            if debug:
+                print(f"[frontier] article fetch fail {url}: {e}")
+            # body は空のままでも OK（CSV では使っていない）
+
+        results.append(
+            {
+                "source": "Frontier Myanmar",
+                "title": unicodedata.normalize("NFC", title or ""),
+                "url": url,
+                "date": art_date_iso,
+                "body": unicodedata.normalize("NFC", body or ""),
+            }
+        )
+
+    return results
+
 # ===== 単体翻訳（既存プロンプト流用） =====
 def translate_title_only(item: Dict, *, model: str = "gemini-2.5-flash") -> str:
     """
