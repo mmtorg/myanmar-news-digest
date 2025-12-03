@@ -599,6 +599,8 @@ const SOURCE_KEY_BASE_MAP = {
   "news eleven burmese": "NEWSELEVEN",
   newseleven: "NEWSELEVEN",
   "popular myanmar": "POPULARMYANMAR",
+  "frontier myanmar": "FRONTIERMYANMAR",
+  frontier: "FRONTIERMYANMAR",
 };
 
 const DEFAULT_BASE_KEY = "MIZZIMA"; // マップにない場合のフォールバック
