@@ -1702,18 +1702,33 @@ def collect_frontier_all_for_date(
                         "NFC", article.title.get_text(strip=True)
                     ) or title
 
-            # 本文抽出（ざっくり）
+            # 本文抽出（Frontier 用）
             host = (
-                article.find("div", class_=re.compile("entry-content", re.I))
-                or article.find("article")
+                # 一番確実：本文を持っているコンテナ
+                article.select_one("div.post-content-single div.elementor-widget-container")
+                # それが無い場合：post-content-single / theme-post-content を優先
+                or article.find("div", class_=re.compile("post-content-single|theme-post-content", re.I))
+                # さらに古いテンプレ互換：entry-content
+                or article.find("div", class_=re.compile("entry-content", re.I))
+                # 最後の手段
                 or article
             )
 
             parts: List[str] = []
-            for p in host.find_all(["p", "h2", "h3", "li"]):
-                text = p.get_text(" ", strip=True)
+
+            for node in host.find_all(["p", "h2", "h3", "li"]):
+                # Paywall / 関連 / More stories / サイドバー系を全部スキップ
+                if node.find_parent(class_=re.compile(r"(pmpro|related|more-stories|elementor-post|share)", re.I)):
+                    continue
+
+                text = node.get_text(" ", strip=True)
                 if not text:
                     continue
+
+                # Paywall の決まり文句も捨てる
+                if "You must have an account to access this content" in text:
+                    continue
+
                 # 余計な空白をつぶす
                 text = re.sub(r"\s+", " ", text)
                 parts.append(text)
@@ -1722,7 +1737,7 @@ def collect_frontier_all_for_date(
 
             # fallback: 共通の段落抽出ユーティリティ
             if not body:
-                paras = extract_paragraphs_with_wait(article)
+                paras = extract_paragraphs_with_wait(host or article)
                 body = "\n".join(
                     re.sub(r"\s+", " ", p.get_text(" ", strip=True))
                     for p in paras
