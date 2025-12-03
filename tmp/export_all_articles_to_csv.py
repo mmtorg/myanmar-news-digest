@@ -1716,17 +1716,30 @@ def collect_frontier_all_for_date(
 
             parts: List[str] = []
 
+            PAYWALL_CLASS_RE = re.compile(r"\b(pmpro|pmpro_card|pmpro_card_content)\b", re.I)
+            RELATED_CLASS_RE = re.compile(r"(related|more-stories|elementor-post|share)", re.I)
+
             for node in host.find_all(["p", "h2", "h3", "li"]):
-                # Paywall / 関連 / More stories / サイドバー系を全部スキップ
-                if node.find_parent(class_=re.compile(r"(pmpro|related|more-stories|elementor-post|share)", re.I)):
+                # --- 1) Paywall ブロックだけをスキップ ---
+                # div.pmpro / div.pmpro_card / div.pmpro_card_content の中にある要素のみ弾く
+                if node.find_parent("div", class_=PAYWALL_CLASS_RE):
+                    continue
+
+                # --- 2) More stories / Related stories などもスキップ ---
+                if node.find_parent(class_=RELATED_CLASS_RE):
                     continue
 
                 text = node.get_text(" ", strip=True)
                 if not text:
                     continue
 
-                # Paywall の決まり文句も捨てる
-                if "You must have an account to access this content" in text:
+                # --- 3) テキストベースのフィルタ（保険） ---
+                lower = text.lower()
+                if "you must have an account to access this content" in lower:
+                    continue
+                if text.strip() in ("Create Account", "Account Required"):
+                    continue
+                if lower.startswith("already a member?"):
                     continue
 
                 # 余計な空白をつぶす
@@ -1735,14 +1748,27 @@ def collect_frontier_all_for_date(
 
             body = "\n".join(parts).strip()
 
-            # fallback: 共通の段落抽出ユーティリティ
+            # fallback: 共通の段落抽出ユーティリティ（host ベース）
             if not body:
                 paras = extract_paragraphs_with_wait(host or article)
-                body = "\n".join(
-                    re.sub(r"\s+", " ", p.get_text(" ", strip=True))
-                    for p in paras
-                    if p.get_text(strip=True)
-                ).strip()
+                tmp_parts = []
+                for p in paras:
+                    text = p.get_text(" ", strip=True)
+                    if not text:
+                        continue
+                    # 上と同じフィルタを軽くかける（最低限でOK）
+                    lower = text.lower()
+                    if "you must have an account to access this content" in lower:
+                        continue
+                    if text.strip() in ("Create Account", "Account Required"):
+                        continue
+                    if lower.startswith("already a member?"):
+                        continue
+
+                    text = re.sub(r"\s+", " ", text)
+                    tmp_parts.append(text)
+
+                body = "\n".join(tmp_parts).strip()
 
         except Exception as e:
             if debug:
