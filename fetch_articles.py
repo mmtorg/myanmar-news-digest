@@ -4021,34 +4021,70 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
             for x in (arr or []):
                 if isinstance(x, dict) and x.get("url"):
                     url_to_res[str(x["url"])] = x
+
             for b in batch:
                 x = url_to_res.get(b["url"]) or {}
                 body_src = b["body"]
-                body_ja = (x.get("body_ja") or body_src).strip()
+
+                # Gemini がこの URL の body_ja を返してくれたかどうか
+                raw_body_ja = (x.get("body_ja") or "").strip()
+                used_fallback = not bool(raw_body_ja)
+
+                if used_fallback:
+                    # ★ バッチ翻訳で body_ja が取れなかったので、
+                    #   ひとまず原文を入れておき、後段の単体再翻訳で必ず拾い直す
+                    body_ja = body_src.strip()
+                else:
+                    body_ja = raw_body_ja
+
                 body_ja = _apply_term_glossary_to_output(body_ja, src=body_src, prefer="body_ja")
-                results.append({"url": b["url"], "body_ja": body_ja})
+
+                # ★ fallback だったかどうかを結果に乗せておく
+                results.append({
+                    "url":       b["url"],
+                    "body_ja":   body_ja,
+                    "_fallback": used_fallback,
+                })
         except Exception as e:
             print("🛑 fulltext batch failed:", e)
             for b in batch:
                 bj = _apply_term_glossary_to_output(b["body"], src=b["body"], prefer="body_ja")
-                results.append({"url": b["url"], "body_ja": bj})
+                # ★ バッチそのものが失敗したので、各URLは確実に単体再翻訳に回す
+                results.append({
+                    "url":       b["url"],
+                    "body_ja":   bj,
+                    "_fallback": True,
+                })
 
-        # === このバッチで積んだ結果のうち「日本語が全く無い」ものだけ再翻訳 ===
+        # === このバッチで積んだ結果のうち「日本語が全く無い or fallbackだった」ものだけ再翻訳 ===
         start_idx = len(results) - len(batch)
         end_idx   = len(results)
         for j in range(start_idx, end_idx):
             item = results[j]
             url  = item["url"]
             body = item.get("body_ja") or ""
-            if _needs_retry_untranslated(body):
-                print(f"[warn] fulltext seems untranslated (no Japanese detected): {url}")
-                raw_body = (url_to_source_title_body.get(url, {}) or {}).get("body") or body
+
+            # 元の本文（ビルマ語）を取り出す
+            raw_body = (url_to_source_title_body.get(url, {}) or {}).get("body") or body
+
+            # 条件A：日本語が全く無い（既存ロジック）
+            need_retry_untranslated = _needs_retry_untranslated(body)
+
+            # 条件B：バッチ翻訳で body_ja が返らず、原文フォールバックになっている
+            used_fallback = bool(item.get("_fallback"))
+
+            if need_retry_untranslated or used_fallback:
+                if used_fallback:
+                    print(f"[warn] fulltext missing body_ja in batch; retrying single: {url}")
+                else:
+                    print(f"[warn] fulltext seems untranslated (no Japanese detected): {url}")
+
                 fixed = _single_fulltext_retry(url, raw_body, max_chars=FULLTEXT_MAX_CHARS)
                 if fixed and _contains_cjk(fixed):
                     results[j]["body_ja"] = _apply_term_glossary_to_output(
                         fixed, src=raw_body, prefer="body_ja"
                     )
-                    print(f"[ok] repaired untranslated fulltext via single retry: {url}")
+                    print(f"[ok] repaired fulltext via single retry: {url}")
                 time.sleep(0.6)
 
         time.sleep(0.6)  # バッチ内マイクロスリープ
