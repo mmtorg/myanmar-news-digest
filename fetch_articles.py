@@ -401,16 +401,7 @@ def call_gemini_with_retries(
                 f"client_api_key_prefix={getattr(client, '_key_prefix', '')}"
             )
             # 実際の呼び出し（既存コードの呼び方に合わせて調整）
-            resp = client.models.generate_content(
-                model=model,
-                contents=prompt,
-                generation_config={
-                    "response_mime_type": "application/json",
-                    "temperature": 0.1,
-                    "top_p": 0.8,
-                    "top_k": 20,
-                },
-            )
+            resp = client.models.generate_content(model=model, contents=prompt)
 
             # 成功したので 503 カウンタはリセット
             consecutive_503 = 0
