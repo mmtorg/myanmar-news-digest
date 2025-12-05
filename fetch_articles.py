@@ -10,6 +10,7 @@ from email.message import EmailMessage
 from email.utils import formataddr
 import unicodedata
 from google import genai
+from google.genai import types
 from collections import defaultdict
 import time
 import json
@@ -401,7 +402,15 @@ def call_gemini_with_retries(
                 f"client_api_key_prefix={getattr(client, '_key_prefix', '')}"
             )
             # 実際の呼び出し（既存コードの呼び方に合わせて調整）
-            resp = client.models.generate_content(model=model, contents=prompt)
+            resp = client.models.generate_content(
+                model=model,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    temperature=0.1,
+                    top_p=0.8,
+                    top_k=20,
+                ),
+            )
 
             # 成功したので 503 カウンタはリセット
             consecutive_503 = 0
