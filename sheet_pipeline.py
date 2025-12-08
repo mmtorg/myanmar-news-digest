@@ -1175,6 +1175,30 @@ def _collect_all_for(target_date_mmt: date) -> List[Dict]:
     return items
 
 # ===== Sheets I/O =====
+# --- Google Sheets のセル上限対策 ---
+# 1セルあたりの最大文字数は 50,000 文字なので、少し余裕を見てクリップする
+SHEET_CELL_MAX_CHARS = 50000
+SHEET_BODY_MAX_CHARS = 48000  # 本文用の安全マージン
+
+def _clip_for_sheet_cell(s: str, max_chars: int = SHEET_BODY_MAX_CHARS) -> str:
+    """
+    Google Sheets の1セル上限 50,000文字を超えないように
+    安全に切り詰めるヘルパー。
+    """
+    if not s:
+        return ""
+    s = str(s)
+    if len(s) <= max_chars:
+        return s
+
+    # 末尾に「セル上限のため省略」の印を付けておく
+    suffix = "\n\n[… セル内文字数上限のため省略 …]"
+    keep = max_chars - len(suffix)
+    if keep <= 0:
+        # 念のための保険（ほぼ来ないはず）
+        return s[:max_chars]
+    return s[:keep].rstrip() + suffix
+
 def _ws():
     return _gc_client().open_by_key(SHEET_ID).worksheet(SHEET_NAME)
 
@@ -1300,7 +1324,7 @@ def cmd_collect_to_sheet(args):
             f"ayeyarwady={is_ay} url={url}"
         )
 
-        # ★ E/F/G はブランク, M にタイトル原文, N に本文原文
+        # ★ E/F/G はブランク, M にタイトル原文, N に本文原文（ただしセル上限対策でクリップ）
         rows_to_append.append([
             target.isoformat(),                  # A 日付(配信日)
             ts,                                  # B timestamp
@@ -1313,7 +1337,7 @@ def cmd_collect_to_sheet(args):
             "",                                  # K 採用フラグ（初期値空）
             "",                                  # L（将来用など、現状不使用なら空）
             title,                               # M 記事タイトル原文
-            body,                                # N 記事本文原文
+            _clip_for_sheet_cell(body),          # N 記事本文原文（セル上限に合わせてクリップ）
         ])
         existing.add(url)
 
