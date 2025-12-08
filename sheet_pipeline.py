@@ -950,6 +950,7 @@ SOURCE_KEY_ENV_MAP: dict[str, str] = {
     "gnlm": "GEMINI_API_KEY_GNLM",
     "global new light of myanmar (国営紙)": "GEMINI_API_KEY_GNLM",
     "popular myanmar": "GEMINI_API_KEY_POPULARMYANMAR",
+    "popular myanmar (国軍系メディア)": "GEMINI_API_KEY_POPULARMYANMAR",
     "frontier myanmar": "GEMINI_API_KEY_FRONTIERMYANMAR",
     "frontier": "GEMINI_API_KEY_FRONTIERMYANMAR",
 }
