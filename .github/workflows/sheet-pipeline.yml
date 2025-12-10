@@ -270,6 +270,8 @@ jobs:
       GEMINI_REQS_PER_MIN: 6
       GEMINI_MIN_INTERVAL_SEC: 2.5
       GEMINI_JITTER_SEC: 0.5
+      # リトライ待機スケジュール（秒）: 2, 4, 8, 15 分（合計約30分）
+      RETRY_WAIT_SCHEDULE: "120 240 480 900"
       # ===== Google Sheets（production）=====
       GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
       MNA_SHEET_ID: ${{ secrets.MNA_SHEET_ID }}
@@ -347,12 +349,38 @@ jobs:
           PY
 
       # === 送信直前の build-bundle（PDF & 添付名を確実に生成） ===
-      - name: Build bundle (PDF & attachment name)
+      - name: Build bundle (PDF & attachment name) with retry
         env:
           MNA_LOG_LEVEL: INFO # 必要に応じて DEBUG に
         run: |
-          set -euxo pipefail
-          python sheet_pipeline.py build-bundle --bundle-dir bundle
+          set -euo pipefail
+
+          # env から共通スケジュールを配列に展開
+          WAIT_SCHEDULE=($RETRY_WAIT_SCHEDULE)
+          MAX_ATTEMPTS=$(( ${#WAIT_SCHEDULE[@]} + 1 ))
+          ATTEMPT=1
+
+          while [ "$ATTEMPT" -le "$MAX_ATTEMPTS" ]; do
+            echo "Attempt $ATTEMPT / $MAX_ATTEMPTS: build-bundle"
+
+            if python sheet_pipeline.py build-bundle --bundle-dir bundle; then
+              echo "build-bundle succeeded."
+              break
+            fi
+
+            if [ "$ATTEMPT" -eq "$MAX_ATTEMPTS" ]; then
+              echo "build-bundle failed after $MAX_ATTEMPTS attempts."
+              exit 1
+            fi
+
+            INDEX=$((ATTEMPT - 1))
+            SLEEP_SECONDS=${WAIT_SCHEDULE[$INDEX]}
+            echo "build-bundle failed. Sleep ${SLEEP_SECONDS}s before retry..."
+            sleep "$SLEEP_SECONDS"
+
+            ATTEMPT=$((ATTEMPT + 1))
+          done
+
           echo "--- bundle after build-bundle ---"
           ls -al bundle
 
@@ -465,6 +493,7 @@ jobs:
             echo "GEMINI_MIN_INTERVAL_SEC=2.5";
             echo "GEMINI_JITTER_SEC=0.5";
             echo "MNA_SHEET_ID=${{ secrets.MNA_SHEET_ID }}";
+            echo "RETRY_WAIT_SCHEDULE=120 240 480 900";
           } >> "$GITHUB_ENV"
 
           # ===== multi-line secret → ファイルに保存（$GITHUB_ENV には書かない）=====
@@ -497,7 +526,7 @@ jobs:
               python sheet_pipeline.py collect-to-sheet
               ;;
             build-bundle)
-              python sheet_pipeline.py build-bundle --bundle-dir bundle
+              echo "build-bundle is handled in a dedicated later step."
               ;;
             *)
               echo "unknown mode: ${{ inputs.mode }}" ; exit 1
@@ -557,14 +586,39 @@ jobs:
           PY
 
       # ←← 先に build-bundle を実行して bundle を生成
-      - name: Build bundle (PDF & attachment name)
+      - name: Build bundle (only when built) (sheet)
         if: ${{ inputs.mode == 'build-bundle' }}
         env:
           PYTHONPATH: .
           MNA_LOG_LEVEL: INFO
         run: |
-          set -euxo pipefail
-          python sheet_pipeline.py build-bundle --bundle-dir bundle
+          set -euo pipefail
+
+          WAIT_SCHEDULE=($RETRY_WAIT_SCHEDULE)
+          MAX_ATTEMPTS=$(( ${#WAIT_SCHEDULE[@]} + 1 ))
+          ATTEMPT=1
+
+          while [ "$ATTEMPT" -le "$MAX_ATTEMPTS" ]; do
+            echo "Attempt $ATTEMPT / $MAX_ATTEMPTS: build-bundle (manual)"
+
+            if python sheet_pipeline.py build-bundle --bundle-dir bundle; then
+              echo "build-bundle succeeded."
+              break
+            fi
+
+            if [ "$ATTEMPT" -eq "$MAX_ATTEMPTS" ]; then
+              echo "build-bundle failed after $MAX_ATTEMPTS attempts."
+              exit 1
+            fi
+
+            INDEX=$((ATTEMPT - 1))
+            SLEEP_SECONDS=${WAIT_SCHEDULE[$INDEX]}
+            echo "build-bundle failed. Sleep ${SLEEP_SECONDS}s before retry..."
+            sleep "$SLEEP_SECONDS"
+
+            ATTEMPT=$((ATTEMPT + 1))
+          done
+
           echo "--- bundle after build-bundle ---"
           ls -al bundle
 
