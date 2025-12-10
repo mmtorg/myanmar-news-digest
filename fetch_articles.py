@@ -3474,6 +3474,30 @@ COMMON_TRANSLATION_RULES = (
     PROMPT_CURRENCY_RULES + "\n"
 )
 
+PROMPT_SELF_CHECK_RULE = (
+    "【出力前のセルフチェック（最重要）】\n"
+    "あなたは翻訳者であると同時に、翻訳ルールの監査者でもあります。\n"
+    "以下の作業を必ず行ってから JSON を出力してください。\n"
+    "\n"
+    "1. このプロンプト内に記載されているすべての翻訳ルール\n"
+    "   （用語統一、特殊訳語、選挙ルール、人物名ルール、団体名ルール、通貨換算ルールなど）\n"
+    "   を一つずつ再確認すること。\n"
+    "\n"
+    "2. あなたが生成した翻訳結果が、上記「すべてのルール」に\n"
+    "   完全に従っているか自己点検すること。\n"
+    "\n"
+    "3. ルールに違反している箇所が 1つでも存在した場合は、\n"
+    "   その部分を必ず修正してから出力すること。\n"
+    "\n"
+    "4. 迷う箇所がある場合は、\n"
+    "   「ルールにより厳密に従う側」へ必ず寄せること。\n"
+    "\n"
+    "5. JSON 出力前に必ず、\n"
+    "   「すべてのルールを遵守しているか」を最終確認してから応答を確定すること。\n"
+    "\n"
+    "上記のセルフチェックを経るまでは、翻訳結果を出力してはならない。\n"
+)
+
 STEP3_TASK = (
     "Step 3: 翻訳と要約処理\n"
     "以下のルールに従って、記事タイトルを自然な日本語に翻訳し、本文を要約してください。\n\n"
@@ -4183,8 +4207,9 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
             "・文体は だ・である調。必要に応じて体言止めを用いる（乱用は避ける）\n"
             "・冗長な修飾は削り、できるだけ簡潔に表現する\n"
             "・半角の()括弧はすべて全角の（ ）に統一すること\n\n"
-            f"{COMMON_TRANSLATION_RULES}"
-            f"{_build_region_glossary_prompt_for(_select_region_entries_for_text(' '.join([x.get('body','') for x in input_array]), _load_regions_cached()), use_headline_ja=False)}"
+            f"{COMMON_TRANSLATION_RULES}\n"
+            f"{PROMPT_SELF_CHECK_RULE}\n"
+            f"{_build_region_glossary_prompt_for(_select_region_entries_for_text(' '.join([x.get('body','') for x in input_array]), _load_regions_cached()), use_headline_ja=False)}\n"
             "【本文以外は必ず除外（この関数専用）】\n"
             "以下は原文に含まれていても翻訳・出力しないこと（含めたら減点）。\n"
             "- 写真キャプション／クレジット（先頭が「写真:」「ဓာတ်ပုံ」「Photo」「(写真」「(Photo」「（写真」などの行）\n"
