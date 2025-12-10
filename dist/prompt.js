@@ -714,6 +714,7 @@ const SOURCE_KEY_BASE_MAP = {
   "news eleven burmese": "NEWSELEVEN",
   newseleven: "NEWSELEVEN",
   "popular myanmar": "POPULARMYANMAR",
+  "popular myanmar (国軍系メディア)": "POPULARMYANMAR",
   "frontier myanmar": "FRONTIERMYANMAR",
   frontier: "FRONTIERMYANMAR",
 };
