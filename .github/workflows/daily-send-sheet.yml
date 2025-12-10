@@ -42,6 +42,8 @@ jobs:
       GEMINI_API_SUMMARY_KEY: ${{ secrets.GEMINI_API_SUMMARY_KEY }}
       GEMINI_API_DEDUPE_KEY: ${{ secrets.GEMINI_API_DEDUPE_KEY }}
       GEMINI_API_FULLTEXT_KEY: ${{ secrets.GEMINI_API_FULLTEXT_KEY }}
+      # リトライ待機スケジュール（秒）: 1, 2, 4, 8, 15, 30 分
+      RETRY_WAIT_SCHEDULE: "60 120 240 480 900 1800"
 
     steps:
       - uses: actions/checkout@v4
@@ -57,34 +59,88 @@ jobs:
       - name: Check gh (preinstalled)
         run: gh --version
 
-      # 直近の main で成功した "Daily Myanmar News Alert Sheet Pipeline" を取得
-      - name: Find latest artifact from Sheet Pipeline
+      # 直近の main で成功した "Daily Myanmar News Alert Sheet Pipeline" を取得（リトライ付き）
+      - name: Find latest artifact from Sheet Pipeline (with retry)
         id: find
         run: |
+          set -euo pipefail
           echo "Target branch: $BRANCH"
-          RUN_ID=$(gh run list --repo "$REPO" \
-            --workflow "Daily Myanmar News Alert Sheet Pipeline" \
-            --branch "$BRANCH" \
-            --json databaseId,status,conclusion \
-            --jq '[.[] | select(.status=="completed" and .conclusion=="success")][0].databaseId')
-          if [ -z "$RUN_ID" ]; then
+
+          # env から共通スケジュールを配列に展開
+          WAIT_SCHEDULE=($RETRY_WAIT_SCHEDULE)
+          MAX_ATTEMPTS=$(( ${#WAIT_SCHEDULE[@]} + 1 ))
+          ATTEMPT=1
+
+          while [ "$ATTEMPT" -le "$MAX_ATTEMPTS" ]; do
+            echo "Attempt $ATTEMPT / $MAX_ATTEMPTS: gh run list"
+
+            if RUN_ID=$(gh run list --repo "$REPO" \
+              --workflow "Daily Myanmar News Alert Sheet Pipeline" \
+              --branch "$BRANCH" \
+              --json databaseId,status,conclusion \
+              --jq '[.[] | select(.status=="completed" and .conclusion=="success")][0].databaseId'); then
+              # gh run list が正常終了したらループを抜ける
+              break
+            fi
+
+            if [ "$ATTEMPT" -eq "$MAX_ATTEMPTS" ]; then
+              echo "gh run list failed after $MAX_ATTEMPTS attempts."
+              exit 1
+            fi
+
+            INDEX=$((ATTEMPT - 1))
+            SLEEP_SECONDS=${WAIT_SCHEDULE[$INDEX]}
+            echo "gh run list failed. Sleep ${SLEEP_SECONDS}s before retry..."
+            sleep "$SLEEP_SECONDS"
+
+            ATTEMPT=$((ATTEMPT + 1))
+          done
+
+          # RUN_ID が空 or null の場合は従来どおり「run なし」と扱う
+          if [ -z "${RUN_ID:-}" ] || [ "$RUN_ID" = "null" ]; then
             echo "No successful Sheet Pipeline run on $BRANCH, skipping."
-            echo "run_id=" >> $GITHUB_OUTPUT
+            echo "run_id=" >> "$GITHUB_OUTPUT"
           else
             echo "RUN_ID=$RUN_ID"
-            echo "run_id=$RUN_ID" >> $GITHUB_OUTPUT
+            echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Skip if no run found
         if: ${{ steps.find.outputs.run_id == '' }}
         run: echo "No collect artifact. Exit." && exit 0
 
-      - name: Download artifact (sheet)
+      - name: Download artifact (sheet) with retry
         run: |
+          set -euo pipefail
           mkdir -p bundle
-          gh run download ${{ steps.find.outputs.run_id }} --repo "$REPO" \
-            --name "mna-bundle-sheet-${{ steps.find.outputs.run_id }}" \
-            --dir bundle
+
+          # env から共通スケジュールを配列に展開
+          WAIT_SCHEDULE=($RETRY_WAIT_SCHEDULE)
+          MAX_ATTEMPTS=$(( ${#WAIT_SCHEDULE[@]} + 1 ))
+          ATTEMPT=1
+
+          while [ "$ATTEMPT" -le "$MAX_ATTEMPTS" ]; do
+            echo "Attempt $ATTEMPT / $MAX_ATTEMPTS: gh run download"
+
+            if gh run download ${{ steps.find.outputs.run_id }} --repo "$REPO" \
+              --name "mna-bundle-sheet-${{ steps.find.outputs.run_id }}" \
+              --dir bundle; then
+              # ダウンロード成功
+              break
+            fi
+
+            if [ "$ATTEMPT" -eq "$MAX_ATTEMPTS" ]; then
+              echo "gh run download failed after $MAX_ATTEMPTS attempts."
+              exit 1
+            fi
+
+            INDEX=$((ATTEMPT - 1))
+            SLEEP_SECONDS=${WAIT_SCHEDULE[$INDEX]}
+            echo "gh run download failed. Sleep ${SLEEP_SECONDS}s before retry..."
+            sleep "$SLEEP_SECONDS"
+
+            ATTEMPT=$((ATTEMPT + 1))
+          done
 
       # 待機ロジック：
       # - 手動時: inputs.send_time_mmt を使用
@@ -168,6 +224,8 @@ jobs:
       GEMINI_API_SUMMARY_KEY: ${{ secrets.GEMINI_API_TEST_SUMMARY_KEY }}
       GEMINI_API_DEDUPE_KEY: ${{ secrets.GEMINI_API_TEST_DEDUPE_KEY }}
       GEMINI_API_FULLTEXT_KEY: ${{ secrets.GEMINI_API_TEST_FULLTEXT_KEY }}
+      # リトライ待機スケジュール（秒）: 1, 2, 4, 8, 15, 30 分
+      RETRY_WAIT_SCHEDULE: "60 120 240 480 900 1800"
 
     steps:
       - uses: actions/checkout@v4
@@ -183,34 +241,85 @@ jobs:
       - name: Check gh (preinstalled)
         run: gh --version
 
-      # 直近の develop で成功した "Daily Myanmar News Alert Sheet Pipeline" を取得
-      - name: Find latest artifact from Sheet Pipeline
+      # 直近の develop で成功した "Daily Myanmar News Alert Sheet Pipeline" を取得（リトライ付き）
+      - name: Find latest artifact from Sheet Pipeline (with retry)
         id: find
         run: |
+          set -euo pipefail
           echo "Target branch: $BRANCH"
-          RUN_ID=$(gh run list --repo "$REPO" \
-            --workflow "Daily Myanmar News Alert Sheet Pipeline" \
-            --branch "$BRANCH" \
-            --json databaseId,status,conclusion \
-            --jq '[.[] | select(.status=="completed" and .conclusion=="success")][0].databaseId')
-          if [ -z "$RUN_ID" ]; then
+
+          # env から共通スケジュールを配列に展開
+          WAIT_SCHEDULE=($RETRY_WAIT_SCHEDULE)
+          MAX_ATTEMPTS=$(( ${#WAIT_SCHEDULE[@]} + 1 ))
+          ATTEMPT=1
+
+          while [ "$ATTEMPT" -le "$MAX_ATTEMPTS" ]; do
+            echo "Attempt $ATTEMPT / $MAX_ATTEMPTS: gh run list"
+
+            if RUN_ID=$(gh run list --repo "$REPO" \
+              --workflow "Daily Myanmar News Alert Sheet Pipeline" \
+              --branch "$BRANCH" \
+              --json databaseId,status,conclusion \
+              --jq '[.[] | select(.status=="completed" and .conclusion=="success")][0].databaseId'); then
+              break
+            fi
+
+            if [ "$ATTEMPT" -eq "$MAX_ATTEMPTS" ]; then
+              echo "gh run list failed after $MAX_ATTEMPTS attempts."
+              exit 1
+            fi
+
+            INDEX=$((ATTEMPT - 1))
+            SLEEP_SECONDS=${WAIT_SCHEDULE[$INDEX]}
+            echo "gh run list failed. Sleep ${SLEEP_SECONDS}s before retry..."
+            sleep "$SLEEP_SECONDS"
+
+            ATTEMPT=$((ATTEMPT + 1))
+          done
+
+          if [ -z "${RUN_ID:-}" ] || [ "$RUN_ID" = "null" ]; then
             echo "No successful Sheet Pipeline run on $BRANCH, skipping."
-            echo "run_id=" >> $GITHUB_OUTPUT
+            echo "run_id=" >> "$GITHUB_OUTPUT"
           else
             echo "RUN_ID=$RUN_ID"
-            echo "run_id=$RUN_ID" >> $GITHUB_OUTPUT
+            echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Skip if no run found
         if: ${{ steps.find.outputs.run_id == '' }}
         run: echo "No collect artifact. Exit." && exit 0
 
-      - name: Download artifact (sheet)
+      - name: Download artifact (sheet) with retry
         run: |
+          set -euo pipefail
           mkdir -p bundle
-          gh run download ${{ steps.find.outputs.run_id }} --repo "$REPO" \
-            --name "mna-bundle-sheet-${{ steps.find.outputs.run_id }}" \
-            --dir bundle
+
+          # env から共通スケジュールを配列に展開
+          WAIT_SCHEDULE=($RETRY_WAIT_SCHEDULE)
+          MAX_ATTEMPTS=$(( ${#WAIT_SCHEDULE[@]} + 1 ))
+          ATTEMPT=1
+
+          while [ "$ATTEMPT" -le "$MAX_ATTEMPTS" ]; do
+            echo "Attempt $ATTEMPT / $MAX_ATTEMPTS: gh run download"
+
+            if gh run download ${{ steps.find.outputs.run_id }} --repo "$REPO" \
+              --name "mna-bundle-sheet-${{ steps.find.outputs.run_id }}" \
+              --dir bundle; then
+              break
+            fi
+
+            if [ "$ATTEMPT" -eq "$MAX_ATTEMPTS" ]; then
+              echo "gh run download failed after $MAX_ATTEMPTS attempts."
+              exit 1
+            fi
+
+            INDEX=$((ATTEMPT - 1))
+            SLEEP_SECONDS=${WAIT_SCHEDULE[$INDEX]}
+            echo "gh run download failed. Sleep ${SLEEP_SECONDS}s before retry..."
+            sleep "$SLEEP_SECONDS"
+
+            ATTEMPT=$((ATTEMPT + 1))
+          done
 
       # 待機ロジック（dev も同様）：
       # - 手動時: inputs.send_time_mmt
