@@ -818,29 +818,133 @@ function normalizeSourceName_(s) {
   return out.toLowerCase();
 }
 
+/************************************************************
+ * APIキー ローテーション（メディア別） + 日次カウンタ（Pacific）
+ ************************************************************/
+
+// Gemini の日次リセットに合わせる（Pacific日付）
+function _todayKeyStrPacific_() {
+  return Utilities.formatDate(new Date(), "America/Los_Angeles", "yyyyMMdd");
+}
+
+// 1日単位の使用回数カウンタ（Script Properties）
+// propName例: "GEMINI_API_KEY_MIZZIMA"
+// counterKey例: "GEMINI_REQCOUNT_GEMINI_API_KEY_MIZZIMA_20251212"（Pacific日付）
+function _counterKeyForApiProp_(apiPropName) {
+  return "GEMINI_REQCOUNT_" + apiPropName + "_" + _todayKeyStrPacific_();
+}
+
+function _getReqCountToday_(apiPropName) {
+  const props = PropertiesService.getScriptProperties();
+  const k = _counterKeyForApiProp_(apiPropName);
+  return Number(props.getProperty(k) || "0");
+}
+
+function _incReqCountToday_(apiPropName) {
+  const props = PropertiesService.getScriptProperties();
+  const k = _counterKeyForApiProp_(apiPropName);
+  const cur = Number(props.getProperty(k) || "0");
+  props.setProperty(k, String(cur + 1));
+  return cur + 1;
+}
+
+/**
+ * メディアごとのローテ設定
+ * - キーの切替をしたいメディアだけ書く（それ以外は従来どおり単一キー）
+ * - baseKeys は「末尾（baseKey）」の配列（prefixはprod/devで自動）
+ *   例: prodなら "GEMINI_API_KEY_" + "MIZZIMA2" → Script Propertiesに GEMINI_API_KEY_MIZZIMA2 を用意
+ */
+const API_KEY_ROTATION_RULES = {
+  "khit thit": { baseKeys: ["KHITTHIT", "KHITTHIT2"], maxReqPerDayPerKey: 240 },
+  "khit thit media": {
+    baseKeys: ["KHITTHIT", "KHITTHIT2"],
+    maxReqPerDayPerKey: 240,
+  },
+  khitthit: { baseKeys: ["KHITTHIT", "KHITTHIT2"], maxReqPerDayPerKey: 240 }, // 念のため残してOK
+
+  dvb: { baseKeys: ["DVB", "DVB2"], maxReqPerDayPerKey: 240 },
+
+  gnlm: { baseKeys: ["GNLM", "GNLM2"], maxReqPerDayPerKey: 240 },
+  "global new light of myanmar": {
+    baseKeys: ["GNLM", "GNLM2"],
+    maxReqPerDayPerKey: 240,
+  }, // メディア表記ゆれ対策（任意）
+
+  "global new light of myanmar (国営紙)": {
+    baseKeys: ["GNLM", "GNLM2"],
+    maxReqPerDayPerKey: 240,
+  },
+
+  "popular myanmar": {
+    baseKeys: ["POPULARMYANMAR", "POPULARMYANMAR2"],
+    maxReqPerDayPerKey: 240,
+  },
+  "popular myanmar (国軍系メディア)": {
+    baseKeys: ["POPULARMYANMAR", "POPULARMYANMAR2"],
+    maxReqPerDayPerKey: 240,
+  },
+  popularmyanmar: {
+    baseKeys: ["POPULARMYANMAR", "POPULARMYANMAR2"],
+    maxReqPerDayPerKey: 240,
+  }, // 念のため残してOK
+};
+
+function _pickApiKeyPropNameWithRotation_(sheetName, sourceRaw) {
+  const prefix = SHEET_KEY_PREFIX_MAP[sheetName] || DEFAULT_PREFIX;
+  const norm = normalizeSourceName_(sourceRaw || "");
+
+  // ローテ設定が無いメディアは従来通り
+  const baseKeyDefault = SOURCE_KEY_BASE_MAP[norm] || DEFAULT_BASE_KEY;
+  const rule = API_KEY_ROTATION_RULES[norm];
+
+  if (!rule || !rule.baseKeys || rule.baseKeys.length === 0) {
+    return prefix + baseKeyDefault;
+  }
+
+  const maxPerKey = Number(rule.maxReqPerDayPerKey || 0);
+
+  // maxPerKey が 0 の場合は「常に先頭キー」を使う（設定ミスでも安全側）
+  if (maxPerKey <= 0) {
+    return prefix + rule.baseKeys[0];
+  }
+
+  // まだ上限未満のキーを優先して選ぶ
+  for (let i = 0; i < rule.baseKeys.length; i++) {
+    const apiPropName = prefix + rule.baseKeys[i];
+    const used = _getReqCountToday_(apiPropName);
+    if (used < maxPerKey) {
+      return apiPropName;
+    }
+  }
+
+  // 全部上限に達したら最後のキーを返す（エラーは呼び出し側で起きる想定）
+  return prefix + rule.baseKeys[rule.baseKeys.length - 1];
+}
+
 // シート名 & メディア名から API キーを取得
 function getApiKeyFromSheetAndSource_(sheetName, sourceRaw, usageTagOpt) {
   const scriptProps = PropertiesService.getScriptProperties();
 
-  const prefix = SHEET_KEY_PREFIX_MAP[sheetName] || DEFAULT_PREFIX;
-
-  const norm = normalizeSourceName_(sourceRaw || "");
-  const baseKey = SOURCE_KEY_BASE_MAP[norm] || DEFAULT_BASE_KEY;
-
-  const propName = prefix + baseKey;
+  // ★ ローテ考慮して「どの Script Property 名を使うか」を決める
+  const propName = _pickApiKeyPropNameWithRotation_(sheetName, sourceRaw);
   const apiKey = scriptProps.getProperty(propName);
 
-  // ★ ここで「どのキー名を使ったか」をログ出力（値そのものは出さない）
+  // ★ 使用回数を1加算（Pacific日付で日次リセット）
+  const newCount = _incReqCountToday_(propName);
+
+  // ログ（値そのものは出さない）
   const tag = usageTagOpt || sheetName || "unknown";
   const msg =
     "use apiKeyProp=" +
     propName +
-    " (baseKey=" +
-    baseKey +
+    " reqCountToday=" +
+    newCount +
+    " (sheet=" +
+    sheetName +
     ", sourceRaw=" +
     sourceRaw +
     ", norm=" +
-    norm +
+    normalizeSourceName_(sourceRaw || "") +
     ")";
 
   Logger.log("[gemini-key] " + msg);
