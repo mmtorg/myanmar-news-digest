@@ -31,6 +31,12 @@ import xml.etree.ElementTree as ET
 from urllib.parse import urljoin
 from email.message import EmailMessage
 import logging
+from types import SimpleNamespace
+
+try:
+    from openai import OpenAI
+except Exception:
+    OpenAI = None
 
 try:
     import httpx
@@ -489,6 +495,79 @@ def call_gemini_with_retries(
 
     # すべて失敗
     raise last_exc if last_exc else RuntimeError("Gemini call failed with unknown error.")
+
+# =========================
+# Gemini → GPT-5 mini fallback
+# =========================
+_OPENAI_CLIENT = None
+if OpenAI and (os.getenv("OPENAI_API_KEY") or "").strip():
+    # 環境変数 OPENAI_API_KEY を SDK が自動で参照するので、これでOK
+    _OPENAI_CLIENT = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+def _should_fallback_to_openai(e: Exception) -> bool:
+    """
+    Gemini 側の一時障害 or 無料枠/レート上限超過っぽい場合のみ True。
+    それ以外（プロンプト不正など）は False（そのまま失敗させる）。
+    """
+    # Free tier quota exceeded は「今日はもう無理」なのでフォールバック対象
+    if _is_free_tier_quota_error(e):
+        return True
+
+    # 既存のリトライ判定に引っかかるものは「一時障害寄り」とみなしてフォールバック対象
+    if _is_retriable_exc(e):
+        return True
+
+    # SDK差分吸収：文字列に 429/503/timeout などがあればフォールバック対象
+    msg = (str(e) or "").lower()
+    hints = [
+        "429", "resource_exhausted", "rate", "quota",
+        "503", "unavailable", "overloaded",
+        "502", "504", "gateway",
+        "timeout", "timed out",
+    ]
+    return any(h in msg for h in hints)
+
+def call_llm_with_fallback(
+    client,
+    prompt: str,
+    model: str = "gemini-2.5-flash",
+    max_retries: int = GEMINI_MAX_RETRIES,
+    base_delay: float = GEMINI_BASE_DELAY,
+    max_delay: float = GEMINI_MAX_DELAY,
+    usage_tag: str = "generic",
+    openai_model: str = "gpt-5-mini",
+):
+    """
+    まず Gemini（既存リトライ込み）を実行。
+    Gemini が一時障害/無料枠上限などで最終的に失敗した場合のみ GPT-5 mini にフォールバック。
+    戻り値は resp.text を持つオブジェクト（Geminiと同じ呼び出し側コードで扱えるようにする）。
+    """
+    try:
+        return call_gemini_with_retries(
+            client,
+            prompt,
+            model=model,
+            max_retries=max_retries,
+            base_delay=base_delay,
+            max_delay=max_delay,
+            usage_tag=usage_tag,
+        )
+    except Exception as e:
+        if not _should_fallback_to_openai(e):
+            raise
+
+        if not _OPENAI_CLIENT:
+            raise RuntimeError(
+                "Gemini failed and OPENAI_API_KEY is not set (or openai SDK not available), "
+                "so fallback to GPT-5 mini cannot run."
+            ) from e
+
+        logging.warning(f"[fallback] Gemini failed; switching to OpenAI model={openai_model}. reason={e}")
+        r = _OPENAI_CLIENT.responses.create(
+            model=openai_model,
+            input=prompt,
+        )
+        return SimpleNamespace(text=r.output_text)
 
 # 要約用に送る本文の最大文字数（固定）
 # Irrawaddy英語記事が3500文字くらいある
@@ -3038,7 +3117,7 @@ def dedupe_articles_with_llm(
     )
 
     try:
-        resp = call_gemini_with_retries(
+        resp = call_llm_with_fallback(
             client,
             prompt,
             model="gemini-2.5-flash",
@@ -3864,7 +3943,7 @@ def process_translation_batches(batch_size=TRANSLATION_BATCH_SIZE, wait_seconds=
                     item, skip_filters=is_irrawaddy, body_max=BODY_MAX_CHARS
                 )
 
-                resp = call_gemini_with_retries(
+                resp = call_llm_with_fallback(
                     client_summary, prompt, model="gemini-2.5-flash"
                 )
                 output_text = resp.text.strip()
@@ -4239,7 +4318,7 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
 
         precheck_sleep(rough_token_estimate(prompt), tag="fulltext-retry")
         try:
-            resp = call_gemini_with_retries(
+            resp = call_llm_with_fallback(
                 client_fulltext,
                 prompt,
                 model="gemini-2.5-flash",
@@ -4304,7 +4383,7 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
         precheck_sleep(rough_token_estimate(prompt), tag="fulltext-batch")
 
         try:
-            resp = call_gemini_with_retries(
+            resp = call_llm_with_fallback(
                 client_fulltext,
                 prompt,
                 model="gemini-2.5-flash",
