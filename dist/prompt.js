@@ -1083,6 +1083,36 @@ function _isRetriableError_(httpCode, data) {
   });
 }
 
+// ===== グローバルスロットリング（Script Properties共有）=====
+// どのトリガー/実行経路でも、Gemini呼び出しを最低この間隔だけ空ける
+const GEMINI_GLOBAL_MIN_INTERVAL_MS = 20000; // 20秒（安全策）
+
+const _GEMINI_LAST_CALL_PROP = "GEMINI_LAST_CALL_MS";
+
+// 全実行（別トリガー含む）で共通の最小間隔を保証する
+function _throttleGeminiCallGlobal_() {
+  const props = PropertiesService.getScriptProperties();
+
+  // 直列化のために短時間ロック（Properties更新競合を避ける）
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30 * 1000);
+
+  try {
+    const now = Date.now();
+    const last = Number(props.getProperty(_GEMINI_LAST_CALL_PROP) || "0");
+    const waitMs = last
+      ? Math.max(0, GEMINI_GLOBAL_MIN_INTERVAL_MS - (now - last))
+      : 0;
+
+    if (waitMs > 0) Utilities.sleep(waitMs);
+
+    // 「次の人」がここから計算できるよう、呼び出し直前の時刻を記録
+    props.setProperty(_GEMINI_LAST_CALL_PROP, String(Date.now()));
+  } finally {
+    lock.releaseLock();
+  }
+}
+
 /************************************************************
  * Gemini 呼び出しログ用シート出力
  ************************************************************/
@@ -1200,6 +1230,7 @@ function callGeminiWithKey_(apiKey, prompt, usageTagOpt) {
 
     let res;
     try {
+      _throttleGeminiCallGlobal_();
       res = UrlFetchApp.fetch(url, options);
     } catch (e) {
       // ネットワーク例外など
