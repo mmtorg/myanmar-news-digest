@@ -93,9 +93,9 @@ def _nl2br(s: str) -> str:
     return s.replace("\n", "<br>")
 
 # ========= Gemini リトライ調整用の定数 =========
-GEMINI_MAX_RETRIES = 7          # 既定 5 → 7
-GEMINI_BASE_DELAY = 10.0        # 既定 2.0 → 10.0
-GEMINI_MAX_DELAY = 120.0        # 既定 30.0 → 120.0
+GEMINI_MAX_RETRIES = 4          # 既定 7 → 4
+GEMINI_BASE_DELAY = 120.0        # 既定 10.0 → 120.0
+GEMINI_MAX_DELAY = 1200.0        # 既定 120.0 → 1200.0
 
 # 翻訳のバッチサイズ（瞬間負荷を下げる）
 TRANSLATION_BATCH_SIZE = 2      # 既定 3 → 2
