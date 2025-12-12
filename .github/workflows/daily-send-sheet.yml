@@ -42,6 +42,7 @@ jobs:
       GEMINI_API_SUMMARY_KEY: ${{ secrets.GEMINI_API_SUMMARY_KEY }}
       GEMINI_API_DEDUPE_KEY: ${{ secrets.GEMINI_API_DEDUPE_KEY }}
       GEMINI_API_FULLTEXT_KEY: ${{ secrets.GEMINI_API_FULLTEXT_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       # リトライ待機スケジュール（秒）: 1, 2, 4, 8, 15, 30 分
       RETRY_WAIT_SCHEDULE: "60 120 240 480 900 1800"
 
@@ -224,6 +225,7 @@ jobs:
       GEMINI_API_SUMMARY_KEY: ${{ secrets.GEMINI_API_TEST_SUMMARY_KEY }}
       GEMINI_API_DEDUPE_KEY: ${{ secrets.GEMINI_API_TEST_DEDUPE_KEY }}
       GEMINI_API_FULLTEXT_KEY: ${{ secrets.GEMINI_API_TEST_FULLTEXT_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       # リトライ待機スケジュール（秒）: 1, 2, 4, 8, 15, 30 分
       RETRY_WAIT_SCHEDULE: "60 120 240 480 900 1800"
 

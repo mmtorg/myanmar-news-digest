@@ -72,13 +72,13 @@ def _coerce_date(d) -> date | None:
 try:
     from fetch_articles import (
         MMT,                      # UTC+6:30
-        call_gemini_with_retries, # Gemini呼び出し（既存のリトライ/レート制御）
+        call_llm_with_fallback,   # Gemini→OpenAI フォールバック
         client_summary,
         deduplicate_by_url,
     )
 except Exception:
     MMT = timezone(timedelta(hours=6, minutes=30))
-    call_gemini_with_retries = None
+    call_llm_with_fallback = None
     client_summary = None
     def deduplicate_by_url(items):
         seen, out = set(), []
@@ -1072,7 +1072,7 @@ def _headline_variants_ja(title: str, source: str, url: str, body: str = "") -> 
     client = _client_for_source(source)
 
     # client が用意できない場合は安全フォールバック
-    if not (call_gemini_with_retries and client):
+    if not (call_llm_with_fallback and client):
         t = unicodedata.normalize("NFC", title or "").strip()
         return [t, t, t]
 
@@ -1088,7 +1088,7 @@ def _headline_variants_ja(title: str, source: str, url: str, body: str = "") -> 
     try:
         if _LIMITER:
             _LIMITER.wait()
-        resp1 = call_gemini_with_retries(
+        resp1 = call_llm_with_fallback(
             client,
             f"{HEADLINE_PROMPT_1}{glossary}\n\n原題: {title}\nsource:{source}\nurl:{url}",
             model=model,
@@ -1102,7 +1102,7 @@ def _headline_variants_ja(title: str, source: str, url: str, body: str = "") -> 
         if _LIMITER:
             _LIMITER.wait()
         prompt2 = (glossary or "") + make_headline_prompt_2_from(v1)
-        resp2 = call_gemini_with_retries(client, prompt2, model=model)
+        resp2 = call_llm_with_fallback(client, prompt2, model=model)
         v2 = unicodedata.normalize("NFC", (resp2.text or "").strip())
     except Exception:
         v2 = v1
@@ -1122,7 +1122,7 @@ def _headline_variants_ja(title: str, source: str, url: str, body: str = "") -> 
                 + "【本文】\n" + body_for_prompt + "\n\n"
                 f"（参考）原題: {title}\nsource:{source}\nurl:{url}\n"
             )
-            resp3 = call_gemini_with_retries(client, prompt3, model=model)
+            resp3 = call_llm_with_fallback(client, prompt3, model=model)
             v3 = unicodedata.normalize("NFC", (resp3.text or "").strip())
     except Exception:
         v3 = v1
@@ -1137,7 +1137,7 @@ def _summary_ja(source: str, title: str, body: str, url: str) -> str:
     # ★ 媒体ごとの client を取得
     client = _client_for_source(source)
 
-    if not (call_gemini_with_retries and client):
+    if not (call_llm_with_fallback and client):
         # グローバルキー無し前提：媒体別キーが無い場合は安全フォールバック＋警告
         try:
             import sys
@@ -1165,7 +1165,7 @@ def _summary_ja(source: str, title: str, body: str, url: str) -> str:
     try:
         if _LIMITER:
             _LIMITER.wait()
-        resp = call_gemini_with_retries(
+        resp = call_llm_with_fallback(
             client,
             prompt,
             model=os.getenv("GEMINI_SUMMARY_MODEL", "gemini-2.5-flash"),
