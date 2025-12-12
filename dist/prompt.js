@@ -981,30 +981,51 @@ function _usageFromData_(data) {
     return obj && key in obj ? obj[key] : fallback;
   }
 
-  const promptTokens = _get(
-    usage,
-    "prompt_token_count",
-    _get(usage, "input_token_count", _get(usage, "input_tokens", 0))
-  );
-  const candTokens = _get(
-    usage,
-    "candidates_token_count",
-    _get(usage, "output_token_count", _get(usage, "output_tokens", 0))
-  );
-  const totalTokens = _get(
-    usage,
-    "total_token_count",
-    _get(usage, "total_tokens", (promptTokens || 0) + (candTokens || 0))
-  );
-  const cacheCreate = _get(usage, "cache_creation_input_token_count", 0);
-  const cacheRead = _get(usage, "cache_read_input_token_count", 0);
+  // prompt
+  const promptTokens =
+    _get(usage, "prompt_token_count", null) ??
+    _get(usage, "promptTokenCount", null) ??
+    _get(usage, "input_token_count", null) ??
+    _get(usage, "inputTokenCount", null) ??
+    _get(usage, "input_tokens", null) ??
+    _get(usage, "inputTokens", null) ??
+    0;
+
+  // candidates/output
+  const candTokens =
+    _get(usage, "candidates_token_count", null) ??
+    _get(usage, "candidatesTokenCount", null) ??
+    _get(usage, "output_token_count", null) ??
+    _get(usage, "outputTokenCount", null) ??
+    _get(usage, "output_tokens", null) ??
+    _get(usage, "outputTokens", null) ??
+    0;
+
+  // total
+  const totalTokens =
+    _get(usage, "total_token_count", null) ??
+    _get(usage, "totalTokenCount", null) ??
+    _get(usage, "total_tokens", null) ??
+    _get(usage, "totalTokens", null) ??
+    Number(promptTokens) + Number(candTokens);
+
+  // cache (存在しないことも多いので0でOK)
+  const cacheCreate =
+    _get(usage, "cache_creation_input_token_count", null) ??
+    _get(usage, "cacheCreationInputTokenCount", null) ??
+    0;
+
+  const cacheRead =
+    _get(usage, "cache_read_input_token_count", null) ??
+    _get(usage, "cacheReadInputTokenCount", null) ??
+    0;
 
   return {
-    prompt_token_count: promptTokens || 0,
-    candidates_token_count: candTokens || 0,
-    total_token_count: totalTokens || 0,
-    cache_creation_input_token_count: cacheCreate || 0,
-    cache_read_input_token_count: cacheRead || 0,
+    prompt_token_count: Number(promptTokens) || 0,
+    candidates_token_count: Number(candTokens) || 0,
+    total_token_count: Number(totalTokens) || 0,
+    cache_creation_input_token_count: Number(cacheCreate) || 0,
+    cache_read_input_token_count: Number(cacheRead) || 0,
   };
 }
 
@@ -1151,13 +1172,17 @@ function callGeminiWithKey_(apiKey, prompt, usageTagOpt) {
   let lastErrorText = "";
 
   for (let attempt = 0; attempt < GEMINI_JS_MAX_RETRIES; attempt++) {
+    const promptChars = (prompt || "").length;
+    // rough estimate: ~4 chars/token (language-dependent). Used only for logging.
+    const estPromptTokens = Math.ceil(promptChars / 4);
     Logger.log(
-      "[gemini-call] try %s/%s tag=%s model=%s prompt_chars=%s",
+      "[gemini-call] try %s/%s tag=%s model=%s prompt_chars=%s est_prompt_tokens=%s",
       attempt + 1,
       GEMINI_JS_MAX_RETRIES,
       usageTag,
       model,
-      (prompt || "").length
+      promptChars,
+      estPromptTokens
     );
 
     _appendGeminiLog_(
@@ -1269,10 +1294,32 @@ function callGeminiWithKey_(apiKey, prompt, usageTagOpt) {
         out.length
       );
 
+      // SUCCESSログに実トークンも付与（usageMetadata が無い場合は空）
+      let tok = "";
+      try {
+        const u = _usageFromData_(data);
+        if (u) {
+          tok =
+            " tokens(in=" +
+            u.prompt_token_count +
+            " out=" +
+            u.candidates_token_count +
+            " total=" +
+            u.total_token_count +
+            " cache=" +
+            u.cache_creation_input_token_count +
+            "/" +
+            u.cache_read_input_token_count +
+            ")";
+        }
+      } catch (e) {
+        tok = "";
+      }
+
       _appendGeminiLog_(
         "SUCCESS",
         usageTag,
-        "success model=" + model + " len(resp)=" + out.length
+        "success model=" + model + " len(resp)=" + out.length + tok
       );
 
       return out;
