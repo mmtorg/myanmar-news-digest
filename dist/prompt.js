@@ -1203,8 +1203,8 @@ function callGeminiWithKey_(apiKey, prompt, usageTagOpt) {
 
   for (let attempt = 0; attempt < GEMINI_JS_MAX_RETRIES; attempt++) {
     const promptChars = (prompt || "").length;
-    // rough estimate: ~4 chars/token (language-dependent). Used only for logging.
-    const estPromptTokens = Math.ceil(promptChars / 4);
+    // processRowsBatch() の推定と同じロジックに統一
+    const estPromptTokens = estimateTokensFromChars_(promptChars);
     Logger.log(
       "[gemini-call] try %s/%s tag=%s model=%s prompt_chars=%s est_prompt_tokens=%s",
       attempt + 1,
@@ -1715,6 +1715,163 @@ const STATUS_COL = 12; // L列 (ステータス列の列番号)
 // NG の最大試行回数（これ以上失敗したら「打ち切り完了」とみなす）
 const MAX_RETRY_COUNT = 3;
 
+// ============================================================
+// ★ バッチ化（キー別まとめ投げ）＋推定トークンで 1件/2件自動調整
+// ============================================================
+const MAX_ROWS_PER_GEMINI_BATCH = 2; // 上限2件
+
+// ★ 2行まとめ可否の判断は「トークン推定のみ」に統一
+// CSV分析の実測（1行 ≒ 19k〜23k in_tokens）から、精度優先なら 40k 推奨
+const BATCH_MAX_EST_INPUT_TOKENS = 40000;
+
+// ★ 文字数→トークン推定（あなたのログ実測に寄せるなら 1 token ≒ 1.7 chars が近い）
+// ※ここは将来ログの実測から調整してOK（例: 1.6〜2.0）
+const CHARS_PER_TOKEN_EST = 1.7;
+
+function estimateTokensFromChars_(nChars) {
+  return Math.ceil(Number(nChars || 0) / CHARS_PER_TOKEN_EST);
+}
+
+function estimateTokensFromText_(s) {
+  const t = (s || "").toString();
+  // ざっくり 1 token ≒ 4 chars を基準に、少し安全側に +10%
+  return Math.ceil((t.length / 4) * 1.1);
+}
+function estimateSourceTokens_(titleRaw, bodyRaw) {
+  return estimateTokensFromText_(titleRaw) + estimateTokensFromText_(bodyRaw);
+}
+// getApiKeyFromSheetAndSource_ と同じ判定で「Script Properties のキー名」を作る
+function _propNameForSheetAndSource_(sheetName, sourceRaw) {
+  const prefix = SHEET_KEY_PREFIX_MAP[sheetName] || DEFAULT_PREFIX;
+  const norm = normalizeSourceName_(sourceRaw || "");
+  const baseKey = SOURCE_KEY_BASE_MAP[norm] || DEFAULT_BASE_KEY;
+  return prefix + baseKey; // 例: GEMINI_API_KEY_MIZZIMA
+}
+
+// 2件まとめ用：配列(JSON)で返させるプロンプト
+function buildMultiTaskPromptForRows_(items) {
+  // items: [{id,titleRaw,bodyRaw,titleGlossaryRules,bodyGlossaryRules}]
+  const blocks = items
+    .map(function (it, idx) {
+      return `
+====================
+[ARTICLE ${idx + 1}]
+id: ${it.id}
+[記事タイトル]
+${it.titleRaw || ""}
+
+[記事本文]
+${it.bodyRaw || ""}
+
+--- Task1 見出しAルール ---
+${HEADLINE_PROMPT_1}
+【タイトル用 用語固定ルール】
+${it.titleGlossaryRules || "(なし)"}
+
+--- Task2 見出しB'ルール ---
+${HEADLINE_PROMPT_3}
+【本文用 用語固定ルール】
+${it.bodyGlossaryRules || "(なし)"}
+--- Task3 本文要約ルール ---
+${SUMMARY_TASK}
+【本文用 用語固定ルール】
+${it.bodyGlossaryRules || "(なし)"}
+`.trim();
+    })
+    .join("\n\n");
+
+  return `
+以下は複数のニュース記事です（最大2件）。
+各記事ごとに、次の3つの結果を同時に生成してください：
+1) 見出しA（タイトル翻訳ベース）
+2) 見出しB'（本文を読んで作る見出し）
+3) 本文要約
+
+${PROMPT_SELF_CHECK_RULE}
+
+【最終出力フォーマット（必須）】
+入力順のまま、JSON 配列を 1つだけ出力してください（それ以外の文字は一切出力しない）。
+
+[
+  {
+    "id": "入力の id をそのまま入れる",
+    "headlineA": "Task1 の見出しA",
+    "headlineBPrime": "Task2 の見出しB'",
+    "summary": "Task3 の本文要約"
+  }
+]
+
+制約:
+- 配列の要素数は入力記事数と一致させること
+- \`\`\`json などのコードブロック禁止。純粋な JSON テキストのみ
+
+${blocks}
+`.trim();
+}
+
+// processRow_ の「書き込み＋ステータス更新」部分を共通化（Gemini呼び出しはしない）
+function _applyOutputsToRow_(
+  sheet,
+  row,
+  prevStatus,
+  ctx,
+  headlineA,
+  headlineB2,
+  summaryJa
+) {
+  const colE = 5;
+  const colG = 7;
+  const colI = 9;
+  const colL = 12;
+
+  const titleRaw = ctx.titleRaw;
+  const bodyRaw = ctx.bodyRaw;
+
+  // 地域名ログ（既存と同じ）
+  logRegionUsageForRow_(sheet, row, {
+    sourceVal: ctx.sourceVal,
+    urlVal: ctx.urlVal,
+    titleRaw: titleRaw,
+    bodyRaw: bodyRaw,
+    headlineA: headlineA,
+    headlineB2: headlineB2,
+    summaryJa: summaryJa,
+  });
+
+  // 書き込み
+  sheet.getRange(row, colE).setValue(headlineA);
+  sheet.getRange(row, colG).setValue(headlineB2);
+  sheet.getRange(row, colI).setValue(summaryJa);
+
+  function isError_(val) {
+    return typeof val === "string" && val.indexOf("ERROR:") === 0;
+  }
+
+  if (!titleRaw && !bodyRaw) {
+    sheet.getRange(row, colL).setValue("EMPTY");
+    return;
+  }
+
+  const vE = sheet.getRange(row, colE).getValue();
+  const vG = sheet.getRange(row, colG).getValue();
+  const vI = sheet.getRange(row, colI).getValue();
+
+  const errors = [];
+  if (isError_(vE)) errors.push("E=" + String(vE));
+  if (isError_(vG)) errors.push("G=" + String(vG));
+  if (isError_(vI)) errors.push("I=" + String(vI));
+
+  let statusText = "";
+  if (errors.length === 0) {
+    statusText = "OK";
+  } else {
+    const prevCount = parseRetryCount_(prevStatus || "");
+    const newCount = prevCount + 1;
+    statusText = `NG(${newCount}): ` + errors.join(" / ");
+  }
+  sheet.getRange(row, colL).setValue(statusText);
+}
+
 /************************************************************
  * メール通知用設定
  ************************************************************/
@@ -1778,12 +1935,17 @@ function processRowsBatch() {
       const numCols = 14; // A〜N まで読む
       const values = sh.getRange(startRow, 1, numRows, numCols).getValues();
 
+      // ★ まず処理対象を集めて、propName(APIキー)ごとにグループ化
+      const groups = {}; // propName -> items[]
+      const groupOrder = []; // 登場順
+
       for (let i = 0; i < numRows; i++) {
         if (remaining <= 0) break;
 
         const rowIndex = startRow + i;
         const row = values[i];
 
+        const sourceVal = row[3 - 1]; // C列
         const titleRaw = row[13 - 1]; // M列 (13)
         const bodyRaw = row[14 - 1]; // N列 (14)
         const status = (row[STATUS_COL - 1] || "").toString(); // L列 (STATUS_COL=12)
@@ -1832,10 +1994,219 @@ function processRowsBatch() {
         // 処理開始マーク
         sh.getRange(rowIndex, STATUS_COL).setValue("RUNNING");
 
-        // 実際の1行処理（prevStatus を渡す）
-        processRow_(sh, rowIndex, prevStatus);
+        const propName = _pickApiKeyPropNameWithRotation_(
+          sheetName,
+          sourceVal || ""
+        );
+        if (!groups[propName]) {
+          groups[propName] = [];
+          groupOrder.push(propName);
+        }
+        groups[propName].push({
+          rowIndex: rowIndex,
+          prevStatus: prevStatus,
+          sourceVal: sourceVal || "",
+          titleRaw: titleRaw || "",
+          bodyRaw: bodyRaw || "",
+          urlVal: row[10 - 1] || "", // J列
+        });
 
-        remaining--;
+        remaining--; // 行数上限は従来どおり行単位で消費
+      }
+
+      // ★ グループごとに「最大2件」＋「推定トークン予算」で詰めて Geminiへ
+      for (let gi = 0; gi < groupOrder.length; gi++) {
+        const propName = groupOrder[gi];
+        const items = groups[propName] || [];
+        if (!items.length) continue;
+
+        let p = 0;
+        while (p < items.length) {
+          const first = items[p];
+          // まずは1件
+          let chunk = [first];
+
+          // 2件案があるなら「2件にした場合の推定input tokens」で判定する（トークンのみ）
+          if (p + 1 < items.length) {
+            const second = items[p + 1];
+
+            // 2件ぶんの promptItems を一旦作って batchPrompt を組み、推定トークンを算出
+            const promptItems2 = [first, second].map(function (it) {
+              const regionRulesTitle = buildRegionRulesForTitle_(
+                it.titleRaw || ""
+              );
+              const regionRulesBody = buildRegionRulesForBody_(
+                it.bodyRaw || ""
+              );
+              const titleGlossaryRules = regionRulesTitle;
+              const bodyGlossaryRules = regionRulesTitle + regionRulesBody;
+              return {
+                id: String(it.rowIndex),
+                rowIndex: it.rowIndex,
+                prevStatus: it.prevStatus,
+                sourceVal: it.sourceVal,
+                urlVal: it.urlVal,
+                titleRaw: it.titleRaw,
+                bodyRaw: it.bodyRaw,
+                titleGlossaryRules: titleGlossaryRules || "",
+                bodyGlossaryRules: bodyGlossaryRules || "",
+              };
+            });
+
+            const batchPrompt2 = buildMultiTaskPromptForRows_(promptItems2);
+            const estInTokens2 = estimateTokensFromChars_(
+              (batchPrompt2 || "").length
+            );
+
+            // ★ここが唯一の判断基準：推定 input tokens
+            if (estInTokens2 <= BATCH_MAX_EST_INPUT_TOKENS) {
+              chunk = [first, second];
+            }
+          }
+
+          const promptItems = chunk.map(function (it) {
+            const regionRulesTitle = buildRegionRulesForTitle_(
+              it.titleRaw || ""
+            );
+            const regionRulesBody = buildRegionRulesForBody_(it.bodyRaw || "");
+            const titleGlossaryRules = regionRulesTitle;
+            const bodyGlossaryRules = regionRulesTitle + regionRulesBody;
+            return {
+              id: String(it.rowIndex),
+              rowIndex: it.rowIndex,
+              prevStatus: it.prevStatus,
+              sourceVal: it.sourceVal,
+              urlVal: it.urlVal,
+              titleRaw: it.titleRaw,
+              bodyRaw: it.bodyRaw,
+              titleGlossaryRules: titleGlossaryRules || "",
+              bodyGlossaryRules: bodyGlossaryRules || "",
+            };
+          });
+
+          const batchPrompt = buildMultiTaskPromptForRows_(promptItems);
+          const n = promptItems.length;
+          const tagBatch =
+            sheetName +
+            "#rows" +
+            promptItems.map((x) => x.rowIndex).join(",") +
+            ":EGI(multi2:auto|n=" +
+            n +
+            ")";
+
+          // 代表1件目のsourceでキー取得（propNameで既にグループ化しているのでOK）
+          const apiKey = getApiKeyFromSheetAndSource_(
+            sheetName,
+            chunk[0].sourceVal,
+            tagBatch
+          );
+          const resp = callGeminiWithKey_(apiKey, batchPrompt, tagBatch);
+          // API呼び出し自体がエラーなら全員同じエラー
+          if (typeof resp === "string" && resp.indexOf("ERROR:") === 0) {
+            promptItems.forEach(function (pi) {
+              _applyOutputsToRow_(
+                sh,
+                pi.rowIndex,
+                pi.prevStatus,
+                {
+                  sourceVal: pi.sourceVal,
+                  urlVal: pi.urlVal,
+                  titleRaw: pi.titleRaw,
+                  bodyRaw: pi.bodyRaw,
+                },
+                resp,
+                resp,
+                resp
+              );
+            });
+            p += chunk.length;
+            continue;
+          }
+
+          // JSON配列をパースして id=rowIndex で突合
+          try {
+            let cleaned = (resp || "").trim();
+            if (cleaned.startsWith("```")) {
+              cleaned = cleaned.replace(/^```[a-zA-Z]*\s*/, "");
+              const lastFence = cleaned.lastIndexOf("```");
+              if (lastFence !== -1) cleaned = cleaned.substring(0, lastFence);
+              cleaned = cleaned.trim();
+            }
+
+            const arr = JSON.parse(cleaned);
+            const byId = {};
+            if (Array.isArray(arr)) {
+              arr.forEach(function (o) {
+                if (!o) return;
+                const id = String(o.id || "");
+                byId[id] = o;
+              });
+            }
+            promptItems.forEach(function (pi) {
+              const o = byId[String(pi.rowIndex)] || null;
+              if (!o) {
+                const errMsg =
+                  "ERROR: invalid JSON array from Gemini (missing id=" +
+                  pi.rowIndex +
+                  ")";
+                _applyOutputsToRow_(
+                  sh,
+                  pi.rowIndex,
+                  pi.prevStatus,
+                  {
+                    sourceVal: pi.sourceVal,
+                    urlVal: pi.urlVal,
+                    titleRaw: pi.titleRaw,
+                    bodyRaw: pi.bodyRaw,
+                  },
+                  errMsg,
+                  errMsg,
+                  errMsg
+                );
+                return;
+              }
+              const hA = String(o.headlineA || "").trim();
+              const hB = String(o.headlineBPrime || o.headlineB || "").trim();
+              const sm = String(o.summary || "").trim();
+
+              _applyOutputsToRow_(
+                sh,
+                pi.rowIndex,
+                pi.prevStatus,
+                {
+                  sourceVal: pi.sourceVal,
+                  urlVal: pi.urlVal,
+                  titleRaw: pi.titleRaw,
+                  bodyRaw: pi.bodyRaw,
+                },
+                hA || "",
+                hB || "",
+                sm || ""
+              );
+            });
+          } catch (e) {
+            const errMsg =
+              "ERROR: invalid JSON from Gemini: " +
+              String(resp).substring(0, 200);
+            promptItems.forEach(function (pi) {
+              _applyOutputsToRow_(
+                sh,
+                pi.rowIndex,
+                pi.prevStatus,
+                {
+                  sourceVal: pi.sourceVal,
+                  urlVal: pi.urlVal,
+                  titleRaw: pi.titleRaw,
+                  bodyRaw: pi.bodyRaw,
+                },
+                errMsg,
+                errMsg,
+                errMsg
+              );
+            });
+          }
+          p += chunk.length; // 1 or 2
+        }
       }
     }
 
