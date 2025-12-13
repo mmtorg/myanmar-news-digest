@@ -205,6 +205,13 @@ const COMMON_TRANSLATION_RULES = `
 - 原文に存在しない年を推測して付与することは禁止（例：2024年12月4日、202X年12月4日 など）。
 - どのような場合でも西暦を自動補完しない。
 
+【日付の年の自動補完を禁止（重要・汎用）】
+- 原文が英語またはビルマ語の場合も同様に、日付の「年」は原文に明示がある場合のみ出力する。
+- 原文内に「年あり日付」と「年なし日付」が混在しても、年なし日付に年を推測で付けてはならない。
+  例）原文に「March 2026」と「28 December」がある場合、要約で「2026年12月28日」としてはならない。
+- 「原文の別箇所に同じ年がある」ことは、年付与の根拠にならない。
+- 年を出力してよい条件：原文の同じ日付表現に年が結び付いている（例：2026年3月、March 2026、၂၀၂၆ ခုနှစ် မတ်လ、など）。
+
 【通貨換算ルール】
 このルールも記事タイトルと本文の翻訳に必ず適用してください。
 ※ただし、別途「見出し専用ルール」で指定がある場合は、そちらを優先すること。
@@ -381,9 +388,34 @@ const PROMPT_SELF_CHECK_RULE = `
 あなたは翻訳者であると同時に、翻訳ルールの監査者でもあります。
 以下の作業を必ず行ってから JSON を出力してください。
 
-1. このプロンプト内に記載されているすべての翻訳ルール
-   （用語統一、特殊訳語、選挙ルール、人物名ルール、団体名ルール、通貨換算ルールなど）
-   を一つずつ再確認すること。
+1. このプロンプト内に記載されている「すべてのルール」（翻訳ルール + 要約/出力形式ルール）を一つずつ再確認すること。
+   ※カテゴリ名の暗記ではなく、実際のルールブロックを上から順に見直すこと（抜け漏れ防止）。
+
+   【必ず確認するルールブロック（この順番）】
+   - COMMON_TRANSLATION_RULES（用語統一/中立化/引用/選挙/時制/日付/通貨/金額分解/数詞・単位 など）
+   - TITLE_OUTPUT_RULES（タイトル専用ルール：1行・ラベル禁止・表記制約・見出し専用の例外 など）
+   - SUMMARY_TASK（要約の構造/見出し/段落/空行/記号禁止/文字数上限 など）
+   - regions / region-glossary（用語集の強制訳：地域名などの固定訳があれば必ず優先）
+   - 出力形式(JSON)のルール（JSON以外を出さない、キー名固定、余計な注釈やコードブロック禁止 など）
+
+   【参考：翻訳ルールのカテゴリ（COMMON_TRANSLATION_RULES 内）】
+     用語統一ルール、
+     ミャンマー情勢に関する用語置き換えルール、
+     特殊訳語・文脈依存訳語ルール、
+     政党名・武装組織名の訳語ルール（USDP / BGF / DKBA / ピューソーティー等）、
+     人物名・肩書きルール、
+     団体名ルール、
+     中立的記述ルール（レッテル除去）、
+     引用・発言・スローガン保持ルール、
+     選挙に関する特例ルール、
+     時制表現の禁止ルール、
+     日付の扱いルール、
+     日付の年の自動補完を禁止、
+     通貨換算ルール、
+     金額分解ルール、
+     ミャンマー語の数詞・単位ルール（သိန်း／သန်း／ဘီလီယံ 等）
+   ）
+   を一つずつ再確認すること
 
 2. あなたが生成した翻訳結果が、上記「すべてのルール」に完全に従っているか自己点検すること。
 
@@ -514,7 +546,8 @@ ${COMMON_TRANSLATION_RULES}
 【見出しと構造化のルール】
 - 見出しを使う場合は \`[見出し名]\` の形式で出力してください。
 - 記事の内容が複数の論点や時系列の段階（例：発生・経過・現在の状況・今後の見通し）に分かれているなど、文量が一定以上ある場合は、なるべく \`[背景]\`\`[現在の状況]\`\`[影響]\` などの見出しを1〜3個程度付けて、構造がひと目で分かるようにしてください。
-- 一方で、本文全体が3〜4文程度で一続きの話題に収まっており、見出しがなくても十分に読みやすいと判断できる場合は、見出しなしの1ブロックの要約でもかまいません（無理に見出しを作らないこと）。
+- 一方で、本文全体が2〜3文程度で一続きの話題に収まっており、見出しを付ける必要がないと判断できる場合は、見出しは作らなくてもよい。
+  ただしこの場合でも、本文は段落に分けること。目安として、2〜3文ごとに1段落とし、段落と段落の間には空行を1行（改行2回）入れること
 - 見出しや箇条書きを用いて構造化する場合も、要約全体は最大500字以内に収めてください。
 - 見出しや箇条書きにはマークダウン記号（#, *, -）を使わず、単純なテキストだけで書いてください。
 
@@ -818,29 +851,133 @@ function normalizeSourceName_(s) {
   return out.toLowerCase();
 }
 
+/************************************************************
+ * APIキー ローテーション（メディア別） + 日次カウンタ（Pacific）
+ ************************************************************/
+
+// Gemini の日次リセットに合わせる（Pacific日付）
+function _todayKeyStrPacific_() {
+  return Utilities.formatDate(new Date(), "America/Los_Angeles", "yyyyMMdd");
+}
+
+// 1日単位の使用回数カウンタ（Script Properties）
+// propName例: "GEMINI_API_KEY_MIZZIMA"
+// counterKey例: "GEMINI_REQCOUNT_GEMINI_API_KEY_MIZZIMA_20251212"（Pacific日付）
+function _counterKeyForApiProp_(apiPropName) {
+  return "GEMINI_REQCOUNT_" + apiPropName + "_" + _todayKeyStrPacific_();
+}
+
+function _getReqCountToday_(apiPropName) {
+  const props = PropertiesService.getScriptProperties();
+  const k = _counterKeyForApiProp_(apiPropName);
+  return Number(props.getProperty(k) || "0");
+}
+
+function _incReqCountToday_(apiPropName) {
+  const props = PropertiesService.getScriptProperties();
+  const k = _counterKeyForApiProp_(apiPropName);
+  const cur = Number(props.getProperty(k) || "0");
+  props.setProperty(k, String(cur + 1));
+  return cur + 1;
+}
+
+/**
+ * メディアごとのローテ設定
+ * - キーの切替をしたいメディアだけ書く（それ以外は従来どおり単一キー）
+ * - baseKeys は「末尾（baseKey）」の配列（prefixはprod/devで自動）
+ *   例: prodなら "GEMINI_API_KEY_" + "MIZZIMA2" → Script Propertiesに GEMINI_API_KEY_MIZZIMA2 を用意
+ */
+const API_KEY_ROTATION_RULES = {
+  "khit thit": { baseKeys: ["KHITTHIT", "KHITTHIT2"], maxReqPerDayPerKey: 240 },
+  "khit thit media": {
+    baseKeys: ["KHITTHIT", "KHITTHIT2"],
+    maxReqPerDayPerKey: 240,
+  },
+  khitthit: { baseKeys: ["KHITTHIT", "KHITTHIT2"], maxReqPerDayPerKey: 240 }, // 念のため残してOK
+
+  dvb: { baseKeys: ["DVB", "DVB2"], maxReqPerDayPerKey: 240 },
+
+  gnlm: { baseKeys: ["GNLM", "GNLM2"], maxReqPerDayPerKey: 240 },
+  "global new light of myanmar": {
+    baseKeys: ["GNLM", "GNLM2"],
+    maxReqPerDayPerKey: 240,
+  }, // メディア表記ゆれ対策（任意）
+
+  "global new light of myanmar (国営紙)": {
+    baseKeys: ["GNLM", "GNLM2"],
+    maxReqPerDayPerKey: 240,
+  },
+
+  "popular myanmar": {
+    baseKeys: ["POPULARMYANMAR", "POPULARMYANMAR2"],
+    maxReqPerDayPerKey: 240,
+  },
+  "popular myanmar (国軍系メディア)": {
+    baseKeys: ["POPULARMYANMAR", "POPULARMYANMAR2"],
+    maxReqPerDayPerKey: 240,
+  },
+  popularmyanmar: {
+    baseKeys: ["POPULARMYANMAR", "POPULARMYANMAR2"],
+    maxReqPerDayPerKey: 240,
+  }, // 念のため残してOK
+};
+
+function _pickApiKeyPropNameWithRotation_(sheetName, sourceRaw) {
+  const prefix = SHEET_KEY_PREFIX_MAP[sheetName] || DEFAULT_PREFIX;
+  const norm = normalizeSourceName_(sourceRaw || "");
+
+  // ローテ設定が無いメディアは従来通り
+  const baseKeyDefault = SOURCE_KEY_BASE_MAP[norm] || DEFAULT_BASE_KEY;
+  const rule = API_KEY_ROTATION_RULES[norm];
+
+  if (!rule || !rule.baseKeys || rule.baseKeys.length === 0) {
+    return prefix + baseKeyDefault;
+  }
+
+  const maxPerKey = Number(rule.maxReqPerDayPerKey || 0);
+
+  // maxPerKey が 0 の場合は「常に先頭キー」を使う（設定ミスでも安全側）
+  if (maxPerKey <= 0) {
+    return prefix + rule.baseKeys[0];
+  }
+
+  // まだ上限未満のキーを優先して選ぶ
+  for (let i = 0; i < rule.baseKeys.length; i++) {
+    const apiPropName = prefix + rule.baseKeys[i];
+    const used = _getReqCountToday_(apiPropName);
+    if (used < maxPerKey) {
+      return apiPropName;
+    }
+  }
+
+  // 全部上限に達したら最後のキーを返す（エラーは呼び出し側で起きる想定）
+  return prefix + rule.baseKeys[rule.baseKeys.length - 1];
+}
+
 // シート名 & メディア名から API キーを取得
 function getApiKeyFromSheetAndSource_(sheetName, sourceRaw, usageTagOpt) {
   const scriptProps = PropertiesService.getScriptProperties();
 
-  const prefix = SHEET_KEY_PREFIX_MAP[sheetName] || DEFAULT_PREFIX;
-
-  const norm = normalizeSourceName_(sourceRaw || "");
-  const baseKey = SOURCE_KEY_BASE_MAP[norm] || DEFAULT_BASE_KEY;
-
-  const propName = prefix + baseKey;
+  // ★ ローテ考慮して「どの Script Property 名を使うか」を決める
+  const propName = _pickApiKeyPropNameWithRotation_(sheetName, sourceRaw);
   const apiKey = scriptProps.getProperty(propName);
 
-  // ★ ここで「どのキー名を使ったか」をログ出力（値そのものは出さない）
+  // ★ 使用回数を1加算（Pacific日付で日次リセット）
+  const newCount = _incReqCountToday_(propName);
+
+  // ログ（値そのものは出さない）
   const tag = usageTagOpt || sheetName || "unknown";
   const msg =
     "use apiKeyProp=" +
     propName +
-    " (baseKey=" +
-    baseKey +
+    " reqCountToday=" +
+    newCount +
+    " (sheet=" +
+    sheetName +
     ", sourceRaw=" +
     sourceRaw +
     ", norm=" +
-    norm +
+    normalizeSourceName_(sourceRaw || "") +
     ")";
 
   Logger.log("[gemini-key] " + msg);
@@ -877,30 +1014,51 @@ function _usageFromData_(data) {
     return obj && key in obj ? obj[key] : fallback;
   }
 
-  const promptTokens = _get(
-    usage,
-    "prompt_token_count",
-    _get(usage, "input_token_count", _get(usage, "input_tokens", 0))
-  );
-  const candTokens = _get(
-    usage,
-    "candidates_token_count",
-    _get(usage, "output_token_count", _get(usage, "output_tokens", 0))
-  );
-  const totalTokens = _get(
-    usage,
-    "total_token_count",
-    _get(usage, "total_tokens", (promptTokens || 0) + (candTokens || 0))
-  );
-  const cacheCreate = _get(usage, "cache_creation_input_token_count", 0);
-  const cacheRead = _get(usage, "cache_read_input_token_count", 0);
+  // prompt
+  const promptTokens =
+    _get(usage, "prompt_token_count", null) ??
+    _get(usage, "promptTokenCount", null) ??
+    _get(usage, "input_token_count", null) ??
+    _get(usage, "inputTokenCount", null) ??
+    _get(usage, "input_tokens", null) ??
+    _get(usage, "inputTokens", null) ??
+    0;
+
+  // candidates/output
+  const candTokens =
+    _get(usage, "candidates_token_count", null) ??
+    _get(usage, "candidatesTokenCount", null) ??
+    _get(usage, "output_token_count", null) ??
+    _get(usage, "outputTokenCount", null) ??
+    _get(usage, "output_tokens", null) ??
+    _get(usage, "outputTokens", null) ??
+    0;
+
+  // total
+  const totalTokens =
+    _get(usage, "total_token_count", null) ??
+    _get(usage, "totalTokenCount", null) ??
+    _get(usage, "total_tokens", null) ??
+    _get(usage, "totalTokens", null) ??
+    Number(promptTokens) + Number(candTokens);
+
+  // cache (存在しないことも多いので0でOK)
+  const cacheCreate =
+    _get(usage, "cache_creation_input_token_count", null) ??
+    _get(usage, "cacheCreationInputTokenCount", null) ??
+    0;
+
+  const cacheRead =
+    _get(usage, "cache_read_input_token_count", null) ??
+    _get(usage, "cacheReadInputTokenCount", null) ??
+    0;
 
   return {
-    prompt_token_count: promptTokens || 0,
-    candidates_token_count: candTokens || 0,
-    total_token_count: totalTokens || 0,
-    cache_creation_input_token_count: cacheCreate || 0,
-    cache_read_input_token_count: cacheRead || 0,
+    prompt_token_count: Number(promptTokens) || 0,
+    candidates_token_count: Number(candTokens) || 0,
+    total_token_count: Number(totalTokens) || 0,
+    cache_creation_input_token_count: Number(cacheCreate) || 0,
+    cache_read_input_token_count: Number(cacheRead) || 0,
   };
 }
 
@@ -956,6 +1114,36 @@ function _isRetriableError_(httpCode, data) {
   return hints.some(function (h) {
     return lower.indexOf(h) !== -1;
   });
+}
+
+// ===== グローバルスロットリング（Script Properties共有）=====
+// どのトリガー/実行経路でも、Gemini呼び出しを最低この間隔だけ空ける
+const GEMINI_GLOBAL_MIN_INTERVAL_MS = 20000; // 20秒（安全策）
+
+const _GEMINI_LAST_CALL_PROP = "GEMINI_LAST_CALL_MS";
+
+// 全実行（別トリガー含む）で共通の最小間隔を保証する
+function _throttleGeminiCallGlobal_() {
+  const props = PropertiesService.getScriptProperties();
+
+  // 直列化のために短時間ロック（Properties更新競合を避ける）
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30 * 1000);
+
+  try {
+    const now = Date.now();
+    const last = Number(props.getProperty(_GEMINI_LAST_CALL_PROP) || "0");
+    const waitMs = last
+      ? Math.max(0, GEMINI_GLOBAL_MIN_INTERVAL_MS - (now - last))
+      : 0;
+
+    if (waitMs > 0) Utilities.sleep(waitMs);
+
+    // 「次の人」がここから計算できるよう、呼び出し直前の時刻を記録
+    props.setProperty(_GEMINI_LAST_CALL_PROP, String(Date.now()));
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 /************************************************************
@@ -1047,13 +1235,17 @@ function callGeminiWithKey_(apiKey, prompt, usageTagOpt) {
   let lastErrorText = "";
 
   for (let attempt = 0; attempt < GEMINI_JS_MAX_RETRIES; attempt++) {
+    const promptChars = (prompt || "").length;
+    // processRowsBatch() の推定と同じロジックに統一
+    const estPromptTokens = estimateTokensFromChars_(promptChars);
     Logger.log(
-      "[gemini-call] try %s/%s tag=%s model=%s prompt_chars=%s",
+      "[gemini-call] try %s/%s tag=%s model=%s prompt_chars=%s est_prompt_tokens=%s",
       attempt + 1,
       GEMINI_JS_MAX_RETRIES,
       usageTag,
       model,
-      (prompt || "").length
+      promptChars,
+      estPromptTokens
     );
 
     _appendGeminiLog_(
@@ -1071,6 +1263,7 @@ function callGeminiWithKey_(apiKey, prompt, usageTagOpt) {
 
     let res;
     try {
+      _throttleGeminiCallGlobal_();
       res = UrlFetchApp.fetch(url, options);
     } catch (e) {
       // ネットワーク例外など
@@ -1165,10 +1358,32 @@ function callGeminiWithKey_(apiKey, prompt, usageTagOpt) {
         out.length
       );
 
+      // SUCCESSログに実トークンも付与（usageMetadata が無い場合は空）
+      let tok = "";
+      try {
+        const u = _usageFromData_(data);
+        if (u) {
+          tok =
+            " tokens(in=" +
+            u.prompt_token_count +
+            " out=" +
+            u.candidates_token_count +
+            " total=" +
+            u.total_token_count +
+            " cache=" +
+            u.cache_creation_input_token_count +
+            "/" +
+            u.cache_read_input_token_count +
+            ")";
+        }
+      } catch (e) {
+        tok = "";
+      }
+
       _appendGeminiLog_(
         "SUCCESS",
         usageTag,
-        "success model=" + model + " len(resp)=" + out.length
+        "success model=" + model + " len(resp)=" + out.length + tok
       );
 
       return out;
@@ -1533,6 +1748,163 @@ const STATUS_COL = 12; // L列 (ステータス列の列番号)
 // NG の最大試行回数（これ以上失敗したら「打ち切り完了」とみなす）
 const MAX_RETRY_COUNT = 3;
 
+// ============================================================
+// ★ バッチ化（キー別まとめ投げ）＋推定トークンで 1件/2件自動調整
+// ============================================================
+const MAX_ROWS_PER_GEMINI_BATCH = 2; // 上限2件
+
+// ★ 2行まとめ可否の判断は「トークン推定のみ」に統一
+// CSV分析の実測（1行 ≒ 19k〜23k in_tokens）から、精度優先なら 40k 推奨
+const BATCH_MAX_EST_INPUT_TOKENS = 40000;
+
+// ★ 文字数→トークン推定（あなたのログ実測に寄せるなら 1 token ≒ 1.7 chars が近い）
+// ※ここは将来ログの実測から調整してOK（例: 1.6〜2.0）
+const CHARS_PER_TOKEN_EST = 1.7;
+
+function estimateTokensFromChars_(nChars) {
+  return Math.ceil(Number(nChars || 0) / CHARS_PER_TOKEN_EST);
+}
+
+function estimateTokensFromText_(s) {
+  const t = (s || "").toString();
+  // ざっくり 1 token ≒ 4 chars を基準に、少し安全側に +10%
+  return Math.ceil((t.length / 4) * 1.1);
+}
+function estimateSourceTokens_(titleRaw, bodyRaw) {
+  return estimateTokensFromText_(titleRaw) + estimateTokensFromText_(bodyRaw);
+}
+// getApiKeyFromSheetAndSource_ と同じ判定で「Script Properties のキー名」を作る
+function _propNameForSheetAndSource_(sheetName, sourceRaw) {
+  const prefix = SHEET_KEY_PREFIX_MAP[sheetName] || DEFAULT_PREFIX;
+  const norm = normalizeSourceName_(sourceRaw || "");
+  const baseKey = SOURCE_KEY_BASE_MAP[norm] || DEFAULT_BASE_KEY;
+  return prefix + baseKey; // 例: GEMINI_API_KEY_MIZZIMA
+}
+
+// 2件まとめ用：配列(JSON)で返させるプロンプト
+function buildMultiTaskPromptForRows_(items) {
+  // items: [{id,titleRaw,bodyRaw,titleGlossaryRules,bodyGlossaryRules}]
+  const blocks = items
+    .map(function (it, idx) {
+      return `
+====================
+[ARTICLE ${idx + 1}]
+id: ${it.id}
+[記事タイトル]
+${it.titleRaw || ""}
+
+[記事本文]
+${it.bodyRaw || ""}
+
+--- Task1 見出しAルール ---
+${HEADLINE_PROMPT_1}
+【タイトル用 用語固定ルール】
+${it.titleGlossaryRules || "(なし)"}
+
+--- Task2 見出しB'ルール ---
+${HEADLINE_PROMPT_3}
+【本文用 用語固定ルール】
+${it.bodyGlossaryRules || "(なし)"}
+--- Task3 本文要約ルール ---
+${SUMMARY_TASK}
+【本文用 用語固定ルール】
+${it.bodyGlossaryRules || "(なし)"}
+`.trim();
+    })
+    .join("\n\n");
+
+  return `
+以下は複数のニュース記事です（最大2件）。
+各記事ごとに、次の3つの結果を同時に生成してください：
+1) 見出しA（タイトル翻訳ベース）
+2) 見出しB'（本文を読んで作る見出し）
+3) 本文要約
+
+${PROMPT_SELF_CHECK_RULE}
+
+【最終出力フォーマット（必須）】
+入力順のまま、JSON 配列を 1つだけ出力してください（それ以外の文字は一切出力しない）。
+
+[
+  {
+    "id": "入力の id をそのまま入れる",
+    "headlineA": "Task1 の見出しA",
+    "headlineBPrime": "Task2 の見出しB'",
+    "summary": "Task3 の本文要約"
+  }
+]
+
+制約:
+- 配列の要素数は入力記事数と一致させること
+- \`\`\`json などのコードブロック禁止。純粋な JSON テキストのみ
+
+${blocks}
+`.trim();
+}
+
+// processRow_ の「書き込み＋ステータス更新」部分を共通化（Gemini呼び出しはしない）
+function _applyOutputsToRow_(
+  sheet,
+  row,
+  prevStatus,
+  ctx,
+  headlineA,
+  headlineB2,
+  summaryJa
+) {
+  const colE = 5;
+  const colG = 7;
+  const colI = 9;
+  const colL = 12;
+
+  const titleRaw = ctx.titleRaw;
+  const bodyRaw = ctx.bodyRaw;
+
+  // 地域名ログ（既存と同じ）
+  logRegionUsageForRow_(sheet, row, {
+    sourceVal: ctx.sourceVal,
+    urlVal: ctx.urlVal,
+    titleRaw: titleRaw,
+    bodyRaw: bodyRaw,
+    headlineA: headlineA,
+    headlineB2: headlineB2,
+    summaryJa: summaryJa,
+  });
+
+  // 書き込み
+  sheet.getRange(row, colE).setValue(headlineA);
+  sheet.getRange(row, colG).setValue(headlineB2);
+  sheet.getRange(row, colI).setValue(summaryJa);
+
+  function isError_(val) {
+    return typeof val === "string" && val.indexOf("ERROR:") === 0;
+  }
+
+  if (!titleRaw && !bodyRaw) {
+    sheet.getRange(row, colL).setValue("EMPTY");
+    return;
+  }
+
+  const vE = sheet.getRange(row, colE).getValue();
+  const vG = sheet.getRange(row, colG).getValue();
+  const vI = sheet.getRange(row, colI).getValue();
+
+  const errors = [];
+  if (isError_(vE)) errors.push("E=" + String(vE));
+  if (isError_(vG)) errors.push("G=" + String(vG));
+  if (isError_(vI)) errors.push("I=" + String(vI));
+
+  let statusText = "";
+  if (errors.length === 0) {
+    statusText = "OK";
+  } else {
+    const prevCount = parseRetryCount_(prevStatus || "");
+    const newCount = prevCount + 1;
+    statusText = `NG(${newCount}): ` + errors.join(" / ");
+  }
+  sheet.getRange(row, colL).setValue(statusText);
+}
+
 /************************************************************
  * メール通知用設定
  ************************************************************/
@@ -1596,12 +1968,17 @@ function processRowsBatch() {
       const numCols = 14; // A〜N まで読む
       const values = sh.getRange(startRow, 1, numRows, numCols).getValues();
 
+      // ★ まず処理対象を集めて、propName(APIキー)ごとにグループ化
+      const groups = {}; // propName -> items[]
+      const groupOrder = []; // 登場順
+
       for (let i = 0; i < numRows; i++) {
         if (remaining <= 0) break;
 
         const rowIndex = startRow + i;
         const row = values[i];
 
+        const sourceVal = row[3 - 1]; // C列
         const titleRaw = row[13 - 1]; // M列 (13)
         const bodyRaw = row[14 - 1]; // N列 (14)
         const status = (row[STATUS_COL - 1] || "").toString(); // L列 (STATUS_COL=12)
@@ -1650,10 +2027,219 @@ function processRowsBatch() {
         // 処理開始マーク
         sh.getRange(rowIndex, STATUS_COL).setValue("RUNNING");
 
-        // 実際の1行処理（prevStatus を渡す）
-        processRow_(sh, rowIndex, prevStatus);
+        const propName = _pickApiKeyPropNameWithRotation_(
+          sheetName,
+          sourceVal || ""
+        );
+        if (!groups[propName]) {
+          groups[propName] = [];
+          groupOrder.push(propName);
+        }
+        groups[propName].push({
+          rowIndex: rowIndex,
+          prevStatus: prevStatus,
+          sourceVal: sourceVal || "",
+          titleRaw: titleRaw || "",
+          bodyRaw: bodyRaw || "",
+          urlVal: row[10 - 1] || "", // J列
+        });
 
-        remaining--;
+        remaining--; // 行数上限は従来どおり行単位で消費
+      }
+
+      // ★ グループごとに「最大2件」＋「推定トークン予算」で詰めて Geminiへ
+      for (let gi = 0; gi < groupOrder.length; gi++) {
+        const propName = groupOrder[gi];
+        const items = groups[propName] || [];
+        if (!items.length) continue;
+
+        let p = 0;
+        while (p < items.length) {
+          const first = items[p];
+          // まずは1件
+          let chunk = [first];
+
+          // 2件案があるなら「2件にした場合の推定input tokens」で判定する（トークンのみ）
+          if (p + 1 < items.length) {
+            const second = items[p + 1];
+
+            // 2件ぶんの promptItems を一旦作って batchPrompt を組み、推定トークンを算出
+            const promptItems2 = [first, second].map(function (it) {
+              const regionRulesTitle = buildRegionRulesForTitle_(
+                it.titleRaw || ""
+              );
+              const regionRulesBody = buildRegionRulesForBody_(
+                it.bodyRaw || ""
+              );
+              const titleGlossaryRules = regionRulesTitle;
+              const bodyGlossaryRules = regionRulesTitle + regionRulesBody;
+              return {
+                id: String(it.rowIndex),
+                rowIndex: it.rowIndex,
+                prevStatus: it.prevStatus,
+                sourceVal: it.sourceVal,
+                urlVal: it.urlVal,
+                titleRaw: it.titleRaw,
+                bodyRaw: it.bodyRaw,
+                titleGlossaryRules: titleGlossaryRules || "",
+                bodyGlossaryRules: bodyGlossaryRules || "",
+              };
+            });
+
+            const batchPrompt2 = buildMultiTaskPromptForRows_(promptItems2);
+            const estInTokens2 = estimateTokensFromChars_(
+              (batchPrompt2 || "").length
+            );
+
+            // ★ここが唯一の判断基準：推定 input tokens
+            if (estInTokens2 <= BATCH_MAX_EST_INPUT_TOKENS) {
+              chunk = [first, second];
+            }
+          }
+
+          const promptItems = chunk.map(function (it) {
+            const regionRulesTitle = buildRegionRulesForTitle_(
+              it.titleRaw || ""
+            );
+            const regionRulesBody = buildRegionRulesForBody_(it.bodyRaw || "");
+            const titleGlossaryRules = regionRulesTitle;
+            const bodyGlossaryRules = regionRulesTitle + regionRulesBody;
+            return {
+              id: String(it.rowIndex),
+              rowIndex: it.rowIndex,
+              prevStatus: it.prevStatus,
+              sourceVal: it.sourceVal,
+              urlVal: it.urlVal,
+              titleRaw: it.titleRaw,
+              bodyRaw: it.bodyRaw,
+              titleGlossaryRules: titleGlossaryRules || "",
+              bodyGlossaryRules: bodyGlossaryRules || "",
+            };
+          });
+
+          const batchPrompt = buildMultiTaskPromptForRows_(promptItems);
+          const n = promptItems.length;
+          const tagBatch =
+            sheetName +
+            "#rows" +
+            promptItems.map((x) => x.rowIndex).join(",") +
+            ":EGI(multi2:auto|n=" +
+            n +
+            ")";
+
+          // 代表1件目のsourceでキー取得（propNameで既にグループ化しているのでOK）
+          const apiKey = getApiKeyFromSheetAndSource_(
+            sheetName,
+            chunk[0].sourceVal,
+            tagBatch
+          );
+          const resp = callGeminiWithKey_(apiKey, batchPrompt, tagBatch);
+          // API呼び出し自体がエラーなら全員同じエラー
+          if (typeof resp === "string" && resp.indexOf("ERROR:") === 0) {
+            promptItems.forEach(function (pi) {
+              _applyOutputsToRow_(
+                sh,
+                pi.rowIndex,
+                pi.prevStatus,
+                {
+                  sourceVal: pi.sourceVal,
+                  urlVal: pi.urlVal,
+                  titleRaw: pi.titleRaw,
+                  bodyRaw: pi.bodyRaw,
+                },
+                resp,
+                resp,
+                resp
+              );
+            });
+            p += chunk.length;
+            continue;
+          }
+
+          // JSON配列をパースして id=rowIndex で突合
+          try {
+            let cleaned = (resp || "").trim();
+            if (cleaned.startsWith("```")) {
+              cleaned = cleaned.replace(/^```[a-zA-Z]*\s*/, "");
+              const lastFence = cleaned.lastIndexOf("```");
+              if (lastFence !== -1) cleaned = cleaned.substring(0, lastFence);
+              cleaned = cleaned.trim();
+            }
+
+            const arr = JSON.parse(cleaned);
+            const byId = {};
+            if (Array.isArray(arr)) {
+              arr.forEach(function (o) {
+                if (!o) return;
+                const id = String(o.id || "");
+                byId[id] = o;
+              });
+            }
+            promptItems.forEach(function (pi) {
+              const o = byId[String(pi.rowIndex)] || null;
+              if (!o) {
+                const errMsg =
+                  "ERROR: invalid JSON array from Gemini (missing id=" +
+                  pi.rowIndex +
+                  ")";
+                _applyOutputsToRow_(
+                  sh,
+                  pi.rowIndex,
+                  pi.prevStatus,
+                  {
+                    sourceVal: pi.sourceVal,
+                    urlVal: pi.urlVal,
+                    titleRaw: pi.titleRaw,
+                    bodyRaw: pi.bodyRaw,
+                  },
+                  errMsg,
+                  errMsg,
+                  errMsg
+                );
+                return;
+              }
+              const hA = String(o.headlineA || "").trim();
+              const hB = String(o.headlineBPrime || o.headlineB || "").trim();
+              const sm = String(o.summary || "").trim();
+
+              _applyOutputsToRow_(
+                sh,
+                pi.rowIndex,
+                pi.prevStatus,
+                {
+                  sourceVal: pi.sourceVal,
+                  urlVal: pi.urlVal,
+                  titleRaw: pi.titleRaw,
+                  bodyRaw: pi.bodyRaw,
+                },
+                hA || "",
+                hB || "",
+                sm || ""
+              );
+            });
+          } catch (e) {
+            const errMsg =
+              "ERROR: invalid JSON from Gemini: " +
+              String(resp).substring(0, 200);
+            promptItems.forEach(function (pi) {
+              _applyOutputsToRow_(
+                sh,
+                pi.rowIndex,
+                pi.prevStatus,
+                {
+                  sourceVal: pi.sourceVal,
+                  urlVal: pi.urlVal,
+                  titleRaw: pi.titleRaw,
+                  bodyRaw: pi.bodyRaw,
+                },
+                errMsg,
+                errMsg,
+                errMsg
+              );
+            });
+          }
+          p += chunk.length; // 1 or 2
+        }
       }
     }
 
