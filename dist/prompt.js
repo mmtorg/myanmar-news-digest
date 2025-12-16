@@ -670,7 +670,8 @@ ${PROMPT_SELF_CHECK_RULE}
 - 特に、\`\`\`json 〜 \`\`\` のようなコードブロックで囲まず
   純粋な JSON テキストのみを出力すること。
 - JSON 全体としては 1 つのオブジェクトだけを出力すればよい。summary の値の中では、
-  「【要約】」「[見出し]」「・箇条書き」などのために改行（\n）を自由に使ってよい。
+  「【要約】」「[見出し]」「・箇条書き」などのために改行が必要な場合は、
+   JSON文字列を壊さないように **実改行は使わず**、必ず "\\n"（バックスラッシュ+n の2文字）として出力すること。
 `;
 }
 
@@ -1499,6 +1500,13 @@ function callGeminiWithKey_(apiKey, prompt, usageTagOpt) {
  *   - I列: 本文要約（STEP3_TASK）
  ************************************************************/
 
+// JSON内に "\\n" として入ってきた改行表現を、表示用に実改行へ戻す
+function decodeJsonNewlines_(s) {
+  const t = String(s == null ? "" : s);
+  // まず \\r\\n を優先して \n に寄せる
+  return t.replace(/\\r\\n/g, "\n").replace(/\\n/g, "\n");
+}
+
 function processRow_(sheet, row, prevStatus) {
   const colC = 3; // メディア
   const colM = 13; // タイトル原文
@@ -1586,7 +1594,7 @@ function processRow_(sheet, row, prevStatus) {
         headlineB2 = (obj.headlineBPrime || obj.headlineB || "")
           .toString()
           .trim();
-        summaryJa = (obj.summary || "").toString().trim();
+        summaryJa = decodeJsonNewlines_((obj.summary || "").toString().trim());
 
         // ★ 円換算表記（約◯◯円）を機械側で矯正（再発防止）
         summaryJa = fixKyatYenInText_(summaryJa);
@@ -2309,7 +2317,7 @@ function processRowsBatch() {
               }
               const hA = String(o.headlineA || "").trim();
               const hB = String(o.headlineBPrime || o.headlineB || "").trim();
-              const sm = String(o.summary || "").trim();
+              const sm = decodeJsonNewlines_(String(o.summary || "").trim());
 
               _applyOutputsToRow_(
                 sh,
