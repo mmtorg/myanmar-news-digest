@@ -1799,9 +1799,10 @@ function formatYenJa_(yenInt) {
   if (oku) out += oku + "億";
   if (man) out += man + "万";
 
-  // 兆/億/万があるとき：円端数がある場合のみ「円」を付ける（既存ルール例に合わせる）
+  // 兆/億/万がある場合でも、最終的に必ず「円」で終わらせる
   if (cho || oku || man) {
     if (en) out += en + "円";
+    else out += "円"; // ★ 端数0でも「円」を付ける
   } else {
     // 1万円未満は "123円" の形
     out = String(en) + "円";

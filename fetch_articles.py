@@ -3914,10 +3914,12 @@ def format_yen_ja(yen_int: int) -> str:
     if man:
         out += f"{man}万"
 
-    # 兆・億・万がある場合は円端数があるときのみ円を付ける
+    # 兆・億・万がある場合でも、必ず最終的に「円」で終わらせる
     if cho or oku or man:
         if en:
             out += f"{en}円"
+        else:
+            out += "円"
     else:
         out = f"{en}円"
 
