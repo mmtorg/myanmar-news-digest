@@ -3,7 +3,7 @@ from bs4 import BeautifulSoup
 from datetime import datetime, timedelta, timezone, date
 from dateutil.parser import parse as parse_date
 import re
-
+import math
 import os
 import sys
 from email.message import EmailMessage
@@ -3876,6 +3876,101 @@ def build_prompt(item: dict, *, skip_filters: bool, body_max: int) -> str:
     # ルール → 入力、の順でプロンプトを構成
     return header + pre + STEP3_TASK + rg_title + rg_body + term_rules + "\n" + input_block
 
+# ============================================================
+# 通貨換算・金額分解（Python版・機械固定）
+# ============================================================
+
+KYAT_TO_YEN_RATE = 0.039  # 固定
+
+def kyat_to_yen_int(kyat_int: int) -> int:
+    """1チャット=0.039円、四捨五入"""
+    return int(round(kyat_int * KYAT_TO_YEN_RATE))
+
+
+def format_yen_ja(yen_int: int) -> str:
+    """
+    例:
+      21060000000 -> '210億6000万円'
+      987654321   -> '9億8765万4321円'
+    """
+    y = abs(int(yen_int))
+
+    T = 1000000000000  # 兆
+    O = 100000000      # 億
+    M = 10000          # 万
+
+    cho = y // T
+    y %= T
+    oku = y // O
+    y %= O
+    man = y // M
+    en  = y % M
+
+    out = ""
+    if cho:
+        out += f"{cho}兆"
+    if oku:
+        out += f"{oku}億"
+    if man:
+        out += f"{man}万"
+
+    # 兆・億・万がある場合は円端数があるときのみ円を付ける
+    if cho or oku or man:
+        if en:
+            out += f"{en}円"
+    else:
+        out = f"{en}円"
+
+    return out or "0円"
+
+
+def parse_ja_kyat_to_int(text: str) -> int:
+    """
+    '5400億チャット'
+    '1兆2345億6789万チャット'
+    -> int チャット
+    """
+    t = re.sub(r"[,\s，]", "", text)
+    t = re.sub(r"チャット.*$", "", t)
+
+    rest = t
+    total = 0
+
+    def take(unit_char: str, unit_value: int):
+        nonlocal rest, total
+        if unit_char in rest:
+            num, rest2 = rest.split(unit_char, 1)
+            total += int(num or 0) * unit_value
+            rest = rest2
+
+    # 兆 → 億 → 万 の順で必ず処理
+    take("兆", 1000000000000)
+    take("億", 100000000)
+    take("万", 10000)
+
+    if rest:
+        total += int(rest or 0)
+
+    return total
+
+
+def fix_kyat_yen_in_text(text: str) -> str:
+    """
+    '◯◯チャット（約◯◯円）' の円表記を必ず再計算して置換
+    """
+    if not text:
+        return text
+
+    pattern = re.compile(r"([0-9０-９兆億万,\s，]+チャット)（約[^）]*円）")
+
+    def repl(m):
+        kyat_part = m.group(1)
+        kyat_int = parse_ja_kyat_to_int(kyat_part)
+        yen_int = kyat_to_yen_int(kyat_int)
+        yen_ja = format_yen_ja(yen_int)
+        return f"{kyat_part}（約{yen_ja}）"
+
+    return pattern.sub(repl, text)
 
 # 超要約を先に抜く処理
 def _normalize_heading_text(s: str) -> str:
@@ -4354,7 +4449,9 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
             if isinstance(arr, list):
                 for x in arr:
                     if isinstance(x, dict) and x.get("url") == url:
-                        return (x.get("body_ja") or "").strip()
+                        bj = (x.get("body_ja") or "").strip()
+                        bj = fix_kyat_yen_in_text(bj)
+                        return bj
         except Exception as e:
             print("[warn] fulltext single retry failed:", e)
         return ""
@@ -4438,6 +4535,9 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
 
                 body_ja = _apply_term_glossary_to_output(body_ja, src=body_src, prefer="body_ja")
 
+                # ★ 円換算表記（約◯◯円）を機械的に矯正（再発防止）
+                body_ja = fix_kyat_yen_in_text(body_ja)
+
                 # ★ fallback だったかどうかを結果に乗せておく
                 results.append({
                     "url":       b["url"],
@@ -4448,6 +4548,8 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
             print("🛑 fulltext batch failed:", e)
             for b in batch:
                 bj = _apply_term_glossary_to_output(b["body"], src=b["body"], prefer="body_ja")
+                bj = _apply_term_glossary_to_output(b["body"], src=b["body"], prefer="body_ja")
+                bj = fix_kyat_yen_in_text(bj)
                 # ★ バッチそのものが失敗したので、各URLは確実に単体再翻訳に回す
                 results.append({
                     "url":       b["url"],
@@ -4480,9 +4582,9 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
 
                 fixed = _single_fulltext_retry(url, raw_body, max_chars=FULLTEXT_MAX_CHARS)
                 if fixed and _contains_cjk(fixed):
-                    results[j]["body_ja"] = _apply_term_glossary_to_output(
-                        fixed, src=raw_body, prefer="body_ja"
-                    )
+                    repaired = _apply_term_glossary_to_output(fixed, src=raw_body, prefer="body_ja")
+                    repaired = fix_kyat_yen_in_text(repaired)
+                    results[j]["body_ja"] = repaired
                     print(f"[ok] repaired fulltext via single retry: {url}")
                 time.sleep(0.6)
 
