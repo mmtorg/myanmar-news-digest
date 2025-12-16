@@ -337,18 +337,31 @@ const COMMON_TRANSLATION_RULES = `
 ＜解釈ルール＞
 - 「◯◯ ဘီလီယံ」「ဘီလီယံ ◯◯」「◯◯ဘီလီယံ」「ဘီလီယံ◯◯」
   → いずれも「◯◯ × 10億チャット」と解釈する。
+- 重要：N が 1000 以上の場合は、日本語表記では必ず「兆」が立つ。
 
 ＜例（ビルマ数字）＞
 - 「ဘီလီယံ ၅」「၅ ဘီလီယံ」「၅ဘီလီယံ」「ဘီလီယံ၅」
   → 5 × 10億 ＝ 50億チャット
-- 「ဘီလီယံ ၅၄၀」「၅၄０ ဘီလီယံ」「၅၄０ဘီလီယံ」
+- 「ဘီလီယံ ၅၄၀」「၅၄၀ ဘီလီယံ」「၅၄၀ဘီလီယံ」
   → 540 × 10億 ＝ 5,400億チャット
+- 「ဘီလီယံ ၁၀၀၀」 → 1兆0億チャット
+- 「ဘီလီယံ ၅၃၂၉」 → 5兆3,290億チャット
+- 「ဘီလီယံ ၅၉၂၃」 → 5兆9,230億チャット
+- 「၁၀၆၈ ဒသမ ၆၆ ဘီလီယံ」 → 1兆686億6000万チャット
 
 ＜例（アラビア数字）＞
 - 「ဘီလီယံ 5」「5 ဘီလီယံ」「5ဘီလီယံ」
   → 5 × 10億 ＝ 50億チャット
 - 「ဘီလီယံ 540」「540 ဘီလီယံ」「540ဘီလီယံ」
   → 540 × 10億 ＝ 5,400億チャット
+- 「ဘီလီယံ 1000」「1000 ဘီလီယံ」「1000ဘီလီယံ」
+  → 1000 × 10億 ＝ 1兆0億チャット
+- 「ဘီလီယံ 5329」「5329 ဘီလီယံ」「5329ဘီလီယံ」
+  → 5329 × 10億 ＝ 5兆3,290億チャット
+- 「ဘီလီယံ 5923」「5923 ဘီလီယံ」「5923ဘီလီယံ」
+  → 5923 × 10億 ＝ 5兆9,230億チャット
+- 「1068.66 ဘီလီယံ」「ဘီလီယံ 1068.66」
+  → 1068.66 × 10億 ＝ 1兆686億6000万チャット
 
 ＜日本語への表記ルール（重要）＞
 - 「◯◯ ဘီလီယံ」などを日本語に訳すときは、金額部分を必ず
@@ -356,6 +369,10 @@ const COMMON_TRANSLATION_RULES = `
 - 例：
   - 「ဘီလီယံ ၅」 → 50億チャット
   - 「ဘီလီယံ ၅၄၀」 → 5,400億チャット
+  - 「ဘီလီယံ ၁၀၀၀」 → 1兆0億チャット（= 1000 × 10億）
+  - 「ဘီလီယံ ၅၃၂၉」 → 5兆3,290億チャット（= 5329 × 10億）
+  - 「ဘီလီယံ ၅၉၂၃」 → 5兆9,230億チャット（= 5923 × 10億）
+  - 「၁၀၆၈ ဒသမ ၆၆ ဘီလီယံ」 → 1兆686億6000万チャット（= 1068.66 × 10億）
 - 絶対に「N ဘီလီယံ」を「N億チャット」などへ短縮してはいけない
   （本来は「N × 10億チャット」である点を必ず保持すること）。
 - 円併記が必要な場合も、まず正しいチャット建て（10億 × N）を計算し、
@@ -1571,6 +1588,9 @@ function processRow_(sheet, row, prevStatus) {
           .trim();
         summaryJa = (obj.summary || "").toString().trim();
 
+        // ★ 円換算表記（約◯◯円）を機械側で矯正（再発防止）
+        summaryJa = fixKyatYenInText_(summaryJa);
+
         headlineA = headlineA || "";
         headlineB2 = headlineB2 || "";
         summaryJa = summaryJa || "";
@@ -1765,6 +1785,92 @@ function estimateTokensFromChars_(nChars) {
   return Math.ceil(Number(nChars || 0) / CHARS_PER_TOKEN_EST);
 }
 
+// ============================================================
+// 通貨換算・金額分解を機械側で固定（円表記の再発防止）
+// ============================================================
+
+// 1チャット=0.039円、四捨五入
+function kyatToYenInt_(kyatInt) {
+  return Math.round(Number(kyatInt) * 0.039);
+}
+
+// 例: 21060000000 -> "210億6000万円" / 987654321 -> "9億8765万4321円"
+function formatYenJa_(yenInt) {
+  let y = Math.round(Number(yenInt) || 0);
+  const sign = y < 0 ? "-" : "";
+  y = Math.abs(y);
+
+  const T = 1000000000000; // 兆
+  const O = 100000000; // 億
+  const M = 10000; // 万
+
+  const cho = Math.floor(y / T);
+  y = y % T;
+  const oku = Math.floor(y / O);
+  y = y % O;
+  const man = Math.floor(y / M);
+  const en = y % M;
+
+  let out = "";
+  if (cho) out += cho + "兆";
+  if (oku) out += oku + "億";
+  if (man) out += man + "万";
+
+  // 兆/億/万がある場合でも、最終的に必ず「円」で終わらせる
+  if (cho || oku || man) {
+    if (en) out += en + "円";
+    else out += "円"; // ★ 端数0でも「円」を付ける
+  } else {
+    // 1万円未満は "123円" の形
+    out = String(en) + "円";
+  }
+
+  return sign + (out || "0円");
+}
+
+// 例: "5400億チャット" / "1兆2345億6789万チャット" -> 整数チャット
+function parseJaKyatToInt_(s) {
+  const t = String(s || "")
+    .replace(/[,，\s]/g, "")
+    .replace(/チャット.*/, "");
+
+  let rest = t;
+  let total = 0;
+
+  function takeUnit(unitChar, unitValue) {
+    const idx = rest.indexOf(unitChar);
+    if (idx === -1) return;
+    const numStr = rest.slice(0, idx);
+    const n = Number(numStr || 0);
+    total += n * unitValue;
+    rest = rest.slice(idx + 1);
+  }
+
+  // 兆→億→万 の順で機械的に処理
+  takeUnit("兆", 1000000000000);
+  takeUnit("億", 100000000);
+  takeUnit("万", 10000);
+
+  // 残りが数字なら（単位なし）として加算
+  if (rest) total += Number(rest || 0);
+
+  return total;
+}
+
+// "◯◯チャット（約◯◯円）" の円側を必ず正しい表記へ矯正
+function fixKyatYenInText_(text) {
+  const s = String(text || "");
+  return s.replace(
+    /([0-9０-９,，\s兆億万]+チャット)（約[^）]*円）/g,
+    function (_m, kyatPart) {
+      const kyatInt = parseJaKyatToInt_(kyatPart);
+      const yenInt = kyatToYenInt_(kyatInt);
+      const yenJa = formatYenJa_(yenInt);
+      return kyatPart + "（約" + yenJa + "）";
+    }
+  );
+}
+
 function estimateTokensFromText_(s) {
   const t = (s || "").toString();
   // ざっくり 1 token ≒ 4 chars を基準に、少し安全側に +10%
@@ -1870,6 +1976,9 @@ function _applyOutputsToRow_(
     headlineB2: headlineB2,
     summaryJa: summaryJa,
   });
+
+  // ★ 円換算表記（約◯◯円）を機械側で矯正（再発防止）
+  summaryJa = fixKyatYenInText_(summaryJa);
 
   // 書き込み
   sheet.getRange(row, colE).setValue(headlineA);
