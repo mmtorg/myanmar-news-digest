@@ -29,7 +29,6 @@ from email.policy import SMTP
 from email.header import Header
 import xml.etree.ElementTree as ET
 from urllib.parse import urljoin
-from email.message import EmailMessage
 import logging
 from types import SimpleNamespace
 
@@ -99,8 +98,8 @@ def _nl2br(s: str) -> str:
     return s.replace("\n", "<br>")
 
 # ========= Gemini リトライ調整用の定数 =========
-GEMINI_MAX_RETRIES = 4          # 既定 7 → 4
-GEMINI_BASE_DELAY = 120.0        # 既定 10.0 → 120.0
+GEMINI_MAX_RETRIES = 2          # 既定 4 → 2
+GEMINI_BASE_DELAY = 60.0        # 既定 120.0 → 60.0
 GEMINI_MAX_DELAY = 1200.0        # 既定 120.0 → 1200.0
 
 # 翻訳のバッチサイズ（瞬間負荷を下げる）
@@ -563,11 +562,49 @@ def call_llm_with_fallback(
             ) from e
 
         logging.warning(f"[fallback] Gemini failed; switching to OpenAI model={openai_model}. reason={e}")
-        r = _OPENAI_CLIENT.responses.create(
+        txt = openai_call_with_retry_(
+            _OPENAI_CLIENT,
             model=openai_model,
-            input=prompt,
+            input_text=prompt,
+            usage_tag=usage_tag,
+            max_tries=2,      # Gemini→GPTフォールバック時のGPT側リトライ回数
+            sleep_sec=10.0,   # 安全側（必要なら 3〜10秒で調整）
         )
-        return SimpleNamespace(text=r.output_text)
+        return SimpleNamespace(text=(txt or ""))
+
+def openai_call_with_retry_(
+    openai_client,
+    *,
+    model: str,
+    input_text: str,
+    usage_tag: str = "",
+    max_tries: int = 2,
+    sleep_sec: float = 10.0,
+):
+    """
+    OpenAI Responses API を呼び、例外が出たら最大 max_tries 回まで再試行する。
+    - 目的: Gemini→GPTフォールバック時の一時的な失敗（5xx/429/ネットワーク等）に耐える
+    """
+    last_err = None
+    for i in range(max_tries):
+        try:
+            r = openai_client.responses.create(
+                model=model,
+                input=input_text,
+            )
+            text = getattr(r, "output_text", None) or ""
+            # 空文字が返るのも失敗扱いにして再試行したいなら次の2行を有効化
+            if not text.strip():
+                raise RuntimeError("OpenAI returned empty output_text")
+            return text
+        except Exception as e:
+            last_err = e
+            logging.warning(f"[warn] OpenAI retry {i+1}/{max_tries} failed (tag={usage_tag}) err={e}")
+            if i < max_tries - 1:
+                time.sleep(sleep_sec)
+
+    raise last_err
+
 
 # 要約用に送る本文の最大文字数（固定）
 # Irrawaddy英語記事が3500文字くらいある
@@ -4465,8 +4502,38 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
                 model="gemini-2.5-flash",
                 usage_tag="fulltext-retry",
             )
-            text = getattr(resp, "text", None) or ""
-            arr  = _safe_json_loads_extract(text)
+
+            llm_text = getattr(resp, "text", None) or ""
+            try:
+                arr = _safe_json_loads_extract(llm_text)
+            except Exception as e_json:
+                # Geminiは返ってきたがJSON抽出に失敗 → GPTで同一プロンプトを再試行
+                logging.warning(f"[warn] fulltext retry: invalid JSON from Gemini; switching to GPT. url={url} err={e_json}")
+                if not _OPENAI_CLIENT:
+                    raise RuntimeError(
+                        "JSON extraction failed from Gemini response, and OPENAI_API_KEY is not set (or openai SDK not available)."
+                    ) from e_json
+
+                last_err = None
+                arr = None
+                # GPT側: OpenAI API例外リトライ（max_tries）に寄せ、外側の二重ループはやめる
+                try:
+                    gpt_text = openai_call_with_retry_(
+                        _OPENAI_CLIENT,
+                        model="gpt-5-mini",      # ここを固定（必要なら環境変数化）
+                        input_text=prompt,
+                        usage_tag="fulltext-retry",
+                        max_tries=2,              # OpenAI API自体の例外リトライ
+                        sleep_sec=10.0,
+                    )
+                    arr = _safe_json_loads_extract(gpt_text)   # JSON抽出できたら成功
+                except Exception as e_gpt:
+                    logging.warning(
+                        f"[warn] fulltext retry failed on BOTH Gemini(JSON-extract) and GPT retry. "
+                        f"url={url} gemini_err={e_json} gpt_err={e_gpt}"
+                    )
+                    raise
+
             if isinstance(arr, dict):
                 arr = [arr]
             if isinstance(arr, list):
@@ -4476,7 +4543,7 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
                         bj = fix_kyat_yen_in_text(bj)
                         return bj
         except Exception as e:
-            print("[warn] fulltext single retry failed:", e)
+            logging.warning(f"[warn] fulltext single retry failed. url={url} err={e}")
         return ""
 
     # --- 1) 前処理（クレンジング＋6000字上限） ---
@@ -4570,7 +4637,6 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
         except Exception as e:
             print("🛑 fulltext batch failed:", e)
             for b in batch:
-                bj = _apply_term_glossary_to_output(b["body"], src=b["body"], prefer="body_ja")
                 bj = _apply_term_glossary_to_output(b["body"], src=b["body"], prefer="body_ja")
                 bj = fix_kyat_yen_in_text(bj)
                 # ★ バッチそのものが失敗したので、各URLは確実に単体再翻訳に回す
