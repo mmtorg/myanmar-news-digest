@@ -1968,7 +1968,7 @@ function _clearLogSheetFor_(sheetName) {
   // ※書式も消したければ sh.clear(); に変更
 }
 
-// ミャンマー時間 16:00〜翌 2:00 の間だけ true を返す
+// ミャンマー時間 16:00〜翌 1:00 の間だけ true を返す
 function isWithinProcessingWindow_() {
   // appsscript.json の timeZone が "Asia/Yangon" になっている前提
   const now = new Date();
@@ -1977,7 +1977,7 @@ function isWithinProcessingWindow_() {
   const t = h * 60 + m; // その日の 0:00 からの経過分数
 
   const START = 16 * 60; // 16:00 → 960 分
-  const END = 2 * 60; // 02:00 → 120 分
+  const END = 1 * 60; // 01:00 → 60 分
 
   // 日付をまたぐウィンドウの判定:
   // 16:00〜24:00 か 0:00〜2:00 のどちらかなら OK
@@ -2867,7 +2867,7 @@ function checkAndNotifyAllDoneIfNeededForSheet_(sheetName) {
     "」で" +
     bStr +
     "分の記事収集が完了しました。\n\n" +
-    "翌 02:00 までにスプレッドシートを更新してください。\n\n" +
+    "翌 01:00 までにスプレッドシートを更新してください。\n\n" +
     "スプレッドシートURL:\n" +
     ssUrl +
     "\n";

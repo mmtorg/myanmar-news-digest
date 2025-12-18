@@ -2,8 +2,8 @@ name: Daily Myanmar News Alert Sheet Pipeline — Send
 
 on:
   schedule:
-    # 03:38 MMT = 21:08 UTC（前日）
-    - cron: "8 21 * * *"
+    # 02:38 MMT = 20:08 UTC（前日）
+    - cron: "8 20 * * *"
   workflow_dispatch:
     inputs:
       send_time_mmt:
