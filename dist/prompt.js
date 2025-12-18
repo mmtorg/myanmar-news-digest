@@ -1891,7 +1891,7 @@ function processRow_(sheet, row, prevStatus) {
   let statusText = "";
 
   if (errors.length === 0) {
-    statusText = "OK";
+    statusText = useGpt ? "OK(GPT)" : "OK";
   } else {
     // 呼び出し元から渡された「前回までのステータス」から回数を計算
     const retryKind = useGpt ? "GPTNG" : "NG";
@@ -2018,7 +2018,7 @@ const MAX_ROWS_PER_RUN = 5; // 1回の実行で処理する最大行数
 const STATUS_COL = 12; // L列 (ステータス列の列番号)
 
 // NG の最大試行回数（これ以上失敗したら「打ち切り完了」とみなす）
-const MAX_RETRY_COUNT = 3;
+const MAX_RETRY_COUNT = 2;
 
 // ============================================================
 // ★ バッチ化（キー別まとめ投げ）＋推定トークンで 1件/2件自動調整
@@ -2298,7 +2298,7 @@ function _applyOutputsToRow_(
 
   let statusText = "";
   if (errors.length === 0) {
-    statusText = "OK";
+    statusText = retryKindOpt === "GPTNG" ? "OK(GPT)" : "OK";
   } else {
     const retryKind = retryKindOpt || "NG";
     const prevCount =
