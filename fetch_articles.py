@@ -4032,6 +4032,31 @@ def fix_kyat_yen_in_text(text: str) -> str:
 
     return pattern.sub(repl, text)
 
+def remove_yen_for_non_kyat(text: str) -> str:
+    """
+    チャット以外の通貨（例：米ドル/バーツ等）に誤って付与された
+    「（約◯◯円）」を削除する。
+    例: 「10億ドル（約390億円）」→「10億ドル」
+    """
+    if not text:
+        return text
+
+    # 代表的な「チャット以外」通貨ラベル（必要なら増やせます）
+    NON_KYAT_CCY = r"(?:米ドル|ドル|USD|US\$|\$|バーツ|THB|ユーロ|EUR|ポンド|GBP|元|人民元|CNY|ウォン|KRW)"
+
+    # 「（約…円）」の中身は数字/カンマ/兆億万などを許容（“約”の有無も吸収）
+    YEN_PAREN = r"（\s*(?:約)?\s*[0-9０-９,，兆億万\.]+(?:円|えん)\s*）"
+    # 非チャット通貨の直後に付いた円換算だけ落とす
+    # 例: 「10億ドル（約390億円）」 / 「USD 1 billion（約…円）」など
+    pat = re.compile(rf"(?P<prefix>{NON_KYAT_CCY}\s*){YEN_PAREN}")
+
+    text = pat.sub(lambda m: m.group("prefix").rstrip(), text)
+
+    # ついでに「ドル 10億（約…円）」のような順序にも軽く対応（任意の保険）
+    pat2 = re.compile(rf"(?P<prefix>{NON_KYAT_CCY}\s*[0-9０-９,，兆億万\.]+)\s*{YEN_PAREN}")
+    text = pat2.sub(lambda m: m.group("prefix").rstrip(), text)
+    return text
+
 # 超要約を先に抜く処理
 def _normalize_heading_text(s: str) -> str:
     """見出し検出のための軽量正規化（括弧の異体字や不可視文字を吸収）"""
@@ -4540,6 +4565,7 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
                 for x in arr:
                     if isinstance(x, dict) and x.get("url") == url:
                         bj = (x.get("body_ja") or "").strip()
+                        bj = remove_yen_for_non_kyat(bj)
                         bj = fix_kyat_yen_in_text(bj)
                         return bj
         except Exception as e:
@@ -4625,7 +4651,9 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
 
                 body_ja = _apply_term_glossary_to_output(body_ja, src=body_src, prefer="body_ja")
 
-                # ★ 円換算表記（約◯◯円）を機械的に矯正（再発防止）
+                # ★ まず「チャット以外」の（約◯◯円）を削除（ドル等の誤換算対策）
+                body_ja = remove_yen_for_non_kyat(body_ja)
+                # ★ 次に「チャット」の（約◯◯円）だけを再計算で矯正
                 body_ja = fix_kyat_yen_in_text(body_ja)
 
                 # ★ fallback だったかどうかを結果に乗せておく
@@ -4638,6 +4666,7 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
             print("🛑 fulltext batch failed:", e)
             for b in batch:
                 bj = _apply_term_glossary_to_output(b["body"], src=b["body"], prefer="body_ja")
+                bj = remove_yen_for_non_kyat(bj)
                 bj = fix_kyat_yen_in_text(bj)
                 # ★ バッチそのものが失敗したので、各URLは確実に単体再翻訳に回す
                 results.append({
@@ -4672,6 +4701,7 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
                 fixed = _single_fulltext_retry(url, raw_body, max_chars=FULLTEXT_MAX_CHARS)
                 if fixed and _contains_cjk(fixed):
                     repaired = _apply_term_glossary_to_output(fixed, src=raw_body, prefer="body_ja")
+                    repaired = remove_yen_for_non_kyat(repaired)
                     repaired = fix_kyat_yen_in_text(repaired)
                     results[j]["body_ja"] = repaired
                     print(f"[ok] repaired fulltext via single retry: {url}")
