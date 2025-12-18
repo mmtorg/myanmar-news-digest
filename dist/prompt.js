@@ -670,7 +670,8 @@ ${PROMPT_SELF_CHECK_RULE}
 - 特に、\`\`\`json 〜 \`\`\` のようなコードブロックで囲まず
   純粋な JSON テキストのみを出力すること。
 - JSON 全体としては 1 つのオブジェクトだけを出力すればよい。summary の値の中では、
-  「【要約】」「[見出し]」「・箇条書き」などのために改行（\n）を自由に使ってよい。
+  「【要約】」「[見出し]」「・箇条書き」などのために改行が必要な場合は、
+   JSON文字列を壊さないように **実改行は使わず**、必ず "\\n"（バックスラッシュ+n の2文字）として出力すること。
 `;
 }
 
@@ -975,7 +976,7 @@ function _pickApiKeyPropNameWithRotation_(sheetName, sourceRaw) {
 function getApiKeyFromSheetAndSource_(sheetName, sourceRaw, usageTagOpt) {
   const scriptProps = PropertiesService.getScriptProperties();
 
-  // ★ ローテ考慮して「どの Script Property 名を使うか」を決める
+  // ★ ローテ考慮して「どの Script Property 名を使うか」を決める（Gemini専用）
   const propName = _pickApiKeyPropNameWithRotation_(sheetName, sourceRaw);
   const apiKey = scriptProps.getProperty(propName);
 
@@ -1003,6 +1004,24 @@ function getApiKeyFromSheetAndSource_(sheetName, sourceRaw, usageTagOpt) {
   return apiKey || null;
 }
 
+function getOpenAiApiKey_(usageTagOpt) {
+  const apiKey =
+    PropertiesService.getScriptProperties().getProperty(OPENAI_API_KEY_PROP) ||
+    "";
+  const tag = usageTagOpt || "openai";
+  if (!apiKey) {
+    const msg = "OPENAI_API_KEY is missing in Script Properties";
+    Logger.log("[openai-key] " + msg);
+    _appendGeminiLog_("ERROR", tag, msg);
+    return null;
+  }
+  Logger.log(
+    "[openai-key] use apiKeyProp=" + OPENAI_API_KEY_PROP + " (tag=" + tag + ")"
+  );
+  _appendGeminiLog_("INFO", tag, "use apiKeyProp=" + OPENAI_API_KEY_PROP);
+  return apiKey;
+}
+
 /************************************************************
  * Gemini 共通設定（リトライ＆ログ）
  ************************************************************/
@@ -1011,6 +1030,13 @@ function getApiKeyFromSheetAndSource_(sheetName, sourceRaw, usageTagOpt) {
 const GEMINI_JS_MAX_RETRIES = 1; // 2 → 1
 const GEMINI_JS_BASE_DELAY_SEC = 8; // 5 → 8
 const GEMINI_JS_MAX_DELAY_SEC = 90; // 60 → 90
+
+// OpenAI(gpt-5-mini) 用リトライ設定
+// - 「リトライの条件」は Gemini と同じ判定ロジックに近い判定を使う
+// - 「回数」は最大2回（= 初回 + 2リトライの合計3回まで）
+const GPT5_MINI_MODEL = "gpt-5-mini";
+const OPENAI_API_KEY_PROP = "OPENAI_API_KEY";
+const GPT_JS_MAX_RETRIES = 2; // 追加リトライ回数（最大2回）
 
 // 乱数ジッター付き指数バックオフ: attempt=0,1,2,... → 待機ミリ秒
 function _expBackoffMs_(attempt) {
@@ -1163,6 +1189,28 @@ function _throttleGeminiCallGlobal_() {
   }
 }
 
+// ===== 503(過負荷) サーキットブレーカー =====
+const _GEMINI_OVERLOADED_UNTIL_PROP = "GEMINI_OVERLOADED_UNTIL_MS";
+const GEMINI_OVERLOADED_COOLDOWN_MS = 10 * 60 * 1000; // 10分
+
+function _getOverloadedUntilMs_() {
+  const props = PropertiesService.getScriptProperties();
+  return Number(props.getProperty(_GEMINI_OVERLOADED_UNTIL_PROP) || "0");
+}
+
+function _setOverloadedUntilMs_(untilMs) {
+  const props = PropertiesService.getScriptProperties();
+  props.setProperty(_GEMINI_OVERLOADED_UNTIL_PROP, String(untilMs));
+}
+
+function _isOverloadedCooldownActive_() {
+  return Date.now() < _getOverloadedUntilMs_();
+}
+
+function _markOverloadedCooldown_() {
+  _setOverloadedUntilMs_(Date.now() + GEMINI_OVERLOADED_COOLDOWN_MS);
+}
+
 /************************************************************
  * Gemini 呼び出しログ用シート出力
  ************************************************************/
@@ -1215,6 +1263,15 @@ function _appendGeminiLog_(level, tag, message) {
  ************************************************************/
 
 function callGeminiWithKey_(apiKey, prompt, usageTagOpt) {
+  // ★ 503が出た直後など「クールダウン中」はGeminiを呼ばない
+  if (_isOverloadedCooldownActive_()) {
+    const until = new Date(_getOverloadedUntilMs_()).toISOString();
+    const msg = "Gemini overloaded cooldown active until " + until;
+    Logger.log("[gemini] " + msg);
+    _appendGeminiLog_("WARN", usageTagOpt || "generic", msg);
+    return "ERROR: " + msg;
+  }
+
   if (!apiKey) {
     Logger.log("[gemini] ERROR: API key not set");
     return "ERROR: API key not set";
@@ -1411,6 +1468,15 @@ function callGeminiWithKey_(apiKey, prompt, usageTagOpt) {
       const err = data.error;
       const status = String(err.status || "");
       const message = String(err.message || "");
+
+      // ★ 503 過負荷ならクールダウン開始
+      if (
+        code === 503 &&
+        (status === "UNAVAILABLE" || /overload/i.test(message))
+      ) {
+        _markOverloadedCooldown_();
+      }
+
       Logger.log(
         "[gemini] HTTP %s error status=%s message=%s",
         code,
@@ -1483,6 +1549,171 @@ function callGeminiWithKey_(apiKey, prompt, usageTagOpt) {
   return "ERROR: " + (lastErrorText || "Gemini call failed");
 }
 
+// ============================================================
+// OpenAI Responses API (gpt-5-mini)
+// ============================================================
+function _extractOutputTextFromResponses_(data) {
+  if (!data) return "";
+
+  // SDK 互換の output_text が返る場合
+  if (typeof data.output_text === "string" && data.output_text.trim()) {
+    return data.output_text;
+  }
+
+  const out = data.output;
+  if (!Array.isArray(out)) return "";
+
+  const parts = [];
+  out.forEach(function (item) {
+    if (!item) return;
+    if (item.type !== "message") return;
+    const content = item.content;
+    if (!Array.isArray(content)) return;
+    content.forEach(function (c) {
+      if (!c) return;
+      if (c.type === "output_text" && typeof c.text === "string") {
+        parts.push(c.text);
+      }
+    });
+  });
+  return parts.join("");
+}
+
+function _isRetriableOpenAIError_(httpCode, data, rawText) {
+  // OpenAI 側の代表的な一時エラー
+  if (httpCode === 502 || httpCode === 504) return true;
+
+  // 既存の Gemini 判定ロジックに寄せるため、形を合わせて _isRetriableError_ を再利用
+  let status = "";
+  let msg = "";
+  try {
+    const err = data && (data.error || (data.error && data.error.error));
+    if (err) {
+      status = String(err.status || err.type || err.code || "");
+      msg = String(err.message || "");
+    }
+  } catch (e) {
+    // ignore
+  }
+  if (!msg) msg = String(rawText || "");
+  const mapped = { error: { status: status, message: msg } };
+  return _isRetriableError_(httpCode, mapped);
+}
+
+// multi2（2件まとめ）の Structured Outputs 用スキーマ
+// ★ json_schema は最上位が object 必須なので、items 配列を object で包む
+const GPT_MULTI2_WRAPPED_SCHEMA_ = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    items: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          id: { type: "string" },
+          headlineA: { type: "string" },
+          headlineBPrime: { type: "string" },
+          summary: { type: "string" },
+        },
+        required: ["id", "headlineA", "headlineBPrime", "summary"],
+      },
+    },
+  },
+  required: ["items"],
+};
+
+// formatTypeOpt:
+//   - "json_object" (default): 単体行のオブジェクト出力向け
+//   - "json_schema_batch": multi2（2件まとめ）で配列を厳密に返させたいとき
+//   - "none": text.format を付けずに呼ぶ（最終手段）
+function callGpt5MiniWithKey_(apiKey, promptText, usageTagOpt, formatTypeOpt) {
+  if (!apiKey) {
+    return "ERROR: missing " + OPENAI_API_KEY_PROP;
+  }
+
+  const url = "https://api.openai.com/v1/responses";
+  const fmt = String(formatTypeOpt || "json_object");
+  const payload = {
+    model: GPT5_MINI_MODEL,
+    input: String(promptText || ""),
+  };
+  if (fmt !== "none") {
+    if (fmt === "json_schema_batch") {
+      // Structured Outputs: JSON Schema を強制（配列を返せる）
+      // docs: text.format に type:"json_schema", strict:true, schema:... を指定 :contentReference[oaicite:2]{index=2}
+      payload.text = {
+        format: {
+          type: "json_schema",
+          name: "multi2_array",
+          strict: true,
+          schema: GPT_MULTI2_WRAPPED_SCHEMA_,
+        },
+      };
+    } else {
+      payload.text = { format: { type: fmt } };
+    }
+  }
+
+  const options = {
+    method: "post",
+    contentType: "application/json",
+    muteHttpExceptions: true,
+    headers: {
+      Authorization: "Bearer " + apiKey,
+    },
+    payload: JSON.stringify(payload),
+  };
+
+  for (let attempt = 0; attempt <= GPT_JS_MAX_RETRIES; attempt++) {
+    try {
+      const res = UrlFetchApp.fetch(url, options);
+      const code = res.getResponseCode();
+      const bodyText = res.getContentText() || "";
+
+      let data = null;
+      try {
+        data = bodyText ? JSON.parse(bodyText) : null;
+      } catch (e) {
+        data = null;
+      }
+
+      if (code >= 200 && code < 300) {
+        const outText = _extractOutputTextFromResponses_(data);
+        if (outText) return outText;
+        // 200 なのに本文が取れない場合も一旦エラー扱い
+        const msg = "ERROR: OpenAI response has no output_text";
+        if (attempt < GPT_JS_MAX_RETRIES) {
+          Utilities.sleep(_expBackoffMs_(attempt));
+          continue;
+        }
+        return msg;
+      }
+
+      // 非2xx
+      const retriable = _isRetriableOpenAIError_(code, data, bodyText);
+      const shortBody = bodyText ? bodyText.slice(0, 300) : "";
+      const errMsg = "ERROR: OpenAI HTTP " + code + " " + shortBody;
+
+      if (retriable && attempt < GPT_JS_MAX_RETRIES) {
+        Utilities.sleep(_expBackoffMs_(attempt));
+        continue;
+      }
+      return errMsg;
+    } catch (e) {
+      const err = "ERROR: OpenAI fetch exception: " + e;
+      if (attempt < GPT_JS_MAX_RETRIES) {
+        Utilities.sleep(_expBackoffMs_(attempt));
+        continue;
+      }
+      return err;
+    }
+  }
+
+  return "ERROR: OpenAI retries exhausted";
+}
+
 /************************************************************
  * 3. 1行分の処理
  *
@@ -1499,10 +1730,41 @@ function callGeminiWithKey_(apiKey, prompt, usageTagOpt) {
  *   - I列: 本文要約（STEP3_TASK）
  ************************************************************/
 
+// JSON内に "\\n" として入ってきた改行表現を、表示用に実改行へ戻す
+function decodeJsonNewlines_(s) {
+  const t = String(s == null ? "" : s);
+  // まず \\r\\n を優先して \n に寄せる
+  return t.replace(/\\r\\n/g, "\n").replace(/\\n/g, "\n");
+}
+
+// 「【要約】」直後に改行が無い場合のみ、改行を1つ補う
+function normalizeSummaryHeader_(summary) {
+  let s = String(summary || "");
+
+  // 先頭が「【要約】」で始まり、直後が改行でない場合のみ処理
+  // ^【要約】(?!\n)
+  s = s.replace(/^【要約】(?!\n)[ \t\u3000]*/, "【要約】\n");
+
+  return s;
+}
+
 function processRow_(sheet, row, prevStatus) {
   const colC = 3; // メディア
   const colM = 13; // タイトル原文
   const colN = 14; // 本文原文
+
+  // gpt-5-mini 側のリトライ上限（GPTNG(2) 以上は打ち切り）
+  const useGpt = shouldUseGpt5Mini_(prevStatus || "");
+  const gptRetryCount = parseGptRetryCount_(prevStatus || "");
+  if (useGpt && gptRetryCount >= GPT_JS_MAX_RETRIES) {
+    Logger.log(
+      "[processRow_] skip row %s (gptRetryCount=%s >= %s)",
+      row,
+      gptRetryCount,
+      GPT_JS_MAX_RETRIES
+    );
+    return;
+  }
 
   const colE = 5; // 見出しA
   const colF = 6; // 見出しA'
@@ -1555,9 +1817,14 @@ function processRow_(sheet, row, prevStatus) {
     const tagMulti = sheetName + "#row" + row + ":EGI(multi)";
 
     // ★ tagMulti を渡して APIキー名ログも紐付ける
-    const apiKey = getApiKeyFromSheetAndSource_(sheetName, sourceVal, tagMulti);
+    const propName = useGpt ? "__OPENAI__" : null;
+    const apiKey = useGpt
+      ? getOpenAiApiKey_(tagMulti)
+      : getApiKeyFromSheetAndSource_(sheetName, sourceVal, tagMulti);
 
-    const resp = callGeminiWithKey_(apiKey, multiPrompt, tagMulti);
+    const resp = useGpt
+      ? callGpt5MiniWithKey_(apiKey, multiPrompt, tagMulti)
+      : callGeminiWithKey_(apiKey, multiPrompt, tagMulti);
 
     if (typeof resp === "string" && resp.indexOf("ERROR:") === 0) {
       // callGeminiWithKey_ 自体がエラーを返した場合 → そのまま3列とも同じエラー扱い
@@ -1586,7 +1853,8 @@ function processRow_(sheet, row, prevStatus) {
         headlineB2 = (obj.headlineBPrime || obj.headlineB || "")
           .toString()
           .trim();
-        summaryJa = (obj.summary || "").toString().trim();
+        summaryJa = decodeJsonNewlines_((obj.summary || "").toString().trim());
+        summaryJa = normalizeSummaryHeader_(summaryJa);
 
         // ★ 円換算表記（約◯◯円）を機械側で矯正（再発防止）
         summaryJa = fixKyatYenInText_(summaryJa);
@@ -1663,10 +1931,12 @@ function processRow_(sheet, row, prevStatus) {
     statusText = "OK";
   } else {
     // 呼び出し元から渡された「前回までのステータス」から回数を計算
-    const prevCount = parseRetryCount_(prevStatus || "");
+    const retryKind = useGpt ? "GPTNG" : "NG";
+    const prevCount = useGpt
+      ? parseGptRetryCount_(prevStatus || "")
+      : parseRetryCount_(prevStatus || "");
     const newCount = prevCount + 1;
-
-    statusText = `NG(${newCount}): ` + errors.join(" / ");
+    statusText = `${retryKind}(${newCount}): ` + errors.join(" / ");
   }
 
   sheet.getRange(row, colL).setValue(statusText);
@@ -1698,7 +1968,7 @@ function _clearLogSheetFor_(sheetName) {
   // ※書式も消したければ sh.clear(); に変更
 }
 
-// ミャンマー時間 16:00〜翌 2:00 の間だけ true を返す
+// ミャンマー時間 16:00〜翌 1:00 の間だけ true を返す
 function isWithinProcessingWindow_() {
   // appsscript.json の timeZone が "Asia/Yangon" になっている前提
   const now = new Date();
@@ -1707,7 +1977,7 @@ function isWithinProcessingWindow_() {
   const t = h * 60 + m; // その日の 0:00 からの経過分数
 
   const START = 16 * 60; // 16:00 → 960 分
-  const END = 2 * 60; // 02:00 → 120 分
+  const END = 1 * 60; // 01:00 → 60 分
 
   // 日付をまたぐウィンドウの判定:
   // 16:00〜24:00 か 0:00〜2:00 のどちらかなら OK
@@ -1720,6 +1990,22 @@ function parseRetryCount_(status) {
   const m = status.match(/^NG\((\d+)\)/);
   if (!m) return 0;
   return Number(m[1]);
+}
+
+function parseGptRetryCount_(status) {
+  if (!status) return 0;
+  const m = status.match(/^GPTNG\((\d+)\)/);
+  if (!m) return 0;
+  return Number(m[1]);
+}
+
+function shouldUseGpt5Mini_(status) {
+  const s = String(status || "");
+  if (s.startsWith("RUNNING(GPT)")) return true;
+  if (s.startsWith("GPTNG(")) return true;
+  const m = s.match(/^NG\((\d+)\)/);
+  if (!m) return false;
+  return Number(m[1]) >= MAX_RETRY_COUNT; // NG(3) 以上なら gpt-5-mini に切替
 }
 
 // ★ 古い RUNNING ステータスを NG(1): timeout に置き換える
@@ -1744,7 +2030,10 @@ function cleanupStaleRunningStatuses_() {
       const status = (values[i][0] || "").toString();
 
       // 前回実行で RUNNING のまま残った行とみなす
-      if (status.startsWith("RUNNING")) {
+      if (status.startsWith("RUNNING(GPT)")) {
+        values[i][0] = "GPTNG(1): timeout";
+        changed = true;
+      } else if (status.startsWith("RUNNING")) {
         // 1回目の失敗として扱う
         values[i][0] = "NG(1): timeout";
         changed = true;
@@ -1828,6 +2117,13 @@ function formatYenJa_(yenInt) {
   return sign + (out || "0円");
 }
 
+// 全角数字→半角数字（例: "５４００" -> "5400"）
+function zenkakuDigitsToAscii_(s) {
+  return String(s || "").replace(/[０-９]/g, (ch) =>
+    String.fromCharCode(ch.charCodeAt(0) - 0xfee0)
+  );
+}
+
 // 例: "5400億チャット" / "1兆2345億6789万チャット" -> 整数チャット
 function parseJaKyatToInt_(s) {
   const t = String(s || "")
@@ -1841,7 +2137,7 @@ function parseJaKyatToInt_(s) {
     const idx = rest.indexOf(unitChar);
     if (idx === -1) return;
     const numStr = rest.slice(0, idx);
-    const n = Number(numStr || 0);
+    const n = Number(zenkakuDigitsToAscii_(numStr) || 0);
     total += n * unitValue;
     rest = rest.slice(idx + 1);
   }
@@ -1852,7 +2148,7 @@ function parseJaKyatToInt_(s) {
   takeUnit("万", 10000);
 
   // 残りが数字なら（単位なし）として加算
-  if (rest) total += Number(rest || 0);
+  if (rest) total += Number(zenkakuDigitsToAscii_(rest) || 0);
 
   return total;
 }
@@ -1942,6 +2238,8 @@ ${PROMPT_SELF_CHECK_RULE}
 
 制約:
 - 配列の要素数は入力記事数と一致させること
+- 各要素の "id" は、各 ARTICLE ブロックにある「id: <value>」の <value> を一字一句そのままコピーすること（連番に作り直さない）
+- 例: 入力が id: 6 なら出力は "id": "6"（文字列）とすること
 - \`\`\`json などのコードブロック禁止。純粋な JSON テキストのみ
 
 ${blocks}
@@ -1956,7 +2254,8 @@ function _applyOutputsToRow_(
   ctx,
   headlineA,
   headlineB2,
-  summaryJa
+  summaryJa,
+  retryKindOpt
 ) {
   const colE = 5;
   const colG = 7;
@@ -2007,9 +2306,13 @@ function _applyOutputsToRow_(
   if (errors.length === 0) {
     statusText = "OK";
   } else {
-    const prevCount = parseRetryCount_(prevStatus || "");
+    const retryKind = retryKindOpt || "NG";
+    const prevCount =
+      retryKind === "GPTNG"
+        ? parseGptRetryCount_(prevStatus || "")
+        : parseRetryCount_(prevStatus || "");
     const newCount = prevCount + 1;
-    statusText = `NG(${newCount}): ` + errors.join(" / ");
+    statusText = `${retryKind}(${newCount}): ` + errors.join(" / ");
   }
   sheet.getRange(row, colL).setValue(statusText);
 }
@@ -2056,6 +2359,17 @@ function processRowsBatch() {
     if (!isWithinProcessingWindow_()) {
       Logger.log("[processRowsBatch] outside allowed time window → skip");
       return;
+    }
+
+    // Gemini 503 クールダウン中でも gpt-5-mini は動かす（Gemini だけ止める）
+    const geminiCooldownActive =
+      _isOverloadedCooldownActive_ && _isOverloadedCooldownActive_();
+    if (geminiCooldownActive) {
+      const until = new Date(_getOverloadedUntilMs_()).toISOString();
+      Logger.log(
+        "[processRowsBatch] Gemini cooldown active until %s → skip Gemini only",
+        until
+      );
     }
 
     const ss = SpreadsheetApp.getActive();
@@ -2108,15 +2422,33 @@ function processRowsBatch() {
           continue;
         }
 
-        // ★ NG の再試行回数チェック
-        const retryCount = parseRetryCount_(status);
+        // ★ 再試行回数チェック
+        const gemRetryCount = parseRetryCount_(status);
+        const gptRetryCount = parseGptRetryCount_(status);
+        const useGpt = shouldUseGpt5Mini_(status);
 
-        // すでに MAX_RETRY_COUNT 回以上失敗している行は再試行しない
-        if (retryCount >= MAX_RETRY_COUNT) {
+        // Gemini クールダウン中は Gemini 対象行を処理しない（gpt-5-mini は処理する）
+        if (!useGpt && geminiCooldownActive) {
+          continue;
+        }
+
+        // gpt-5-mini 側のリトライ上限（GPTNG(2) になったら打ち切り）
+        if (useGpt && gptRetryCount >= GPT_JS_MAX_RETRIES) {
           Logger.log(
-            "[processRowsBatch] skip row %s (retryCount=%s >= %s)",
+            "[processRowsBatch] skip row %s (gptRetryCount=%s >= %s)",
             rowIndex,
-            retryCount,
+            gptRetryCount,
+            GPT_JS_MAX_RETRIES
+          );
+          continue;
+        }
+
+        // Gemini 側は MAX_RETRY_COUNT 未満のみ再試行（NG(3) 以上は gpt-5-mini に回す）
+        if (!useGpt && gemRetryCount >= MAX_RETRY_COUNT) {
+          Logger.log(
+            "[processRowsBatch] skip row %s (gemRetryCount=%s >= %s)",
+            rowIndex,
+            gemRetryCount,
             MAX_RETRY_COUNT
           );
           continue;
@@ -2134,12 +2466,13 @@ function processRowsBatch() {
         const prevStatus = status;
 
         // 処理開始マーク
-        sh.getRange(rowIndex, STATUS_COL).setValue("RUNNING");
-
-        const propName = _pickApiKeyPropNameWithRotation_(
-          sheetName,
-          sourceVal || ""
+        sh.getRange(rowIndex, STATUS_COL).setValue(
+          useGpt ? "RUNNING(GPT)" : "RUNNING"
         );
+
+        const propName = useGpt
+          ? "__OPENAI__"
+          : _pickApiKeyPropNameWithRotation_(sheetName, sourceVal || "");
         if (!groups[propName]) {
           groups[propName] = [];
           groupOrder.push(propName);
@@ -2237,12 +2570,26 @@ function processRowsBatch() {
             ")";
 
           // 代表1件目のsourceでキー取得（propNameで既にグループ化しているのでOK）
-          const apiKey = getApiKeyFromSheetAndSource_(
-            sheetName,
-            chunk[0].sourceVal,
-            tagBatch
-          );
-          const resp = callGeminiWithKey_(apiKey, batchPrompt, tagBatch);
+          const apiKey =
+            propName === "__OPENAI__"
+              ? getOpenAiApiKey_(tagBatch)
+              : getApiKeyFromSheetAndSource_(
+                  sheetName,
+                  chunk[0].sourceVal,
+                  tagBatch
+                );
+
+          // ★ multi2 (バッチ) は JSON配列が返る必要があるため、OpenAI 側は Structured Outputs で配列スキーマを強制する
+          const resp =
+            propName === "__OPENAI__"
+              ? callGpt5MiniWithKey_(
+                  apiKey,
+                  batchPrompt,
+                  tagBatch,
+                  "json_schema_batch"
+                )
+              : callGeminiWithKey_(apiKey, batchPrompt, tagBatch);
+
           // API呼び出し自体がエラーなら全員同じエラー
           if (typeof resp === "string" && resp.indexOf("ERROR:") === 0) {
             promptItems.forEach(function (pi) {
@@ -2258,7 +2605,8 @@ function processRowsBatch() {
                 },
                 resp,
                 resp,
-                resp
+                resp,
+                propName === "__OPENAI__" ? "GPTNG" : "NG"
               );
             });
             p += chunk.length;
@@ -2275,7 +2623,14 @@ function processRowsBatch() {
               cleaned = cleaned.trim();
             }
 
-            const arr = JSON.parse(cleaned);
+            const parsed = JSON.parse(cleaned);
+            // OpenAI json_schema_batch は { items: [...] } で返る想定。
+            // 旧挙動（配列直返し）も許容して両対応にする。
+            const arr = Array.isArray(parsed)
+              ? parsed
+              : parsed && Array.isArray(parsed.items)
+              ? parsed.items
+              : [];
             const byId = {};
             if (Array.isArray(arr)) {
               arr.forEach(function (o) {
@@ -2287,8 +2642,11 @@ function processRowsBatch() {
             promptItems.forEach(function (pi) {
               const o = byId[String(pi.rowIndex)] || null;
               if (!o) {
+                const modelLabel = propName === "__OPENAI__" ? "GPT" : "Gemini";
                 const errMsg =
-                  "ERROR: invalid JSON array from Gemini (missing id=" +
+                  "ERROR: invalid JSON array from " +
+                  modelLabel +
+                  " (missing id=" +
                   pi.rowIndex +
                   ")";
                 _applyOutputsToRow_(
@@ -2303,13 +2661,15 @@ function processRowsBatch() {
                   },
                   errMsg,
                   errMsg,
-                  errMsg
+                  errMsg,
+                  propName === "__OPENAI__" ? "GPTNG" : "NG"
                 );
                 return;
               }
               const hA = String(o.headlineA || "").trim();
               const hB = String(o.headlineBPrime || o.headlineB || "").trim();
-              const sm = String(o.summary || "").trim();
+              const sm = decodeJsonNewlines_(String(o.summary || "").trim());
+              const sm2 = normalizeSummaryHeader_(sm);
 
               _applyOutputsToRow_(
                 sh,
@@ -2323,12 +2683,16 @@ function processRowsBatch() {
                 },
                 hA || "",
                 hB || "",
-                sm || ""
+                sm2 || "",
+                propName === "__OPENAI__" ? "GPTNG" : "NG"
               );
             });
           } catch (e) {
+            const modelLabel = propName === "__OPENAI__" ? "GPT" : "Gemini";
             const errMsg =
-              "ERROR: invalid JSON from Gemini: " +
+              "ERROR: invalid JSON from " +
+              modelLabel +
+              ": " +
               String(resp).substring(0, 200);
             promptItems.forEach(function (pi) {
               _applyOutputsToRow_(
@@ -2343,7 +2707,8 @@ function processRowsBatch() {
                 },
                 errMsg,
                 errMsg,
-                errMsg
+                errMsg,
+                propName === "__OPENAI__" ? "GPTNG" : "NG"
               );
             });
           }
@@ -2502,7 +2867,7 @@ function checkAndNotifyAllDoneIfNeededForSheet_(sheetName) {
     "」で" +
     bStr +
     "分の記事収集が完了しました。\n\n" +
-    "翌 02:00 までにスプレッドシートを更新してください。\n\n" +
+    "翌 01:00 までにスプレッドシートを更新してください。\n\n" +
     "スプレッドシートURL:\n" +
     ssUrl +
     "\n";
@@ -2967,8 +3332,13 @@ function detectUnknownRegionsForArticle_(
   }
 
   try {
-    const arr = JSON.parse(cleaned);
-    if (!Array.isArray(arr)) return [];
+    const parsed = JSON.parse(cleaned);
+    const arr = Array.isArray(parsed)
+      ? parsed
+      : parsed && Array.isArray(parsed.items)
+      ? parsed.items
+      : null;
+    if (!arr) return [];
     // part が title/body のものだけ返す
     return arr.filter(function (item) {
       if (!item || typeof item !== "object") return false;
