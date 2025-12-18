@@ -1189,28 +1189,6 @@ function _throttleGeminiCallGlobal_() {
   }
 }
 
-// ===== 503(過負荷) サーキットブレーカー =====
-const _GEMINI_OVERLOADED_UNTIL_PROP = "GEMINI_OVERLOADED_UNTIL_MS";
-const GEMINI_OVERLOADED_COOLDOWN_MS = 10 * 60 * 1000; // 10分
-
-function _getOverloadedUntilMs_() {
-  const props = PropertiesService.getScriptProperties();
-  return Number(props.getProperty(_GEMINI_OVERLOADED_UNTIL_PROP) || "0");
-}
-
-function _setOverloadedUntilMs_(untilMs) {
-  const props = PropertiesService.getScriptProperties();
-  props.setProperty(_GEMINI_OVERLOADED_UNTIL_PROP, String(untilMs));
-}
-
-function _isOverloadedCooldownActive_() {
-  return Date.now() < _getOverloadedUntilMs_();
-}
-
-function _markOverloadedCooldown_() {
-  _setOverloadedUntilMs_(Date.now() + GEMINI_OVERLOADED_COOLDOWN_MS);
-}
-
 /************************************************************
  * Gemini 呼び出しログ用シート出力
  ************************************************************/
@@ -1263,15 +1241,6 @@ function _appendGeminiLog_(level, tag, message) {
  ************************************************************/
 
 function callGeminiWithKey_(apiKey, prompt, usageTagOpt) {
-  // ★ 503が出た直後など「クールダウン中」はGeminiを呼ばない
-  if (_isOverloadedCooldownActive_()) {
-    const until = new Date(_getOverloadedUntilMs_()).toISOString();
-    const msg = "Gemini overloaded cooldown active until " + until;
-    Logger.log("[gemini] " + msg);
-    _appendGeminiLog_("WARN", usageTagOpt || "generic", msg);
-    return "ERROR: " + msg;
-  }
-
   if (!apiKey) {
     Logger.log("[gemini] ERROR: API key not set");
     return "ERROR: API key not set";
@@ -1468,14 +1437,6 @@ function callGeminiWithKey_(apiKey, prompt, usageTagOpt) {
       const err = data.error;
       const status = String(err.status || "");
       const message = String(err.message || "");
-
-      // ★ 503 過負荷ならクールダウン開始
-      if (
-        code === 503 &&
-        (status === "UNAVAILABLE" || /overload/i.test(message))
-      ) {
-        _markOverloadedCooldown_();
-      }
 
       Logger.log(
         "[gemini] HTTP %s error status=%s message=%s",
@@ -2394,17 +2355,6 @@ function processRowsBatch() {
       return;
     }
 
-    // Gemini 503 クールダウン中でも gpt-5-mini は動かす（Gemini だけ止める）
-    const geminiCooldownActive =
-      _isOverloadedCooldownActive_ && _isOverloadedCooldownActive_();
-    if (geminiCooldownActive) {
-      const until = new Date(_getOverloadedUntilMs_()).toISOString();
-      Logger.log(
-        "[processRowsBatch] Gemini cooldown active until %s → skip Gemini only",
-        until
-      );
-    }
-
     const ss = SpreadsheetApp.getActive();
     const sheetNames = ["prod", "dev"]; // 対象シート
     let remaining = MAX_ROWS_PER_RUN; // 1回の実行で処理する最大行数（既存の定数）
@@ -2459,11 +2409,6 @@ function processRowsBatch() {
         const gemRetryCount = parseRetryCount_(status);
         const gptRetryCount = parseGptRetryCount_(status);
         const useGpt = shouldUseGpt5Mini_(status);
-
-        // Gemini クールダウン中は Gemini 対象行を処理しない（gpt-5-mini は処理する）
-        if (!useGpt && geminiCooldownActive) {
-          continue;
-        }
 
         // gpt-5-mini 側のリトライ上限（GPTNG(2) になったら打ち切り）
         if (useGpt && gptRetryCount >= GPT_JS_MAX_RETRIES) {
