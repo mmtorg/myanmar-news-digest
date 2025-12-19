@@ -878,25 +878,29 @@ function _todayKeyStrPacific_() {
   return Utilities.formatDate(new Date(), "America/Los_Angeles", "yyyyMMdd");
 }
 
-// 1日単位の使用回数カウンタ（Script Properties）
-// propName例: "GEMINI_API_KEY_MIZZIMA"
-// counterKey例: "GEMINI_REQCOUNT_GEMINI_API_KEY_MIZZIMA_20251212"（Pacific日付）
-function _counterKeyForApiProp_(apiPropName) {
-  return "GEMINI_REQCOUNT_" + apiPropName + "_" + _todayKeyStrPacific_();
+// --- 429 RESOURCE_EXHAUSTED（quota超過）で「その日だけ使えないキー」を記録 ---
+function _exhaustedKeyForApiProp_(apiPropName) {
+  return "GEMINI_EXHAUSTED_" + apiPropName + "_" + _todayKeyStrPacific_();
 }
 
-function _getReqCountToday_(apiPropName) {
-  const props = PropertiesService.getScriptProperties();
-  const k = _counterKeyForApiProp_(apiPropName);
-  return Number(props.getProperty(k) || "0");
+function _markApiKeyExhaustedToday_(apiPropName) {
+  try {
+    if (!apiPropName) return;
+    const props = PropertiesService.getScriptProperties();
+    props.setProperty(_exhaustedKeyForApiProp_(apiPropName), "1");
+  } catch (e) {
+    // マーク失敗は致命的ではないので無視
+  }
 }
 
-function _incReqCountToday_(apiPropName) {
-  const props = PropertiesService.getScriptProperties();
-  const k = _counterKeyForApiProp_(apiPropName);
-  const cur = Number(props.getProperty(k) || "0");
-  props.setProperty(k, String(cur + 1));
-  return cur + 1;
+function _isApiKeyExhaustedToday_(apiPropName) {
+  try {
+    if (!apiPropName) return false;
+    const props = PropertiesService.getScriptProperties();
+    return props.getProperty(_exhaustedKeyForApiProp_(apiPropName)) === "1";
+  } catch (e) {
+    return false;
+  }
 }
 
 /**
@@ -906,37 +910,29 @@ function _incReqCountToday_(apiPropName) {
  *   例: prodなら "GEMINI_API_KEY_" + "MIZZIMA2" → Script Propertiesに GEMINI_API_KEY_MIZZIMA2 を用意
  */
 const API_KEY_ROTATION_RULES = {
-  "khit thit": { baseKeys: ["KHITTHIT", "KHITTHIT2"], maxReqPerDayPerKey: 240 },
-  "khit thit media": {
-    baseKeys: ["KHITTHIT", "KHITTHIT2"],
-    maxReqPerDayPerKey: 240,
-  },
-  khitthit: { baseKeys: ["KHITTHIT", "KHITTHIT2"], maxReqPerDayPerKey: 240 }, // 念のため残してOK
+  "khit thit": { baseKeys: ["KHITTHIT", "KHITTHIT2"] },
+  "khit thit media": { baseKeys: ["KHITTHIT", "KHITTHIT2"] },
+  khitthit: { baseKeys: ["KHITTHIT", "KHITTHIT2"] }, // 念のため残してOK
 
-  dvb: { baseKeys: ["DVB", "DVB2"], maxReqPerDayPerKey: 240 },
+  dvb: { baseKeys: ["DVB", "DVB2"] },
 
-  gnlm: { baseKeys: ["GNLM", "GNLM2"], maxReqPerDayPerKey: 240 },
+  gnlm: { baseKeys: ["GNLM", "GNLM2"] },
   "global new light of myanmar": {
     baseKeys: ["GNLM", "GNLM2"],
-    maxReqPerDayPerKey: 240,
   }, // メディア表記ゆれ対策（任意）
 
   "global new light of myanmar (国営紙)": {
     baseKeys: ["GNLM", "GNLM2"],
-    maxReqPerDayPerKey: 240,
   },
 
   "popular myanmar": {
     baseKeys: ["POPULARMYANMAR", "POPULARMYANMAR2"],
-    maxReqPerDayPerKey: 240,
   },
   "popular myanmar (国軍系メディア)": {
     baseKeys: ["POPULARMYANMAR", "POPULARMYANMAR2"],
-    maxReqPerDayPerKey: 240,
   },
   popularmyanmar: {
     baseKeys: ["POPULARMYANMAR", "POPULARMYANMAR2"],
-    maxReqPerDayPerKey: 240,
   }, // 念のため残してOK
 };
 
@@ -952,44 +948,31 @@ function _pickApiKeyPropNameWithRotation_(sheetName, sourceRaw) {
     return prefix + baseKeyDefault;
   }
 
-  const maxPerKey = Number(rule.maxReqPerDayPerKey || 0);
-
-  // maxPerKey が 0 の場合は「常に先頭キー」を使う（設定ミスでも安全側）
-  if (maxPerKey <= 0) {
-    return prefix + rule.baseKeys[0];
-  }
-
-  // まだ上限未満のキーを優先して選ぶ
+  // ★ 429(quota)で当日枯渇と判定されたキーはスキップし、先頭から順に使う
   for (let i = 0; i < rule.baseKeys.length; i++) {
     const apiPropName = prefix + rule.baseKeys[i];
-    const used = _getReqCountToday_(apiPropName);
-    if (used < maxPerKey) {
-      return apiPropName;
-    }
+    if (_isApiKeyExhaustedToday_(apiPropName)) continue;
+    return apiPropName;
   }
 
-  // 全部上限に達したら最後のキーを返す（エラーは呼び出し側で起きる想定）
+  // 全部枯渇していたら最後のキーを返す（呼び出し側で429になる想定）
   return prefix + rule.baseKeys[rule.baseKeys.length - 1];
 }
 
-// シート名 & メディア名から API キーを取得
-function getApiKeyFromSheetAndSource_(sheetName, sourceRaw, usageTagOpt) {
-  const scriptProps = PropertiesService.getScriptProperties();
-
-  // ★ ローテ考慮して「どの Script Property 名を使うか」を決める（Gemini専用）
+// Gemini用：apiKey と「Script Properties のキー名(propName)」を返す
+function getGeminiApiKeyBundleFromSheetAndSource_(
+  sheetName,
+  sourceRaw,
+  usageTagOpt
+) {
+  const props = PropertiesService.getScriptProperties();
   const propName = _pickApiKeyPropNameWithRotation_(sheetName, sourceRaw);
-  const apiKey = scriptProps.getProperty(propName);
-
-  // ★ 使用回数を1加算（Pacific日付で日次リセット）
-  const newCount = _incReqCountToday_(propName);
-
+  const apiKey = props.getProperty(propName);
   // ログ（値そのものは出さない）
   const tag = usageTagOpt || sheetName || "unknown";
   const msg =
     "use apiKeyProp=" +
     propName +
-    " reqCountToday=" +
-    newCount +
     " (sheet=" +
     sheetName +
     ", sourceRaw=" +
@@ -1001,7 +984,17 @@ function getApiKeyFromSheetAndSource_(sheetName, sourceRaw, usageTagOpt) {
   Logger.log("[gemini-key] " + msg);
   _appendGeminiLog_("INFO", tag, msg);
 
-  return apiKey || null;
+  return { apiKey: apiKey || null, propName: propName || "" };
+}
+
+// 互換ラッパー（既存呼び出しが残っても動くように）
+function getApiKeyFromSheetAndSource_(sheetName, sourceRaw, usageTagOpt) {
+  const b = getGeminiApiKeyBundleFromSheetAndSource_(
+    sheetName,
+    sourceRaw,
+    usageTagOpt
+  );
+  return (b && b.apiKey) || null;
 }
 
 function getOpenAiApiKey_(usageTagOpt) {
@@ -1240,7 +1233,21 @@ function _appendGeminiLog_(level, tag, message) {
  * 2. Gemini 呼び出し共通
  ************************************************************/
 
-function callGeminiWithKey_(apiKey, prompt, usageTagOpt) {
+// quota超過判定用
+function _isQuotaExhaustedMessage_(status, message) {
+  const s = String(status || "");
+  const m = String(message || "");
+  const lower = (s + " " + m).toLowerCase();
+  return (
+    lower.indexOf("resource_exhausted") !== -1 ||
+    lower.indexOf("exceeded your current quota") !== -1 ||
+    lower.indexOf("rate-limits") !== -1 ||
+    lower.indexOf("rate limits") !== -1
+  );
+}
+
+// apiKeyPropNameOpt: "GEMINI_API_KEY_KHITTHIT" のような Script Properties 名
+function callGeminiWithKey_(apiKey, prompt, usageTagOpt, apiKeyPropNameOpt) {
   if (!apiKey) {
     Logger.log("[gemini] ERROR: API key not set");
     return "ERROR: API key not set";
@@ -1451,6 +1458,18 @@ function callGeminiWithKey_(apiKey, prompt, usageTagOpt) {
         usageTag,
         "HTTP " + code + " error status=" + status + " message=" + message
       );
+
+      // ★ 429(quota) なら、そのキーを「当日枯渇」としてマーク
+      if (code === 429 && _isQuotaExhaustedMessage_(status, message)) {
+        if (apiKeyPropNameOpt) {
+          _markApiKeyExhaustedToday_(apiKeyPropNameOpt);
+          _appendGeminiLog_(
+            "WARN",
+            usageTag,
+            "marked exhausted today: " + apiKeyPropNameOpt
+          );
+        }
+      }
     } else {
       Logger.log("[gemini] HTTP %s unexpected response body: %s", code, text);
       lastErrorText = "HTTP " + code;
@@ -1777,15 +1796,53 @@ function processRow_(sheet, row, prevStatus) {
     const multiPrompt = buildMultiTaskPromptForRow_(multiParams);
     const tagMulti = sheetName + "#row" + row + ":EGI(multi)";
 
-    // ★ tagMulti を渡して APIキー名ログも紐付ける
-    const propName = useGpt ? "__OPENAI__" : null;
+    const gemBundle = useGpt
+      ? null
+      : getGeminiApiKeyBundleFromSheetAndSource_(
+          sheetName,
+          sourceVal,
+          tagMulti
+        );
     const apiKey = useGpt
       ? getOpenAiApiKey_(tagMulti)
-      : getApiKeyFromSheetAndSource_(sheetName, sourceVal, tagMulti);
+      : gemBundle && gemBundle.apiKey;
 
-    const resp = useGpt
+    let resp = useGpt
       ? callGpt5MiniWithKey_(apiKey, multiPrompt, tagMulti)
-      : callGeminiWithKey_(apiKey, multiPrompt, tagMulti);
+      : callGeminiWithKey_(
+          apiKey,
+          multiPrompt,
+          tagMulti,
+          gemBundle && gemBundle.propName
+        );
+
+    // ★ 429(quota) のときは「その後は別キー」を即時反映するため、別キーで1回だけ即リトライ
+    if (
+      !useGpt &&
+      typeof resp === "string" &&
+      resp.indexOf("ERROR:") === 0 &&
+      _isQuotaExhaustedMessage_("", resp)
+    ) {
+      const tagRetry = tagMulti + "|rotated";
+      const gemBundle2 = getGeminiApiKeyBundleFromSheetAndSource_(
+        sheetName,
+        sourceVal,
+        tagRetry
+      );
+      if (
+        gemBundle2 &&
+        gemBundle2.apiKey &&
+        gemBundle2.propName &&
+        gemBundle2.propName !== (gemBundle && gemBundle.propName)
+      ) {
+        resp = callGeminiWithKey_(
+          gemBundle2.apiKey,
+          multiPrompt,
+          tagRetry,
+          gemBundle2.propName
+        );
+      }
+    }
 
     if (typeof resp === "string" && resp.indexOf("ERROR:") === 0) {
       // callGeminiWithKey_ 自体がエラーを返した場合 → そのまま3列とも同じエラー扱い
@@ -2374,8 +2431,9 @@ function processRowsBatch() {
       const numCols = 14; // A〜N まで読む
       const values = sh.getRange(startRow, 1, numRows, numCols).getValues();
 
-      // ★ まず処理対象を集めて、propName(APIキー)ごとにグループ化
-      const groups = {}; // propName -> items[]
+      // ★ まず処理対象を集める（Geminiは「キー固定のグループ化」をしない）
+      //    → 429(quota)後に同一実行内でも即座に別キーへ切替できるようにする
+      const groups = {}; // groupKey -> items[]
       const groupOrder = []; // 登場順
 
       for (let i = 0; i < numRows; i++) {
@@ -2448,14 +2506,17 @@ function processRowsBatch() {
           useGpt ? "RUNNING(GPT)" : "RUNNING"
         );
 
-        const propName = useGpt
+        // groupKey:
+        // - OpenAI は "__OPENAI__" でまとめてOK（キー単一）
+        // - Gemini は「メディア正規化名」でまとめる（ただし呼び出し時に毎回キーを選ぶ）
+        const groupKey = useGpt
           ? "__OPENAI__"
-          : _pickApiKeyPropNameWithRotation_(sheetName, sourceVal || "");
-        if (!groups[propName]) {
-          groups[propName] = [];
-          groupOrder.push(propName);
+          : normalizeSourceName_(sourceVal || "");
+        if (!groups[groupKey]) {
+          groups[groupKey] = [];
+          groupOrder.push(groupKey);
         }
-        groups[propName].push({
+        groups[groupKey].push({
           rowIndex: rowIndex,
           prevStatus: prevStatus,
           sourceVal: sourceVal || "",
@@ -2469,8 +2530,8 @@ function processRowsBatch() {
 
       // ★ グループごとに「最大2件」＋「推定トークン予算」で詰めて Geminiへ
       for (let gi = 0; gi < groupOrder.length; gi++) {
-        const propName = groupOrder[gi];
-        const items = groups[propName] || [];
+        const groupKey = groupOrder[gi];
+        const items = groups[groupKey] || [];
         if (!items.length) continue;
 
         let p = 0;
@@ -2547,26 +2608,56 @@ function processRowsBatch() {
             n +
             ")";
 
-          // 代表1件目のsourceでキー取得（propNameで既にグループ化しているのでOK）
-          const apiKey =
-            propName === "__OPENAI__"
-              ? getOpenAiApiKey_(tagBatch)
-              : getApiKeyFromSheetAndSource_(
-                  sheetName,
-                  chunk[0].sourceVal,
-                  tagBatch
-                );
+          // ★ 呼び出し直前に「今使うべきキー」を毎回選ぶ（429後に即切替するため）
+          let resp = "";
+          if (groupKey === "__OPENAI__") {
+            const apiKey = getOpenAiApiKey_(tagBatch);
+            resp = callGpt5MiniWithKey_(
+              apiKey,
+              batchPrompt,
+              tagBatch,
+              "json_schema_batch"
+            );
+          } else {
+            const b1 = getGeminiApiKeyBundleFromSheetAndSource_(
+              sheetName,
+              chunk[0].sourceVal,
+              tagBatch
+            );
+            resp = callGeminiWithKey_(
+              b1.apiKey,
+              batchPrompt,
+              tagBatch,
+              b1.propName
+            );
 
-          // ★ multi2 (バッチ) は JSON配列が返る必要があるため、OpenAI 側は Structured Outputs で配列スキーマを強制する
-          const resp =
-            propName === "__OPENAI__"
-              ? callGpt5MiniWithKey_(
-                  apiKey,
+            // ★ 429(quota)なら、その後の処理も別キーになるよう「即座に別キーで1回だけ再試行」
+            if (
+              typeof resp === "string" &&
+              resp.indexOf("ERROR:") === 0 &&
+              _isQuotaExhaustedMessage_("", resp)
+            ) {
+              const tagRetry = tagBatch + "|rotated";
+              const b2 = getGeminiApiKeyBundleFromSheetAndSource_(
+                sheetName,
+                chunk[0].sourceVal,
+                tagRetry
+              );
+              if (
+                b2 &&
+                b2.apiKey &&
+                b2.propName &&
+                b2.propName !== b1.propName
+              ) {
+                resp = callGeminiWithKey_(
+                  b2.apiKey,
                   batchPrompt,
-                  tagBatch,
-                  "json_schema_batch"
-                )
-              : callGeminiWithKey_(apiKey, batchPrompt, tagBatch);
+                  tagRetry,
+                  b2.propName
+                );
+              }
+            }
+          }
 
           // API呼び出し自体がエラーなら全員同じエラー
           if (typeof resp === "string" && resp.indexOf("ERROR:") === 0) {
@@ -2584,7 +2675,7 @@ function processRowsBatch() {
                 resp,
                 resp,
                 resp,
-                propName === "__OPENAI__" ? "GPTNG" : "NG"
+                groupKey === "__OPENAI__" ? "GPTNG" : "NG"
               );
             });
             p += chunk.length;
@@ -2620,7 +2711,7 @@ function processRowsBatch() {
             promptItems.forEach(function (pi) {
               const o = byId[String(pi.rowIndex)] || null;
               if (!o) {
-                const modelLabel = propName === "__OPENAI__" ? "GPT" : "Gemini";
+                const modelLabel = groupKey === "__OPENAI__" ? "GPT" : "Gemini";
                 const errMsg =
                   "ERROR: invalid JSON array from " +
                   modelLabel +
@@ -2640,7 +2731,7 @@ function processRowsBatch() {
                   errMsg,
                   errMsg,
                   errMsg,
-                  propName === "__OPENAI__" ? "GPTNG" : "NG"
+                  groupKey === "__OPENAI__" ? "GPTNG" : "NG"
                 );
                 return;
               }
@@ -2662,11 +2753,11 @@ function processRowsBatch() {
                 hA || "",
                 hB || "",
                 sm2 || "",
-                propName === "__OPENAI__" ? "GPTNG" : "NG"
+                groupKey === "__OPENAI__" ? "GPTNG" : "NG"
               );
             });
           } catch (e) {
-            const modelLabel = propName === "__OPENAI__" ? "GPT" : "Gemini";
+            const modelLabel = groupKey === "__OPENAI__" ? "GPT" : "Gemini";
             const errMsg =
               "ERROR: invalid JSON from " +
               modelLabel +
@@ -2686,7 +2777,7 @@ function processRowsBatch() {
                 errMsg,
                 errMsg,
                 errMsg,
-                propName === "__OPENAI__" ? "GPTNG" : "NG"
+                groupKey === "__OPENAI__" ? "GPTNG" : "NG"
               );
             });
           }
@@ -3297,7 +3388,12 @@ function detectUnknownRegionsForArticle_(
     bodyJa || "(なし)",
   ].join("\n");
 
-  const resp = callGeminiWithKey_(apiKey, prompt, "regionlog#article");
+  const resp = callGeminiWithKey_(
+    apiKey,
+    prompt,
+    "regionlog#article",
+    "GEMINI_API_KEY_REGION_LOG"
+  );
   if (typeof resp !== "string" || resp.indexOf("ERROR:") === 0) return [];
 
   let cleaned = resp.trim();
