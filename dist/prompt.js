@@ -934,29 +934,68 @@ const API_KEY_ROTATION_RULES = {
   popularmyanmar: {
     baseKeys: ["POPULARMYANMAR", "POPULARMYANMAR2"],
   }, // 念のため残してOK
+
+  "bbc burmese": { baseKeys: ["BBC", "BBC2"] },
+  irrawaddy: { baseKeys: ["IRRAWADDY", "IRRAWADDY2"] },
+  "myanmar now": { baseKeys: ["MYANMARNOW", "MYANMARNOW2"] },
 };
 
 function _pickApiKeyPropNameWithRotation_(sheetName, sourceRaw) {
+  const props = PropertiesService.getScriptProperties();
   const prefix = SHEET_KEY_PREFIX_MAP[sheetName] || DEFAULT_PREFIX;
   const norm = normalizeSourceName_(sourceRaw || "");
 
   // ローテ設定が無いメディアは従来通り
   const baseKeyDefault = SOURCE_KEY_BASE_MAP[norm] || DEFAULT_BASE_KEY;
-  const rule = API_KEY_ROTATION_RULES[norm];
+  let rule = API_KEY_ROTATION_RULES[norm];
 
+  // ルール未定義でも「末尾2キー」が存在すれば自動で2本ローテ（安全のため値が入っている場合のみ）
+  // 例: baseKeyDefault="BBC" のとき Script Properties に GEMINI_API_KEY_BBC2 があれば [BBC, BBC2]
   if (!rule || !rule.baseKeys || rule.baseKeys.length === 0) {
-    return prefix + baseKeyDefault;
+    const base2PropName = prefix + baseKeyDefault + "2";
+    const base2Val = props.getProperty(base2PropName);
+    if (base2Val) {
+      rule = { baseKeys: [baseKeyDefault, baseKeyDefault + "2"] };
+    } else {
+      return prefix + baseKeyDefault;
+    }
   }
 
-  // ★ 429(quota)で当日枯渇と判定されたキーはスキップし、先頭から順に使う
-  for (let i = 0; i < rule.baseKeys.length; i++) {
-    const apiPropName = prefix + rule.baseKeys[i];
+  const baseKeys = rule.baseKeys;
+  const nKeys = baseKeys.length;
+  if (!nKeys) return prefix + baseKeyDefault;
+
+  // ★ ローテ状態（同一メディア内の「最後に選んだキー」）
+  // - 429で全キーが当日枯渇扱いになっても、呼び出しのたびに次キーへ進める
+  const rotStateProp =
+    "ROTSTATE_" +
+    String(prefix).replace(/[^A-Za-z0-9_]/g, "_") +
+    "_" +
+    String(norm).replace(/[^A-Za-z0-9_]/g, "_");
+
+  let lastIdx = 0;
+  try {
+    const v = props.getProperty(rotStateProp);
+    const n = parseInt(v || "0", 10);
+    if (!isNaN(n)) lastIdx = n;
+  } catch (e) {
+    lastIdx = 0;
+  }
+  if (lastIdx < 0 || lastIdx >= nKeys) lastIdx = 0;
+
+  // 1) まずは「当日枯渇」になっていないキーを優先
+  for (let offset = 0; offset < nKeys; offset++) {
+    const idx = (lastIdx + offset) % nKeys;
+    const apiPropName = prefix + baseKeys[idx];
     if (_isApiKeyExhaustedToday_(apiPropName)) continue;
+    props.setProperty(rotStateProp, String(idx));
     return apiPropName;
   }
 
-  // 全部枯渇していたら最後のキーを返す（呼び出し側で429になる想定）
-  return prefix + rule.baseKeys[rule.baseKeys.length - 1];
+  // 2) 全部が「当日枯渇」でも、呼び出しのたびに次のキーへ進める
+  const nextIdx = (lastIdx + 1) % nKeys;
+  props.setProperty(rotStateProp, String(nextIdx));
+  return prefix + baseKeys[nextIdx];
 }
 
 // Gemini用：apiKey と「Script Properties のキー名(propName)」を返す
