@@ -52,9 +52,9 @@ function exportProdRowsToMonthlyCsv() {
     return;
   }
 
-  // 各月ごとにCSVを書き出し
+  // 各月ごとにスプレッドシートを書き出し
   monthKeys.forEach(function (monthKey) {
-    appendRowsToMonthlyCsv_(monthKey, header, monthBuckets[monthKey]);
+    appendRowsToMonthlySpreadsheet_(monthKey, header, monthBuckets[monthKey]);
   });
 }
 
@@ -72,98 +72,69 @@ function getCsvOutputFolder_() {
 }
 
 /**
- * 指定した月キー(YYYYMM)のCSVファイルに、ヘッダー付きで行を追記する。
- * 既に同じ行が存在する場合は重複保存しない。
+ * セル内の「空行」を維持するために、空行部分にゼロ幅スペースを入れる。
+ * 例: "a\n\nb" -> "a\n\u200B\nb"
+ */
+function preserveBlankLinesInCell_(v) {
+  if (typeof v !== "string") return v;
+  // 改行コードの揺れを統一
+  const s = v.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+
+  // 空行（= 連続改行で生まれる空の行）にゼロ幅スペースを注入
+  // splitして空行要素を検知するのが堅い
+  const lines = s.split("\n");
+  const fixed = lines.map((line) => (line === "" ? "\u200B" : line)).join("\n");
+  return fixed;
+}
+
+/**
+ * 指定した月キー(YYYYMM)のスプレッドシートファイルに、ヘッダー付きで行を追記する。
  *
  * @param {string} monthKey 例: "202512"
  * @param {any[]} headerRow prodシートのヘッダー行
  * @param {any[][]} rows    追記したい行
  */
-function appendRowsToMonthlyCsv_(monthKey, headerRow, rows) {
+function appendRowsToMonthlySpreadsheet_(monthKey, headerRow, rows) {
   if (!rows || rows.length === 0) return;
 
-  const fileName = "prod_" + monthKey + ".csv";
-
-  // 既存ファイルを探す（同名が複数ある想定はしない）
-  let file;
+  const fileName = "prod_" + monthKey;
   const folder = getCsvOutputFolder_();
-  const files = folder.getFilesByName(fileName);
 
+  let file;
+  const files = folder.getFilesByName(fileName);
   if (files.hasNext()) {
     file = files.next();
   } else {
-    file = folder.createFile(fileName, "", MimeType.CSV);
+    const ss = SpreadsheetApp.create(fileName);
+    file = DriveApp.getFileById(ss.getId());
+    folder.addFile(file);
+    DriveApp.getRootFolder().removeFile(file);
   }
 
-  // 既存内容を読み込み
-  const existingContent = file.getBlob().getDataAsString("UTF-8");
-  let lines = [];
-  if (existingContent) {
-    lines = existingContent.split("\n").filter(function (l) {
-      return l !== "";
-    });
+  const outSs = SpreadsheetApp.openById(file.getId());
+
+  // アーカイブ先スプレッドシートのTZを固定
+  outSs.setSpreadsheetTimeZone("Asia/Yangon");
+
+  const sheetName = "prod";
+  let outSheet = outSs.getSheetByName(sheetName);
+  if (!outSheet) outSheet = outSs.insertSheet(sheetName);
+
+  // ヘッダー確認＆設定
+  const lastRow = outSheet.getLastRow();
+  if (lastRow === 0) {
+    outSheet.getRange(1, 1, 1, headerRow.length).setValues([headerRow]);
   }
 
-  const headerLine = headerRow.map(csvEscape_).join(",");
-
-  // 既存行のセットを作って重複チェックに使う
-  const existingSet = new Set(lines);
-
-  // 1行目がヘッダーでない場合のみ、ヘッダーを先頭に差し込む
-  if (lines.length === 0) {
-    // 完全に空 → ヘッダーを入れてからデータを追加
-    lines.push(headerLine);
-    existingSet.add(headerLine);
-  } else {
-    const firstLine = lines[0];
-    if (firstLine !== headerLine) {
-      // ヘッダーが存在しないとみなして、先頭に挿入
-      lines.unshift(headerLine);
-      existingSet.add(headerLine);
-    }
-  }
-
-  // 新規行をCSV形式に変換して、既存にないものだけ追加
-  rows.forEach(function (row) {
-    const line = row.map(csvEscape_).join(",");
-    if (!existingSet.has(line)) {
-      lines.push(line);
-      existingSet.add(line);
-    }
+  // ★ setValues 前に I列だけ空行保持加工（I列=9列目 index=8）
+  const rowsFixed = rows.map((r) => {
+    const rr = r.slice(); // 行をコピー（元データを壊さない）
+    rr[8] = preserveBlankLinesInCell_(rr[8]);
+    return rr;
   });
 
-  const newContent = lines.join("\n");
-  // 上書き保存（CSVとして維持される）
-  file.setContent(newContent);
-}
-
-/**
- * CSV用エスケープ
- * - null/undefinedは空文字
- * - " を "" にエスケープ
- * - カンマ/ダブルクオート/改行を含む場合はダブルクオートで囲む
- *
- * @param {any} value
- * @returns {string}
- */
-function csvEscape_(value) {
-  if (value === null || value === undefined) return "";
-  let str = String(value);
-  let needsQuote = false;
-
-  if (str.indexOf('"') !== -1) {
-    str = str.replace(/"/g, '""');
-    needsQuote = true;
-  }
-  if (
-    str.indexOf(",") !== -1 ||
-    str.indexOf("\n") !== -1 ||
-    str.indexOf("\r") !== -1
-  ) {
-    needsQuote = true;
-  }
-  if (needsQuote) {
-    str = '"' + str + '"';
-  }
-  return str;
+  // ★ 重複チェックなしでそのまま追記
+  outSheet
+    .getRange(outSheet.getLastRow() + 1, 1, rowsFixed.length, headerRow.length)
+    .setValues(rowsFixed);
 }
