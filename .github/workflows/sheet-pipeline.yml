@@ -16,9 +16,9 @@ on:
     # 22:50 MMT ≒ 16:20 UTC → 16:17 UTC（= 22:47 MMT, 3分前倒し）
     - cron: "17 16 * * *" # 22:47 MMT（実運用目標: 22:50）
 
-    # 01:00 MMT（= 18:30 UTC 前日）: bundle生成（1時間前倒し）
-    # 01:00 MMT（翌日）≒ 18:30 UTC（前日）→ 18:27 UTC（= 00:57 MMT, 3分前倒し）
-    - cron: "27 18 * * *" # 00:57 MMT（実運用目標: 01:00）
+    # 01:30 MMT（= 19:00 UTC 前日）: bundle生成
+    # → 18:57 UTC（= 01:27 MMT, 3分前倒し）
+    - cron: "57 18 * * *" # 01:27 MMT（実運用目標: 01:30）
 
   workflow_dispatch:
     inputs:
@@ -257,7 +257,7 @@ jobs:
       #     CSV_EMAIL_RECIPIENTS: ${{ secrets.CSV_EMAIL_RECIPIENTS }}
 
   schedule-build-bundle:
-    if: github.event_name == 'schedule' && github.event.schedule == '27 18 * * *'
+    if: github.event_name == 'schedule' && github.event.schedule == '57 18 * * *'
     runs-on: ubuntu-latest
     environment: production
     env:
