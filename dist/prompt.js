@@ -2975,7 +2975,7 @@ function checkAndNotifyAllDoneIfNeededForSheet_(sheetName) {
     "」で" +
     bStr +
     "分の記事収集が完了しました。\n\n" +
-    "翌 01:00 までにスプレッドシートを更新してください。\n\n" +
+    "翌 01:30 までにスプレッドシートを更新してください。\n\n" +
     "スプレッドシートURL:\n" +
     ssUrl +
     "\n";
