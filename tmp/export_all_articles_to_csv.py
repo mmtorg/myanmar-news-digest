@@ -1424,59 +1424,33 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
                         })
                     continue
 
-        soup = BeautifulSoup(res.text, "html.parser")
+            soup = BeautifulSoup(res.text, "html.parser")
 
-        art_date = _article_date_from_meta_mmt(soup) or target_date_mmt
+            art_date = _article_date_from_meta_mmt(soup) or target_date_mmt
 
-        title = _extract_title(soup)
-        if not title:
-            h1 = soup.select_one("header#article-title h1.entry-title")
-            if h1:
-                title = h1.get_text(strip=True)
-        if not title:
-            # 最後の保険として feed タイトル
-            title = fallback_titles.get(url, "") or _title_from_slug(url)
-        if not title:
-            continue
+            title = _extract_title(soup)
+            if not title:
+                h1 = soup.select_one("header#article-title h1.entry-title")
+                if h1:
+                    title = h1.get_text(strip=True)
+            if not title:
+                # 最後の保険として feed タイトル
+                title = fallback_titles.get(url, "") or _title_from_slug(url)
+            if not title:
+                continue
 
-        # 本文: リード <h3> + <div.entry-content> 直下の <p>
-        body_parts: list[str] = []
-        content = soup.select_one("div.entry-content")
-        if content:
-            # 1) GNLM 専用: <br> を改行に変換
-            for br in content.find_all("br"):
-                br.replace_with("\n")
+            # 本文: リード <h3> + <div.entry-content> 直下の <p>
+            body_parts: list[str] = []
+            content = soup.select_one("div.entry-content")
+            if content:
+                # 1) GNLM 専用: <br> を改行に変換
+                for br in content.find_all("br"):
+                    br.replace_with("\n")
 
-            # 2) 見出し（ある場合のみ）
-            lead = content.find("h3", recursive=False)
-            if lead:
-                txt = lead.get_text("\n", strip=True)
-                if txt:
-                    txt = "\n".join(
-                        re.sub(r"\s+", " ", seg).strip()
-                        for seg in txt.split("\n")
-                    )
-                    if txt:
-                        body_parts.append(txt)
-
-            # 3) 直下の <p> をこれまで通り抽出
-            for child in content.children:
-                if not getattr(child, "name", None):
-                    continue
-
-                # 共有ボタンコンテナなどが出てきたら本文終端とみなす（追加のガード）
-                if child.name == "div":
-                    classes = " ".join(child.get("class", [])) if child.get("class") else ""
-                    if any(k in classes for k in ["sharing", "share", "crp_related"]):
-                        break
-
-                if child.name in ("h2", "h3"):
-                    label = child.get_text(" ", strip=True)
-                    if re.match(r"related\s+posts?:?", label, re.I):
-                        break
-
-                if child.name == "p":
-                    txt = child.get_text("\n", strip=True)
+                # 2) 見出し（ある場合のみ）
+                lead = content.find("h3", recursive=False)
+                if lead:
+                    txt = lead.get_text("\n", strip=True)
                     if txt:
                         txt = "\n".join(
                             re.sub(r"\s+", " ", seg).strip()
@@ -1485,46 +1459,72 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
                         if txt:
                             body_parts.append(txt)
 
-            # ★ 直下の <p> で何も拾えなかった場合のフォールバック（既存）
-            if not body_parts:
-                for p in content.find_all("p"):
-                    txt = p.get_text("\n", strip=True)
-                    if not txt:
+                # 3) 直下の <p> をこれまで通り抽出
+                for child in content.children:
+                    if not getattr(child, "name", None):
                         continue
-                    txt = "\n".join(
-                        re.sub(r"\s+", " ", seg).strip()
-                        for seg in txt.split("\n")
-                    )
-                    if txt:
+
+                    # 共有ボタンコンテナなどが出てきたら本文終端とみなす（追加のガード）
+                    if child.name == "div":
+                        classes = " ".join(child.get("class", [])) if child.get("class") else ""
+                        if any(k in classes for k in ["sharing", "share", "crp_related"]):
+                            break
+
+                    if child.name in ("h2", "h3"):
+                        label = child.get_text(" ", strip=True)
+                        if re.match(r"related\s+posts?:?", label, re.I):
+                            break
+
+                    if child.name == "p":
+                        txt = child.get_text("\n", strip=True)
+                        if txt:
+                            txt = "\n".join(
+                                re.sub(r"\s+", " ", seg).strip()
+                                for seg in txt.split("\n")
+                            )
+                            if txt:
+                                body_parts.append(txt)
+
+                # ★ 直下の <p> で何も拾えなかった場合のフォールバック（既存）
+                if not body_parts:
+                    for p in content.find_all("p"):
+                        txt = p.get_text("\n", strip=True)
+                        if not txt:
+                            continue
+                        txt = "\n".join(
+                            re.sub(r"\s+", " ", seg).strip()
+                            for seg in txt.split("\n")
+                        )
+                        if txt:
+                            body_parts.append(txt)
+
+                # 段落っぽい <div> も安全なものだけ本文に足す
+                extra_div_parts: list[str] = []
+                for child in content.children:
+                    if _gnlm_div_looks_like_paragraph(child):
+                        txt = child.get_text("\n", strip=True)
+                        txt = "\n".join(
+                            re.sub(r"\s+", " ", seg).strip()
+                            for seg in txt.split("\n")
+                        )
+                        if txt:
+                            extra_div_parts.append(txt)
+
+                # <div> が既存の body_parts と完全重複するケースは少ないはずですが、
+                # 念のため重複を避けて追加
+                for txt in extra_div_parts:
+                    if txt not in body_parts:
                         body_parts.append(txt)
 
-            # 段落っぽい <div> も安全なものだけ本文に足す
-            extra_div_parts: list[str] = []
-            for child in content.children:
-                if _gnlm_div_looks_like_paragraph(child):
-                    txt = child.get_text("\n", strip=True)
-                    txt = "\n".join(
-                        re.sub(r"\s+", " ", seg).strip()
-                        for seg in txt.split("\n")
-                    )
-                    if txt:
-                        extra_div_parts.append(txt)
+            body = "\n".join(body_parts)
 
-            # <div> が既存の body_parts と完全重複するケースは少ないはずですが、
-            # 念のため重複を避けて追加
-            for txt in extra_div_parts:
-                if txt not in body_parts:
-                    body_parts.append(txt)
-
-        body = "\n".join(body_parts)
-
-        out.append({
-            "source": "GNLM",
-            "title": unicodedata.normalize("NFC", title).strip(),
-            "url": url,
-            "date": (art_date or target_date_mmt).isoformat(),
-            "body": unicodedata.normalize("NFC", body).strip(),
-        })
+            out.append({
+                "source": "GNLM",
+                "title": unicodedata.normalize("NFC", title).strip(),
+                "url": url,
+                "date": (art_date or target_date_mmt).isoformat(),
+                "body": unicodedata.normalize("NFC", body).strip(),
+            })
 
     return deduplicate_by_url(out)
 
