@@ -1236,7 +1236,77 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
     # ★ curl_cffi セッション（最重要）
     sess = CurlSession(impersonate="chrome")
 
+    # --- Google News用の小物 ---
+    def _fetch_text(url: str, timeout: int = 20) -> str:
+        try:
+            r = sess.get(
+                url,
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/128.0.0.0 Safari/537.36"
+                    )
+                },
+                timeout=timeout,
+            )
+            if r.status_code == 200 and (r.text or "").strip():
+                return r.text
+        except Exception:
+            pass
+        return ""
+
+    def _fetch_text_via_jina(url: str, timeout: int = 25) -> str:
+        try:
+            alt = f"https://r.jina.ai/http://{url.lstrip('/')}"
+            r = sess.get(alt, headers={"User-Agent": "Mozilla/5.0"}, timeout=timeout)
+            if r.status_code == 200 and (r.text or "").strip():
+                return r.text
+        except Exception:
+            pass
+        return ""
+
+    def _mmt_date(dt_utc: datetime) -> date:
+        return dt_utc.astimezone(MMT).date()
+
+    def _rss_items_from_google_news_gnlm() -> List[Dict[str, str]]:
+        # 当日限定（MMT判定は後段）
+        gnews = (
+            "https://news.google.com/rss/search?"
+            "q=site:gnlm.com.mm+when:1d&hl=en-US&gl=US&ceid=US:en"
+        )
+        xml = _fetch_text(gnews)
+        if not xml:
+            xml = _fetch_text_via_jina(gnews)
+            if not xml:
+                return []
+
+        try:
+            root = ET.fromstring(xml)
+        except Exception:
+            return []
+
+        import re as _re
+        href_re = _re.compile(r'href=["\']([^"\']+)["\']', _re.I)
+
+        items: List[Dict[str, str]] = []
+        for it in root.findall(".//item"):
+            title = (it.findtext("title") or "").strip()
+            link = (it.findtext("link") or "").strip()
+            pub = (it.findtext("pubDate") or "").strip()
+            desc = (it.findtext("description") or "").strip()
+
+            # description 内の “gnlm.com.mm 直リンク” を優先（Irrawaddyと同じ発想）
+            direct = None
+            m = href_re.search(desc)
+            if m and "gnlm.com.mm" in m.group(1):
+                direct = m.group(1)
+
+            items.append({"title": title, "link": direct or link, "pubDate": pub})
+        return items
+
     collected_urls: set[str] = set()
+    fallback_titles: dict[str, str] = {}  # 記事が取れない時のタイトル保険
 
     # ---- 一覧ページ ----
     for base in BASE_CATEGORIES:
@@ -1301,36 +1371,58 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
 
             if stop_paging:
                 break
-
-    # ---- 個別記事 ----
-    out: list[Dict] = []
-
-    for url in sorted(collected_urls):
-        # A: curl_cffi
-        try:
-            res = sess.get(url, timeout=20)
-            if res.status_code != 200 or not res.text.strip():
-                raise Exception(f"status={res.status_code}")
-        except Exception as e:
-            print(f"[gnlm] curl_cffi article fetch failed: {e} url={url}")
-
-            # B: cloudscraper fallback
+            
+    # 一覧が全滅（または0件）なら Google News RSS から当日分だけ拾う
+    if not collected_urls:
+        for it in _rss_items_from_google_news_gnlm():
+            title = (it.get("title") or "").strip()
+            link = (it.get("link") or "").strip()
+            pub = it.get("pubDate") or ""
             try:
-                import cloudscraper
+                dt = parse_date(pub)
+            except Exception:
+                dt = None
+            if link and dt and _mmt_date(dt) == target_date_mmt:
+                collected_urls.add(link)
+                if title:
+                    fallback_titles[link] = title
 
-                scraper = cloudscraper.create_scraper(
-                    browser={
-                        "browser": "chrome",
-                        "platform": "windows",
-                        "desktop": True,
-                    }
-                )
-                res = scraper.get(url, timeout=20)
+        if collected_urls:
+            print(f"[gnlm] fallback via Google News: {len(collected_urls)} urls")
+
+        # ---- 個別記事 ----
+        out: list[Dict] = []
+        for url in sorted(collected_urls):
+            try:
+                res = sess.get(url, timeout=20)
                 if res.status_code != 200 or not res.text.strip():
                     raise Exception(f"status={res.status_code}")
-            except Exception as e2:
-                print(f"[gnlm] cloudscraper article fetch failed: {e2} url={url}")
-                continue
+            except Exception as e:
+                print(f"[gnlm] curl_cffi article fetch failed: {e} url={url}")
+                try:
+                    import cloudscraper
+                    scraper = cloudscraper.create_scraper(
+                        browser={"browser": "chrome", "platform": "windows", "desktop": True}
+                    )
+                    res = scraper.get(url, timeout=20)
+                    if res.status_code != 200 or not res.text.strip():
+                        raise Exception(f"status={res.status_code}")
+                except Exception as e2:
+                    print(f"[gnlm] cloudscraper article fetch failed: {e2} url={url}")
+
+                    # 記事本文は取れないが、Google News等のタイトルだけでも残す
+                    t = (fallback_titles.get(url) or "").strip()
+                    if not t:
+                        t = _title_from_slug(url)
+                    if t:
+                        out.append({
+                            "source": "GNLM",
+                            "title": unicodedata.normalize("NFC", t),
+                            "url": url,
+                            "date": target_date_mmt.isoformat(),
+                            "body": "",  # 本文は諦める
+                        })
+                    continue
 
         soup = BeautifulSoup(res.text, "html.parser")
 
@@ -1342,7 +1434,8 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
             if h1:
                 title = h1.get_text(strip=True)
         if not title:
-            title = _title_from_slug(url)
+            # 最後の保険として feed タイトル
+            title = fallback_titles.get(url, "") or _title_from_slug(url)
         if not title:
             continue
 
@@ -1405,7 +1498,7 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
                     if txt:
                         body_parts.append(txt)
 
-            # ★ 追加: 段落っぽい <div> も安全なものだけ本文に足す ★
+            # 段落っぽい <div> も安全なものだけ本文に足す
             extra_div_parts: list[str] = []
             for child in content.children:
                 if _gnlm_div_looks_like_paragraph(child):
@@ -1425,15 +1518,13 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
 
         body = "\n".join(body_parts)
 
-        out.append(
-            {
-                "source": "Global New Light Of Myanmar (国営紙)",
-                "title": unicodedata.normalize("NFC", title),
-                "url": url,
-                "date": art_date.isoformat(),
-                "body": body,
-            }
-        )
+        out.append({
+            "source": "GNLM",
+            "title": unicodedata.normalize("NFC", title).strip(),
+            "url": url,
+            "date": (art_date or target_date_mmt).isoformat(),
+            "body": unicodedata.normalize("NFC", body).strip(),
+        })
 
     return deduplicate_by_url(out)
 
