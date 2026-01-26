@@ -591,7 +591,15 @@ def collect_myanmar_now_mm_all_for_date(target_date_mmt: date, max_pages: int = 
 
     def _fetch_text_via_jina(url: str, timeout: int = 25) -> str:
         try:
-            alt = f"https://r.jina.ai/http://{url.lstrip('/')}"
+            from urllib.parse import urlparse
+            p = urlparse(url)
+            if p.scheme:
+                host_path = p.netloc + p.path
+                if p.query:
+                    host_path += "?" + p.query
+            else:
+                host_path = url.lstrip("/")
+            alt = f"https://r.jina.ai/http://{host_path}"
             r = sess.get(alt, headers={"User-Agent": "Mozilla/5.0"}, timeout=timeout)
             if r.status_code == 200 and (r.text or "").strip():
                 return r.text
@@ -915,7 +923,15 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
 
     def _fetch_text_via_jina(url: str, timeout: int = 25) -> str:
         try:
-            alt = f"https://r.jina.ai/http://{url.lstrip('/')}"
+            from urllib.parse import urlparse
+            p = urlparse(url)
+            if p.scheme:
+                host_path = p.netloc + p.path
+                if p.query:
+                    host_path += "?" + p.query
+            else:
+                host_path = url.lstrip("/")
+            alt = f"https://r.jina.ai/http://{host_path}"
             r = sess.get(alt, headers={"User-Agent": "Mozilla/5.0"}, timeout=timeout)
             if r.status_code == 200 and (r.text or "").strip():
                 return r.text
@@ -1258,7 +1274,15 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
 
     def _fetch_text_via_jina(url: str, timeout: int = 25) -> str:
         try:
-            alt = f"https://r.jina.ai/http://{url.lstrip('/')}"
+            from urllib.parse import urlparse
+            p = urlparse(url)
+            if p.scheme:
+                host_path = p.netloc + p.path
+                if p.query:
+                    host_path += "?" + p.query
+            else:
+                host_path = url.lstrip("/")
+            alt = f"https://r.jina.ai/http://{host_path}"
             r = sess.get(alt, headers={"User-Agent": "Mozilla/5.0"}, timeout=timeout)
             if r.status_code == 200 and (r.text or "").strip():
                 return r.text
