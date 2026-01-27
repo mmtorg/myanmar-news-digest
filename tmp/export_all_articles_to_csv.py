@@ -1326,6 +1326,42 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
                 "pubDate": (it.findtext("pubDate") or "").strip(),
             })
         return items
+    
+    def _decode_google_news_rss_url(g_link: str) -> str:
+        """
+        Google News RSS の /rss/articles/<token> 形式から元記事URLを復元する。
+        参考：Base64デコード→中に含まれる最初の http(s):// を抽出する手法。
+        """
+        if not g_link:
+            return ""
+
+        try:
+            from urllib.parse import urlparse
+            import base64
+            import re
+
+            u = urlparse(g_link)
+            parts = u.path.split("/")
+            if "articles" not in parts:
+                return ""
+
+            token = parts[parts.index("articles") + 1]
+            if not token:
+                return ""
+
+            # URL-safe base64 のことが多い。パディング補正してデコード。
+            token += "=" * (-len(token) % 4)
+            raw = base64.urlsafe_b64decode(token)
+
+            # デコードしたバイト列の中に元URLが埋まっているので抽出
+            m = re.search(rb"https?://[^\s\"'<>\x00]+", raw)
+            if not m:
+                return ""
+
+            return m.group(0).decode("utf-8", errors="ignore")
+        except Exception as e:
+            print(f"[gnlm] gnews decode failed: {e} link={g_link}")
+            return ""
 
     def _resolve_publisher_url_from_google_news(g_link: str) -> str:
         """
@@ -1354,9 +1390,10 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
         return ""
 
     def _rss_items_from_google_news_gnlm() -> List[Dict[str, str]]:
+        # 日付判定は後段で行うので広めに
         gnews = (
             "https://news.google.com/rss/search?"
-            "q=site:gnlm.com.mm+when:1d&hl=en-MM&gl=MM&ceid=MM:en"
+            "q=site:gnlm.com.mm+when:30d&hl=en-MM&gl=MM&ceid=MM:en"
         )
 
         xml = _fetch_text(gnews) or _fetch_text_via_jina(gnews)
@@ -1379,8 +1416,9 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
             g_link = (it.findtext("link") or "").strip()
             pub = (it.findtext("pubDate") or "").strip()
 
-            # ★ここが肝：Google Newsのページから配信元URLを抽出
-            direct = _resolve_publisher_url_from_google_news(g_link)
+            direct = _decode_google_news_rss_url(g_link)
+
+            # まれにデコード結果が別サイト(AMP/キャッシュ等)になるので、GNLMだけ採用
             if "gnlm.com.mm" not in (direct or ""):
                 continue
 
