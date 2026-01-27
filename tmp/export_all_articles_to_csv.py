@@ -1327,35 +1327,49 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
         return items
 
     def _rss_items_from_google_news_gnlm() -> List[Dict[str, str]]:
+        # 日付判定は後段でするので広めに
         gnews = (
             "https://news.google.com/rss/search?"
-            "q=site:gnlm.com.mm+when:1d&hl=en-US&gl=US&ceid=US:en"
+            "q=site:gnlm.com.mm+when:1d&hl=en-MM&gl=MM&ceid=MM:en"
         )
+
         xml = _fetch_text(gnews) or _fetch_text_via_jina(gnews)
         if not xml:
+            print("[gnlm] google news rss fetch failed")
             return []
 
         try:
             root = ET.fromstring(xml)
-        except Exception:
+        except Exception as e:
+            print(f"[gnlm] google news rss parse failed: {e}")
             return []
 
-        import re as _re
-        href_re = _re.compile(r'href=["\']([^"\']+)["\']', _re.I)
-
         items: List[Dict[str, str]] = []
-        for it in root.findall(".//item"):
+        rss_items = root.findall(".//item")
+        print(f"[gnlm] google news rss items={len(rss_items)}")
+
+        for it in rss_items:
             title = (it.findtext("title") or "").strip()
-            link = (it.findtext("link") or "").strip()
+            g_link = (it.findtext("link") or "").strip()     # たいてい news.google.com のURL
             pub = (it.findtext("pubDate") or "").strip()
-            desc = (it.findtext("description") or "").strip()
 
-            direct = None
-            m = href_re.search(desc)
-            if m and "gnlm.com.mm" in m.group(1):
-                direct = m.group(1)
+            final = ""
+            if g_link:
+                try:
+                    # リダイレクト追跡して「本当の配信元URL」を取る
+                    r = sess.get(g_link, timeout=20, allow_redirects=True)
+                    final = (getattr(r, "url", "") or "").strip()
+                except Exception as e:
+                    print(f"[gnlm] google redirect follow failed: {e} link={g_link}")
 
-            items.append({"title": title, "link": direct or link, "pubDate": pub})
+            # GNLM以外なら捨てる
+            link = final if ("gnlm.com.mm" in final) else ""
+            if not link:
+                continue
+
+            items.append({"title": title, "link": link, "pubDate": pub})
+
+        print(f"[gnlm] google news resolved gnlm_links={len(items)}")
         return items
 
     # ==================================================
