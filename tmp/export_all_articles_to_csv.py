@@ -1327,6 +1327,32 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
             })
         return items
 
+    def _resolve_publisher_url_from_google_news(g_link: str) -> str:
+        """
+        Google News の記事URL（news.google.com/...）から配信元URLを抽出する。
+        redirect だけでは取れないことが多いので、HTMLから gnlm.com.mm を拾う。
+        """
+        if not g_link:
+            return ""
+
+        # 1) まずは素直に取得（HTMLを読む）
+        html = _fetch_text(g_link, timeout=20)
+
+        # 2) 取れなければ jina 経由（Google側はだいたい読める）
+        if not html:
+            html = _fetch_text_via_jina(g_link, timeout=25)
+
+        if not html:
+            return ""
+
+        # 3) HTML/テキスト中から GNLM の直URLを拾う（複数あれば最初を採用）
+        import re as _re
+        m = _re.search(r'https?://(?:www\.)?gnlm\.com\.mm/[^\s"\'<>]+', html, _re.I)
+        if m:
+            return m.group(0)
+
+        return ""
+
     def _rss_items_from_google_news_gnlm() -> List[Dict[str, str]]:
         gnews = (
             "https://news.google.com/rss/search?"
@@ -1344,35 +1370,21 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
             print(f"[gnlm] google news rss parse failed: {e}")
             return []
 
-        items: List[Dict[str, str]] = []
         rss_items = root.findall(".//item")
         print(f"[gnlm] google news rss items={len(rss_items)}")
 
+        items: List[Dict[str, str]] = []
         for it in rss_items:
             title = (it.findtext("title") or "").strip()
-            g_link = (it.findtext("link") or "").strip()     # たいてい news.google.com のURL
+            g_link = (it.findtext("link") or "").strip()
             pub = (it.findtext("pubDate") or "").strip()
 
-            final = ""
-            if g_link:
-                try:
-                    # リダイレクト追跡して「本当の配信元URL」を取る
-                    r = sess.get(
-                        g_link,
-                        timeout=20,
-                        allow_redirects=True,
-                        headers={"User-Agent": "Mozilla/5.0"},
-                    )
-                    final = (getattr(r, "url", "") or "").strip()
-                except Exception as e:
-                    print(f"[gnlm] google redirect follow failed: {e} link={g_link}")
-
-            # GNLM以外なら捨てる
-            link = final if ("gnlm.com.mm" in final) else ""
-            if not link:
+            # ★ここが肝：Google Newsのページから配信元URLを抽出
+            direct = _resolve_publisher_url_from_google_news(g_link)
+            if "gnlm.com.mm" not in (direct or ""):
                 continue
 
-            items.append({"title": title, "link": link, "pubDate": pub})
+            items.append({"title": title, "link": direct, "pubDate": pub})
 
         print(f"[gnlm] google news resolved gnlm_links={len(items)}")
         return items
