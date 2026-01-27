@@ -1390,10 +1390,9 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
         return ""
 
     def _rss_items_from_google_news_gnlm() -> List[Dict[str, str]]:
-        # 日付判定は後段で行うので広めに
         gnews = (
             "https://news.google.com/rss/search?"
-            "q=site:gnlm.com.mm+when:30d&hl=en-MM&gl=MM&ceid=MM:en"
+            "q=site:gnlm.com.mm+when:1d&hl=en-MM&gl=MM&ceid=MM:en"
         )
 
         xml = _fetch_text(gnews) or _fetch_text_via_jina(gnews)
@@ -1411,14 +1410,20 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
         print(f"[gnlm] google news rss items={len(rss_items)}")
 
         items: List[Dict[str, str]] = []
-        for it in rss_items:
+        for i, it in enumerate(rss_items):
             title = (it.findtext("title") or "").strip()
             g_link = (it.findtext("link") or "").strip()
             pub = (it.findtext("pubDate") or "").strip()
 
+            if i == 0:
+                print(f"[gnlm] sample title={title!r}")
+                print(f"[gnlm] sample g_link={g_link}")
+
             direct = _decode_google_news_rss_url(g_link)
 
-            # まれにデコード結果が別サイト(AMP/キャッシュ等)になるので、GNLMだけ採用
+            if i == 0:
+                print(f"[gnlm] sample decoded_direct={direct!r}")
+
             if "gnlm.com.mm" not in (direct or ""):
                 continue
 
