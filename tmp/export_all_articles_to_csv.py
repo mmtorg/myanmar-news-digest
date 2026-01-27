@@ -1233,6 +1233,7 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
     対象MMT日付の記事を取得（キーワード絞り込みなし）。
     """
     from curl_cffi.requests import Session as CurlSession
+    import xml.etree.ElementTree as ET  
 
     BASE_CATEGORIES = [
         "https://www.gnlm.com.mm/category/national/",
@@ -1327,7 +1328,6 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
         return items
 
     def _rss_items_from_google_news_gnlm() -> List[Dict[str, str]]:
-        # 日付判定は後段でするので広めに
         gnews = (
             "https://news.google.com/rss/search?"
             "q=site:gnlm.com.mm+when:1d&hl=en-MM&gl=MM&ceid=MM:en"
@@ -1357,7 +1357,12 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
             if g_link:
                 try:
                     # リダイレクト追跡して「本当の配信元URL」を取る
-                    r = sess.get(g_link, timeout=20, allow_redirects=True)
+                    r = sess.get(
+                        g_link,
+                        timeout=20,
+                        allow_redirects=True,
+                        headers={"User-Agent": "Mozilla/5.0"},
+                    )
                     final = (getattr(r, "url", "") or "").strip()
                 except Exception as e:
                     print(f"[gnlm] google redirect follow failed: {e} link={g_link}")
