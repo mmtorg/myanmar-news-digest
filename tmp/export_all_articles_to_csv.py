@@ -1462,6 +1462,23 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
     if collected_urls:
         print(f"[gnlm] urls via RSS feeds: {len(collected_urls)}")
 
+    # ===== RSS取得だけテストしたい場合（ここから）=====
+    if collected_urls:
+        print(f"[gnlm] urls via RSS feeds: {len(collected_urls)}")
+
+        # RSSで取れた URL/Title だけ返して以降の処理（HTML/GoogleNews/本文取得）を止める
+        return [
+            {
+                "source": "GNLM",
+                "title": (fallback_titles.get(url, "") or "").strip(),
+                "url": url,
+                "date": target_date_mmt.isoformat(),
+                "body": "",
+            }
+            for url in sorted(collected_urls)
+        ]
+    # ===== RSS取得だけテストしたい場合（ここまで）=====
+
     # 2) HTMLカテゴリ一覧（※RSSで取れていても回してOK。ログがうるさければ if not collected_urls: で囲む）
     for base in BASE_CATEGORIES:
         for page in range(1, max_pages + 1):
