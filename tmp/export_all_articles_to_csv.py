@@ -1390,6 +1390,8 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
         return ""
 
     def _rss_items_from_google_news_gnlm() -> List[Dict[str, str]]:
+        from googlenewsdecoder import new_decoderv1  # パッケージ側のAPI（README参照）
+
         gnews = (
             "https://news.google.com/rss/search?"
             "q=site:gnlm.com.mm+when:1d&hl=en-MM&gl=MM&ceid=MM:en"
@@ -1409,28 +1411,31 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
         rss_items = root.findall(".//item")
         print(f"[gnlm] google news rss items={len(rss_items)}")
 
-        items: List[Dict[str, str]] = []
-        for i, it in enumerate(rss_items):
+        out_items: List[Dict[str, str]] = []
+
+        for it in rss_items:
             title = (it.findtext("title") or "").strip()
             g_link = (it.findtext("link") or "").strip()
             pub = (it.findtext("pubDate") or "").strip()
 
-            if i == 0:
-                print(f"[gnlm] sample title={title!r}")
-                print(f"[gnlm] sample g_link={g_link}")
-
-            direct = _decode_google_news_rss_url(g_link)
-
-            if i == 0:
-                print(f"[gnlm] sample decoded_direct={direct!r}")
-
-            if "gnlm.com.mm" not in (direct or ""):
+            if not g_link:
                 continue
 
-            items.append({"title": title, "link": direct, "pubDate": pub})
+            # ★ここが肝：Google News URL → 元URL復元
+            try:
+                res = new_decoderv1(g_link)  # dictが返る想定（README参照）
+                direct = (res.get("decoded_url") or "").strip()
+            except Exception as e:
+                print(f"[gnlm] googlenewsdecoder failed: {e}")
+                direct = ""
 
-        print(f"[gnlm] google news resolved gnlm_links={len(items)}")
-        return items
+            if "gnlm.com.mm" not in direct:
+                continue
+
+            out_items.append({"title": title, "link": direct, "pubDate": pub})
+
+        print(f"[gnlm] google news resolved gnlm_links={len(out_items)}")
+        return out_items
 
     # ==================================================
     # URL収集フェーズ（RSS → HTML → Google News）
