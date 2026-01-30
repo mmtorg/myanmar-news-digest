@@ -2218,7 +2218,15 @@ function fixKyatYenInText_(text) {
     /([0-9０-９,，\s兆億万]+チャット)（約[^）]*円）/g,
     function (_m, kyatPart) {
       const kyatInt = parseJaKyatToInt_(kyatPart);
+
+      // ★ 数値として解釈できない/0以下は触らない（保険）
+      if (!Number.isFinite(kyatInt) || kyatInt <= 0) return kyatPart;
+
       const yenInt = kyatToYenInt_(kyatInt);
+
+      // ★ 0円になるケースは併記しない（これで「（約0円）」が消える）
+      if (yenInt <= 0) return kyatPart;
+
       const yenJa = formatYenJa_(yenInt);
       return kyatPart + "（約" + yenJa + "）";
     },
