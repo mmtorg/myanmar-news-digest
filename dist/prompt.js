@@ -786,7 +786,7 @@ function buildRegionGlossaryPromptFor_(entries, useHeadlineJa) {
           en +
           "」が出たら、必ず「" +
           ja +
-          "」と訳す。"
+          "」と訳す。",
       );
     } else if (mm) {
       lines.push("- 「" + mm + "」が出たら、必ず「" + ja + "」と訳す。");
@@ -803,7 +803,7 @@ function buildRegionGlossaryPromptFor_(entries, useHeadlineJa) {
 function buildRegionRulesForTitle_(title) {
   const entries = selectRegionEntriesForText_(
     title || "",
-    loadRegionGlossary_()
+    loadRegionGlossary_(),
   );
   return buildRegionGlossaryPromptFor_(entries, true);
 }
@@ -812,7 +812,7 @@ function buildRegionRulesForTitle_(title) {
 function buildRegionRulesForBody_(body) {
   const entries = selectRegionEntriesForText_(
     body || "",
-    loadRegionGlossary_()
+    loadRegionGlossary_(),
   );
   return buildRegionGlossaryPromptFor_(entries, false);
 }
@@ -1002,7 +1002,7 @@ function _pickApiKeyPropNameWithRotation_(sheetName, sourceRaw) {
 function getGeminiApiKeyBundleFromSheetAndSource_(
   sheetName,
   sourceRaw,
-  usageTagOpt
+  usageTagOpt,
 ) {
   const props = PropertiesService.getScriptProperties();
   const propName = _pickApiKeyPropNameWithRotation_(sheetName, sourceRaw);
@@ -1031,7 +1031,7 @@ function getApiKeyFromSheetAndSource_(sheetName, sourceRaw, usageTagOpt) {
   const b = getGeminiApiKeyBundleFromSheetAndSource_(
     sheetName,
     sourceRaw,
-    usageTagOpt
+    usageTagOpt,
   );
   return (b && b.apiKey) || null;
 }
@@ -1048,7 +1048,7 @@ function getOpenAiApiKey_(usageTagOpt) {
     return null;
   }
   Logger.log(
-    "[openai-key] use apiKeyProp=" + OPENAI_API_KEY_PROP + " (tag=" + tag + ")"
+    "[openai-key] use apiKeyProp=" + OPENAI_API_KEY_PROP + " (tag=" + tag + ")",
   );
   _appendGeminiLog_("INFO", tag, "use apiKeyProp=" + OPENAI_API_KEY_PROP);
   return apiKey;
@@ -1151,7 +1151,7 @@ function _logGeminiUsage_(data, usageTag, model) {
     u.total_token_count,
     u.cache_creation_input_token_count,
     u.cache_read_input_token_count,
-    m
+    m,
   );
 }
 
@@ -1334,7 +1334,7 @@ function callGeminiWithKey_(apiKey, prompt, usageTagOpt, apiKeyPropNameOpt) {
       usageTag,
       model,
       promptChars,
-      estPromptTokens
+      estPromptTokens,
     );
 
     _appendGeminiLog_(
@@ -1347,7 +1347,7 @@ function callGeminiWithKey_(apiKey, prompt, usageTagOpt, apiKeyPropNameOpt) {
         " model=" +
         model +
         " prompt_chars=" +
-        (prompt || "").length
+        (prompt || "").length,
     );
 
     let res;
@@ -1369,7 +1369,7 @@ function callGeminiWithKey_(apiKey, prompt, usageTagOpt, apiKeyPropNameOpt) {
       Logger.log(
         "[gemini] retry after %sms (fetch exception, attempt=%s)",
         sleepMs,
-        attempt + 1
+        attempt + 1,
       );
 
       _appendGeminiLog_(
@@ -1379,7 +1379,7 @@ function callGeminiWithKey_(apiKey, prompt, usageTagOpt, apiKeyPropNameOpt) {
           sleepMs +
           "ms (fetch exception, attempt=" +
           (attempt + 1) +
-          ")"
+          ")",
       );
 
       Utilities.sleep(sleepMs);
@@ -1415,7 +1415,7 @@ function callGeminiWithKey_(apiKey, prompt, usageTagOpt, apiKeyPropNameOpt) {
       _appendGeminiLog_(
         "ERROR",
         usageTag,
-        "free tier quota exceeded: " + errMsg
+        "free tier quota exceeded: " + errMsg,
       );
 
       return "ERROR: " + errMsg;
@@ -1444,7 +1444,7 @@ function callGeminiWithKey_(apiKey, prompt, usageTagOpt, apiKeyPropNameOpt) {
         "[gemini] success tag=%s model=%s len(resp)=%s",
         usageTag,
         model,
-        out.length
+        out.length,
       );
 
       // SUCCESSログに実トークンも付与（usageMetadata が無い場合は空）
@@ -1472,7 +1472,7 @@ function callGeminiWithKey_(apiKey, prompt, usageTagOpt, apiKeyPropNameOpt) {
       _appendGeminiLog_(
         "SUCCESS",
         usageTag,
-        "success model=" + model + " len(resp)=" + out.length + tok
+        "success model=" + model + " len(resp)=" + out.length + tok,
       );
 
       return out;
@@ -1488,14 +1488,14 @@ function callGeminiWithKey_(apiKey, prompt, usageTagOpt, apiKeyPropNameOpt) {
         "[gemini] HTTP %s error status=%s message=%s",
         code,
         status,
-        message
+        message,
       );
       lastErrorText = message || "HTTP " + code;
 
       _appendGeminiLog_(
         "WARN",
         usageTag,
-        "HTTP " + code + " error status=" + status + " message=" + message
+        "HTTP " + code + " error status=" + status + " message=" + message,
       );
 
       // ★ 429(quota) なら、そのキーを「当日枯渇」としてマーク
@@ -1505,7 +1505,7 @@ function callGeminiWithKey_(apiKey, prompt, usageTagOpt, apiKeyPropNameOpt) {
           _appendGeminiLog_(
             "WARN",
             usageTag,
-            "marked exhausted today: " + apiKeyPropNameOpt
+            "marked exhausted today: " + apiKeyPropNameOpt,
           );
         }
       }
@@ -1516,7 +1516,7 @@ function callGeminiWithKey_(apiKey, prompt, usageTagOpt, apiKeyPropNameOpt) {
       _appendGeminiLog_(
         "WARN",
         usageTag,
-        "HTTP " + code + " unexpected response: " + text.substring(0, 200)
+        "HTTP " + code + " unexpected response: " + text.substring(0, 200),
       );
     }
 
@@ -1526,13 +1526,13 @@ function callGeminiWithKey_(apiKey, prompt, usageTagOpt, apiKeyPropNameOpt) {
       Logger.log(
         "[gemini] give up (retriable=%s): %s",
         retriable,
-        lastErrorText
+        lastErrorText,
       );
 
       _appendGeminiLog_(
         "ERROR",
         usageTag,
-        "give up (retriable=" + retriable + "): " + lastErrorText
+        "give up (retriable=" + retriable + "): " + lastErrorText,
       );
 
       return "ERROR: " + lastErrorText;
@@ -1544,7 +1544,7 @@ function callGeminiWithKey_(apiKey, prompt, usageTagOpt, apiKeyPropNameOpt) {
       attempt + 1,
       GEMINI_JS_MAX_RETRIES,
       sleepMs,
-      code
+      code,
     );
 
     _appendGeminiLog_(
@@ -1558,7 +1558,7 @@ function callGeminiWithKey_(apiKey, prompt, usageTagOpt, apiKeyPropNameOpt) {
         sleepMs +
         "ms (HTTP " +
         code +
-        ")"
+        ")",
     );
 
     Utilities.sleep(sleepMs);
@@ -1780,7 +1780,7 @@ function processRow_(sheet, row, prevStatus) {
       "[processRow_] skip row %s (gptRetryCount=%s >= %s)",
       row,
       gptRetryCount,
-      GPT_JS_MAX_RETRIES
+      GPT_JS_MAX_RETRIES,
     );
     return;
   }
@@ -1840,7 +1840,7 @@ function processRow_(sheet, row, prevStatus) {
       : getGeminiApiKeyBundleFromSheetAndSource_(
           sheetName,
           sourceVal,
-          tagMulti
+          tagMulti,
         );
     const apiKey = useGpt
       ? getOpenAiApiKey_(tagMulti)
@@ -1852,7 +1852,7 @@ function processRow_(sheet, row, prevStatus) {
           apiKey,
           multiPrompt,
           tagMulti,
-          gemBundle && gemBundle.propName
+          gemBundle && gemBundle.propName,
         );
 
     // ★ 429(quota) のときは「その後は別キー」を即時反映するため、別キーで1回だけ即リトライ
@@ -1866,7 +1866,7 @@ function processRow_(sheet, row, prevStatus) {
       const gemBundle2 = getGeminiApiKeyBundleFromSheetAndSource_(
         sheetName,
         sourceVal,
-        tagRetry
+        tagRetry,
       );
       if (
         gemBundle2 &&
@@ -1878,7 +1878,7 @@ function processRow_(sheet, row, prevStatus) {
           gemBundle2.apiKey,
           multiPrompt,
           tagRetry,
-          gemBundle2.propName
+          gemBundle2.propName,
         );
       }
     }
@@ -2027,16 +2027,15 @@ function _clearLogSheetFor_(sheetName) {
   // ※書式も消したければ sh.clear(); に変更
 }
 
-// ミャンマー時間 16:00〜翌 1:00 の間だけ true を返す
+// ミャンマー時間 16:00〜翌 2:00 の間だけ true を返す
 function isWithinProcessingWindow_() {
-  // appsscript.json の timeZone が "Asia/Yangon" になっている前提
   const now = new Date();
-  const h = now.getHours(); // 0〜23
-  const m = now.getMinutes(); // 0〜59
-  const t = h * 60 + m; // その日の 0:00 からの経過分数
+  const h = now.getHours();
+  const m = now.getMinutes();
+  const t = h * 60 + m;
 
   const START = 16 * 60; // 16:00 → 960 分
-  const END = 1 * 60; // 01:00 → 60 分
+  const END = 2 * 60; // 02:00 → 120 分
 
   // 日付をまたぐウィンドウの判定:
   // 16:00〜24:00 か 0:00〜2:00 のどちらかなら OK
@@ -2103,7 +2102,7 @@ function cleanupStaleRunningStatuses_() {
       statusRange.setValues(values);
       Logger.log(
         "[cleanupStaleRunningStatuses_] sheet=%s cleaned RUNNING rows",
-        sheetName
+        sheetName,
       );
     }
   });
@@ -2179,7 +2178,7 @@ function formatYenJa_(yenInt) {
 // 全角数字→半角数字（例: "５４００" -> "5400"）
 function zenkakuDigitsToAscii_(s) {
   return String(s || "").replace(/[０-９]/g, (ch) =>
-    String.fromCharCode(ch.charCodeAt(0) - 0xfee0)
+    String.fromCharCode(ch.charCodeAt(0) - 0xfee0),
   );
 }
 
@@ -2219,10 +2218,18 @@ function fixKyatYenInText_(text) {
     /([0-9０-９,，\s兆億万]+チャット)（約[^）]*円）/g,
     function (_m, kyatPart) {
       const kyatInt = parseJaKyatToInt_(kyatPart);
+
+      // ★ 数値として解釈できない/0以下は触らない（保険）
+      if (!Number.isFinite(kyatInt) || kyatInt <= 0) return kyatPart;
+
       const yenInt = kyatToYenInt_(kyatInt);
+
+      // ★ 0円になるケースは併記しない（これで「（約0円）」が消える）
+      if (yenInt <= 0) return kyatPart;
+
       const yenJa = formatYenJa_(yenInt);
       return kyatPart + "（約" + yenJa + "）";
-    }
+    },
   );
 }
 
@@ -2241,14 +2248,14 @@ function removeYenForNonKyat_(text) {
   // 1) 「10億ドル（約…円）」のように “金額→通貨→円” の順
   const pat1 = new RegExp(
     "([0-9０-９,，\\s兆億万\\.]+\\s*" + NON_KYAT_CCY + ")\\s*" + YEN_PAREN,
-    "g"
+    "g",
   );
   s = s.replace(pat1, "$1");
 
   // 2) 「USD 1 billion（約…円）」のように “通貨→金額→円” の順（保険）
   const pat2 = new RegExp(
     "(" + NON_KYAT_CCY + "\\s*[0-9０-９,，\\s兆億万\\.]+)\\s*" + YEN_PAREN,
-    "g"
+    "g",
   );
   s = s.replace(pat2, "$1");
 
@@ -2343,7 +2350,7 @@ function _applyOutputsToRow_(
   headlineA,
   headlineB2,
   summaryJa,
-  retryKindOpt
+  retryKindOpt,
 ) {
   const colE = 5;
   const colG = 7;
@@ -2445,7 +2452,7 @@ function processRowsBatch() {
     // ★ ここで「前回の RUNNING」を NG に戻す
     cleanupStaleRunningStatuses_();
 
-    // ★ 時間帯外なら即スキップ（16:00〜翌1:00だけ動かす）
+    // ★ 時間帯外なら即スキップ（16:00〜翌2:00だけ動かす）
     if (!isWithinProcessingWindow_()) {
       Logger.log("[processRowsBatch] outside allowed time window → skip");
       return;
@@ -2513,7 +2520,7 @@ function processRowsBatch() {
             "[processRowsBatch] skip row %s (gptRetryCount=%s >= %s)",
             rowIndex,
             gptRetryCount,
-            GPT_JS_MAX_RETRIES
+            GPT_JS_MAX_RETRIES,
           );
           continue;
         }
@@ -2524,7 +2531,7 @@ function processRowsBatch() {
             "[processRowsBatch] skip row %s (gemRetryCount=%s >= %s)",
             rowIndex,
             gemRetryCount,
-            MAX_RETRY_COUNT
+            MAX_RETRY_COUNT,
           );
           continue;
         }
@@ -2534,7 +2541,7 @@ function processRowsBatch() {
           "[processRowsBatch] processing %s row %s (status=%s)",
           sheetName,
           rowIndex,
-          status
+          status,
         );
 
         // この行の「処理前ステータス」を保持（NG(1) など）
@@ -2542,7 +2549,7 @@ function processRowsBatch() {
 
         // 処理開始マーク
         sh.getRange(rowIndex, STATUS_COL).setValue(
-          useGpt ? "RUNNING(GPT)" : "RUNNING"
+          useGpt ? "RUNNING(GPT)" : "RUNNING",
         );
 
         // groupKey:
@@ -2586,10 +2593,10 @@ function processRowsBatch() {
             // 2件ぶんの promptItems を一旦作って batchPrompt を組み、推定トークンを算出
             const promptItems2 = [first, second].map(function (it) {
               const regionRulesTitle = buildRegionRulesForTitle_(
-                it.titleRaw || ""
+                it.titleRaw || "",
               );
               const regionRulesBody = buildRegionRulesForBody_(
-                it.bodyRaw || ""
+                it.bodyRaw || "",
               );
               const titleGlossaryRules = regionRulesTitle;
               const bodyGlossaryRules = regionRulesTitle + regionRulesBody;
@@ -2608,7 +2615,7 @@ function processRowsBatch() {
 
             const batchPrompt2 = buildMultiTaskPromptForRows_(promptItems2);
             const estInTokens2 = estimateTokensFromChars_(
-              (batchPrompt2 || "").length
+              (batchPrompt2 || "").length,
             );
 
             // ★ここが唯一の判断基準：推定 input tokens
@@ -2619,7 +2626,7 @@ function processRowsBatch() {
 
           const promptItems = chunk.map(function (it) {
             const regionRulesTitle = buildRegionRulesForTitle_(
-              it.titleRaw || ""
+              it.titleRaw || "",
             );
             const regionRulesBody = buildRegionRulesForBody_(it.bodyRaw || "");
             const titleGlossaryRules = regionRulesTitle;
@@ -2655,19 +2662,19 @@ function processRowsBatch() {
               apiKey,
               batchPrompt,
               tagBatch,
-              "json_schema_batch"
+              "json_schema_batch",
             );
           } else {
             const b1 = getGeminiApiKeyBundleFromSheetAndSource_(
               sheetName,
               chunk[0].sourceVal,
-              tagBatch
+              tagBatch,
             );
             resp = callGeminiWithKey_(
               b1.apiKey,
               batchPrompt,
               tagBatch,
-              b1.propName
+              b1.propName,
             );
 
             // ★ 429(quota)なら、その後の処理も別キーになるよう「即座に別キーで1回だけ再試行」
@@ -2680,7 +2687,7 @@ function processRowsBatch() {
               const b2 = getGeminiApiKeyBundleFromSheetAndSource_(
                 sheetName,
                 chunk[0].sourceVal,
-                tagRetry
+                tagRetry,
               );
               if (
                 b2 &&
@@ -2692,7 +2699,7 @@ function processRowsBatch() {
                   b2.apiKey,
                   batchPrompt,
                   tagRetry,
-                  b2.propName
+                  b2.propName,
                 );
               }
             }
@@ -2714,7 +2721,7 @@ function processRowsBatch() {
                 resp,
                 resp,
                 resp,
-                groupKey === "__OPENAI__" ? "GPTNG" : "NG"
+                groupKey === "__OPENAI__" ? "GPTNG" : "NG",
               );
             });
             p += chunk.length;
@@ -2737,8 +2744,8 @@ function processRowsBatch() {
             const arr = Array.isArray(parsed)
               ? parsed
               : parsed && Array.isArray(parsed.items)
-              ? parsed.items
-              : [];
+                ? parsed.items
+                : [];
             const byId = {};
             if (Array.isArray(arr)) {
               arr.forEach(function (o) {
@@ -2770,7 +2777,7 @@ function processRowsBatch() {
                   errMsg,
                   errMsg,
                   errMsg,
-                  groupKey === "__OPENAI__" ? "GPTNG" : "NG"
+                  groupKey === "__OPENAI__" ? "GPTNG" : "NG",
                 );
                 return;
               }
@@ -2792,7 +2799,7 @@ function processRowsBatch() {
                 hA || "",
                 hB || "",
                 sm2 || "",
-                groupKey === "__OPENAI__" ? "GPTNG" : "NG"
+                groupKey === "__OPENAI__" ? "GPTNG" : "NG",
               );
             });
           } catch (e) {
@@ -2816,7 +2823,7 @@ function processRowsBatch() {
                 errMsg,
                 errMsg,
                 errMsg,
-                groupKey === "__OPENAI__" ? "GPTNG" : "NG"
+                groupKey === "__OPENAI__" ? "GPTNG" : "NG",
               );
             });
           }
@@ -2827,7 +2834,7 @@ function processRowsBatch() {
 
     Logger.log(
       "[processRowsBatch] done, processed rows=%s",
-      MAX_ROWS_PER_RUN - remaining
+      MAX_ROWS_PER_RUN - remaining,
     );
 
     // ★ prod / dev それぞれについて、完了していればメール通知
@@ -2952,7 +2959,7 @@ function checkAndNotifyAllDoneIfNeededForSheet_(sheetName) {
     Logger.log(
       "[notify] sheet=%s already notified for key=%s",
       sheetName,
-      notifyKey
+      notifyKey,
     );
     return;
   }
@@ -2975,7 +2982,7 @@ function checkAndNotifyAllDoneIfNeededForSheet_(sheetName) {
     "」で" +
     bStr +
     "分の記事収集が完了しました。\n\n" +
-    "翌 01:00 までにスプレッドシートを更新してください。\n\n" +
+    "翌 02:00 までにスプレッドシートを更新してください。\n\n" +
     "スプレッドシートURL:\n" +
     ssUrl +
     "\n";
@@ -2987,7 +2994,7 @@ function checkAndNotifyAllDoneIfNeededForSheet_(sheetName) {
       "[notify] sent mail to %s for sheet=%s key=%s",
       emailTo,
       sheetName,
-      notifyKey
+      notifyKey,
     );
   });
 
@@ -3098,7 +3105,7 @@ function _cleanupOldGeminiLogs_() {
       "[_cleanupOldGeminiLogs_] sheet=%s kept_rows=%s deleted_rows=%s",
       logSheetName,
       keptRows.length,
-      numRows - keptRows.length
+      numRows - keptRows.length,
     );
   });
 }
@@ -3301,7 +3308,7 @@ function logRegionUsageForRow_(sheet, row, ctx) {
     headlineB2 || "",
     summaryJa || "",
     entriesTitle,
-    entriesBody
+    entriesBody,
   );
 
   unknownList.forEach(function (item) {
@@ -3368,7 +3375,7 @@ function detectUnknownRegionsForArticle_(
   headlineB2,
   summaryJa,
   knownEntriesTitle,
-  knownEntriesBody
+  knownEntriesBody,
 ) {
   const apiKey = getRegionLogApiKey_();
   if (!apiKey) return []; // ログ専用キーが無ければスキップ
@@ -3431,7 +3438,7 @@ function detectUnknownRegionsForArticle_(
     apiKey,
     prompt,
     "regionlog#article",
-    "GEMINI_API_KEY_REGION_LOG"
+    "GEMINI_API_KEY_REGION_LOG",
   );
   if (typeof resp !== "string" || resp.indexOf("ERROR:") === 0) return [];
 
@@ -3449,8 +3456,8 @@ function detectUnknownRegionsForArticle_(
     const arr = Array.isArray(parsed)
       ? parsed
       : parsed && Array.isArray(parsed.items)
-      ? parsed.items
-      : null;
+        ? parsed.items
+        : null;
     if (!arr) return [];
     // part が title/body のものだけ返す
     return arr.filter(function (item) {
