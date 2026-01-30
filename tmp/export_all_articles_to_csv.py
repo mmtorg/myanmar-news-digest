@@ -1562,7 +1562,7 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
                 t = (fallback_titles.get(url) or "").strip() or _title_from_slug(url)
                 if t:
                     out.append({
-                        "source": "GNLM",
+                        "source": "Global New Light Of Myanmar (国営紙)",
                         "title": unicodedata.normalize("NFC", t).strip(),
                         "url": url,
                         "date": target_date_mmt.isoformat(),
@@ -1643,7 +1643,7 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
         body = "\n".join(body_parts)
 
         out.append({
-            "source": "GNLM",
+            "source": "Global New Light Of Myanmar (国営紙)",
             "title": unicodedata.normalize("NFC", title).strip(),
             "url": url,
             "date": (art_date or target_date_mmt).isoformat(),
