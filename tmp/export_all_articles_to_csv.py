@@ -591,7 +591,15 @@ def collect_myanmar_now_mm_all_for_date(target_date_mmt: date, max_pages: int = 
 
     def _fetch_text_via_jina(url: str, timeout: int = 25) -> str:
         try:
-            alt = f"https://r.jina.ai/http://{url.lstrip('/')}"
+            from urllib.parse import urlparse
+            p = urlparse(url)
+            if p.scheme:
+                host_path = p.netloc + p.path
+                if p.query:
+                    host_path += "?" + p.query
+            else:
+                host_path = url.lstrip("/")
+            alt = f"https://r.jina.ai/http://{host_path}"
             r = sess.get(alt, headers={"User-Agent": "Mozilla/5.0"}, timeout=timeout)
             if r.status_code == 200 and (r.text or "").strip():
                 return r.text
@@ -915,7 +923,15 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
 
     def _fetch_text_via_jina(url: str, timeout: int = 25) -> str:
         try:
-            alt = f"https://r.jina.ai/http://{url.lstrip('/')}"
+            from urllib.parse import urlparse
+            p = urlparse(url)
+            if p.scheme:
+                host_path = p.netloc + p.path
+                if p.query:
+                    host_path += "?" + p.query
+            else:
+                host_path = url.lstrip("/")
+            alt = f"https://r.jina.ai/http://{host_path}"
             r = sess.get(alt, headers={"User-Agent": "Mozilla/5.0"}, timeout=timeout)
             if r.status_code == 200 and (r.text or "").strip():
                 return r.text
@@ -1217,11 +1233,19 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
     対象MMT日付の記事を取得（キーワード絞り込みなし）。
     """
     from curl_cffi.requests import Session as CurlSession
+    import xml.etree.ElementTree as ET  
 
     BASE_CATEGORIES = [
         "https://www.gnlm.com.mm/category/national/",
         "https://www.gnlm.com.mm/category/business/",
         "https://www.gnlm.com.mm/category/local-news/",
+    ]
+
+    GNLM_FEEDS = [
+        "https://www.gnlm.com.mm/feed/",
+        "https://www.gnlm.com.mm/category/national/feed/",
+        "https://www.gnlm.com.mm/category/business/feed/",
+        "https://www.gnlm.com.mm/category/local-news/feed/",
     ]
 
     def _title_from_slug(u: str) -> str:
@@ -1236,9 +1260,209 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
     # ★ curl_cffi セッション（最重要）
     sess = CurlSession(impersonate="chrome")
 
-    collected_urls: set[str] = set()
+    # --- fetch helpers（先に定義：RSS/GoogleNewsが使う） ---
+    def _fetch_text(url: str, timeout: int = 20) -> str:
+        try:
+            r = sess.get(
+                url,
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/128.0.0.0 Safari/537.36"
+                    )
+                },
+                timeout=timeout,
+            )
+            if r.status_code == 200 and (r.text or "").strip():
+                return r.text
+        except Exception:
+            pass
+        return ""
 
-    # ---- 一覧ページ ----
+    def _fetch_text_via_jina(url: str, timeout: int = 25) -> str:
+        try:
+            from urllib.parse import urlparse
+            p = urlparse(url)
+            if p.scheme:
+                host_path = p.netloc + p.path
+                if p.query:
+                    host_path += "?" + p.query
+            else:
+                host_path = url.lstrip("/")
+            alt = f"https://r.jina.ai/http://{host_path}"
+            r = sess.get(alt, headers={"User-Agent": "Mozilla/5.0"}, timeout=timeout)
+            if r.status_code == 200 and (r.text or "").strip():
+                return r.text
+        except Exception:
+            pass
+        return ""
+
+    def _mmt_date(dt_utc: datetime) -> date:
+        return dt_utc.astimezone(MMT).date()
+
+    # --- RSS helpers ---
+    def _rss_items(url: str) -> list[dict]:
+        xml = _fetch_text(url) or _fetch_text_via_jina(url)
+        if not xml:
+            return []
+
+        # Cloudflare/CAPTCHA で HTML が返るケースを弾く
+        if "<rss" not in xml and "<feed" not in xml:
+            print(f"[gnlm] rss not xml? url={url} head={xml[:120]!r}")
+            return []
+
+        try:
+            root = ET.fromstring(xml)
+        except Exception as e:
+            print(f"[gnlm] rss parse fail url={url} err={e}")
+            return []
+
+        items = []
+        for it in root.findall(".//item"):
+            items.append({
+                "title": (it.findtext("title") or "").strip(),
+                "link":  (it.findtext("link") or "").strip(),
+                "pubDate": (it.findtext("pubDate") or "").strip(),
+            })
+        return items
+    
+    def _decode_google_news_rss_url(g_link: str) -> str:
+        """
+        Google News RSS の /rss/articles/<token> 形式から元記事URLを復元する。
+        参考：Base64デコード→中に含まれる最初の http(s):// を抽出する手法。
+        """
+        if not g_link:
+            return ""
+
+        try:
+            from urllib.parse import urlparse
+            import base64
+            import re
+
+            u = urlparse(g_link)
+            parts = u.path.split("/")
+            if "articles" not in parts:
+                return ""
+
+            token = parts[parts.index("articles") + 1]
+            if not token:
+                return ""
+
+            # URL-safe base64 のことが多い。パディング補正してデコード。
+            token += "=" * (-len(token) % 4)
+            raw = base64.urlsafe_b64decode(token)
+
+            # デコードしたバイト列の中に元URLが埋まっているので抽出
+            m = re.search(rb"https?://[^\s\"'<>\x00]+", raw)
+            if not m:
+                return ""
+
+            return m.group(0).decode("utf-8", errors="ignore")
+        except Exception as e:
+            print(f"[gnlm] gnews decode failed: {e} link={g_link}")
+            return ""
+
+    def _resolve_publisher_url_from_google_news(g_link: str) -> str:
+        """
+        Google News の記事URL（news.google.com/...）から配信元URLを抽出する。
+        redirect だけでは取れないことが多いので、HTMLから gnlm.com.mm を拾う。
+        """
+        if not g_link:
+            return ""
+
+        # 1) まずは素直に取得（HTMLを読む）
+        html = _fetch_text(g_link, timeout=20)
+
+        # 2) 取れなければ jina 経由（Google側はだいたい読める）
+        if not html:
+            html = _fetch_text_via_jina(g_link, timeout=25)
+
+        if not html:
+            return ""
+
+        # 3) HTML/テキスト中から GNLM の直URLを拾う（複数あれば最初を採用）
+        import re as _re
+        m = _re.search(r'https?://(?:www\.)?gnlm\.com\.mm/[^\s"\'<>]+', html, _re.I)
+        if m:
+            return m.group(0)
+
+        return ""
+
+    def _rss_items_from_google_news_gnlm() -> List[Dict[str, str]]:
+        from googlenewsdecoder import new_decoderv1  # パッケージ側のAPI（README参照）
+
+        gnews = (
+            "https://news.google.com/rss/search?"
+            "q=site:gnlm.com.mm+when:1d&hl=en-MM&gl=MM&ceid=MM:en"
+        )
+
+        xml = _fetch_text(gnews) or _fetch_text_via_jina(gnews)
+        if not xml:
+            print("[gnlm] google news rss fetch failed")
+            return []
+
+        try:
+            root = ET.fromstring(xml)
+        except Exception as e:
+            print(f"[gnlm] google news rss parse failed: {e}")
+            return []
+
+        rss_items = root.findall(".//item")
+        print(f"[gnlm] google news rss items={len(rss_items)}")
+
+        out_items: List[Dict[str, str]] = []
+
+        for it in rss_items:
+            title = (it.findtext("title") or "").strip()
+            g_link = (it.findtext("link") or "").strip()
+            pub = (it.findtext("pubDate") or "").strip()
+
+            if not g_link:
+                continue
+
+            # ★ここが肝：Google News URL → 元URL復元
+            try:
+                res = new_decoderv1(g_link)  # dictが返る想定（README参照）
+                direct = (res.get("decoded_url") or "").strip()
+            except Exception as e:
+                print(f"[gnlm] googlenewsdecoder failed: {e}")
+                direct = ""
+
+            if "gnlm.com.mm" not in direct:
+                continue
+
+            out_items.append({"title": title, "link": direct, "pubDate": pub})
+
+        print(f"[gnlm] google news resolved gnlm_links={len(out_items)}")
+        return out_items
+
+    # ==================================================
+    # URL収集フェーズ（RSS → HTML → Google News）
+    # ==================================================
+    collected_urls: set[str] = set()
+    fallback_titles: dict[str, str] = {}  # 記事が取れない時のタイトル保険
+
+    # 1) RSS feed 優先
+    for feed in GNLM_FEEDS:
+        for it in _rss_items(feed):
+            link = it.get("link")
+            pub = it.get("pubDate")
+            if not link or not pub:
+                continue
+            try:
+                dt = parse_date(pub)
+            except Exception:
+                continue
+            if _mmt_date(dt) == target_date_mmt:
+                collected_urls.add(link)
+                if it.get("title"):
+                    fallback_titles[link] = it["title"]
+
+    if collected_urls:
+        print(f"[gnlm] urls via RSS feeds: {len(collected_urls)}")
+
+    # 2) HTMLカテゴリ一覧（※RSSで取れていても回してOK。ログがうるさければ if not collected_urls: で囲む）
     for base in BASE_CATEGORIES:
         for page in range(1, max_pages + 1):
             list_url = base if page == 1 else f"{base}page/{page}/"
@@ -1254,13 +1478,8 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
                 # B: cloudscraper fallback
                 try:
                     import cloudscraper
-
                     scraper = cloudscraper.create_scraper(
-                        browser={
-                            "browser": "chrome",
-                            "platform": "windows",
-                            "desktop": True,
-                        }
+                        browser={"browser": "chrome", "platform": "windows", "desktop": True}
                     )
                     res = scraper.get(list_url, timeout=20)
                     if res.status_code != 200 or not res.text.strip():
@@ -1275,17 +1494,13 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
                 break
 
             stop_paging = False
-
             for art in articles:
                 date_span = art.select_one("div.post-date span")
                 if not date_span:
                     continue
 
                 try:
-                    d = datetime.strptime(
-                        date_span.get_text(strip=True),
-                        "%B %d, %Y",
-                    ).date()
+                    d = datetime.strptime(date_span.get_text(strip=True), "%B %d, %Y").date()
                 except Exception:
                     continue
 
@@ -1302,34 +1517,57 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
             if stop_paging:
                 break
 
-    # ---- 個別記事 ----
+    # 3) まだ0件なら Google News RSS fallback
+    if not collected_urls:
+        for it in _rss_items_from_google_news_gnlm():
+            title = (it.get("title") or "").strip()
+            link = (it.get("link") or "").strip()
+            pub = it.get("pubDate") or ""
+            try:
+                dt = parse_date(pub)
+            except Exception:
+                dt = None
+            if link and dt and _mmt_date(dt) == target_date_mmt:
+                collected_urls.add(link)
+                if title:
+                    fallback_titles[link] = title
+
+        if collected_urls:
+            print(f"[gnlm] fallback via Google News: {len(collected_urls)} urls")
+
+    # ==================================================
+    # 個別記事フェーズ（★ここは必ず “if not collected_urls” の外）
+    # ==================================================
     out: list[Dict] = []
 
     for url in sorted(collected_urls):
-        # A: curl_cffi
         try:
             res = sess.get(url, timeout=20)
             if res.status_code != 200 or not res.text.strip():
                 raise Exception(f"status={res.status_code}")
         except Exception as e:
             print(f"[gnlm] curl_cffi article fetch failed: {e} url={url}")
-
-            # B: cloudscraper fallback
             try:
                 import cloudscraper
-
                 scraper = cloudscraper.create_scraper(
-                    browser={
-                        "browser": "chrome",
-                        "platform": "windows",
-                        "desktop": True,
-                    }
+                    browser={"browser": "chrome", "platform": "windows", "desktop": True}
                 )
                 res = scraper.get(url, timeout=20)
                 if res.status_code != 200 or not res.text.strip():
                     raise Exception(f"status={res.status_code}")
             except Exception as e2:
                 print(f"[gnlm] cloudscraper article fetch failed: {e2} url={url}")
+
+                # 本文は取れないが、タイトル+URLだけでも残す
+                t = (fallback_titles.get(url) or "").strip() or _title_from_slug(url)
+                if t:
+                    out.append({
+                        "source": "Global New Light Of Myanmar (国営紙)",
+                        "title": unicodedata.normalize("NFC", t).strip(),
+                        "url": url,
+                        "date": target_date_mmt.isoformat(),
+                        "body": "",
+                    })
                 continue
 
         soup = BeautifulSoup(res.text, "html.parser")
@@ -1342,36 +1580,28 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
             if h1:
                 title = h1.get_text(strip=True)
         if not title:
-            title = _title_from_slug(url)
+            title = fallback_titles.get(url, "") or _title_from_slug(url)
         if not title:
             continue
 
-        # 本文: リード <h3> + <div.entry-content> 直下の <p>
         body_parts: list[str] = []
         content = soup.select_one("div.entry-content")
         if content:
-            # 1) GNLM 専用: <br> を改行に変換
             for br in content.find_all("br"):
                 br.replace_with("\n")
 
-            # 2) 見出し（ある場合のみ）
             lead = content.find("h3", recursive=False)
             if lead:
                 txt = lead.get_text("\n", strip=True)
                 if txt:
-                    txt = "\n".join(
-                        re.sub(r"\s+", " ", seg).strip()
-                        for seg in txt.split("\n")
-                    )
+                    txt = "\n".join(re.sub(r"\s+", " ", seg).strip() for seg in txt.split("\n"))
                     if txt:
                         body_parts.append(txt)
 
-            # 3) 直下の <p> をこれまで通り抽出
             for child in content.children:
                 if not getattr(child, "name", None):
                     continue
 
-                # 共有ボタンコンテナなどが出てきたら本文終端とみなす（追加のガード）
                 if child.name == "div":
                     classes = " ".join(child.get("class", [])) if child.get("class") else ""
                     if any(k in classes for k in ["sharing", "share", "crp_related"]):
@@ -1385,55 +1615,40 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
                 if child.name == "p":
                     txt = child.get_text("\n", strip=True)
                     if txt:
-                        txt = "\n".join(
-                            re.sub(r"\s+", " ", seg).strip()
-                            for seg in txt.split("\n")
-                        )
+                        txt = "\n".join(re.sub(r"\s+", " ", seg).strip() for seg in txt.split("\n"))
                         if txt:
                             body_parts.append(txt)
 
-            # ★ 直下の <p> で何も拾えなかった場合のフォールバック（既存）
             if not body_parts:
                 for p in content.find_all("p"):
                     txt = p.get_text("\n", strip=True)
                     if not txt:
                         continue
-                    txt = "\n".join(
-                        re.sub(r"\s+", " ", seg).strip()
-                        for seg in txt.split("\n")
-                    )
+                    txt = "\n".join(re.sub(r"\s+", " ", seg).strip() for seg in txt.split("\n"))
                     if txt:
                         body_parts.append(txt)
 
-            # ★ 追加: 段落っぽい <div> も安全なものだけ本文に足す ★
             extra_div_parts: list[str] = []
             for child in content.children:
                 if _gnlm_div_looks_like_paragraph(child):
                     txt = child.get_text("\n", strip=True)
-                    txt = "\n".join(
-                        re.sub(r"\s+", " ", seg).strip()
-                        for seg in txt.split("\n")
-                    )
+                    txt = "\n".join(re.sub(r"\s+", " ", seg).strip() for seg in txt.split("\n"))
                     if txt:
                         extra_div_parts.append(txt)
 
-            # <div> が既存の body_parts と完全重複するケースは少ないはずですが、
-            # 念のため重複を避けて追加
             for txt in extra_div_parts:
                 if txt not in body_parts:
                     body_parts.append(txt)
 
         body = "\n".join(body_parts)
 
-        out.append(
-            {
-                "source": "Global New Light Of Myanmar (国営紙)",
-                "title": unicodedata.normalize("NFC", title),
-                "url": url,
-                "date": art_date.isoformat(),
-                "body": body,
-            }
-        )
+        out.append({
+            "source": "Global New Light Of Myanmar (国営紙)",
+            "title": unicodedata.normalize("NFC", title).strip(),
+            "url": url,
+            "date": (art_date or target_date_mmt).isoformat(),
+            "body": unicodedata.normalize("NFC", body).strip(),
+        })
 
     return deduplicate_by_url(out)
 

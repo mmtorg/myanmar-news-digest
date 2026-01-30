@@ -59,11 +59,11 @@ function exportProdRowsToMonthlyCsv() {
 }
 
 // スクリプトプロパティからCSV出力先フォルダを取得
-function getCsvOutputFolder_() {
-  const folderId = PropertiesService.getScriptProperties().getProperty(
-    "CSV_OUTPUT_FOLDER_ID"
-  );
+const folderId = PropertiesService.getScriptProperties().getProperty(
+  "CSV_OUTPUT_FOLDER_ID"
+);
 
+function getCsvOutputFolder_() {
   if (!folderId) {
     throw new Error("スクリプトプロパティ CSV_OUTPUT_FOLDER_ID が未設定です");
   }
