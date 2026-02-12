@@ -4300,6 +4300,14 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
     import re, json, time, unicodedata
     from datetime import datetime, timezone
 
+    def _normalize_url_key(u: str) -> str:
+        u = (u or "").strip()
+        if not u:
+            return ""
+        # LLM 側の軽微な正規化差（末尾スラッシュ/フラグメント）を吸収
+        u = u.split("#", 1)[0]
+        return u.rstrip("/")
+
     # --- English & Burmese leading labels / outlet-only lines ---
     EXCLUDE_LINE_PATTERNS = [
         # Captions / media labels (English)
@@ -4566,12 +4574,25 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
             if isinstance(arr, dict):
                 arr = [arr]
             if isinstance(arr, list):
+                target = _normalize_url_key(url)
+                candidate_body = ""
                 for x in arr:
-                    if isinstance(x, dict) and x.get("url") == url:
-                        bj = (x.get("body_ja") or "").strip()
+                    if not isinstance(x, dict):
+                        continue
+                    bj = (x.get("body_ja") or "").strip()
+                    if not bj:
+                        continue
+                    if _normalize_url_key(str(x.get("url") or "")) == target:
                         bj = remove_yen_for_non_kyat(bj)
                         bj = fix_kyat_yen_in_text(bj)
                         return bj
+                    # 単一記事リトライでは URL 欠落/差異があっても本文があれば救済する
+                    if not candidate_body:
+                        candidate_body = bj
+                if candidate_body:
+                    candidate_body = remove_yen_for_non_kyat(candidate_body)
+                    candidate_body = fix_kyat_yen_in_text(candidate_body)
+                    return candidate_body
         except Exception as e:
             logging.warning(f"[warn] fulltext single retry failed. url={url} err={e}")
         return ""
@@ -4636,10 +4657,12 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
             url_to_res = {}
             for x in (arr or []):
                 if isinstance(x, dict) and x.get("url"):
-                    url_to_res[str(x["url"])] = x
+                    key = _normalize_url_key(str(x["url"]))
+                    if key:
+                        url_to_res[key] = x
 
             for b in batch:
-                x = url_to_res.get(b["url"]) or {}
+                x = url_to_res.get(_normalize_url_key(b["url"])) or {}
                 body_src = b["body"]
 
                 # Gemini がこの URL の body_ja を返してくれたかどうか

@@ -1591,6 +1591,34 @@ def cmd_build_bundle_from_sheet(args):
             logging.warning("[bundle] translation returned empty; skip PDF")
             return
 
+        # 翻訳成功分を bodies.json に永続化（次回buildで再利用できるようにする）
+        norm_to_original_url = {((u or "").strip().rstrip("/")): u for u in urls_in_order if (u or "").strip()}
+        with _BODIES_LOCK:
+            cache_latest = _load_bodies_cache(out_dir)
+            updated = 0
+            for it in translated:
+                nu = (it.get("url", "") or "").strip().rstrip("/")
+                if not nu:
+                    continue
+                body_ja = (it.get("body_ja", "") or "").strip()
+                if not body_ja:
+                    continue
+                original_url = norm_to_original_url.get(nu, (it.get("url", "") or "").strip())
+                if not original_url:
+                    continue
+                existing = cache_latest.get(original_url, {})
+                src_meta = url_to_source_title_body.get(original_url, {})
+                cache_latest[original_url] = {
+                    "source": existing.get("source") or src_meta.get("source", ""),
+                    "title":  existing.get("title")  or src_meta.get("title", ""),
+                    "body":   existing.get("body")   or src_meta.get("body", ""),
+                    "body_ja": body_ja,
+                }
+                updated += 1
+            if updated:
+                _save_bodies_cache(out_dir, cache_latest)
+                logging.info(f"[bundle] persisted translated body_ja entries to bodies.json: {updated}")
+
         # ---- PDFビルダーが期待するメタ（title_ja / source / date / url）を付与する ----
         # sheet_pipeline の summaries には、すでに確定見出しやメディア、配信日が入っている
         #   - s["title"]      : 確定見出し（日本語）
