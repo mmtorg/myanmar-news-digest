@@ -837,6 +837,8 @@ def extract_body_mail_pdf_scoped(url: str, soup) -> str:
         DOMAIN_SCOPES = DOMAIN_SCOPES or ["div.node-content", "div.entry-content", "article"]
     if ("myanmar-now" in U) or ("myanmarnow" in U):
         DOMAIN_SCOPES = DOMAIN_SCOPES or ["div.article-content", "article .content-body", "article"]
+    if ("gnlm.com.mm" in U):
+        DOMAIN_SCOPES = DOMAIN_SCOPES or ["div.entry-content", "div.post-content", "article"]
 
     # 汎用候補
     GENERIC_SCOPES = [
@@ -856,6 +858,7 @@ def extract_body_mail_pdf_scoped(url: str, soup) -> str:
 
     # ルート決定
     root = None
+    lines = []  # ← 初期化を追加
     for sel in DOMAIN_SCOPES:
         n = soup.select_one(sel)
         if n: root = n; break

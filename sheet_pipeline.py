@@ -270,7 +270,7 @@ def _get_body_once(url: str, source: str, out_dir: str, title: str = "") -> str:
     # --- 1) キャッシュ命中なら即返す ---
     cache = _load_bodies_cache(out_dir)
     cached = cache.get(url)
-    if cached and (cached.get("body") or "").strip():
+    if cached and isinstance(cached, dict) and (cached.get("body") or "").strip():
         return cached["body"]
 
     # --- 事前正規化：Google News の場合は最終到達URLを一度解決 ---
@@ -364,7 +364,17 @@ def _get_body_once(url: str, source: str, out_dir: str, title: str = "") -> str:
     if body.strip():
         with _BODIES_LOCK:
             cache = _load_bodies_cache(out_dir)  # 競合対策で再読込
-            cache[url] = {"source": source, "title": title, "body": body}
+            # 既存のキャッシュエントリがあれば、body_jaを維持（翻訳済みを上書きしない）
+            existing = cache.get(url, {})
+            entry = {
+                "source": source,
+                "title": title,
+                "body": body
+            }
+            # 既にbody_jaがあればそれを保持
+            if "body_ja" in existing:
+                entry["body_ja"] = existing["body_ja"]
+            cache[url] = entry
             _save_bodies_cache(out_dir, cache)
 
     return body
@@ -1636,9 +1646,12 @@ def cmd_build_bundle_from_sheet(args):
             f.write(attachment_name)
         logging.info(f"[bundle] wrote business PDF: {attachment_name} ({len(pdf_bytes)} bytes)")
 
-    # ⑤ bodies.json の書き出し
+    # ⑤ bodies.json の書き出し（既存キャッシュとマージ）
     if bodies:
-        _save_bodies_cache(out_dir, bodies)
+        existing = _load_bodies_cache(out_dir)
+        # マージ：既存キャッシュに本文があればそれを優先（翻訳済みを上書きしない）
+        merged = {**existing, **bodies}
+        _save_bodies_cache(out_dir, merged)
 
     try:
         _make_business_pdf_from_summaries(summaries, meta["date_mmt"], out_dir)
