@@ -887,6 +887,7 @@ def extract_body_mail_pdf_scoped(url: str, soup) -> str:
 
     # ==== <p> 抽出ロジック（既存） =====
     # <p> から本文を構築（タグ雲行／WPコメント定型は除外）
+    ps = root.find_all("p")
     for p in ps:
         # GNLM 専用：separator="\n" にする（<br> を上で改行化済み）
         if is_gnlm:
