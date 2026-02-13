@@ -435,10 +435,10 @@ const PROMPT_SELF_CHECK_RULE = `
    を一つずつ再確認すること
 
 2. あなたが生成した翻訳結果が、上記「すべてのルール」に完全に従っているか自己点検すること。
-   - 特に、本文要約（summary / 【要約】ブロック）の文字数が、必ず **200〜400字** の範囲内であること。
+   - 特に、本文要約（summary / 【要約】ブロック）の文字数が、必ず **200〜320字** の範囲内であること。
    - 文字数は **句読点・記号・数字も1文字** として数えること。
    - **先頭行の「【要約】」はカウントに含めない**（2行目以降のみを数える）。
-   - 400字超なら削って短く修正してから出力すること。
+   - 320字超なら削って短く修正してから出力すること。
 
 3. ルールに違反している箇所が1つでも存在した場合は、その部分を必ず修正してから出力すること。
 
@@ -524,16 +524,16 @@ Step 3: 翻訳と要約処理
 
 ${COMMON_TRANSLATION_RULES}
 本文要約：
-- 以下の記事本文について重要なポイントをまとめ、最大400字で具体的に要約する（400字を超えない）。
+- 以下の記事本文について重要なポイントをまとめ、最大320字で具体的に要約する（320字を超えない）。
 - 自然な日本語で表現する。文体は だ・である調。必要に応じて体言止めを用いる（乱用は避ける）。
 - 個別記事の本文のみを対象とし、メディア説明やページ全体の解説は不要です。
 - レスポンスでは要約のみを返してください、それ以外の文言は不要です。
 
 【文字数ルール（最重要・厳守）】
-- 要約本文の文字数は「下限200字、上限400字」とする。
+- 要約本文の文字数は「下限250字、上限320字」とする。
 - 文字数カウントは、句読点、記号、数字も「1文字」として数える。
 - 先頭行の「【要約】」は文字数カウントに含めない（2行目以降のみをカウント対象とする）。
-- 400字を1文字でも超える場合は、情報を削ってでも短くして400字以内に収める。
+- 320字を1文字でも超える場合は、情報を削ってでも短くして320字以内に収める。
 
 【内容の優先順位（重要）】
 - まず最初の段落で「いつ・どこで・誰が・何をした・結果・規模」を簡潔にまとめる。
@@ -575,7 +575,7 @@ ${COMMON_TRANSLATION_RULES}
 - 記事の内容が複数の論点や時系列の段階（例：発生・経過・現在の状況・今後の見通し）に分かれているなど、文量が一定以上ある場合は、なるべく \`[背景]\`\`[現在の状況]\`\`[影響]\` などの見出しを1〜3個程度付けて、構造がひと目で分かるようにしてください。
 - 一方で、本文全体が2〜3文程度で一続きの話題に収まっており、見出しを付ける必要がないと判断できる場合は、見出しは作らなくてもよい。
   ただしこの場合でも、本文は段落に分けること。目安として、2〜3文ごとに1段落とし、段落と段落の間には空行を1行（改行2回）入れること
-- 見出しや箇条書きを用いて構造化する場合も、要約全体は最大400字以内に収めてください。
+- 見出しや箇条書きを用いて構造化する場合も、要約全体は最大320字以内に収めてください。
 - 見出しや箇条書きにはマークダウン記号（#, *, -）を使わず、単純なテキストだけで書いてください。
 
 【空行ルール（厳守）】
@@ -605,7 +605,7 @@ ${COMMON_TRANSLATION_RULES}
 - 特殊記号は使わないでください。
 - 「【要約】」は冒頭の1回のみ使用してください。
 - 思考手順（Step1/2、Q1/Q2、→ など）は出力に含めないでください。
-- 要約全体は最大400字以内とし、不要な背景説明や重複表現は削ること。
+- 要約全体は最大320字以内とし、不要な背景説明や重複表現は削ること。
   特に重要情報（日時／主体／行為／規模／結果）を優先すること。
 `;
 
@@ -1578,6 +1578,145 @@ function callGeminiWithKey_(apiKey, prompt, usageTagOpt, apiKeyPropNameOpt) {
   return "ERROR: " + (lastErrorText || "Gemini call failed");
 }
 
+// Geminiで「プレーンテキスト」を返させたいとき用（要約圧縮など）
+function callGeminiTextWithKey_(
+  apiKey,
+  prompt,
+  usageTagOpt,
+  apiKeyPropNameOpt,
+) {
+  if (!apiKey) {
+    Logger.log("[gemini] ERROR: API key not set");
+    return "ERROR: API key not set";
+  }
+
+  const usageTag = usageTagOpt || "generic";
+  const model = "gemini-2.5-flash";
+  const url =
+    "https://generativelanguage.googleapis.com/v1beta/models/" +
+    model +
+    ":generateContent?key=" +
+    encodeURIComponent(apiKey);
+
+  const payload = {
+    contents: [{ parts: [{ text: String(prompt || "") }] }],
+    generationConfig: {
+      // ★ json強制しない（テキスト出力にする）
+      temperature: 0.1,
+      topP: 0.8,
+      topK: 20,
+    },
+  };
+
+  const options = {
+    method: "post",
+    contentType: "application/json",
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true,
+  };
+
+  // 中身は callGeminiWithKey_ と同等のリトライ・ログ判定に寄せる（最小実装）
+  // 既存の callGeminiWithKey_ を参考に、同じ判定関数群を再利用します。
+  let lastErrorText = "";
+
+  for (let attempt = 0; attempt < GEMINI_JS_MAX_RETRIES; attempt++) {
+    let res;
+    try {
+      _throttleGeminiCallGlobal_();
+      res = UrlFetchApp.fetch(url, options);
+    } catch (e) {
+      lastErrorText = (e && e.toString()) || "fetch error";
+      if (attempt === GEMINI_JS_MAX_RETRIES - 1)
+        return "ERROR: " + lastErrorText;
+      Utilities.sleep(_expBackoffMs_(attempt));
+      continue;
+    }
+
+    const code = res.getResponseCode();
+    const text = res.getContentText();
+
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch (e) {
+      lastErrorText = "invalid JSON: " + text.substring(0, 500);
+      if (attempt === GEMINI_JS_MAX_RETRIES - 1)
+        return "ERROR: " + lastErrorText;
+      Utilities.sleep(_expBackoffMs_(attempt));
+      continue;
+    }
+
+    if (_isFreeTierQuotaErrorData_(data)) {
+      const errMsg =
+        (data.error && data.error.message) ||
+        "free tier quota exceeded (generate_content_free_tier_requests)";
+      return "ERROR: " + errMsg;
+    }
+
+    if (code >= 200 && code < 300 && !(data && data.error)) {
+      let out = "";
+      try {
+        out =
+          ((((data.candidates || [])[0] || {}).content.parts || [])[0] || {})
+            .text || "";
+      } catch (e) {}
+      return String(out || "").trim();
+    }
+
+    if (data && data.error) {
+      const err = data.error;
+      const status = String(err.status || "");
+      const message = String(err.message || "");
+      lastErrorText = message || "HTTP " + code;
+
+      // 429(quota)なら「当日枯渇」マーク
+      if (code === 429 && _isQuotaExhaustedMessage_(status, message)) {
+        if (apiKeyPropNameOpt) _markApiKeyExhaustedToday_(apiKeyPropNameOpt);
+      }
+    } else {
+      lastErrorText = "HTTP " + code;
+    }
+
+    const retriable = _isRetriableError_(code, data);
+    if (!retriable || attempt === GEMINI_JS_MAX_RETRIES - 1) {
+      return "ERROR: " + lastErrorText;
+    }
+    Utilities.sleep(_expBackoffMs_(attempt));
+  }
+
+  return "ERROR: " + (lastErrorText || "Gemini call failed");
+}
+
+const GEMINI_SUMMARY_COMPRESS_PROP_PROD = "GEMINI_API_KEY_SUMMARY_COMPRESS";
+const GEMINI_SUMMARY_COMPRESS_PROP_DEV = "GEMINI_API_TEST_KEY_SUMMARY_COMPRESS";
+
+// 圧縮プロンプト専用：Gemini(専用キー) → 失敗ならOpenAIへフォールバック
+function compressSummaryWithFallback_(sheetName, promptText, usageTagOpt) {
+  const props = PropertiesService.getScriptProperties();
+  const propName =
+    sheetName === "dev"
+      ? GEMINI_SUMMARY_COMPRESS_PROP_DEV
+      : GEMINI_SUMMARY_COMPRESS_PROP_PROD;
+
+  const gemKey = props.getProperty(propName) || "";
+  if (gemKey) {
+    const r1 = callGeminiTextWithKey_(
+      gemKey,
+      promptText,
+      usageTagOpt,
+      propName,
+    );
+    if (!(typeof r1 === "string" && r1.indexOf("ERROR:") === 0)) {
+      return r1;
+    }
+    // Gemini失敗 → OpenAIへ
+  }
+
+  const oaKey = getOpenAiApiKey_(usageTagOpt);
+  // 圧縮はJSON不要なので formatTypeOpt="none"
+  return callGpt5MiniWithKey_(oaKey, promptText, usageTagOpt, "none");
+}
+
 // ============================================================
 // OpenAI Responses API (gpt-5-mini)
 // ============================================================
@@ -1777,6 +1916,38 @@ function normalizeSummaryHeader_(summary) {
   return s;
 }
 
+// 「【要約】」1行目を除外し、改行(\r,\n)も除外して文字数カウント
+function countSummaryBodyChars_(summaryText) {
+  const s = String(summaryText ?? "");
+  const body = s.replace(/^【要約】\s*[\r\n]?/, ""); // 先頭行除外
+  return body.replace(/[\r\n]/g, "").length; // 改行は数えない
+}
+
+// 400字超のときだけ使う：既存要約を入力にして圧縮を依頼するプロンプト
+function buildSummaryCompressionPrompt_(summaryText) {
+  const s = String(summaryText || "");
+  return `
+あなたは編集者です。下の「元の要約（翻訳要約）」を、内容の意味を変えずに重複表現を減らすなどの方法で圧縮してください。
+
+【出力】
+- 1行目は必ず「【要約】」
+- 本文は300〜400字（句読点・数字・記号も1字）
+- 出力前に本文字数を確認し、必ず400字以内
+
+【圧縮方針】
+- 同じ内容の言い回し、言い換えの繰り返し、冗長な前置きは削除/統合
+- 結論・目的・主要結果、重要な数値/固有名詞/条件/比較は優先して残す
+- 因果関係（理由→結果）や制約条件は落とさない
+- 日本語として自然に整える（ただし意味は変えない）
+
+【禁止】
+- 要約以外の説明（方針や文字数の報告など）
+
+[元の要約]
+${s}
+`.trim();
+}
+
 function processRow_(sheet, row, prevStatus) {
   const colC = 3; // メディア
   const colM = 13; // タイトル原文
@@ -1927,6 +2098,28 @@ function processRow_(sheet, row, prevStatus) {
         summaryJa = removeYenForNonKyat_(summaryJa);
         // ★ 次に「チャット」の（約◯◯円）だけを再計算で矯正
         summaryJa = fixKyatYenInText_(summaryJa);
+
+        // ===== 400字超のときだけ、圧縮の再生成を「1回だけ」挟む（切り詰めはしない） =====
+        let n = countSummaryBodyChars_(summaryJa);
+        if (n > 400) {
+          const prompt2 = buildSummaryCompressionPrompt_(summaryJa);
+          const tag2 = sheetName + "#row" + row + ":compress400";
+
+          // 圧縮は「専用Geminiキー」→失敗ならOpenAIへ
+          const resp2 = compressSummaryWithFallback_(sheetName, prompt2, tag2);
+
+          if (!(typeof resp2 === "string" && resp2.indexOf("ERROR:") === 0)) {
+            summaryJa = normalizeSummaryHeader_(String(resp2 || "").trim());
+            // 圧縮後も円表記補正をかけ直す
+            summaryJa = removeYenForNonKyat_(summaryJa);
+            summaryJa = fixKyatYenInText_(summaryJa);
+          }
+
+          if (countSummaryBodyChars_(summaryJa) > 400) {
+            summaryJa =
+              "ERROR: 要約が400字以内に収まりませんでした（再生成後も超過）";
+          }
+        }
 
         headlineA = headlineA || "";
         headlineB2 = headlineB2 || "";
@@ -2363,6 +2556,34 @@ function _applyOutputsToRow_(
   summaryJa = removeYenForNonKyat_(summaryJa);
   // ★ 次に「チャット」の（約◯◯円）だけを再計算で矯正
   summaryJa = fixKyatYenInText_(summaryJa);
+
+  // 「【要約】」の整形（バッチ側でも統一）
+  summaryJa = normalizeSummaryHeader_(String(summaryJa || ""));
+
+  // ===== 400字超なら圧縮を1回だけ挟む（切り詰めはしない）=====
+  // エラー文字列の場合は圧縮しない
+  if (!(typeof summaryJa === "string" && summaryJa.indexOf("ERROR:") === 0)) {
+    const n = countSummaryBodyChars_(summaryJa);
+    if (n > 400) {
+      const sheetName = sheet.getName();
+      const prompt2 = buildSummaryCompressionPrompt_(summaryJa);
+      const tag2 = sheetName + "#row" + row + ":compress400(batch)";
+
+      const resp2 = compressSummaryWithFallback_(sheetName, prompt2, tag2);
+
+      if (!(typeof resp2 === "string" && resp2.indexOf("ERROR:") === 0)) {
+        summaryJa = normalizeSummaryHeader_(String(resp2 || "").trim());
+        // 圧縮後も円表記補正をかけ直す
+        summaryJa = removeYenForNonKyat_(summaryJa);
+        summaryJa = fixKyatYenInText_(summaryJa);
+      }
+
+      if (countSummaryBodyChars_(summaryJa) > 400) {
+        summaryJa =
+          "ERROR: 要約が400字以内に収まりませんでした（再生成後も超過）";
+      }
+    }
+  }
 
   // 書き込み
   sheet.getRange(row, colE).setValue(headlineA);

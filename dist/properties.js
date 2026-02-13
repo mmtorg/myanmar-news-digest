@@ -18,5 +18,5 @@ function importScriptPropertiesSafe() {
 // script propertiesを削除したい場合
 function deleteOneScriptProperty() {
   const props = PropertiesService.getScriptProperties();
-  props.deleteProperty("NEW_SCRIPT_PROPERTY ");
+  props.deleteProperty("NEW_SCRIPT_PROPERTY");
 }
