@@ -217,7 +217,7 @@ const COMMON_TRANSLATION_RULES = `
 ※ただし、別途「見出し専用ルール」で指定がある場合は、そちらを優先すること。
 
 ミャンマー通貨「チャット（Kyat、ကျပ်）」が出てきた場合は、日本円に換算して併記してください。
-- 換算レートは 1チャット = 0.039円 を必ず使用すること。
+- 換算レートは 1チャット = 0.0385円 を必ず使用すること。
 - 記事中にチャットが出た場合は必ず「◯チャット（約◯円）」の形式に翻訳すること。
 - 日本円は小数点以下を四捨五入すること（例：16,500円）。
 - 日本円の金額は、計算で得られた数値をもとに、機械的に「兆・億・万」に分解して表記すること。
@@ -1317,7 +1317,7 @@ function callGeminiWithKey_(apiKey, prompt, usageTagOpt, apiKeyPropNameOpt) {
       },
     ],
     generationConfig: {
-      response_mime_type: "application/json",
+      responseMimeType: "application/json",
       temperature: 0.1,
       topP: 0.8,
       topK: 20,
@@ -2328,7 +2328,7 @@ function estimateTokensFromChars_(nChars) {
 // 通貨換算・金額分解を機械側で固定（円表記の再発防止）
 // ============================================================
 
-// 1チャット=0.039円、四捨五入
+// 1チャット=0.0385円、四捨五入
 function kyatToYenInt_(kyatInt) {
   return Math.round(Number(kyatInt) * 0.039);
 }
