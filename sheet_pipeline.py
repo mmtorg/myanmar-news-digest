@@ -747,6 +747,9 @@ COMMON_TRANSLATION_RULES = (
     PROMPT_CURRENCY_RULES + "\n"
 )
 
+# プロンプト先頭に1回だけ載せる共通ルールブロック（Task/見出し/要約すべてに適用）
+COMMON_RULES_HEADER = "【共通ルール（最優先）】\n" + COMMON_TRANSLATION_RULES + "\n\n"
+
 TITLE_OUTPUT_RULES = (
     "出力は見出し文だけを1行で返してください。\n"
     "【翻訳】や【日本語見出し案】、## 翻訳 などのラベル・注釈タグ・見出しは出力しないでください。\n"
@@ -756,7 +759,6 @@ TITLE_OUTPUT_RULES = (
 # ===== ▼ プロンプト管理（見出し翻訳 / 本文要約）================================
 # 見出し翻訳（見出し3案）※共通ルールを含む
 HEADLINE_PROMPT_1 = (
-    f"{COMMON_TRANSLATION_RULES}"
     f"{TITLE_OUTPUT_RULES}"
     "あなたは報道見出しの専門翻訳者です。以下の英語/ビルマ語のニュース見出しタイトルを、"
     "自然で簡潔な日本語見出しに翻訳してください。固有名詞は一般的な日本語表記を優先し、"
@@ -768,7 +770,6 @@ def make_headline_prompt_2_from(variant1_ja: str) -> str:
     案1（日本語見出し）をインプットにして、要件に沿った案2を生成する。
     """
     return (
-        f"{COMMON_TRANSLATION_RULES}"
         f"{TITLE_OUTPUT_RULES}"
         "以下は先に作成した日本語見出し（案1）です。\n"
         f"【案1】{variant1_ja}\n\n"
@@ -783,7 +784,6 @@ def make_headline_prompt_2_from(variant1_ja: str) -> str:
 
 # 本文から要素抽出して新聞見出しを作る（日本語1行）
 HEADLINE_PROMPT_3 = (
-    f"{COMMON_TRANSLATION_RULES}"
     f"{TITLE_OUTPUT_RULES}"
     "あなたは新聞社の見出しデスクです。以下の本文（原文／機械翻訳含む可能性あり）を読み、"
     "記事の要点（誰／どこ／何が起きた／規模・数値／結果／時点）を抽出し、"
@@ -814,7 +814,6 @@ STEP12_FILTERS = (
 STEP3_TASK = (
     "Step 3: 翻訳と要約処理\n"
     "以下のルールに従って、本文を要約してください。\n\n"
-    f"{COMMON_TRANSLATION_RULES}"
     "本文要約：\n"
     "- 以下の記事本文について重要なポイントをまとめ、最大500字で具体的に要約する（500字を超えない）。\n"
     "- 自然な日本語に翻訳する。文体は だ・である調。必要に応じて体言止めを用いる（乱用は避ける）。\n"
@@ -861,7 +860,7 @@ def _build_summary_prompt(item: dict, *, body_max: int) -> str:
     rg_title = _region_rules_for_title(item.get("title") or "")
     rg_body  = _region_rules_for_body(body)
     term_rules = _build_term_rules_prompt(item.get("title") or "", body)
-    return header + pre + STEP3_TASK + (rg_title + rg_body) + term_rules + "\n" + input_block
+    return header + COMMON_RULES_HEADER + pre + STEP3_TASK + (rg_title + rg_body) + term_rules + "\n" + input_block
 
 # ===== 用語集（A:Myanmar / B:English / C:本文訳 / D:見出し訳） =====
 _TERM_CACHE: list[dict] | None = None
@@ -1128,7 +1127,7 @@ def _headline_variants_ja(title: str, source: str, url: str, body: str = "") -> 
             _LIMITER.wait()
         resp1 = call_llm_with_fallback(
             client,
-            f"{HEADLINE_PROMPT_1}{glossary}\n\n原題: {title}\nsource:{source}\nurl:{url}",
+            f"{COMMON_RULES_HEADER}{HEADLINE_PROMPT_1}{glossary}\n\n原題: {title}\nsource:{source}\nurl:{url}",
             model=model,
         )
         v1 = unicodedata.normalize("NFC", (resp1.text or "").strip())
@@ -1139,7 +1138,7 @@ def _headline_variants_ja(title: str, source: str, url: str, body: str = "") -> 
     try:
         if _LIMITER:
             _LIMITER.wait()
-        prompt2 = (glossary or "") + make_headline_prompt_2_from(v1)
+        prompt2 = COMMON_RULES_HEADER + (glossary or "") + make_headline_prompt_2_from(v1)
         resp2 = call_llm_with_fallback(client, prompt2, model=model)
         v2 = unicodedata.normalize("NFC", (resp2.text or "").strip())
     except Exception:
@@ -1155,7 +1154,8 @@ def _headline_variants_ja(title: str, source: str, url: str, body: str = "") -> 
             v3 = v1
         else:
             prompt3 = (
-                f"{HEADLINE_PROMPT_3}\n\n"
+                COMMON_RULES_HEADER
+                + f"{HEADLINE_PROMPT_3}\n\n"
                 + (glossary or "")
                 + "【本文】\n" + body_for_prompt + "\n\n"
                 f"（参考）原題: {title}\nsource:{source}\nurl:{url}\n"

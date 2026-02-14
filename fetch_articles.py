@@ -3622,6 +3622,9 @@ COMMON_TRANSLATION_RULES = (
     PROMPT_CURRENCY_RULES + "\n"
 )
 
+# プロンプト先頭に1回だけ載せる共通ルールブロック（見出し/本文要約/全文訳などに適用）
+COMMON_RULES_HEADER = "【共通ルール（最優先）】\n" + COMMON_TRANSLATION_RULES + "\n\n"
+
 PROMPT_SELF_CHECK_RULE = (
     "【出力前のセルフチェック（最重要）】\n"
     "あなたは翻訳者であると同時に、翻訳ルールの監査者でもあります。\n"
@@ -3665,7 +3668,6 @@ PROMPT_SELF_CHECK_RULE = (
 STEP3_TASK = (
     "Step 3: 翻訳と要約処理\n"
     "以下のルールに従って、記事タイトルを自然な日本語に翻訳し、本文を要約してください。\n\n"
-    f"{COMMON_TRANSLATION_RULES}"
     "タイトル：\n"
     "あなたは報道見出しの専門翻訳者です。以下の英語/ビルマ語の見出しタイトルを、"
     "自然で簡潔な日本語見出しに翻訳してください。固有名詞は一般的な日本語表記を優先し、"
@@ -3936,13 +3938,13 @@ def build_prompt(item: dict, *, skip_filters: bool, body_max: int) -> str:
     term_rules = _build_term_rules_prompt(title_src, body_src)
 
     # ルール → 入力、の順でプロンプトを構成
-    return header + pre + STEP3_TASK + rg_title + rg_body + term_rules + "\n" + input_block
+    return header + COMMON_RULES_HEADER + pre + STEP3_TASK + rg_title + rg_body + term_rules + "\n" + input_block
 
 # ============================================================
 # 通貨換算・金額分解（Python版・機械固定）
 # ============================================================
 
-KYAT_TO_YEN_RATE = 0.039  # 固定
+KYAT_TO_YEN_RATE = 0.0385  # 固定
 
 def kyat_to_yen_int(kyat_int: int) -> int:
     """1チャット=0.0385円、四捨五入"""
