@@ -217,7 +217,7 @@ const COMMON_TRANSLATION_RULES = `
 ※ただし、別途「見出し専用ルール」で指定がある場合は、そちらを優先すること。
 
 ミャンマー通貨「チャット（Kyat、ကျပ်）」が出てきた場合は、日本円に換算して併記してください。
-- 換算レートは 1チャット = 0.039円 を必ず使用すること。
+- 換算レートは 1チャット = 0.0385円 を必ず使用すること。
 - 記事中にチャットが出た場合は必ず「◯チャット（約◯円）」の形式に翻訳すること。
 - 日本円は小数点以下を四捨五入すること（例：16,500円）。
 - 日本円の金額は、計算で得られた数値をもとに、機械的に「兆・億・万」に分解して表記すること。
@@ -435,10 +435,10 @@ const PROMPT_SELF_CHECK_RULE = `
    を一つずつ再確認すること
 
 2. あなたが生成した翻訳結果が、上記「すべてのルール」に完全に従っているか自己点検すること。
-   - 特に、本文要約（summary / 【要約】ブロック）の文字数が、必ず **200〜400字** の範囲内であること。
+   - 特に、本文要約（summary / 【要約】ブロック）の文字数が、必ず **200〜320字** の範囲内であること。
    - 文字数は **句読点・記号・数字も1文字** として数えること。
    - **先頭行の「【要約】」はカウントに含めない**（2行目以降のみを数える）。
-   - 400字超なら削って短く修正してから出力すること。
+   - 320字超なら削って短く修正してから出力すること。
 
 3. ルールに違反している箇所が1つでも存在した場合は、その部分を必ず修正してから出力すること。
 
@@ -467,7 +467,6 @@ const TITLE_OUTPUT_RULES = `
 
 // HEADLINE_PROMPT_1：原題ベースの日本語見出し（A）
 const HEADLINE_PROMPT_1 = `
-${COMMON_TRANSLATION_RULES}
 ${TITLE_OUTPUT_RULES}
 あなたは報道見出しの専門翻訳者です。
 以下の英語/ビルマ語のニュース見出しタイトルを、
@@ -485,7 +484,6 @@ ${TITLE_OUTPUT_RULES}
 
 // HEADLINE_PROMPT_3：本文を読んで作る見出し（B/B’）
 const HEADLINE_PROMPT_3 = `
-${COMMON_TRANSLATION_RULES}
 ${TITLE_OUTPUT_RULES}
 あなたは新聞社の見出しデスクです。
 以下の本文（原文／機械翻訳含む可能性あり）を読み、
@@ -502,7 +500,6 @@ ${TITLE_OUTPUT_RULES}
 // make_headline_prompt_2_from 相当：案1 から案2を作るプロンプトを生成
 function buildHeadlinePrompt2From_(variant1Ja) {
   return `
-${COMMON_TRANSLATION_RULES}
 ${TITLE_OUTPUT_RULES}
 以下は先に作成した日本語見出し（案1）です。
 【案1】${variant1Ja}
@@ -522,18 +519,17 @@ const SUMMARY_TASK = `
 Step 3: 翻訳と要約処理
 以下のルールに従って、本文を要約してください。
 
-${COMMON_TRANSLATION_RULES}
 本文要約：
-- 以下の記事本文について重要なポイントをまとめ、最大400字で具体的に要約する（400字を超えない）。
+- 以下の記事本文について重要なポイントをまとめ、最大320字で具体的に要約する（320字を超えない）。
 - 自然な日本語で表現する。文体は だ・である調。必要に応じて体言止めを用いる（乱用は避ける）。
 - 個別記事の本文のみを対象とし、メディア説明やページ全体の解説は不要です。
 - レスポンスでは要約のみを返してください、それ以外の文言は不要です。
 
 【文字数ルール（最重要・厳守）】
-- 要約本文の文字数は「下限200字、上限400字」とする。
+- 要約本文の文字数は「下限250字、上限320字」とする。
 - 文字数カウントは、句読点、記号、数字も「1文字」として数える。
 - 先頭行の「【要約】」は文字数カウントに含めない（2行目以降のみをカウント対象とする）。
-- 400字を1文字でも超える場合は、情報を削ってでも短くして400字以内に収める。
+- 320字を1文字でも超える場合は、情報を削ってでも短くして320字以内に収める。
 
 【内容の優先順位（重要）】
 - まず最初の段落で「いつ・どこで・誰が・何をした・結果・規模」を簡潔にまとめる。
@@ -570,42 +566,29 @@ ${COMMON_TRANSLATION_RULES}
 - 1行目は\`【要約】\`とだけ書いてください。
 - 2行目以降が全て空行になってはいけません。
 
-【見出しと構造化のルール】
-- 見出しを使う場合は \`[見出し名]\` の形式で出力してください。
-- 記事の内容が複数の論点や時系列の段階（例：発生・経過・現在の状況・今後の見通し）に分かれているなど、文量が一定以上ある場合は、なるべく \`[背景]\`\`[現在の状況]\`\`[影響]\` などの見出しを1〜3個程度付けて、構造がひと目で分かるようにしてください。
-- 一方で、本文全体が2〜3文程度で一続きの話題に収まっており、見出しを付ける必要がないと判断できる場合は、見出しは作らなくてもよい。
-  ただしこの場合でも、本文は段落に分けること。目安として、2〜3文ごとに1段落とし、段落と段落の間には空行を1行（改行2回）入れること
-- 見出しや箇条書きを用いて構造化する場合も、要約全体は最大400字以内に収めてください。
-- 見出しや箇条書きにはマークダウン記号（#, *, -）を使わず、単純なテキストだけで書いてください。
+【小見出し禁止（厳守）】
+- []で囲む小見出し（例：[背景] [現状] [結論] など）は一切使わない。
+- 本文は見出しではなく、段落分け（2〜3段落）で構造化する。
+
+【段落分けのルール】
+- 本文を必ず「2〜3段落」に分けて書くこと。
+  - 2段落または3段落に限る（1段落のみ、4段落以上は禁止）。
+  - 目安：1段落あたり1〜2文程度（長くても3文まで）。
+- 箇条書きを使う場合でも、本文の段落数（空行区切り）は必ず2〜3段落とすること。
+- 箇条書きは \`・\` を使ってください。
 
 【空行ルール（厳守）】
-- \`【要約】\` の直後に空行は入れない（すぐに見出しか本文を書く）。
-- 見出し \`[見出し名]\` の直後には空行を入れず、次の行に本文を書く。
-- その本文ブロック（1段落）が終わったら、必ず空行を1行入れること。
-  ※これにより「見出し → 本文 → 空行 → 次の見出し」という形にする。
-- 見出し同士を空行なしで連続させてはならない（必ず本文＋空行を挟む）。
-- 本文が複数段落になる場合は、段落（複数行）と段落（複数行）の間に空行を1行だけ入れる。
-  （例：段落1 → 空行 → 段落2）
-- 箇条書き（・）同士の間には空行を入れない。
+- \`【要約】\` の直後に空行は入れない（すぐ本文を書く）。
+- 段落と段落の間には、空行を必ず1行だけ入れる（= 改行2回）。
 - 空行を2行以上連続させない（常に1行まで）。
-- 上記以外の用途で空行を作らない。
-
-【見出しの書式例（厳守）】
-[現状]
-本文本文本文…
-（空行）
-[身代金と送致]
-本文本文本文…
-（空行）
-[住民の抵抗]
-本文本文本文…
+- 上記以外の用途で空行を作らないこと。
+- 段落内での改行はしない（改行は段落区切りの空行のみに使う）。
 
 【その他のルール】
-- 箇条書きは \`・\` を使ってください。
 - 特殊記号は使わないでください。
 - 「【要約】」は冒頭の1回のみ使用してください。
 - 思考手順（Step1/2、Q1/Q2、→ など）は出力に含めないでください。
-- 要約全体は最大400字以内とし、不要な背景説明や重複表現は削ること。
+- 要約全体は最大320字以内とし、不要な背景説明や重複表現は削ること。
   特に重要情報（日時／主体／行為／規模／結果）を優先すること。
 `;
 
@@ -621,6 +604,9 @@ function buildMultiTaskPromptForRow_(params) {
   } = params;
 
   return `
+【共通ルール（Task1/2/3すべてに適用・最優先）】
+${COMMON_TRANSLATION_RULES}
+
 以下は1つのニュース記事です。
 あなたはこの1記事から、次の3つの結果を同時に生成してください。
 
@@ -1317,7 +1303,7 @@ function callGeminiWithKey_(apiKey, prompt, usageTagOpt, apiKeyPropNameOpt) {
       },
     ],
     generationConfig: {
-      response_mime_type: "application/json",
+      responseMimeType: "application/json",
       temperature: 0.1,
       topP: 0.8,
       topK: 20,
@@ -1578,6 +1564,145 @@ function callGeminiWithKey_(apiKey, prompt, usageTagOpt, apiKeyPropNameOpt) {
   return "ERROR: " + (lastErrorText || "Gemini call failed");
 }
 
+// Geminiで「プレーンテキスト」を返させたいとき用（要約圧縮など）
+function callGeminiTextWithKey_(
+  apiKey,
+  prompt,
+  usageTagOpt,
+  apiKeyPropNameOpt,
+) {
+  if (!apiKey) {
+    Logger.log("[gemini] ERROR: API key not set");
+    return "ERROR: API key not set";
+  }
+
+  const usageTag = usageTagOpt || "generic";
+  const model = "gemini-2.5-flash";
+  const url =
+    "https://generativelanguage.googleapis.com/v1beta/models/" +
+    model +
+    ":generateContent?key=" +
+    encodeURIComponent(apiKey);
+
+  const payload = {
+    contents: [{ parts: [{ text: String(prompt || "") }] }],
+    generationConfig: {
+      // ★ json強制しない（テキスト出力にする）
+      temperature: 0.1,
+      topP: 0.8,
+      topK: 20,
+    },
+  };
+
+  const options = {
+    method: "post",
+    contentType: "application/json",
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true,
+  };
+
+  // 中身は callGeminiWithKey_ と同等のリトライ・ログ判定に寄せる（最小実装）
+  // 既存の callGeminiWithKey_ を参考に、同じ判定関数群を再利用します。
+  let lastErrorText = "";
+
+  for (let attempt = 0; attempt < GEMINI_JS_MAX_RETRIES; attempt++) {
+    let res;
+    try {
+      _throttleGeminiCallGlobal_();
+      res = UrlFetchApp.fetch(url, options);
+    } catch (e) {
+      lastErrorText = (e && e.toString()) || "fetch error";
+      if (attempt === GEMINI_JS_MAX_RETRIES - 1)
+        return "ERROR: " + lastErrorText;
+      Utilities.sleep(_expBackoffMs_(attempt));
+      continue;
+    }
+
+    const code = res.getResponseCode();
+    const text = res.getContentText();
+
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch (e) {
+      lastErrorText = "invalid JSON: " + text.substring(0, 500);
+      if (attempt === GEMINI_JS_MAX_RETRIES - 1)
+        return "ERROR: " + lastErrorText;
+      Utilities.sleep(_expBackoffMs_(attempt));
+      continue;
+    }
+
+    if (_isFreeTierQuotaErrorData_(data)) {
+      const errMsg =
+        (data.error && data.error.message) ||
+        "free tier quota exceeded (generate_content_free_tier_requests)";
+      return "ERROR: " + errMsg;
+    }
+
+    if (code >= 200 && code < 300 && !(data && data.error)) {
+      let out = "";
+      try {
+        out =
+          ((((data.candidates || [])[0] || {}).content.parts || [])[0] || {})
+            .text || "";
+      } catch (e) {}
+      return String(out || "").trim();
+    }
+
+    if (data && data.error) {
+      const err = data.error;
+      const status = String(err.status || "");
+      const message = String(err.message || "");
+      lastErrorText = message || "HTTP " + code;
+
+      // 429(quota)なら「当日枯渇」マーク
+      if (code === 429 && _isQuotaExhaustedMessage_(status, message)) {
+        if (apiKeyPropNameOpt) _markApiKeyExhaustedToday_(apiKeyPropNameOpt);
+      }
+    } else {
+      lastErrorText = "HTTP " + code;
+    }
+
+    const retriable = _isRetriableError_(code, data);
+    if (!retriable || attempt === GEMINI_JS_MAX_RETRIES - 1) {
+      return "ERROR: " + lastErrorText;
+    }
+    Utilities.sleep(_expBackoffMs_(attempt));
+  }
+
+  return "ERROR: " + (lastErrorText || "Gemini call failed");
+}
+
+const GEMINI_SUMMARY_COMPRESS_PROP_PROD = "GEMINI_API_KEY_SUMMARY_COMPRESS";
+const GEMINI_SUMMARY_COMPRESS_PROP_DEV = "GEMINI_API_TEST_KEY_SUMMARY_COMPRESS";
+
+// 圧縮プロンプト専用：Gemini(専用キー) → 失敗ならOpenAIへフォールバック
+function compressSummaryWithFallback_(sheetName, promptText, usageTagOpt) {
+  const props = PropertiesService.getScriptProperties();
+  const propName =
+    sheetName === "dev"
+      ? GEMINI_SUMMARY_COMPRESS_PROP_DEV
+      : GEMINI_SUMMARY_COMPRESS_PROP_PROD;
+
+  const gemKey = props.getProperty(propName) || "";
+  if (gemKey) {
+    const r1 = callGeminiTextWithKey_(
+      gemKey,
+      promptText,
+      usageTagOpt,
+      propName,
+    );
+    if (!(typeof r1 === "string" && r1.indexOf("ERROR:") === 0)) {
+      return r1;
+    }
+    // Gemini失敗 → OpenAIへ
+  }
+
+  const oaKey = getOpenAiApiKey_(usageTagOpt);
+  // 圧縮はJSON不要なので formatTypeOpt="none"
+  return callGpt5MiniWithKey_(oaKey, promptText, usageTagOpt, "none");
+}
+
 // ============================================================
 // OpenAI Responses API (gpt-5-mini)
 // ============================================================
@@ -1777,6 +1902,38 @@ function normalizeSummaryHeader_(summary) {
   return s;
 }
 
+// 「【要約】」1行目を除外し、改行(\r,\n)も除外して文字数カウント
+function countSummaryBodyChars_(summaryText) {
+  const s = String(summaryText ?? "");
+  const body = s.replace(/^【要約】\s*[\r\n]?/, ""); // 先頭行除外
+  return body.replace(/[\r\n]/g, "").length; // 改行は数えない
+}
+
+// 400字超のときだけ使う：既存要約を入力にして圧縮を依頼するプロンプト
+function buildSummaryCompressionPrompt_(summaryText) {
+  const s = String(summaryText || "");
+  return `
+あなたは編集者です。下の「元の要約（翻訳要約）」を、内容の意味を変えずに重複表現を減らすなどの方法で圧縮してください。
+
+【出力】
+- 1行目は必ず「【要約】」
+- 本文は300〜400字（句読点・数字・記号も1字）
+- 出力前に本文字数を確認し、必ず400字以内
+
+【圧縮方針】
+- 同じ内容の言い回し、言い換えの繰り返し、冗長な前置きは削除/統合
+- 結論・目的・主要結果、重要な数値/固有名詞/条件/比較は優先して残す
+- 因果関係（理由→結果）や制約条件は落とさない
+- 日本語として自然に整える（ただし意味は変えない）
+
+【禁止】
+- 要約以外の説明（方針や文字数の報告など）
+
+[元の要約]
+${s}
+`.trim();
+}
+
 function processRow_(sheet, row, prevStatus) {
   const colC = 3; // メディア
   const colM = 13; // タイトル原文
@@ -1928,6 +2085,28 @@ function processRow_(sheet, row, prevStatus) {
         // ★ 次に「チャット」の（約◯◯円）だけを再計算で矯正
         summaryJa = fixKyatYenInText_(summaryJa);
 
+        // ===== 400字超のときだけ、圧縮の再生成を「1回だけ」挟む（切り詰めはしない） =====
+        let n = countSummaryBodyChars_(summaryJa);
+        if (n > 400) {
+          const prompt2 = buildSummaryCompressionPrompt_(summaryJa);
+          const tag2 = sheetName + "#row" + row + ":compress400";
+
+          // 圧縮は「専用Geminiキー」→失敗ならOpenAIへ
+          const resp2 = compressSummaryWithFallback_(sheetName, prompt2, tag2);
+
+          if (!(typeof resp2 === "string" && resp2.indexOf("ERROR:") === 0)) {
+            summaryJa = normalizeSummaryHeader_(String(resp2 || "").trim());
+            // 圧縮後も円表記補正をかけ直す
+            summaryJa = removeYenForNonKyat_(summaryJa);
+            summaryJa = fixKyatYenInText_(summaryJa);
+          }
+
+          if (countSummaryBodyChars_(summaryJa) > 400) {
+            summaryJa =
+              "ERROR: 要約が400字以内に収まりませんでした（再生成後も超過）";
+          }
+        }
+
         headlineA = headlineA || "";
         headlineB2 = headlineB2 || "";
         summaryJa = summaryJa || "";
@@ -1940,17 +2119,6 @@ function processRow_(sheet, row, prevStatus) {
       }
     }
   }
-
-  // ★ここで地域名ログを出す
-  logRegionUsageForRow_(sheet, row, {
-    sourceVal,
-    urlVal,
-    titleRaw,
-    bodyRaw,
-    headlineA,
-    headlineB2,
-    summaryJa,
-  });
 
   // シートに書き込み
   sheet.getRange(row, colE).setValue(headlineA); // 見出しA
@@ -2146,9 +2314,9 @@ function estimateTokensFromChars_(nChars) {
 // 通貨換算・金額分解を機械側で固定（円表記の再発防止）
 // ============================================================
 
-// 1チャット=0.039円、四捨五入
+// 1チャット=0.0385円、四捨五入
 function kyatToYenInt_(kyatInt) {
-  return Math.round(Number(kyatInt) * 0.039);
+  return Math.round(Number(kyatInt) * 0.0385);
 }
 
 // 例: 21060000000 -> "210億6000万円" / 987654321 -> "9億8765万4321円"
@@ -2321,6 +2489,9 @@ ${it.bodyGlossaryRules || "(なし)"}
     .join("\n\n");
 
   return `
+【共通ルール（全ARTICLE・全Taskに適用・最優先）】
+${COMMON_TRANSLATION_RULES}
+
 以下は複数のニュース記事です（最大2件）。
 各記事ごとに、次の3つの結果を同時に生成してください：
 1) 見出しA（タイトル翻訳ベース）
@@ -2370,21 +2541,38 @@ function _applyOutputsToRow_(
   const titleRaw = ctx.titleRaw;
   const bodyRaw = ctx.bodyRaw;
 
-  // 地域名ログ（既存と同じ）
-  logRegionUsageForRow_(sheet, row, {
-    sourceVal: ctx.sourceVal,
-    urlVal: ctx.urlVal,
-    titleRaw: titleRaw,
-    bodyRaw: bodyRaw,
-    headlineA: headlineA,
-    headlineB2: headlineB2,
-    summaryJa: summaryJa,
-  });
-
   // ★ まず「チャット以外」の（約◯◯円）を削除（ドル等の誤換算対策）
   summaryJa = removeYenForNonKyat_(summaryJa);
   // ★ 次に「チャット」の（約◯◯円）だけを再計算で矯正
   summaryJa = fixKyatYenInText_(summaryJa);
+
+  // 「【要約】」の整形（バッチ側でも統一）
+  summaryJa = normalizeSummaryHeader_(String(summaryJa || ""));
+
+  // ===== 400字超なら圧縮を1回だけ挟む（切り詰めはしない）=====
+  // エラー文字列の場合は圧縮しない
+  if (!(typeof summaryJa === "string" && summaryJa.indexOf("ERROR:") === 0)) {
+    const n = countSummaryBodyChars_(summaryJa);
+    if (n > 400) {
+      const sheetName = sheet.getName();
+      const prompt2 = buildSummaryCompressionPrompt_(summaryJa);
+      const tag2 = sheetName + "#row" + row + ":compress400(batch)";
+
+      const resp2 = compressSummaryWithFallback_(sheetName, prompt2, tag2);
+
+      if (!(typeof resp2 === "string" && resp2.indexOf("ERROR:") === 0)) {
+        summaryJa = normalizeSummaryHeader_(String(resp2 || "").trim());
+        // 圧縮後も円表記補正をかけ直す
+        summaryJa = removeYenForNonKyat_(summaryJa);
+        summaryJa = fixKyatYenInText_(summaryJa);
+      }
+
+      if (countSummaryBodyChars_(summaryJa) > 400) {
+        summaryJa =
+          "ERROR: 要約が400字以内に収まりませんでした（再生成後も超過）";
+      }
+    }
+  }
 
   // 書き込み
   sheet.getRange(row, colE).setValue(headlineA);
@@ -3097,7 +3285,7 @@ function _cleanupOldGeminiLogs_() {
         continue;
       }
 
-      // 24時間以内 → 残す
+      // 12時間より古いログを削除
       if (tsDate.getTime() >= cutoffMs) {
         keptRows.push(row);
       }
@@ -3118,364 +3306,4 @@ function _cleanupOldGeminiLogs_() {
       numRows - keptRows.length,
     );
   });
-}
-
-/************************************************************
- * 地名ログ出力用
- ************************************************************/
-// 地名ログを書き出す先のスプレッドシートを取得
-function getRegionLogSpreadsheet_() {
-  const props = PropertiesService.getScriptProperties();
-  const logId = props.getProperty("REGION_LOG_SPREADSHEET_ID");
-
-  // 設定されていれば、そのスプレッドシートに書き出す
-  return SpreadsheetApp.openById(logId);
-}
-
-function openRegionLogSheet_() {
-  // ★ ここで別のログ用スプレッドシートを開く
-  const ss = getRegionLogSpreadsheet_();
-  const name = "region_logs";
-  let sh = ss.getSheetByName(name);
-  if (!sh) {
-    sh = ss.insertSheet(name);
-  }
-
-  // ★ ヘッダー行がまだ何も無い場合だけ、ヘッダーを追加
-  if (sh.getLastRow() === 0) {
-    sh.appendRow([
-      "timestamp",
-      "sheet",
-      "row",
-      "source",
-      "url",
-      "part",
-      "type",
-      "mm",
-      "en",
-      "used_in_output",
-      "output_ja",
-      "note",
-    ]);
-  }
-  return sh;
-}
-
-function logRegionUsageForRow_(sheet, row, ctx) {
-  const logSheet = openRegionLogSheet_();
-  const entriesAll = loadRegionGlossary_();
-
-  const sheetName = sheet.getName();
-  const {
-    sourceVal,
-    urlVal,
-    titleRaw,
-    bodyRaw,
-    headlineA,
-    headlineB2,
-    summaryJa,
-  } = ctx;
-
-  const now = new Date();
-
-  // 判定用：元テキスト
-  const titleText = (titleRaw || "").toString();
-  const bodyText = (bodyRaw || "").toString();
-
-  // タイトル／本文それぞれで regions マッチ（既知地名）
-  const entriesTitle = selectRegionEntriesForText_(titleRaw || "", entriesAll);
-  const entriesBody = selectRegionEntriesForText_(bodyRaw || "", entriesAll);
-
-  // --- known（regions にある地名）をログ ---
-  // タイトル用：見出しA に dict_ja が含まれているか
-  entriesTitle.forEach(function (e) {
-    const ja = e.ja_headline || e.ja || "";
-    const used = ja && headlineA && headlineA.indexOf(ja) !== -1;
-
-    // 出力で使われていないものはログしない
-    if (!used) return;
-
-    const mm = e.mm || "";
-    const en = e.en || "";
-
-    // この記事タイトルで mm / en のどちらが実際に出ているかを判定
-    let mmHit = false;
-    let enHit = false;
-
-    if (mm) {
-      if (titleText.indexOf(mm) !== -1) {
-        mmHit = true;
-      }
-    }
-    if (en) {
-      // 英語は単語境界で判定
-      const re = new RegExp("\\b" + escapeRegExp_(en) + "\\b", "i");
-      if (re.test(titleText)) {
-        enHit = true;
-      }
-    }
-
-    // ログに書き込む mm / en を決定
-    let mmOut = "";
-    let enOut = "";
-    if (mmHit && !enHit) {
-      mmOut = mm;
-    } else if (enHit && !mmHit) {
-      enOut = en;
-    } else if (mmHit && enHit) {
-      // 両方出ているケースは、とりあえず mm を優先
-      mmOut = mm;
-    } else {
-      // 念のため、どちらも検出できない場合は従来通り両方入れておく
-      mmOut = mm;
-      enOut = en;
-    }
-
-    logSheet.appendRow([
-      now,
-      sheetName,
-      row,
-      sourceVal,
-      urlVal,
-      "title",
-      "known",
-      mmOut,
-      enOut,
-      true, // used_in_output
-      ja, // output_ja
-      "",
-    ]);
-  });
-
-  // 本文用：見出しB' + 要約 に dict_ja が含まれているか（日本語側のかたまり）
-  const blobBodyJa = (headlineB2 || "") + "\n" + (summaryJa || "");
-
-  entriesBody.forEach(function (e) {
-    const ja = e.ja_body || e.ja || "";
-    const used = ja && blobBodyJa.indexOf(ja) !== -1;
-
-    // 出力で使われていないものはログしない
-    if (!used) return;
-
-    const mm = e.mm || "";
-    const en = e.en || "";
-
-    // この記事本文(bodyText)で mm / en のどちらが出ているかを判定
-    let mmHit = false;
-    let enHit = false;
-
-    if (mm) {
-      if (bodyText.indexOf(mm) !== -1) {
-        mmHit = true;
-      }
-    }
-    if (en) {
-      const re = new RegExp("\\b" + escapeRegExp_(en) + "\\b", "i");
-      if (re.test(bodyText)) {
-        enHit = true;
-      }
-    }
-
-    let mmOut = "";
-    let enOut = "";
-    if (mmHit && !enHit) {
-      mmOut = mm;
-    } else if (enHit && !mmHit) {
-      enOut = en;
-    } else if (mmHit && enHit) {
-      // 両方出ている場合は mm を優先
-      mmOut = mm;
-    } else {
-      // 念のため両方なしのときは元の値をそのまま入れておく
-      mmOut = mm;
-      enOut = en;
-    }
-
-    logSheet.appendRow([
-      now,
-      sheetName,
-      row,
-      sourceVal,
-      urlVal,
-      "body",
-      "known",
-      mmOut,
-      enOut,
-      true, // used_in_output
-      ja, // output_ja
-      "",
-    ]);
-  });
-
-  // ★ unknown 判定でも使う日本語出力のかたまり
-  const blobTitleJa = headlineA || "";
-
-  // --- unknown（regions にない地名）を 1 回の呼び出しで検出 ---
-  const unknownList = detectUnknownRegionsForArticle_(
-    titleRaw || "",
-    bodyRaw || "",
-    headlineA || "",
-    headlineB2 || "",
-    summaryJa || "",
-    entriesTitle,
-    entriesBody,
-  );
-
-  unknownList.forEach(function (item) {
-    const part = (item.part || "").toString().toLowerCase();
-    const normalizedPart = part === "title" ? "title" : "body"; // 不正値は body 扱い
-
-    const jaOut = (item.ja || "").toString();
-    let used = false;
-    if (jaOut) {
-      if (normalizedPart === "title") {
-        // タイトル用: headlineA の中に含まれているか
-        used = blobTitleJa.indexOf(jaOut) !== -1;
-      } else {
-        // 本文用: 見出しB' + 要約 の中に含まれているか
-        used = blobBodyJa.indexOf(jaOut) !== -1;
-      }
-    }
-
-    // ★ ここから追加：src を mm / en に振り分ける
-    const src = (item.src || "").toString();
-
-    let mmOut = "";
-    let enOut = "";
-
-    if (src) {
-      // ビルマ文字を含んでいるかどうかで判定
-      if (/[က-႟]/.test(src)) {
-        // ミャンマー語とみなして mm 列へ
-        mmOut = src;
-      } else {
-        // それ以外は英語（ローマ字等）とみなして en 列へ
-        enOut = src;
-      }
-    }
-
-    logSheet.appendRow([
-      now,
-      sheetName,
-      row,
-      sourceVal,
-      urlVal,
-      normalizedPart,
-      "unknown",
-      mmOut, // ← ミャンマー語ならここ
-      enOut, // ← 英語ならここ
-      used, // used_in_output
-      jaOut, // output_ja
-      "",
-    ]);
-  });
-}
-
-function getRegionLogApiKey_() {
-  const props = PropertiesService.getScriptProperties();
-  const v = props.getProperty("GEMINI_API_KEY_REGION_LOG");
-  return v || ""; // 空なら呼び出し側でフォールバック
-}
-
-// 記事単位で未知地名を検出する関数
-function detectUnknownRegionsForArticle_(
-  titleRaw,
-  bodyRaw,
-  headlineA,
-  headlineB2,
-  summaryJa,
-  knownEntriesTitle,
-  knownEntriesBody,
-) {
-  const apiKey = getRegionLogApiKey_();
-  if (!apiKey) return []; // ログ専用キーが無ければスキップ
-
-  // 原文 or 出力どちらも何も無ければスキップ
-  if (!(titleRaw || bodyRaw)) return [];
-  if (!(headlineA || headlineB2 || summaryJa)) return [];
-
-  // 既知エントリ(mm/en)をマージ＋重複除去
-  const allKnown = []
-    .concat(knownEntriesTitle || [], knownEntriesBody || [])
-    .filter(Boolean);
-
-  const seen = {};
-  const knownList = [];
-  allKnown.forEach(function (e) {
-    const mm = e.mm || "";
-    const en = e.en || "";
-    const key = mm + "|" + en;
-    if (seen[key]) return;
-    seen[key] = true;
-    knownList.push({ mm: mm, en: en });
-  });
-
-  // 本文側日本語（見出しB' + 要約）
-  const bodyJa = [headlineB2 || "", summaryJa || ""].join("\n").trim();
-
-  const prompt = [
-    "あなたは対訳ペアから地名の対応を抽出するツールです。",
-    "",
-    "与えられた原文タイトル・本文と、その日本語タイトル・本文から、",
-    "regions 用語集には載っていないミャンマー国内の地名のみを抽出してください。",
-    "",
-    "出力は JSON 配列1つのみとし、フォーマットは次の通りです（日本語以外は英数字）：",
-    '[{"part":"titleまたはbody","src":"...元の地名...","ja":"...日本語訳..."}]',
-    "",
-    "制約:",
-    "- regions 用語集に含まれている mm/en は抽出しないこと",
-    "- 「src」は原文（ミャンマー語または英語）側の地名をそのまま出すこと",
-    "- 「ja」は対応する日本語訳をできるだけ短く自然な形で出すこと",
-    "- 地名以外（人名・肩書き・一般名詞など）は含めないこと",
-    "",
-    "【既知の地名（regionsに既に存在）】",
-    JSON.stringify(knownList),
-    "",
-    "【原文タイトル】",
-    titleRaw || "(なし)",
-    "",
-    "【原文本文】",
-    bodyRaw || "(なし)",
-    "",
-    "【日本語タイトル】",
-    headlineA || "(なし)",
-    "",
-    "【日本語本文（見出しB' + 要約）】",
-    bodyJa || "(なし)",
-  ].join("\n");
-
-  const resp = callGeminiWithKey_(
-    apiKey,
-    prompt,
-    "regionlog#article",
-    "GEMINI_API_KEY_REGION_LOG",
-  );
-  if (typeof resp !== "string" || resp.indexOf("ERROR:") === 0) return [];
-
-  let cleaned = resp.trim();
-  // ```json ... ``` のガード
-  if (cleaned.startsWith("```")) {
-    cleaned = cleaned.replace(/^```[a-zA-Z]*\s*/, "");
-    const last = cleaned.lastIndexOf("```");
-    if (last !== -1) cleaned = cleaned.substring(0, last);
-    cleaned = cleaned.trim();
-  }
-
-  try {
-    const parsed = JSON.parse(cleaned);
-    const arr = Array.isArray(parsed)
-      ? parsed
-      : parsed && Array.isArray(parsed.items)
-        ? parsed.items
-        : null;
-    if (!arr) return [];
-    // part が title/body のものだけ返す
-    return arr.filter(function (item) {
-      if (!item || typeof item !== "object") return false;
-      const p = (item.part || "").toString().toLowerCase();
-      return p === "title" || p === "body";
-    });
-  } catch (e) {
-    return [];
-  }
 }
