@@ -2184,8 +2184,13 @@ function processRow_(sheet, row, prevStatus) {
           }
 
           if (countSummaryBodyChars_(summaryJa) > 400) {
-            summaryJa =
-              "ERROR: 要約が400字以内に収まりませんでした（再生成後も超過）";
+            // 400字を超えても要約は出力する（エラーにしない）
+            Logger.log(
+              "[WARN] summary over 400 chars (body=%s) sheet=%s row=%s",
+              countSummaryBodyChars_(summaryJa),
+              sheet.getName ? sheet.getName() : "",
+              row,
+            );
           }
         }
 
@@ -2654,8 +2659,13 @@ function _applyOutputsToRow_(
       }
 
       if (countSummaryBodyChars_(summaryJa) > 400) {
-        summaryJa =
-          "ERROR: 要約が400字以内に収まりませんでした（再生成後も超過）";
+        // 400字を超えても要約は出力する（エラーにしない）
+        Logger.log(
+          "[WARN] summary over 400 chars (body=%s) sheet=%s row=%s",
+          countSummaryBodyChars_(summaryJa),
+          sheet.getName ? sheet.getName() : "",
+          row,
+        );
       }
     }
   }
