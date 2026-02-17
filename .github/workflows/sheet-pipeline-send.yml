@@ -1,4 +1,4 @@
-name: Daily Myanmar News Alert Sheet Pipeline
+name: Daily Myanmar News Alert Sheet Pipeline Send Integrated
 
 on:
   schedule:
@@ -263,7 +263,6 @@ jobs:
       #     # 受信先（未設定だと --to が空になって失敗）
       #     CSV_EMAIL_RECIPIENTS: ${{ secrets.CSV_EMAIL_RECIPIENTS }}
 
-
   schedule-watch-build-send:
     # 02:05 MMT（= 19:35 UTC 前日）以降に監視ループ開始
     if: github.event_name == 'schedule' && github.event.schedule == '35 19 * * *'
@@ -314,11 +313,11 @@ jobs:
       TRIGGER_COLUMN_RANGE: "K:K"
       # 送信済み日付を記録するセル（同一日の重複実行防止）
       SENT_MARK_CELL: "config!A1"
-      POLL_INTERVAL_SEC: "600"     # 10分
-      MAX_WATCH_SEC: "18000"       # 5時間（GitHub Actions 実行上限を考慮）
-      BUILD_FAIL_RETRY_LIMIT: "2"  # build-bundle 失敗後、監視ループに戻る回数（最大2回）
-      MAIL_RETRY_LIMIT: "2"        # メール送信リトライ回数（最大2回）
-      MAIL_RETRY_WAIT_SEC: "600"   # メール送信リトライ間隔（秒）
+      POLL_INTERVAL_SEC: "600" # 10分
+      MAX_WATCH_SEC: "18000" # 5時間（GitHub Actions 実行上限を考慮）
+      BUILD_FAIL_RETRY_LIMIT: "2" # build-bundle 失敗後、監視ループに戻る回数（最大2回）
+      MAIL_RETRY_LIMIT: "2" # メール送信リトライ回数（最大2回）
+      MAIL_RETRY_WAIT_SEC: "600" # メール送信リトライ間隔（秒）
 
     steps:
       - name: Checkout (main)
@@ -597,7 +596,6 @@ jobs:
           echo "GOOGLE_APPLICATION_CREDENTIALS=$SA_FILE" >> "$GITHUB_ENV"
           echo "GOOGLE_SERVICE_ACCOUNT_FILE=$SA_FILE" >> "$GITHUB_ENV"
 
-
       - name: Download bundle artifact (send-only)
         if: ${{ inputs.mode == 'send-only' }}
         env:
@@ -628,7 +626,6 @@ jobs:
 
           test -f bundle/meta.json
           ls -al bundle
-
 
       - name: Send email from downloaded bundle (send-only)
         if: ${{ inputs.mode == 'send-only' }}
