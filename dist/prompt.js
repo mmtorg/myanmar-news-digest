@@ -562,13 +562,9 @@ Step 3: 翻訳と要約処理
 - 個人の発言が記事の中心テーマでない場合、
   個人名は1回だけまたは省略してもよい。
 
-本文要約の出力条件：
+【本文要約の出力条件（厳守）】
 - 1行目は\`【要約】\`とだけ書いてください。
 - 2行目以降が全て空行になってはいけません。
-
-【小見出し禁止（厳守）】
-- []で囲む小見出し（例：[背景] [現状] [結論] など）は一切使わない。
-- 本文は見出しではなく、段落分け（2〜3段落）で構造化する。
 
 【段落分けのルール】
 - 本文を必ず「2〜3段落」に分けて書くこと。
@@ -1902,11 +1898,101 @@ function normalizeSummaryHeader_(summary) {
   return s;
 }
 
+// 本文中の「改行1回」を「改行2回」にして空行を作る（既に\n\nがある所は保持）
+function singleNewlineToBlankLine_(text) {
+  if (text == null) return text;
+  let s = String(text).replace(/\r\n/g, "\n");
+
+  const header = "【要約】\n";
+  if (!s.startsWith(header)) return s;
+
+  let body = s.slice(header.length);
+
+  // すでに段落区切りがあるなら、改行正規化だけ
+  if (/\n\s*\n/.test(body)) {
+    body = body.replace(/\n{3,}/g, "\n\n").trim();
+    return header + body;
+  }
+
+  // 段落区切りが無い場合のみ：最初の改行だけを段落にする
+  if (body.includes("\n")) {
+    const idx = body.indexOf("\n");
+    const p1 = body.slice(0, idx).trim();
+    const p2 = body.slice(idx + 1).trim();
+    return header + p1 + "\n\n" + p2;
+  }
+
+  return s;
+}
+
+// 先頭に【要約】が無ければ補う（ヘッダ直後は必ず改行1回）
+function ensureSummaryHeader_(text) {
+  if (text == null) return text;
+
+  let s = String(text).replace(/\r\n/g, "\n").trim();
+
+  // すでにある（先頭一致）ならそのまま
+  if (s.startsWith("【要約】")) {
+    // 「【要約】」の直後が改行でなければ改行を入れる
+    s = s.replace(/^【要約】\s*/, "【要約】\n");
+    // 直後に空行ができていたら1行に正規化（任意だけど安全）
+    s = s.replace(/^【要約】\n\n+/, "【要約】\n");
+    return s;
+  }
+
+  // 無いなら補う
+  return "【要約】\n" + s;
+}
+
 // 「【要約】」1行目を除外し、改行(\r,\n)も除外して文字数カウント
 function countSummaryBodyChars_(summaryText) {
   const s = String(summaryText ?? "");
   const body = s.replace(/^【要約】\s*[\r\n]?/, ""); // 先頭行除外
   return body.replace(/[\r\n]/g, "").length; // 改行は数えない
+}
+
+// 空行（\n\n）が無い場合は強制的に段落区切りを作る
+function enforceParagraphBreaks_(summary) {
+  let s = String(summary || "").trim();
+
+  // 空行の正規化（3個以上の改行は2個に）
+  s = s.replace(/\n{3,}/g, "\n\n").trim();
+
+  // 先頭の【要約】を確保
+  if (!s.startsWith("【要約】")) {
+    s = "【要約】\n" + s.trim();
+  }
+
+  const m = s.match(/^【要約】\n([\s\S]*)$/);
+  if (!m) return s;
+
+  let body = m[1].trim();
+
+  // すでに空行があるならOK（= 段落になっている）
+  if (/\n\s*\n/.test(body)) {
+    body = body.replace(/\n{3,}/g, "\n\n").trim();
+    return `【要約】\n${body}`;
+  }
+
+  // 空行が無い → 段落を作る
+  // 1) 改行が1回以上あるなら、最初の改行を空行に変換
+  if (body.includes("\n")) {
+    const idx = body.indexOf("\n");
+    const p1 = body.slice(0, idx).trim();
+    const p2 = body.slice(idx + 1).trim();
+    return `【要約】\n${p1}\n\n${p2}`;
+  }
+
+  // 2) 改行が全く無いなら最初の「。」で割る（無ければ長さで割る）
+  const pos = body.indexOf("。");
+  const cutAt =
+    pos !== -1 && pos + 1 < body.length
+      ? pos + 1
+      : Math.min(160, Math.floor(body.length / 2));
+
+  const p1 = body.slice(0, cutAt).trim();
+  const p2 = body.slice(cutAt).trim();
+  return `【要約】\n${p1}\n\n${p2}`;
 }
 
 // 400字超のときだけ使う：既存要約を入力にして圧縮を依頼するプロンプト
@@ -1919,6 +2005,7 @@ function buildSummaryCompressionPrompt_(summaryText) {
 - 1行目は必ず「【要約】」
 - 本文は300〜400字（句読点・数字・記号も1字）
 - 出力前に本文字数を確認し、必ず400字以内
+- 空行1行（= 改行2回）は残す
 
 【圧縮方針】
 - 同じ内容の言い回し、言い換えの繰り返し、冗長な前置きは削除/統合
@@ -2102,8 +2189,13 @@ function processRow_(sheet, row, prevStatus) {
           }
 
           if (countSummaryBodyChars_(summaryJa) > 400) {
-            summaryJa =
-              "ERROR: 要約が400字以内に収まりませんでした（再生成後も超過）";
+            // 400字を超えても要約は出力する（エラーにしない）
+            Logger.log(
+              "[WARN] summary over 400 chars (body=%s) sheet=%s row=%s",
+              countSummaryBodyChars_(summaryJa),
+              sheet.getName ? sheet.getName() : "",
+              row,
+            );
           }
         }
 
@@ -2118,6 +2210,15 @@ function processRow_(sheet, row, prevStatus) {
         summaryJa = errMsg;
       }
     }
+  }
+
+  summaryJa = ensureSummaryHeader_(summaryJa);
+
+  if (countSummaryBodyChars_(summaryJa) === 0) {
+    summaryJa = "";
+  } else {
+    summaryJa = enforceParagraphBreaks_(summaryJa);
+    summaryJa = singleNewlineToBlankLine_(summaryJa); // すでに\n\nがあれば何もしない版ならOK
   }
 
   // シートに書き込み
@@ -2568,10 +2669,24 @@ function _applyOutputsToRow_(
       }
 
       if (countSummaryBodyChars_(summaryJa) > 400) {
-        summaryJa =
-          "ERROR: 要約が400字以内に収まりませんでした（再生成後も超過）";
+        // 400字を超えても要約は出力する（エラーにしない）
+        Logger.log(
+          "[WARN] summary over 400 chars (body=%s) sheet=%s row=%s",
+          countSummaryBodyChars_(summaryJa),
+          sheet.getName ? sheet.getName() : "",
+          row,
+        );
       }
     }
+  }
+
+  summaryJa = ensureSummaryHeader_(summaryJa);
+
+  if (countSummaryBodyChars_(summaryJa) === 0) {
+    summaryJa = "";
+  } else {
+    summaryJa = enforceParagraphBreaks_(summaryJa);
+    summaryJa = singleNewlineToBlankLine_(summaryJa); // すでに\n\nがあれば何もしない版ならOK
   }
 
   // 書き込み

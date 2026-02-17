@@ -1,0 +1,813 @@
+name: Daily Myanmar News Alert Sheet Pipeline Send Integrated
+
+on:
+  schedule:
+    # 15:50 MMT（= 09:20 UTC）: 前日クリア → 追記
+    # 15:50 MMT ≒ 09:20 UTC → 09:17 UTC（= 15:47 MMT, 3分前倒し）
+    - cron: "17 9 * * *" # 15:47 MMT（実運用目標: 15:50）
+
+    # 17:50 / 20:50 / 21:50 / 22:50 MMT（= 11:20 / 14:20 / 15:20 / 16:20 UTC）: 追記のみ
+    # 17:50 MMT ≒ 11:20 UTC → 11:17 UTC（= 17:47 MMT, 3分前倒し）
+    - cron: "17 11 * * *" # 17:47 MMT（実運用目標: 17:50）
+    # 20:50 MMT ≒ 14:20 UTC → 14:17 UTC（= 20:47 MMT, 3分前倒し）
+    - cron: "17 14 * * *" # 20:47 MMT（実運用目標: 20:50）
+    # 21:50 MMT ≒ 15:20 UTC → 15:17 UTC（= 21:47 MMT, 3分前倒し）
+    - cron: "17 15 * * *" # 21:47 MMT（実運用目標: 21:50）
+    # 22:50 MMT ≒ 16:20 UTC → 16:17 UTC（= 22:47 MMT, 3分前倒し）
+    - cron: "17 16 * * *" # 22:47 MMT（実運用目標: 22:50）
+
+    # 02:00 MMT（= 19:30 UTC 前日）: bundle生成
+    # → 19:27 UTC（= 02:00 MMT, 3分前倒し）
+    - cron: "35 19 * * *" # 02:05 MMT（監視ループ開始）
+
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "collect16（15:50回） / collect（17:50/20:50/21:50/22:50回） / build-bundle（02:00） / send-only（artifactから再送）"
+        type: choice
+        required: true
+        default: collect16
+        options:
+          - collect16
+          - collect
+          - build-bundle
+          - notify-email
+          - send-only
+
+      bundle_run_id:
+        description: "send-onlyで使用するbundle artifactのrun_id（例: 1234567890）"
+        type: string
+        required: false
+        default: ""
+# どのイベントでも 1 workflow につき環境ごとに直列化
+concurrency:
+  # 手動実行: main→production / develop→development / その他→production（元の式を踏襲）
+  group: mna-sheet-pipeline-${{ github.event_name == 'workflow_dispatch' && (github.ref_name == 'main' && 'production' || 'development') || 'production' }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # === スケジュール（本番のみ / mainブランチ運用前提） ===
+  schedule-collect16:
+    # 15:50 枠（09:17 UTC 起動）
+    if: github.event_name == 'schedule' && github.event.schedule == '17 9 * * *'
+    runs-on: ubuntu-latest
+    # 環境別シークレット（Environments）の切替：本番固定
+    environment: production
+    # ▼ 環境変数（prod用）のみ追加（ここでのmulti-lineはOK：$GITHUB_ENV経由ではない）
+    env:
+      # ===== Gemini（production）=====
+      GEMINI_API_KEY_MIZZIMA: ${{ secrets.GEMINI_API_KEY_MIZZIMA }}
+      GEMINI_API_KEY_BBC: ${{ secrets.GEMINI_API_KEY_BBC }}
+      GEMINI_API_KEY_IRRAWADDY: ${{ secrets.GEMINI_API_KEY_IRRAWADDY }}
+      GEMINI_API_KEY_KHITTHIT: ${{ secrets.GEMINI_API_KEY_KHITTHIT }}
+      GEMINI_API_KEY_MYANMARNOW: ${{ secrets.GEMINI_API_KEY_MYANMARNOW }}
+      GEMINI_API_KEY_DVB: ${{ secrets.GEMINI_API_KEY_DVB }}
+      GEMINI_API_KEY_GNLM: ${{ secrets.GEMINI_API_KEY_GNLM }}
+      GEMINI_API_KEY_POPULARMYANMAR: ${{ secrets.GEMINI_API_KEY_POPULARMYANMAR }}
+      GEMINI_API_KEY_FRONTIERMYANMAR: ${{ secrets.GEMINI_API_KEY_FRONTIERMYANMAR }}
+      GEMINI_REQS_PER_MIN: 6
+      GEMINI_MIN_INTERVAL_SEC: 2.5
+      GEMINI_JITTER_SEC: 0.5
+      # ===== Google Sheets（production）=====
+      GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+      MNA_SHEET_ID: ${{ secrets.MNA_SHEET_ID }}
+      MNA_SHEET_NAME: "prod"
+      # ===== fetch_articles.pyで使う環境変数（production）=====
+      GEMINI_API_SUMMARY_KEY: ${{ secrets.GEMINI_API_SUMMARY_KEY }}
+      GEMINI_API_DEDUPE_KEY: ${{ secrets.GEMINI_API_DEDUPE_KEY }}
+      GEMINI_API_FULLTEXT_KEY: ${{ secrets.GEMINI_API_FULLTEXT_KEY }}
+      # ===== OpenAI（全文翻訳: GPT-5 mini）=====
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+    steps:
+      - name: Checkout (main)
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Diagnostics | env + tree
+        run: |
+          set -euxo pipefail
+          echo "PWD=$(pwd)"
+          python --version
+          find . -maxdepth 2 -type d -print | sort
+
+      - name: Diagnostics | gemini keys present? (masked)
+        run: |
+          python - <<'PY'
+          import os
+          keys = sorted(k for k in os.environ if k.startswith("GEMINI"))
+          print("gemini_key_names:", keys)
+          print("gemini_keys_nonempty:", {k: bool(os.environ.get(k)) for k in keys})
+          PY
+
+      - name: Write GOOGLE_APPLICATION_CREDENTIALS
+        if: env.GOOGLE_SERVICE_ACCOUNT_JSON != ''
+        run: |
+          SA_FILE="$RUNNER_TEMP/sa.json"
+          printf '%s' "${GOOGLE_SERVICE_ACCOUNT_JSON}" > "$SA_FILE"
+          echo "GOOGLE_APPLICATION_CREDENTIALS=$SA_FILE" >> "$GITHUB_ENV"
+          echo "GOOGLE_SERVICE_ACCOUNT_FILE=$SA_FILE" >> "$GITHUB_ENV"
+
+      - name: Collect → write to sheet (15:50 run, clear yesterday once)
+        run: |
+          python sheet_pipeline.py collect-to-sheet --clear-yesterday
+
+      # ★ 15:50 枠の収集完了時にメール通知（※一時的に無効化）
+      # - name: Notify by email via Python (cron 15:50 MMT)
+      #   if: ${{ github.event_name == 'schedule' && success() }}
+      #   run: |
+      #     set -euo pipefail
+      #
+      #     echo "Prev step finished. Sleep 60 minutes before sending email..."
+      #     sleep 3600  # ← 60 分
+      #
+      #     BODY="$(printf '%s\n%s\n%s\n' \
+      #       '✅ 15:50収集 完了（本番用）' \
+      #       '・対象シート: 「prod」シートに追記済みです。' \
+      #       '・17:50 / 20:50 / 22:50 の収集が順次実行予定です。' )"
+      #     python notify_done.py \
+      #       --to "${CSV_EMAIL_RECIPIENTS}" \
+      #       --subject "【MNA 記事収集】15:50収集 完了（本番用）" \
+      #       --body "$BODY" \
+      #       --sheet-url "https://docs.google.com/spreadsheets/d/${{ secrets.MNA_SHEET_ID }}/edit"
+      #   env:
+      #     GMAIL_CLIENT_ID: ${{ secrets.GMAIL_CLIENT_ID }}
+      #     GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
+      #     GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
+      #     EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
+      #     CSV_EMAIL_RECIPIENTS: ${{ secrets.CSV_EMAIL_RECIPIENTS }}
+
+  schedule-collect:
+    # 17:50 / 20:50 / 21:50 / 22:50 枠
+    if: github.event_name == 'schedule' && contains(fromJson('["17 11 * * *","17 14 * * *","17 15 * * *","17 16 * * *"]'), github.event.schedule)
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      # ===== Gemini（production）=====
+      GEMINI_API_KEY_MIZZIMA: ${{ secrets.GEMINI_API_KEY_MIZZIMA }}
+      GEMINI_API_KEY_BBC: ${{ secrets.GEMINI_API_KEY_BBC }}
+      GEMINI_API_KEY_IRRAWADDY: ${{ secrets.GEMINI_API_KEY_IRRAWADDY }}
+      GEMINI_API_KEY_KHITTHIT: ${{ secrets.GEMINI_API_KEY_KHITTHIT }}
+      GEMINI_API_KEY_MYANMARNOW: ${{ secrets.GEMINI_API_KEY_MYANMARNOW }}
+      GEMINI_API_KEY_DVB: ${{ secrets.GEMINI_API_KEY_DVB }}
+      GEMINI_API_KEY_GNLM: ${{ secrets.GEMINI_API_KEY_GNLM }}
+      GEMINI_API_KEY_POPULARMYANMAR: ${{ secrets.GEMINI_API_KEY_POPULARMYANMAR }}
+      GEMINI_API_KEY_FRONTIERMYANMAR: ${{ secrets.GEMINI_API_KEY_FRONTIERMYANMAR }}
+      GEMINI_REQS_PER_MIN: 6
+      GEMINI_MIN_INTERVAL_SEC: 2.5
+      GEMINI_JITTER_SEC: 0.5
+      # ===== Google Sheets（production）=====
+      GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+      MNA_SHEET_ID: ${{ secrets.MNA_SHEET_ID }}
+      MNA_SHEET_NAME: "prod"
+      # ===== fetch_articles.pyで使う環境変数（production）=====
+      GEMINI_API_SUMMARY_KEY: ${{ secrets.GEMINI_API_SUMMARY_KEY }}
+      GEMINI_API_DEDUPE_KEY: ${{ secrets.GEMINI_API_DEDUPE_KEY }}
+      GEMINI_API_FULLTEXT_KEY: ${{ secrets.GEMINI_API_FULLTEXT_KEY }}
+      # ===== OpenAI（全文翻訳: GPT-5 mini）=====
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+    steps:
+      - name: Checkout (main)
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Diagnostics | env + tree
+        run: |
+          set -euxo pipefail
+          echo "PWD=$(pwd)"
+          python --version
+          find . -maxdepth 2 -type d -print | sort
+
+      - name: Diagnostics | gemini keys present? (masked)
+        run: |
+          python - <<'PY'
+          import os
+          keys = sorted(k for k in os.environ if k.startswith("GEMINI"))
+          print("gemini_key_names:", keys)
+          print("gemini_keys_nonempty:", {k: bool(os.environ.get(k)) for k in keys})
+          PY
+
+      - name: Write GOOGLE_APPLICATION_CREDENTIALS
+        if: env.GOOGLE_SERVICE_ACCOUNT_JSON != ''
+        run: |
+          SA_FILE="$RUNNER_TEMP/sa.json"
+          printf '%s' "${GOOGLE_SERVICE_ACCOUNT_JSON}" > "$SA_FILE"
+          echo "GOOGLE_APPLICATION_CREDENTIALS=$SA_FILE" >> "$GITHUB_ENV"
+          echo "GOOGLE_SERVICE_ACCOUNT_FILE=$SA_FILE" >> "$GITHUB_ENV"
+
+      - name: Collect → append to sheet (17:50/20:50/21:50/22:50 runs)
+        run: |
+          python sheet_pipeline.py collect-to-sheet
+
+      # ★ 17:50 / 20:50 / 21:50 / 22:50 枠ごとに、collect 完了後にメール通知（※一時的に無効化）
+      # - name: Notify by email via Python (cron 17:50/20:50/21:50/22:50 MMT)
+      #   if: ${{ github.event_name == 'schedule' && success() }}
+      #   run: |
+      #     set -euo pipefail
+      #
+      #     echo "Prev step finished. Sleep 40 minutes before sending email..."
+      #     sleep 2400 # 40分
+      #
+      #     # github.event.schedule から MMT 時刻ラベルを決定
+      #     case "${{ github.event.schedule }}" in
+      #       "17 11 * * *") SLOT_LABEL="17:50" ;;
+      #       "17 14 * * *") SLOT_LABEL="20:50" ;;
+      #       "17 15 * * *") SLOT_LABEL="21:50" ;;
+      #       "17 16 * * *") SLOT_LABEL="22:50" ;;
+      #       *)             SLOT_LABEL="定期収集" ;;
+      #     esac
+      #     BODY="$(printf '%s\n%s\n%s\n' \
+      #       "✅ ${SLOT_LABEL}収集 完了（本番用）" \
+      #       '・対象シート: 「prod」シートに追記済みです。' \
+      #       '・翌 02:00 までにスプレッドシートの更新を完了してください。' )"
+      #     python notify_done.py \
+      #       --to "${CSV_EMAIL_RECIPIENTS}" \
+      #       --subject "【MNA 記事収集】${SLOT_LABEL}収集 完了（本番用）" \
+      #       --body "$BODY" \
+      #       --sheet-url "https://docs.google.com/spreadsheets/d/${{ secrets.MNA_SHEET_ID }}/edit"
+      #   env:
+      #     GMAIL_CLIENT_ID: ${{ secrets.GMAIL_CLIENT_ID }}
+      #     GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
+      #     GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
+      #     # 任意: From 表示名を固定したい場合のみ
+      #     EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
+      #     # 受信先（未設定だと --to が空になって失敗）
+      #     CSV_EMAIL_RECIPIENTS: ${{ secrets.CSV_EMAIL_RECIPIENTS }}
+
+  schedule-watch-build-send:
+    # 02:05 MMT（= 19:35 UTC 前日）以降に監視ループ開始
+    if: github.event_name == 'schedule' && github.event.schedule == '35 19 * * *'
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      # ===== Gemini（production）=====
+      GEMINI_API_KEY_MIZZIMA: ${{ secrets.GEMINI_API_KEY_MIZZIMA }}
+      GEMINI_API_KEY_BBC: ${{ secrets.GEMINI_API_KEY_BBC }}
+      GEMINI_API_KEY_IRRAWADDY: ${{ secrets.GEMINI_API_KEY_IRRAWADDY }}
+      GEMINI_API_KEY_KHITTHIT: ${{ secrets.GEMINI_API_KEY_KHITTHIT }}
+      GEMINI_API_KEY_MYANMARNOW: ${{ secrets.GEMINI_API_KEY_MYANMARNOW }}
+      GEMINI_API_KEY_DVB: ${{ secrets.GEMINI_API_KEY_DVB }}
+      GEMINI_API_KEY_GNLM: ${{ secrets.GEMINI_API_KEY_GNLM }}
+      GEMINI_API_KEY_POPULARMYANMAR: ${{ secrets.GEMINI_API_KEY_POPULARMYANMAR }}
+      GEMINI_API_KEY_FRONTIERMYANMAR: ${{ secrets.GEMINI_API_KEY_FRONTIERMYANMAR }}
+      GEMINI_REQS_PER_MIN: 6
+      GEMINI_MIN_INTERVAL_SEC: 2.5
+      GEMINI_JITTER_SEC: 0.5
+
+      # ===== Google Sheets（production）=====
+      GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+      MNA_SHEET_ID: ${{ secrets.MNA_SHEET_ID }}
+      MNA_SHEET_NAME: "prod"
+
+      # ===== fetch_articles.pyで使う環境変数（production）=====
+      GEMINI_API_SUMMARY_KEY: ${{ secrets.GEMINI_API_SUMMARY_KEY }}
+      GEMINI_API_DEDUPE_KEY: ${{ secrets.GEMINI_API_DEDUPE_KEY }}
+      GEMINI_API_FULLTEXT_KEY: ${{ secrets.GEMINI_API_FULLTEXT_KEY }}
+
+      # ===== OpenAI（全文翻訳: GPT-5 mini）=====
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+
+      # ===== Email (Gmail OAuth / Recipients) =====
+      EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
+      LITE_EMAIL_RECIPIENTS: ${{ secrets.LITE_EMAIL_RECIPIENTS }}
+      BUSINESS_EMAIL_RECIPIENTS: ${{ secrets.BUSINESS_EMAIL_RECIPIENTS }}
+      TRIAL_EMAIL_RECIPIENTS: ${{ secrets.TRIAL_EMAIL_RECIPIENTS }}
+      INTERNAL_EMAIL_RECIPIENTS: ${{ secrets.INTERNAL_EMAIL_RECIPIENTS }}
+      GMAIL_CLIENT_ID: ${{ secrets.GMAIL_CLIENT_ID }}
+      GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
+      GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
+      PAID_PLAN_URL: ${{ secrets.PAID_PLAN_URL }}
+
+      # ===== 監視 & 状態管理 =====
+      WATCH_TZ: "Asia/Yangon"
+      TRIGGER_VALUE: "a"
+      TRIGGER_COLUMN_RANGE: "K:K"
+      # 送信済み日付を記録するセル（同一日の重複実行防止）
+      SENT_MARK_CELL: "config!A1"
+      POLL_INTERVAL_SEC: "600" # 10分
+      MAX_WATCH_SEC: "18000" # 5時間（GitHub Actions 実行上限を考慮）
+      BUILD_FAIL_RETRY_LIMIT: "2" # build-bundle 失敗後、監視ループに戻る回数（最大2回）
+      MAIL_RETRY_LIMIT: "2" # メール送信リトライ回数（最大2回）
+      MAIL_RETRY_WAIT_SEC: "600" # メール送信リトライ間隔（秒）
+
+    steps:
+      - name: Checkout (main)
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          # Sheets API を直接叩くために明示（requirements.txt に入っていれば二重でも問題なし）
+          pip install -q google-api-python-client google-auth
+
+      - name: Write GOOGLE_APPLICATION_CREDENTIALS
+        if: env.GOOGLE_SERVICE_ACCOUNT_JSON != ''
+        run: |
+          SA_FILE="$RUNNER_TEMP/sa.json"
+          printf '%s' "${GOOGLE_SERVICE_ACCOUNT_JSON}" > "$SA_FILE"
+          echo "GOOGLE_APPLICATION_CREDENTIALS=$SA_FILE" >> "$GITHUB_ENV"
+          echo "GOOGLE_SERVICE_ACCOUNT_FILE=$SA_FILE" >> "$GITHUB_ENV"
+
+      - name: Assert vendored fonts & export PDF_FONT_PATH
+        run: |
+          set -euxo pipefail
+          ls -al "$GITHUB_WORKSPACE/fonts"
+          test -f "$GITHUB_WORKSPACE/fonts/NotoSansJP-Regular.ttf"
+          test -f "$GITHUB_WORKSPACE/fonts/NotoSansJP-Bold.ttf"
+          echo "PDF_FONT_PATH=$GITHUB_WORKSPACE/fonts/NotoSansJP-Regular.ttf" >> "$GITHUB_ENV"
+          echo "PDF_FONT_BOLD_PATH=$GITHUB_WORKSPACE/fonts/NotoSansJP-Bold.ttf" >> "$GITHUB_ENV"
+
+      - name: Watch K column -> build-bundle (same-day guard in config!A1)
+        id: watch_build
+        env:
+          MNA_LOG_LEVEL: INFO
+        run: |
+          set -euo pipefail
+
+          # default outputs
+          echo "built=false" >> "$GITHUB_OUTPUT"
+
+          check_sheet () {
+            python - <<'PY'
+            import os, sys
+            from datetime import datetime
+            from google.oauth2.service_account import Credentials
+            from googleapiclient.discovery import build
+
+            SHEET_ID = os.environ['MNA_SHEET_ID']
+            SHEET_NAME = os.environ.get('MNA_SHEET_NAME', 'prod')
+            TRIGGER_VALUE = os.environ.get('TRIGGER_VALUE', 'a')
+            TRIGGER_RANGE = os.environ.get('TRIGGER_COLUMN_RANGE', 'K:K')
+            SENT_MARK_CELL = os.environ.get('SENT_MARK_CELL', 'config!A1')
+            WATCH_TZ = os.environ.get('WATCH_TZ', 'Asia/Yangon')
+
+            creds = None
+            sa_json = os.environ.get('GOOGLE_SERVICE_ACCOUNT_JSON', '')
+            if os.environ.get('GOOGLE_APPLICATION_CREDENTIALS'):
+              creds = Credentials.from_service_account_file(
+                os.environ['GOOGLE_APPLICATION_CREDENTIALS'],
+                scopes=['https://www.googleapis.com/auth/spreadsheets']
+              )
+            elif sa_json:
+              import json, tempfile
+              fd, p = tempfile.mkstemp(suffix='.json')
+              with os.fdopen(fd, 'w') as f:
+                f.write(sa_json)
+              creds = Credentials.from_service_account_file(p, scopes=['https://www.googleapis.com/auth/spreadsheets'])
+            else:
+              print('missing service account json', file=sys.stderr)
+              sys.exit(2)
+
+            service = build('sheets', 'v4', credentials=creds, cache_discovery=False)
+            sheets = service.spreadsheets().values()
+
+            # same-day guard: if config!A1 == today(Asia/Yangon) => exit 20
+            mark = sheets.get(spreadsheetId=SHEET_ID, range=SENT_MARK_CELL).execute().get('values', [])
+            mark_val = (mark[0][0] if mark and mark[0] else '').strip()
+            try:
+              import zoneinfo
+              tz = zoneinfo.ZoneInfo(WATCH_TZ)
+              today = datetime.now(tz).strftime('%Y-%m-%d')
+            except Exception:
+              today = datetime.utcnow().strftime('%Y-%m-%d')
+            if mark_val == today:
+              sys.exit(20)
+
+            # trigger check: any cell in K:K == 'a' (exact match, trim)
+            rng = f"{SHEET_NAME}!{TRIGGER_RANGE}"
+            vals = sheets.get(spreadsheetId=SHEET_ID, range=rng).execute().get('values', [])
+            flat = [v[0].strip() for v in vals if v and isinstance(v[0], str)]
+            if any(x == TRIGGER_VALUE for x in flat):
+              sys.exit(10)
+            sys.exit(0)
+            PY
+          }
+
+          POLL=${POLL_INTERVAL_SEC:-600}
+          MAX=${MAX_WATCH_SEC:-18000}
+          FAIL_LIMIT=${BUILD_FAIL_RETRY_LIMIT:-2}
+          started=$(date +%s)
+          fails=0
+
+          while true; do
+            set +e
+            check_sheet
+            code=$?
+            set -e
+
+            if [ "$code" -eq 20 ]; then
+              echo "Already sent today; stop."
+              exit 0
+            elif [ "$code" -eq 10 ]; then
+              echo "Trigger found; run build-bundle."
+              if python sheet_pipeline.py build-bundle --bundle-dir bundle; then
+                echo "built=true" >> "$GITHUB_OUTPUT"
+                exit 0
+              else
+                fails=$((fails+1))
+                echo "build-bundle failed (count=${fails})."
+                if [ "$fails" -gt "$FAIL_LIMIT" ]; then
+                  echo "build-bundle failures exceeded limit; stop."
+                  exit 1
+                fi
+              fi
+            else
+              now=$(date +%s)
+              elapsed=$((now-started))
+              if [ "$elapsed" -ge "$MAX" ]; then
+                echo "No trigger within max watch window; stop."
+                exit 0
+              fi
+              echo "No trigger; sleep ${POLL}s (elapsed ${elapsed}s)."
+              sleep "$POLL"
+            fi
+          done
+
+      - name: Upload bundle artifact (always after successful build-bundle)
+        if: ${{ steps.watch_build.outputs.built == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: mna-bundle-${{ github.run_id }}
+          path: |
+            bundle/meta.json
+            bundle/summaries.json
+            bundle/summaries_ayeyar.json
+            bundle/digest.pdf
+            bundle/attachment_name.txt
+            bundle/bodies.json
+          retention-days: 2
+          if-no-files-found: error
+
+      - name: Send email immediately (no fixed time) (retry mail only)
+        if: ${{ steps.watch_build.outputs.built == 'true' }}
+        env:
+          MNA_LOG_LEVEL: INFO
+        run: |
+          set -euo pipefail
+          max=${MAIL_RETRY_LIMIT:-2}
+          wait_s=${MAIL_RETRY_WAIT_SEC:-600}
+          n=0
+          while true; do
+            if python fetch_articles.py --phase send --bundle-dir bundle --sheet-mail-preserve-newlines; then
+              echo "mail sent"
+              break
+            fi
+            n=$((n+1))
+            if [ "$n" -gt "$max" ]; then
+              echo "mail failed after retries" >&2
+              exit 1
+            fi
+            echo "mail failed; retry in ${wait_s}s (attempt ${n}/${max})" >&2
+            sleep "$wait_s"
+          done
+
+      - name: Mark sent in sheet (config!A1 = today in Asia/Yangon)
+        if: ${{ steps.watch_build.outputs.built == 'true' && success() }}
+        run: |
+          python - <<'PY'
+          import os
+          from datetime import datetime
+          from google.oauth2.service_account import Credentials
+          from googleapiclient.discovery import build
+          import zoneinfo
+
+          SHEET_ID = os.environ['MNA_SHEET_ID']
+          SENT_MARK_CELL = os.environ.get('SENT_MARK_CELL', 'config!A1')
+          WATCH_TZ = os.environ.get('WATCH_TZ', 'Asia/Yangon')
+
+          creds = Credentials.from_service_account_file(
+            os.environ['GOOGLE_APPLICATION_CREDENTIALS'],
+            scopes=['https://www.googleapis.com/auth/spreadsheets']
+          )
+          service = build('sheets', 'v4', credentials=creds, cache_discovery=False)
+          tz = zoneinfo.ZoneInfo(WATCH_TZ)
+          today = datetime.now(tz).strftime('%Y-%m-%d')
+          body = {'values': [[today]]}
+          service.spreadsheets().values().update(
+            spreadsheetId=SHEET_ID,
+            range=SENT_MARK_CELL,
+            valueInputOption='RAW',
+            body=body,
+          ).execute()
+          print('marked sent:', today)
+          PY
+      - name: Checkout (手動で選んだブランチ)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # ▼ prod/dev で環境変数だけを切り替え（処理は変更しない）
+      - name: Export env (prod/dev switch by branch)
+        run: |
+          if [ "${GITHUB_REF_NAME}" = "develop" ]; then
+            {
+              echo "GEMINI_API_KEY_MIZZIMA=${{ secrets.GEMINI_API_TEST_KEY_MIZZIMA }}";
+              echo "GEMINI_API_KEY_BBC=${{ secrets.GEMINI_API_TEST_KEY_BBC }}";
+              echo "GEMINI_API_KEY_IRRAWADDY=${{ secrets.GEMINI_API_TEST_KEY_IRRAWADDY }}";
+              echo "GEMINI_API_KEY_KHITTHIT=${{ secrets.GEMINI_API_TEST_KEY_KHITTHIT }}";
+              echo "GEMINI_API_KEY_MYANMARNOW=${{ secrets.GEMINI_API_TEST_KEY_MYANMARNOW }}";
+              echo "GEMINI_API_KEY_DVB=${{ secrets.GEMINI_API_TEST_KEY_DVB }}";
+              echo "GEMINI_API_TEST_KEY_GNLM=${{ secrets.GEMINI_API_TEST_KEY_GNLM }}";
+              echo "GEMINI_API_TEST_KEY_POPULARMYANMAR=${{ secrets.GEMINI_API_TEST_KEY_POPULARMYANMAR }}";
+              echo "GEMINI_API_TEST_KEY_FRONTIERMYANMAR=${{ secrets.GEMINI_API_TEST_KEY_FRONTIERMYANMAR }}";
+              echo "GEMINI_API_SUMMARY_KEY=${{ secrets.GEMINI_API_TEST_SUMMARY_KEY }}";
+              echo "GEMINI_API_DEDUPE_KEY=${{ secrets.GEMINI_API_TEST_DEDUPE_KEY }}";
+              echo "GEMINI_API_FULLTEXT_KEY=${{ secrets.GEMINI_API_TEST_FULLTEXT_KEY }}";
+              echo "MNA_SHEET_NAME=dev";
+              echo "CSV_EMAIL_RECIPIENTS=${{ secrets.CSV_EMAIL_RECIPIENTS }}";
+            } >> "$GITHUB_ENV"
+          else
+            {
+              echo "GEMINI_API_KEY_MIZZIMA=${{ secrets.GEMINI_API_KEY_MIZZIMA }}";
+              echo "GEMINI_API_KEY_BBC=${{ secrets.GEMINI_API_KEY_BBC }}";
+              echo "GEMINI_API_KEY_IRRAWADDY=${{ secrets.GEMINI_API_KEY_IRRAWADDY }}";
+              echo "GEMINI_API_KEY_KHITTHIT=${{ secrets.GEMINI_API_KEY_KHITTHIT }}";
+              echo "GEMINI_API_KEY_MYANMARNOW=${{ secrets.GEMINI_API_KEY_MYANMARNOW }}";
+              echo "GEMINI_API_KEY_DVB=${{ secrets.GEMINI_API_KEY_DVB }}";
+              echo "GEMINI_API_KEY_GNLM=${{ secrets.GEMINI_API_KEY_GNLM }}";
+              echo "GEMINI_API_KEY_POPULARMYANMAR=${{ secrets.GEMINI_API_KEY_POPULARMYANMAR }}";
+              echo "GEMINI_API_KEY_FRONTIERMYANMAR=${{ secrets.GEMINI_API_KEY_FRONTIERMYANMAR }}";
+              echo "GEMINI_API_SUMMARY_KEY=${{ secrets.GEMINI_API_SUMMARY_KEY }}";
+              echo "GEMINI_API_DEDUPE_KEY=${{ secrets.GEMINI_API_DEDUPE_KEY }}";
+              echo "GEMINI_API_FULLTEXT_KEY=${{ secrets.GEMINI_API_FULLTEXT_KEY }}";
+              echo "MNA_SHEET_NAME=prod";
+              echo "CSV_EMAIL_RECIPIENTS=${{ secrets.CSV_EMAIL_RECIPIENTS }}";
+            } >> "$GITHUB_ENV"
+          fi
+          {
+            echo "GEMINI_REQS_PER_MIN=6";
+            echo "GEMINI_MIN_INTERVAL_SEC=2.5";
+            echo "GEMINI_JITTER_SEC=0.5";
+            echo "MNA_SHEET_ID=${{ secrets.MNA_SHEET_ID }}";
+            echo "RETRY_WAIT_SCHEDULE=120 240 480 900";
+            echo "OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}";
+          } >> "$GITHUB_ENV"
+
+          # ===== multi-line secret → ファイルに保存（$GITHUB_ENV には書かない）=====
+          SA_FILE="$RUNNER_TEMP/sa.json"
+          printf '%s' '${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}' > "$SA_FILE"
+          echo "GOOGLE_APPLICATION_CREDENTIALS=$SA_FILE" >> "$GITHUB_ENV"
+          echo "GOOGLE_SERVICE_ACCOUNT_FILE=$SA_FILE" >> "$GITHUB_ENV"
+
+      - name: Download bundle artifact (send-only)
+        if: ${{ inputs.mode == 'send-only' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          RID="${{ inputs.bundle_run_id }}"
+          if [ -z "${RID}" ]; then
+            echo "bundle_run_id not provided. Searching the latest successful run that has a bundle artifact..."
+            # Newest-first. Search within the same branch as this dispatch, to avoid mixing environments.
+            for cand in $(gh run list --workflow "${GITHUB_WORKFLOW}" --branch "${GITHUB_REF_NAME}" --limit 50 \
+              --json databaseId,conclusion --jq '.[] | select(.conclusion=="success") | .databaseId'); do
+              if gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${cand}/artifacts" --jq '.artifacts[].name' | grep -qx "mna-bundle-${cand}"; then
+                RID="${cand}"
+                break
+              fi
+            done
+          fi
+
+          if [ -z "${RID}" ]; then
+            echo "No successful run with bundle artifact (mna-bundle-<run_id>) was found in the recent history." >&2
+            exit 1
+          fi
+
+          ART_NAME="mna-bundle-${RID}"
+          echo "Downloading artifact: ${ART_NAME} from run_id=${RID}"
+          gh run download "${RID}" -n "${ART_NAME}" -D .
+
+          test -f bundle/meta.json
+          ls -al bundle
+
+      - name: Send email from downloaded bundle (send-only)
+        if: ${{ inputs.mode == 'send-only' }}
+        run: |
+          set -euo pipefail
+          max=${MAIL_RETRY_LIMIT:-2}
+          wait_s=${MAIL_RETRY_WAIT_SEC:-600}
+          n=0
+          while true; do
+            if python fetch_articles.py --phase send --bundle-dir bundle --sheet-mail-preserve-newlines; then
+              echo "mail sent"
+              break
+            fi
+            n=$((n+1))
+            if [ "$n" -gt "$max" ]; then
+              echo "mail failed after retries" >&2
+              exit 1
+            fi
+            echo "mail failed; retry in ${wait_s}s (attempt ${n}/${max})" >&2
+            sleep "$wait_s"
+          done
+
+      - name: Assert vendored fonts & export PDF_FONT_PATH (only for build-bundle)
+        if: ${{ inputs.mode == 'build-bundle' }}
+        run: |
+          set -euxo pipefail
+          ls -al "$GITHUB_WORKSPACE/fonts" || true
+          test -f "$GITHUB_WORKSPACE/fonts/NotoSansJP-Regular.ttf"
+          test -f "$GITHUB_WORKSPACE/fonts/NotoSansJP-Bold.ttf"
+          echo "PDF_FONT_PATH=$GITHUB_WORKSPACE/fonts/NotoSansJP-Regular.ttf" >> "$GITHUB_ENV"
+          echo "PDF_FONT_BOLD_PATH=$GITHUB_WORKSPACE/fonts/NotoSansJP-Bold.ttf" >> "$GITHUB_ENV"
+          echo "PDF_FONT_PATH=${PDF_FONT_PATH:-<not-set>}"
+
+      - name: Run selected mode
+        if: ${{ github.event_name != 'workflow_dispatch' || (inputs.mode != 'notify-email' && inputs.mode != 'send-only') }}
+        run: |
+          set -euo pipefail
+          echo "Run case \"${{ inputs.mode }}\" in"
+          case "${{ inputs.mode }}" in
+            collect16)
+              python sheet_pipeline.py collect-to-sheet --clear-yesterday
+              ;;
+            collect)
+              python sheet_pipeline.py collect-to-sheet
+              ;;
+            build-bundle)
+              echo "build-bundle is handled in a dedicated later step."
+              ;;
+            *)
+              echo "unknown mode: ${{ inputs.mode }}" ; exit 1
+              ;;
+          esac
+
+      # 手動実行でも通知を送れるように追加（collect/collect16 成功時のみ）（※一時的に無効化）
+      # - name: Notify by email via Python (manual run)
+      #   if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'notify-email' && success() }}
+      #   run: |
+      #     set -euo pipefail
+      #     BODY="$(printf '%s\n%s\n%s\n' \
+      #       '✅ 22:50収集 完了（開発用）' \
+      #       '・対象シート: 「dev」シートに追記済みです。' \
+      #       '・翌 02:00 までにスプレッドシートの更新を完了してください。' )"
+      #     python notify_done.py \
+      #       --to "${CSV_EMAIL_RECIPIENTS}" \
+      #       --subject "【MNA 記事収集】22:50収集 完了（開発用）" \
+      #       --body "$BODY" \
+      #       --sheet-url "https://docs.google.com/spreadsheets/d/${{ secrets.MNA_SHEET_ID }}/edit"
+      #   env:
+      #     GMAIL_CLIENT_ID: ${{ secrets.GMAIL_CLIENT_ID }}
+      #     GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
+      #     GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
+      #     EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
+
+      # === Diagnostics: ランナー環境と bundle の状況を確認（読み取りのみ） ===
+      - name: Diagnostics | env + tree
+        run: |
+          set -euxo pipefail
+          echo "PWD=$(pwd)"
+          python --version
+          find . -maxdepth 2 -type d -print | sort
+          ls -al bundle || true
+
+      - name: Diagnostics | Python helpers importable?
+        run: |
+          python - <<'PY'
+          from importlib import import_module
+          m = import_module("fetch_articles")
+          req = ["translate_fulltexts_for_business", "build_combined_pdf_for_business", "_jp_date"]
+          ok = all(hasattr(m, x) for x in req)
+          print("helpers_importable:", ok)
+          print("module_file:", getattr(m, "__file__", None))
+          PY
+
+      - name: Diagnostics | gemini keys present? (masked)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          keys = sorted(k for k in os.environ if k.startswith("GEMINI"))
+          print("gemini_key_names:", keys)
+          # 値は True/False のみ表示（中身は GitHub が自動マスク）
+          print("gemini_keys_nonempty:", {k: bool(os.environ.get(k)) for k in keys})
+          PY
+
+      # ←← 先に build-bundle を実行して bundle を生成
+      - name: Build bundle (only when built) (sheet)
+        if: ${{ inputs.mode == 'build-bundle' }}
+        env:
+          PYTHONPATH: .
+          MNA_LOG_LEVEL: INFO
+        run: |
+          set -euo pipefail
+
+          WAIT_SCHEDULE=($RETRY_WAIT_SCHEDULE)
+          MAX_ATTEMPTS=$(( ${#WAIT_SCHEDULE[@]} + 1 ))
+          ATTEMPT=1
+
+          while [ "$ATTEMPT" -le "$MAX_ATTEMPTS" ]; do
+            echo "Attempt $ATTEMPT / $MAX_ATTEMPTS: build-bundle (manual)"
+
+            if python sheet_pipeline.py build-bundle --bundle-dir bundle; then
+              echo "build-bundle succeeded."
+              break
+            fi
+
+            if [ "$ATTEMPT" -eq "$MAX_ATTEMPTS" ]; then
+              echo "build-bundle failed after $MAX_ATTEMPTS attempts."
+              exit 1
+            fi
+
+            INDEX=$((ATTEMPT - 1))
+            SLEEP_SECONDS=${WAIT_SCHEDULE[$INDEX]}
+            echo "build-bundle failed. Sleep ${SLEEP_SECONDS}s before retry..."
+            sleep "$SLEEP_SECONDS"
+
+            ATTEMPT=$((ATTEMPT + 1))
+          done
+
+          echo "--- bundle after build-bundle ---"
+          ls -al bundle
+
+      - name: Diagnostics | summaries/bodies coverage
+        run: |
+          python - <<'PY'
+          import os, json, sys
+          b = "bundle"
+          s = os.path.join(b, "summaries.json")
+          if not os.path.exists(s):
+              print("[!] bundle/summaries.json not found (skipping coverage)"); sys.exit(0)
+          summaries = json.load(open(s, encoding="utf-8"))
+          print("selected_count:", len(summaries))
+          bp = os.path.join(b, "bodies.json")
+          cache = {}
+          if os.path.exists(bp):
+              cache = json.load(open(bp, encoding="utf-8"))
+          missing = []
+          short = []
+          for it in summaries:
+            u = it.get("url","")
+            if not u: continue
+            body = (cache.get(u) or {}).get("body","")
+            if not body:
+              missing.append(u)
+            elif len(body.strip()) < 80:
+              short.append(u)
+          print("in_cache:", len(cache), "missing_bodies:", len(missing), "short_bodies:", len(short))
+          if missing[:5]:
+            print("first_missing_examples:", missing[:5])
+          PY
+
+      - name: Upload bundle (only when built) (sheet)
+        if: ${{ inputs.mode == 'build-bundle' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: mna-bundle-${{ github.run_id }}
+          path: |
+            bundle/meta.json
+            bundle/summaries.json
+            bundle/summaries_ayeyar.json
+            bundle/digest.pdf
+            bundle/attachment_name.txt
+            bundle/bodies.json
+          retention-days: 2
+          if-no-files-found: ignore
