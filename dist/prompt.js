@@ -1901,20 +1901,25 @@ function normalizeSummaryHeader_(summary) {
 // 本文中の「改行1回」を「改行2回」にして空行を作る（既に\n\nがある所は保持）
 function singleNewlineToBlankLine_(text) {
   if (text == null) return text;
-
   let s = String(text).replace(/\r\n/g, "\n");
 
-  // 先頭が【要約】なら、ヘッダ直後の改行はそのまま、本文だけ変換する
   const header = "【要約】\n";
-  if (s.startsWith(header)) {
-    let body = s.slice(header.length);
+  if (!s.startsWith(header)) return s;
 
-    // 単発の\n（次が\nではない）だけを\n\nにする
-    body = body.replace(/\n(?!\n)/g, "\n\n");
-    // 念のため3つ以上の改行は2つに正規化
-    body = body.replace(/\n{3,}/g, "\n\n");
+  let body = s.slice(header.length);
 
+  // すでに段落区切りがあるなら、改行正規化だけ
+  if (/\n\s*\n/.test(body)) {
+    body = body.replace(/\n{3,}/g, "\n\n").trim();
     return header + body;
+  }
+
+  // 段落区切りが無い場合のみ：最初の改行だけを段落にする
+  if (body.includes("\n")) {
+    const idx = body.indexOf("\n");
+    const p1 = body.slice(0, idx).trim();
+    const p2 = body.slice(idx + 1).trim();
+    return header + p1 + "\n\n" + p2;
   }
 
   return s;
@@ -2208,8 +2213,13 @@ function processRow_(sheet, row, prevStatus) {
   }
 
   summaryJa = ensureSummaryHeader_(summaryJa);
-  summaryJa = enforceParagraphBreaks_(summaryJa);
-  summaryJa = singleNewlineToBlankLine_(summaryJa);
+
+  if (countSummaryBodyChars_(summaryJa) === 0) {
+    summaryJa = "";
+  } else {
+    summaryJa = enforceParagraphBreaks_(summaryJa);
+    summaryJa = singleNewlineToBlankLine_(summaryJa); // すでに\n\nがあれば何もしない版ならOK
+  }
 
   // シートに書き込み
   sheet.getRange(row, colE).setValue(headlineA); // 見出しA
@@ -2671,8 +2681,13 @@ function _applyOutputsToRow_(
   }
 
   summaryJa = ensureSummaryHeader_(summaryJa);
-  summaryJa = enforceParagraphBreaks_(summaryJa);
-  summaryJa = singleNewlineToBlankLine_(summaryJa);
+
+  if (countSummaryBodyChars_(summaryJa) === 0) {
+    summaryJa = "";
+  } else {
+    summaryJa = enforceParagraphBreaks_(summaryJa);
+    summaryJa = singleNewlineToBlankLine_(summaryJa); // すでに\n\nがあれば何もしない版ならOK
+  }
 
   // 書き込み
   sheet.getRange(row, colE).setValue(headlineA);
