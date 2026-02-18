@@ -2003,6 +2003,67 @@ def collect_frontier_all_for_date(
     return results
 
 # ===== JETRO（ビジネス短信・ミャンマー） =====
+_JETRO_PAREN_ONLY_RE = re.compile(r"^\s*（[^（）]+）\s*$")
+
+def _jetro_extract_title_country_body(soup: BeautifulSoup) -> tuple[str, str, str]:
+    """
+    戻り値: (title, country, body)
+    - title: 記事タイトル（装飾抜き）
+    - country: （ミャンマー）など
+    - body: 本文（ノイズ除去済み）
+    """
+    # 1) “本文エリア” をまず mainArea に限定（mainタグは無いことが多い）
+    main = soup.select_one("#mainArea") or soup.select_one('[role="main"]') or soup
+
+    # 2) タイトル：h1優先（og:titleは装飾混入するのでフォールバック）
+    h1 = main.select_one("#elem_heading_lv1 h1") or main.select_one("h1")
+    title = (h1.get_text(strip=True) if h1 else "").strip()
+    if not title:
+        og = soup.find("meta", attrs={"property": "og:title"})
+        title = (og.get("content", "").strip() if og else "")
+        # og:title から余計な後ろを落とす（保険）
+        title = re.sub(r"\s*\|.*$", "", title).strip()
+        title = re.sub(r"\s*\([^)]*\)\s*$", "", title).strip()
+
+    # 3) 国・地域：（ミャンマー）などの “括弧だけの行” を先頭付近から探す
+    country = ""
+    for p in main.find_all("p"):
+        t = p.get_text(strip=True)
+        if _JETRO_PAREN_ONLY_RE.match(t):
+            country = t
+            break
+
+    # 4) 本文：wzgブロックがあればそこだけ。なければ main 内の段落を拾う。
+    body_paras: list[str] = []
+    body_box = main.select_one(".elem_paragraph.wzg")
+    if body_box:
+        for p in body_box.find_all("p"):
+            # 末尾の署名（例: p.noindent）などを除外
+            if "noindent" in (p.get("class") or []):
+                continue
+            t = p.get_text(" ", strip=True)
+            if not t:
+                continue
+            body_paras.append(t)
+    else:
+        # 予備ルート：main内から、ノイズっぽいものを避けつつ拾う
+        for p in main.find_all("p"):
+            t = p.get_text(" ", strip=True)
+            if not t:
+                continue
+            if t == country:
+                continue
+            if t.startswith("ビジネス短信"):
+                continue
+            if _JETRO_PAREN_ONLY_RE.match(t) and t != country:
+                continue
+            body_paras.append(t)
+
+    body = unicodedata.normalize("NFC", "\n".join(body_paras)).strip()
+    title = unicodedata.normalize("NFC", title).strip()
+    country = unicodedata.normalize("NFC", country).strip()
+    return title, country, body
+
 def _parse_jetro_date_text(s: str) -> date | None:
     """
     例:'2026年1月23日' または '2026-01-23' を date にする
@@ -2119,27 +2180,21 @@ def collect_jetro_biznews_mm_all_for_date(
             if not pub or pub != target_date_mmt:
                 continue
 
-            # タイトルは og:title が安定（例: news.html にも og:title がある）
-            og = soup.find("meta", attrs={"property": "og:title"})
-            title = (og["content"].strip() if og and og.has_attr("content") else "")
-            if not title:
-                h1 = soup.find("h1") or soup.find("title")
-                title = (h1.get_text(strip=True) if h1 else "").strip()
+            # タイトル/国（地域）/本文を “記事の本文領域” から安定抽出
+            title, country, body = _jetro_extract_title_country_body(soup)
 
-            if not title:
+            # 期待する形式：タイトル + 改行 + 国（地域）
+            title_out = title
+            if country:
+                title_out = f"{title}\n{country}"
+
+            if not title_out:
                 continue
-
-            # 本文は CSV 出力に使ってないが、構造を合わせて最低限入れる
-            body = ""
-            main = soup.select_one("main") or soup
-            ps = [p.get_text(" ", strip=True) for p in main.find_all("p")]
-            ps = [t for t in ps if t]
-            body = unicodedata.normalize("NFC", "\n".join(ps)).strip()
 
             results.append(
                 {
                     "source": "JETRO（ビジネス短信・ミャンマー）",
-                    "title": unicodedata.normalize("NFC", title),
+                    "title": title_out,
                     "url": url,
                     "date": target_date_mmt.isoformat(),
                     "body": body,
