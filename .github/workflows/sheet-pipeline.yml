@@ -6,7 +6,7 @@ on:
     # 15:50 MMT ≒ 09:20 UTC → 09:17 UTC（= 15:47 MMT, 3分前倒し）
     - cron: "17 9 * * *" # 15:47 MMT（実運用目標: 15:50）
 
-    # 17:50 / 20:50 / 21:50 / 22:50 MMT（= 11:20 / 14:20 / 15:20 / 16:20 UTC）: 追記のみ
+    # 17:50 / 20:50 / 21:50 / 22:50 / 23:50 MMT（= 11:20 / 14:20 / 15:20 / 16:20 / 17:20 UTC）: 追記のみ
     # 17:50 MMT ≒ 11:20 UTC → 11:17 UTC（= 17:47 MMT, 3分前倒し）
     - cron: "17 11 * * *" # 17:47 MMT（実運用目標: 17:50）
     # 20:50 MMT ≒ 14:20 UTC → 14:17 UTC（= 20:47 MMT, 3分前倒し）
@@ -15,6 +15,7 @@ on:
     - cron: "17 15 * * *" # 21:47 MMT（実運用目標: 21:50）
     # 22:50 MMT ≒ 16:20 UTC → 16:17 UTC（= 22:47 MMT, 3分前倒し）
     - cron: "17 16 * * *" # 22:47 MMT（実運用目標: 22:50）
+    - cron: "17 17 * * *" # 23:47 MMT（実運用目標: 23:50）
 
     # 02:00 MMT（= 19:30 UTC 前日）: bundle生成
     # → 19:27 UTC（= 02:00 MMT, 3分前倒し）
@@ -23,7 +24,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "collect16（15:50回） / collect（17:50/20:50/21:50/22:50回） / build-bundle（02:00）"
+        description: "collect16（15:50回） / collect（17:50/20:50/21:50/22:50/23:50回） / build-bundle（02:00）"
         type: choice
         required: true
         default: collect16
@@ -149,8 +150,8 @@ jobs:
       #     CSV_EMAIL_RECIPIENTS: ${{ secrets.CSV_EMAIL_RECIPIENTS }}
 
   schedule-collect:
-    # 17:50 / 20:50 / 21:50 / 22:50 枠
-    if: github.event_name == 'schedule' && contains(fromJson('["17 11 * * *","17 14 * * *","17 15 * * *","17 16 * * *"]'), github.event.schedule)
+    # 17:50 / 20:50 / 21:50 / 22:50 / 23:50 枠
+    if: github.event_name == 'schedule' && contains(fromJson('["17 11 * * *","17 14 * * *","17 15 * * *","17 16 * * *","17 17 * * *"]'), github.event.schedule)
     runs-on: ubuntu-latest
     environment: production
     env:
