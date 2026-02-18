@@ -2183,10 +2183,11 @@ def collect_jetro_biznews_mm_all_for_date(
             # タイトル/国（地域）/本文を “記事の本文領域” から安定抽出
             title, country, body = _jetro_extract_title_country_body(soup)
 
-            # 期待する形式：タイトル + 改行 + 国（地域）
-            title_out = title
+            # 期待する形式：タイトル + 国（地域） ※改行しない
+            title_out = title.replace("\n", " ").strip()
             if country:
-                title_out = f"{title}\n{country}"
+                country_clean = country.replace("\n", " ").strip()
+                title_out = f"{title_out}{country_clean}"   # ← 改行なし（スペースも入れない）
 
             if not title_out:
                 continue
