@@ -2002,6 +2002,155 @@ def collect_frontier_all_for_date(
 
     return results
 
+# ===== JETRO（ビジネス短信・ミャンマー） =====
+def _parse_jetro_date_text(s: str) -> date | None:
+    """
+    例:'2026年1月23日' または '2026-01-23' を date にする
+    """
+    s = (s or "").strip()
+    if not s:
+        return None
+    m = re.search(r"(\d{4})年\s*(\d{1,2})月\s*(\d{1,2})日", s)
+    if m:
+        y, mo, d = map(int, m.groups())
+        return date(y, mo, d)
+    m = re.search(r"(\d{4})-(\d{2})-(\d{2})", s)
+    if m:
+        y, mo, d = map(int, m.groups())
+        return date(y, mo, d)
+    return None
+
+
+def _jetro_publicize_date_from_article_html(soup: BeautifulSoup) -> date | None:
+    meta = soup.find("meta", attrs={"name": "jetro-publicize_date"})
+    if meta and meta.has_attr("content"):
+        return _parse_jetro_date_text(meta["content"])
+    return None
+
+
+def collect_jetro_biznews_mm_all_for_date(
+    target_date_mmt: date,
+    *,
+    max_pages: int = 1,
+) -> List[Dict]:
+    """
+    JETRO: https://www.jetro.go.jp/biznewstop/asia/mm/biznews/
+    - 一覧をページング（/view_interface.php cmd=loadTag）しつつ候補URL収集
+    - 記事ページの meta jetro-publicize_date で target_date_mmt と一致するものだけ返す
+    """
+    BASE = "https://www.jetro.go.jp"
+    LIST_URL = f"{BASE}/biznewstop/asia/mm/biznews/"
+    VIEW_IF = f"{BASE}/view_interface.php"
+
+    # index.html から分かる固定値（genPager の引数）
+    # genPager(..., 40241826, 841, 30, ..., 'asia/mm/biznews')
+    block_id = 40241826
+    tag_id = 841
+    pathinfo = "asia/mm/biznews"
+    page_size = 30
+
+    sess = _make_pooled_session()
+
+    # 1) 候補URLを一覧から集める
+    candidate_urls: List[str] = []
+    seen = set()
+
+    def add_candidate(u: str):
+        if not u:
+            return
+        if u.startswith("/"):
+            u = BASE + u
+        if not u.startswith("http"):
+            return
+        if u not in seen:
+            seen.add(u)
+            candidate_urls.append(u)
+
+    # 1-1) 1ページ目：HTMLに <ul id="recordList40241826-841"> がある
+    try:
+        r = sess.get(LIST_URL, timeout=15)
+        r.raise_for_status()
+        soup = BeautifulSoup(r.content, "html.parser")
+        for a in soup.select(f"ul#recordList{block_id}-{tag_id} li.record a[href]"):
+            add_candidate(a.get("href") or "")
+    except Exception as e:
+        print(f"[jetro] list page(1) fetch failed: {e}")
+
+    # 1-2) 2ページ目以降：Ajax（cmd=loadTag）
+    # offset = (page-1)*30 の想定（JSもそうしている）
+    for page in range(2, max_pages + 1):
+        offset = (page - 1) * page_size
+        try:
+            rr = sess.get(
+                VIEW_IF,
+                params={
+                    "cmd": "loadTag",
+                    "blockId": block_id,
+                    "tagId": tag_id,
+                    "offset": offset,
+                    "pathinfo": pathinfo,
+                    "ut": int(time.time()),
+                },
+                timeout=15,
+            )
+            rr.raise_for_status()
+            data = rr.json()
+            arts = data.get("articleList") or []
+            if not arts:
+                break
+
+            for a in arts:
+                add_candidate((a.get("url") or "").strip())
+        except Exception as e:
+            # 失敗したらそれ以上進めず終了（他媒体と同じく安全側）
+            print(f"[jetro] ajax loadTag failed page={page}: {e}")
+            break
+
+    # 2) 記事ページを精査して target_date_mmt のみ返す
+    results: List[Dict] = []
+    for url in candidate_urls:
+        try:
+            ar = sess.get(url, timeout=20)
+            if ar.status_code != 200:
+                continue
+            soup = BeautifulSoup(ar.content, "html.parser")
+
+            pub = _jetro_publicize_date_from_article_html(soup)
+            if not pub or pub != target_date_mmt:
+                continue
+
+            # タイトルは og:title が安定（例: news.html にも og:title がある）
+            og = soup.find("meta", attrs={"property": "og:title"})
+            title = (og["content"].strip() if og and og.has_attr("content") else "")
+            if not title:
+                h1 = soup.find("h1") or soup.find("title")
+                title = (h1.get_text(strip=True) if h1 else "").strip()
+
+            if not title:
+                continue
+
+            # 本文は CSV 出力に使ってないが、構造を合わせて最低限入れる
+            body = ""
+            main = soup.select_one("main") or soup
+            ps = [p.get_text(" ", strip=True) for p in main.find_all("p")]
+            ps = [t for t in ps if t]
+            body = unicodedata.normalize("NFC", "\n".join(ps)).strip()
+
+            results.append(
+                {
+                    "source": "JETRO（ビジネス短信・ミャンマー）",
+                    "title": unicodedata.normalize("NFC", title),
+                    "url": url,
+                    "date": target_date_mmt.isoformat(),
+                    "body": body,
+                }
+            )
+        except Exception as e:
+            print(f"[jetro] article fail {url}: {e}")
+            continue
+
+    return deduplicate_by_url(results)
+
 # ===== 単体翻訳（既存プロンプト流用） =====
 def translate_title_only(item: Dict, *, model: str = "gemini-2.5-flash") -> str:
     """
@@ -2156,6 +2305,7 @@ def main(argv=None):
         all_rows.extend(collect_khitthit_all_for_date(d, max_pages=15))
         all_rows.extend(collect_dvb_all_for_date(d))  # DVB 内部を 1〜15 ページ対応済み
         all_rows.extend(collect_mizzima_all_for_date(d, max_pages=15))
+        all_rows.extend(collect_jetro_biznews_mm_all_for_date(d, max_pages=1))
 
     # 重複除去の前後をログ
     print(f"Dedup by URL: before={len(all_rows)}")
