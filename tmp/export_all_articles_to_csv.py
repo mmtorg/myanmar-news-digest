@@ -2039,13 +2039,17 @@ def _jetro_extract_title_country_body(soup: BeautifulSoup) -> tuple[str, str, st
     body_boxes = main.select(".elem_paragraph.wzg")
     if body_boxes:
         for box in body_boxes:
-            for node in box.find_all(["p", "li"]):
-                # li の中に p がある場合は p 側で拾うので二重取得を避ける（保険）
-                if node.name == "li" and node.find("p"):
-                    continue
-
+            for node in box.find_all(["h2", "h3", "h4", "p", "li"]):
                 t = node.get_text(" ", strip=True)
                 if not t:
+                    continue
+
+                if node.name in ("h2", "h3", "h4"):
+                    body_paras.append(t)   # 見出し行として入れる
+                    continue
+
+                # li の中に p がある場合は p 側で拾うので二重取得を避ける（保険）
+                if node.name == "li" and node.find("p"):
                     continue
 
                 if node.name == "p":
@@ -2061,9 +2065,10 @@ def _jetro_extract_title_country_body(soup: BeautifulSoup) -> tuple[str, str, st
                 else:
                     # li はそのまま本文として入れる
                     body_paras.append(t)
+
     else:
         # 予備ルート：main 内から拾う（li も対象にする）
-        for node in main.find_all(["p", "li"]):
+        for node in main.find_all(["h2", "h3", "h4", "p", "li"]):
             t = node.get_text(" ", strip=True)
             if not t:
                 continue
