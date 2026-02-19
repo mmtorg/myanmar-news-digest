@@ -2039,25 +2039,32 @@ def _jetro_extract_title_country_body(soup: BeautifulSoup) -> tuple[str, str, st
     body_boxes = main.select(".elem_paragraph.wzg")
     if body_boxes:
         for box in body_boxes:
-            for p in box.find_all("p"):
-                cls = p.get("class") or []
-                t = p.get_text(" ", strip=True)
+            for node in box.find_all(["p", "li"]):
+                # li の中に p がある場合は p 側で拾うので二重取得を避ける（保険）
+                if node.name == "li" and node.find("p"):
+                    continue
+
+                t = node.get_text(" ", strip=True)
                 if not t:
                     continue
 
-                # 署名は落とす（必要ならパターン調整）
-                # 例: （片岡一生、箕浦智崇）
-                if "noindent" in cls:
-                    if t.startswith("（注）"):
-                        body_paras.append(t)      # 注記は残す
+                if node.name == "p":
+                    cls = node.get("class") or []
+                    # noindent の扱いは現行踏襲（注は残す、それ以外は署名等として除外）
+                    if "noindent" in cls:
+                        if t.startswith("（注）"):
+                            body_paras.append(t)
+                        else:
+                            continue
                     else:
-                        continue                  # 署名などは除外
+                        body_paras.append(t)
                 else:
+                    # li はそのまま本文として入れる
                     body_paras.append(t)
     else:
-        # 予備ルート：main内から、ノイズっぽいものを避けつつ拾う（現状踏襲）
-        for p in main.find_all("p"):
-            t = p.get_text(" ", strip=True)
+        # 予備ルート：main 内から拾う（li も対象にする）
+        for node in main.find_all(["p", "li"]):
+            t = node.get_text(" ", strip=True)
             if not t:
                 continue
             if t == country:
