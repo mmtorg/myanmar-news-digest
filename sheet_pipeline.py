@@ -1248,7 +1248,7 @@ def _is_ayeyarwady(title_raw: str, body_raw: str) -> bool:
         return any(kw in hay for kw in kws)
 
 def _collect_all_for(target_date_mmt: date) -> List[Dict]:
-    target_date_mmt = date(2026, 1, 23)  # ←一時テスト用に固定
+    target_date_mmt = date(2026, 1, 15)  # ←一時テスト用に固定
     if not collectors_loaded:
         raise SystemExit("収集関数の読み込み失敗。export_all_articles_to_csv.py を配置してください。")
     items: List[Dict] = []
