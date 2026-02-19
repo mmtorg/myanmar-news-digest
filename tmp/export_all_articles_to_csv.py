@@ -2033,20 +2033,29 @@ def _jetro_extract_title_country_body(soup: BeautifulSoup) -> tuple[str, str, st
             country = t
             break
 
-    # 4) 本文：wzgブロックがあればそこだけ。なければ main 内の段落を拾う。
+    # 4) 本文：wzg ブロックがあれば「全部」を連結。なければ main 内の段落を拾う。
     body_paras: list[str] = []
-    body_box = main.select_one(".elem_paragraph.wzg")
-    if body_box:
-        for p in body_box.find_all("p"):
-            # 末尾の署名（例: p.noindent）などを除外
-            if "noindent" in (p.get("class") or []):
-                continue
-            t = p.get_text(" ", strip=True)
-            if not t:
-                continue
-            body_paras.append(t)
+
+    body_boxes = main.select(".elem_paragraph.wzg")
+    if body_boxes:
+        for box in body_boxes:
+            for p in box.find_all("p"):
+                cls = p.get("class") or []
+                t = p.get_text(" ", strip=True)
+                if not t:
+                    continue
+
+                # 署名は落とす（必要ならパターン調整）
+                # 例: （片岡一生、箕浦智崇）
+                if "noindent" in cls:
+                    if t.startswith("（注）"):
+                        body_paras.append(t)      # 注記は残す
+                    else:
+                        continue                  # 署名などは除外
+                else:
+                    body_paras.append(t)
     else:
-        # 予備ルート：main内から、ノイズっぽいものを避けつつ拾う
+        # 予備ルート：main内から、ノイズっぽいものを避けつつ拾う（現状踏襲）
         for p in main.find_all("p"):
             t = p.get_text(" ", strip=True)
             if not t:
