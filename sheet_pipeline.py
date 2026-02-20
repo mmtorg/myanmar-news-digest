@@ -1247,8 +1247,22 @@ def _is_ayeyarwady(title_raw: str, body_raw: str) -> bool:
         hay = f"{t} {b}"
         return any(kw in hay for kw in kws)
 
+def _collect_all_for_range_test_override() -> List[Dict]:
+    # ✅ テスト用にここで期間を固定
+    start_date_mmt = date(2025, 10, 10)
+    end_date_mmt   = date(2026, 1, 30)
+
+    items: List[Dict] = []
+    d = start_date_mmt
+    while d <= end_date_mmt:
+        items.extend(_collect_all_for(d))
+        d += timedelta(days=1)
+
+    # 全期間で重複排除（安全のため）
+    items = deduplicate_by_url(items)
+    return items
+
 def _collect_all_for(target_date_mmt: date) -> List[Dict]:
-    target_date_mmt = date(2025, 10, 10)  # ←一時テスト用に固定
     if not collectors_loaded:
         raise SystemExit("収集関数の読み込み失敗。export_all_articles_to_csv.py を配置してください。")
     items: List[Dict] = []
@@ -1392,7 +1406,8 @@ def cmd_collect_to_sheet(args):
         logging.info(f"[clean] kept only {today} (removed {removed} rows)")
 
     # ① 各メディアから記事収集（export_all_articles_to_csv と同じ collectors）
-    items = _collect_all_for(target)
+    # items = _collect_all_for(target)
+    items = _collect_all_for_range_test_override()
     if not items:
         logging.warning("[collect] no items to write")
         print("no items to write")
