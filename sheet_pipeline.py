@@ -1248,20 +1248,19 @@ def _is_ayeyarwady(title_raw: str, body_raw: str) -> bool:
         return any(kw in hay for kw in kws)
 
 def _collect_all_for(target_date_mmt: date) -> List[Dict]:
-    target_date_mmt = date(2026, 1, 14)  # ←一時テスト用に固定
     if not collectors_loaded:
         raise SystemExit("収集関数の読み込み失敗。export_all_articles_to_csv.py を配置してください。")
     items: List[Dict] = []
     for fn, kwargs in [
-        # (collect_mizzima_all_for_date, {"max_pages": 3}),
-        # (collect_bbc_all_for_date, {}),
-        # (collect_irrawaddy_all_for_date, {}),
-        # (collect_khitthit_all_for_date, {"max_pages": 5}),
-        # (collect_dvb_all_for_date, {}),
-        # (collect_myanmar_now_mm_all_for_date, {"max_pages": 3}),
-        # (collect_gnlm_all_for_date, {"max_pages": 3}),
-        # (collect_popular_all_for_date, {}),
-        # (collect_frontier_all_for_date, {}),
+        (collect_mizzima_all_for_date, {"max_pages": 3}),
+        (collect_bbc_all_for_date, {}),
+        (collect_irrawaddy_all_for_date, {}),
+        (collect_khitthit_all_for_date, {"max_pages": 5}),
+        (collect_dvb_all_for_date, {}),
+        (collect_myanmar_now_mm_all_for_date, {"max_pages": 3}),
+        (collect_gnlm_all_for_date, {"max_pages": 3}),
+        (collect_popular_all_for_date, {}),
+        (collect_frontier_all_for_date, {}),
         (collect_jetro_biznews_mm_all_for_date, {}),
     ]:
         name = fn.__name__.replace("_all_for_date", "")
