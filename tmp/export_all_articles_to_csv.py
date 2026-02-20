@@ -2002,7 +2002,7 @@ def collect_frontier_all_for_date(
 
     return results
 
-# ===== JETRO（ビジネス短信・ミャンマー） =====
+# ===== JETROビジネス短信 =====
 _JETRO_PAREN_ONLY_RE = re.compile(r"^\s*（[^（）]+）\s*$")
 
 def _jetro_extract_title_country_body(soup: BeautifulSoup) -> tuple[str, str, str]:
@@ -2216,7 +2216,7 @@ def collect_jetro_biznews_mm_all_for_date(
 
             results.append(
                 {
-                    "source": "JETRO（ビジネス短信・ミャンマー）",
+                    "source": "JETROビジネス短信",
                     "title": title_out,
                     "url": url,
                     "date": target_date_mmt.isoformat(),

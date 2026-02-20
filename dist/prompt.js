@@ -839,6 +839,8 @@ const SOURCE_KEY_BASE_MAP = {
   "popular myanmar (国軍系メディア)": "POPULARMYANMAR",
   "frontier myanmar": "FRONTIERMYANMAR",
   frontier: "FRONTIERMYANMAR",
+  jetroビジネス短信: "JETRO",
+  "jetro ビジネス短信": "JETRO",
 };
 
 const DEFAULT_BASE_KEY = "MIZZIMA"; // マップにない場合のフォールバック
