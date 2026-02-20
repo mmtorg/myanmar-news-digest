@@ -56,6 +56,7 @@ from tmp.export_all_articles_to_csv import (
     collect_gnlm_all_for_date,
     collect_popular_all_for_date,
     collect_frontier_all_for_date,
+    collect_jetro_biznews_mm_all_for_date,
     translate_titles_in_batch,
     translate_title_only,
     RateLimiter,
@@ -202,6 +203,8 @@ def main(argv=None) -> int:
     all_rows.extend(collect_popular_all_for_date(today_mmt))
     # Frontier Myanmar
     all_rows.extend(collect_frontier_all_for_date(today_mmt))
+    # JETRO
+    all_rows.extend(collect_jetro_biznews_mm_all_for_date(today_mmt, max_pages=1))
 
     # URL重複は既存関数で除去
     all_rows = deduplicate_by_url(all_rows)
