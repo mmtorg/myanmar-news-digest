@@ -2053,13 +2053,14 @@ def _jetro_extract_title_country_body(soup: BeautifulSoup) -> tuple[str, str, st
                     continue
 
                 if node.name == "p":
+                    if t == country:
+                        continue
                     cls = node.get("class") or []
-                    # noindent の扱いは現行踏襲（注は残す、それ以外は署名等として除外）
                     if "noindent" in cls:
-                        if t.startswith("（注）"):
+                        # （注）,（注1）,（注2）… を拾う
+                        if t.startswith("（注"):
                             body_paras.append(t)
-                        else:
-                            continue
+                        continue
                     else:
                         body_paras.append(t)
                 else:
