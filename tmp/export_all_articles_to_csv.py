@@ -793,7 +793,7 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
     seen_urls = set()
     candidate_urls: List[str] = []
     origins: Dict[str, str] = {}
-    # RSS/検索から得た補助情報（タイトル/日付）をURLキーで保持
+    # RSS/検索から得た補助情報（タイトル/日付/summary）をURLキーで保持
     feed_hints: Dict[str, Dict[str, str]] = {}
     if debug:
         print(f"[irrawaddy] target_date={target_date_mmt}")
@@ -942,6 +942,17 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
     def _mmt_date(dt_utc: datetime) -> date:
         return dt_utc.astimezone(MMT).date()
 
+    def _clean_summary_text(s: str) -> str:
+        s = (s or "").strip()
+        if not s:
+            return ""
+        try:
+            s = re.sub(r"<[^>]+>", " ", s)
+            s = re.sub(r"\s+", " ", s).strip()
+        except Exception:
+            pass
+        return s
+
     def _rss_items_from_google_news() -> List[Dict[str, str]]:
         # 当日限定（MMT判定は後段）
         gnews = (
@@ -970,13 +981,18 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
             m = href_re.search(desc)
             if m and "irrawaddy.com" in m.group(1):
                 direct = m.group(1)
-            items.append({"title": title, "link": direct or link, "pubDate": pub})
+            items.append({
+                "title": title,
+                "link": direct or link,
+                "pubDate": pub,
+                "summary": _clean_summary_text(desc),
+            })
         return items
 
     if len(candidate_urls) == 0:
         # 1) WP JSON
         wp_url = (
-            "https://www.irrawaddy.com/wp-json/wp/v2/posts?per_page=50&_fields=link,date,title"
+            "https://www.irrawaddy.com/wp-json/wp/v2/posts?per_page=50&_fields=link,date,title,excerpt"
         )
         wp_json = _fetch_text(wp_url) or _fetch_text_via_jina(wp_url)
         if wp_json:
@@ -990,6 +1006,11 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
                         tt = (t.get("rendered") or "").strip()
                     else:
                         tt = (t or "").strip()
+                    ex = o.get("excerpt")
+                    if isinstance(ex, dict):
+                        sx = _clean_summary_text(ex.get("rendered") or "")
+                    else:
+                        sx = _clean_summary_text(ex or "")
                     try:
                         dt = parse_date(ds)
                     except Exception:
@@ -999,7 +1020,11 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
                             candidate_urls.append(link)
                             seen_urls.add(link)
                             origins[link] = "feed"
-                        feed_hints[link] = {"title": tt, "date": target_date_mmt.isoformat()}
+                        feed_hints[link] = {
+                            "title": tt,
+                            "summary": sx,
+                            "date": target_date_mmt.isoformat(),
+                        }
             except Exception:
                 pass
 
@@ -1015,6 +1040,7 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
                         title = (it.findtext("title") or "").strip()
                         link = (it.findtext("link") or "").strip()
                         pub = (it.findtext("pubDate") or "").strip()
+                        desc = (it.findtext("description") or "").strip()
                         try:
                             dt = parse_date(pub)
                         except Exception:
@@ -1024,7 +1050,11 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
                                 candidate_urls.append(link)
                                 seen_urls.add(link)
                                 origins[link] = "feed"
-                            feed_hints[link] = {"title": title, "date": target_date_mmt.isoformat()}
+                            feed_hints[link] = {
+                                "title": title,
+                                "summary": _clean_summary_text(desc),
+                                "date": target_date_mmt.isoformat(),
+                            }
                 except Exception:
                     pass
 
@@ -1043,7 +1073,11 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
                         candidate_urls.append(link)
                         seen_urls.add(link)
                         origins[link] = "feed"
-                    feed_hints[link] = {"title": title, "date": target_date_mmt.isoformat()}
+                    feed_hints[link] = {
+                        "title": title,
+                        "summary": _clean_summary_text(it.get("summary") or ""),
+                        "date": target_date_mmt.isoformat(),
+                    }
         if debug:
             print(f"[irrawaddy] fallback candidates={len(candidate_urls)}")
 
@@ -1070,16 +1104,17 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
                 hint = feed_hints.get(url)
                 if hint and (hint.get("date") == target_date_mmt.isoformat()):
                     title_fb = (hint.get("title") or "").strip()
+                    body_fb = (hint.get("summary") or "").strip()
                     if title_fb:
                         if debug:
-                            print("  -> fallback: use feed title/date (meta_date mismatch)")
+                            print("  -> fallback: use feed title/date/summary (meta_date mismatch)")
                         results.append(
                             {
                                 "source": "Irrawaddy",
                                 "title": unicodedata.normalize("NFC", title_fb),
                                 "url": url,
                                 "date": target_date_mmt.isoformat(),
-                                "body": "",
+                                "body": unicodedata.normalize("NFC", body_fb),
                             }
                         )
                         continue
@@ -1104,7 +1139,9 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
                             "title": unicodedata.normalize("NFC", title_fb),
                             "url": url,
                             "date": target_date_mmt.isoformat(),
-                            "body": "",
+                            "body": unicodedata.normalize(
+                                "NFC", (feed_hints.get(url, {}).get("summary") or "").strip()
+                            ),
                         }
                     )
                     continue
@@ -1179,6 +1216,11 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
                     txt = _fetch_text(alt2, timeout=25)
                 if txt:
                     body = unicodedata.normalize("NFC", txt).strip()
+            # 2.4) それでも本文が空なら feed/google の summary を本文として採用
+            if not body:
+                hint_summary = (feed_hints.get(url, {}).get("summary") or "").strip()
+                if hint_summary:
+                    body = unicodedata.normalize("NFC", hint_summary)
             if not body and debug:
                 print("  -> note: empty body")
 
