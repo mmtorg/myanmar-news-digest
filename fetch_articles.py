@@ -1881,6 +1881,7 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
     seen_urls = set()
     candidate_urls = []
     fallback_titles: Dict[str, str] = {}
+    fallback_summaries: Dict[str, str] = {}
 
     # ==== 1) 各カテゴリURLを1回ずつ巡回 → 当日候補抽出 ====
     for rel_path in paths:
@@ -2024,6 +2025,18 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
             pass
         return ""
 
+    def _clean_summary_text(s: str) -> str:
+        s = (s or "").strip()
+        if not s:
+            return ""
+        # RSS description は HTML のことがあるので、最低限の正規化をかける
+        try:
+            s = re.sub(r"<[^>]+>", " ", s)
+            s = re.sub(r"\s+", " ", s).strip()
+        except Exception:
+            pass
+        return s
+
     def _rss_items_from_google_news() -> List[Dict[str, str]]:
         # Google News RSS（Irrawaddy限定）
         gnews = (
@@ -2058,6 +2071,7 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
                 "title": title,
                 "link": direct or link,
                 "pubDate": pub,
+                "summary": _clean_summary_text(desc),
             })
         return items
 
@@ -2072,7 +2086,7 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
 
     def _fallback_candidates_via_feeds() -> List[Dict[str, str]]:
         # 1) WordPress JSON（多くの場合WAF対象）
-        wp_url = "https://www.irrawaddy.com/wp-json/wp/v2/posts?per_page=50&_fields=link,date,title"
+        wp_url = "https://www.irrawaddy.com/wp-json/wp/v2/posts?per_page=50&_fields=link,date,title,excerpt"
         wp_json = _fetch_text(wp_url) or _fetch_text_via_jina(wp_url)
         cands: List[Dict[str, str]] = []
         if wp_json:
@@ -2087,11 +2101,21 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
                         tt = (t.get("rendered") or "").strip()
                     else:
                         tt = (t or "").strip()
+                    ex = o.get("excerpt")
+                    if isinstance(ex, dict):
+                        sx = _clean_summary_text(ex.get("rendered") or "")
+                    else:
+                        sx = _clean_summary_text(ex or "")
                     dt = _parse_rfc822_date(ds) or (
                         parse_date(ds) if ds else None
                     )
                     if link and dt and _mmt_date(dt) == date_obj and not _is_excluded_url(link):
-                        cands.append({"url": link, "title": tt, "date": date_obj.isoformat()})
+                        cands.append({
+                            "url": link,
+                            "title": tt,
+                            "summary": sx,
+                            "date": date_obj.isoformat(),
+                        })
             except Exception:
                 pass
 
@@ -2111,6 +2135,7 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
                             cands.append({
                                 "url": link,
                                 "title": title,
+                                "summary": _clean_summary_text(it.findtext("description") or ""),
                                 "date": date_obj.isoformat(),
                             })
                 except Exception:
@@ -2182,6 +2207,7 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
                     cands.append({
                         "url": link,
                         "title": title,
+                        "summary": _clean_summary_text(it.get("summary") or ""),
                         "date": date_obj.isoformat(),
                     })
 
@@ -2207,6 +2233,8 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
                 seen_urls.add(u)
                 if o.get("title"):
                     fallback_titles[u] = o.get("title") or ""
+                if o.get("summary"):
+                    fallback_summaries[u] = o.get("summary") or ""
 
     # ==== 2) 候補記事で厳密確認（meta日付/本文/キーワード） ====
     for url in candidate_urls:
@@ -2252,6 +2280,12 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
                     if not title:
                         # フィードで拾ったタイトルを最終手段として流用
                         title = fallback_titles.get(url, "")
+
+            # ②.5) まだ本文が空なら、feed/googleの summary を本文として採用
+            if not body:
+                hint_body = (fallback_summaries.get(url) or "").strip()
+                if hint_body:
+                    body = hint_body
 
             # ③ それでもタイトルが空なら、oEmbed またはスラッグから補完
             if not title:

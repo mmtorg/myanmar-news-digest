@@ -234,7 +234,7 @@ def _extract_body_dvb_first_then_scoped(url: str, soup: "BeautifulSoup") -> str:
             return body
     return extract_body_mail_pdf_scoped(url, soup)
 
-def _get_body_once(url: str, source: str, out_dir: str, title: str = "") -> str:
+def _get_body_once(url: str, source: str, out_dir: str, title: str = "", summary: str = "") -> str:
     """
     1) bundle/bodies.json を見てあれば返す
     2) なければ取得→保存→返す
@@ -359,6 +359,10 @@ def _get_body_once(url: str, source: str, out_dir: str, title: str = "") -> str:
                 except Exception:
                     pass
             body = (txt or "").strip()
+
+    # --- 3.5) まだ空なら、収集器が持っていた summary を本文として採用 ---
+    if not (body or "").strip():
+        body = (summary or "").strip()
 
     # --- 4) 空本文はキャッシュしない（将来の再取得の余地を残す）---
     if body.strip():
@@ -1414,6 +1418,7 @@ def cmd_collect_to_sheet(args):
 
         # collector が本文を持っていればそれを最優先（再取得しない）
         body = (it.get("body") or "").strip()
+        summary = (it.get("summary") or "").strip()
         if body:
             with _BODIES_LOCK:
                 cache = _load_bodies_cache(bundle_dir)
@@ -1421,7 +1426,7 @@ def cmd_collect_to_sheet(args):
                 _save_bodies_cache(bundle_dir, cache)
         else:
             # なければ堅牢抽出器で1回だけ取得→キャッシュ
-            body = _get_body_once(url, source, out_dir=bundle_dir, title=title)
+            body = _get_body_once(url, source, out_dir=bundle_dir, title=title, summary=summary)
 
         # ★ ここから：Gemini は使わず、エーヤワディ判定だけを行う
         is_ay = _is_ayeyarwady(title, body)
