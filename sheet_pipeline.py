@@ -1256,16 +1256,16 @@ def _collect_all_for(target_date_mmt: date) -> List[Dict]:
         raise SystemExit("収集関数の読み込み失敗。export_all_articles_to_csv.py を配置してください。")
     items: List[Dict] = []
     for fn, kwargs in [
-        (collect_mizzima_all_for_date, {"max_pages": 3}),
-        (collect_bbc_all_for_date, {}),
+        # (collect_mizzima_all_for_date, {"max_pages": 3}),
+        # (collect_bbc_all_for_date, {}),
         (collect_irrawaddy_all_for_date, {}),
-        (collect_khitthit_all_for_date, {"max_pages": 5}),
-        (collect_dvb_all_for_date, {}),
-        (collect_myanmar_now_mm_all_for_date, {"max_pages": 3}),
-        (collect_gnlm_all_for_date, {"max_pages": 3}),
-        (collect_popular_all_for_date, {}),
-        (collect_frontier_all_for_date, {}),
-        (collect_jetro_biznews_mm_all_for_date, {}),
+        # (collect_khitthit_all_for_date, {"max_pages": 5}),
+        # (collect_dvb_all_for_date, {}),
+        # (collect_myanmar_now_mm_all_for_date, {"max_pages": 3}),
+        # (collect_gnlm_all_for_date, {"max_pages": 3}),
+        # (collect_popular_all_for_date, {}),
+        # (collect_frontier_all_for_date, {}),
+        # (collect_jetro_biznews_mm_all_for_date, {}),
     ]:
         name = fn.__name__.replace("_all_for_date", "")
         try:
@@ -1380,7 +1380,7 @@ def _keep_only_rows_of_date(date_str: str) -> int:
 # ===== Gemini を呼ばずに E=タイトル原文, F=本文原文 を書き出す版 =====
 def cmd_collect_to_sheet(args):
     now_mmt = datetime.now(MMT)
-    target = now_mmt.date()
+    target = (now_mmt - timedelta(days=1)).date()
     
     logging.info(
         f"[collect] start target_date_mmt={target.isoformat()} "
