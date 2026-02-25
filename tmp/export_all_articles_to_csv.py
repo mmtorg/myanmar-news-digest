@@ -57,6 +57,7 @@ from fetch_articles import (
     client_summary,
     deduplicate_by_url,
     fetch_with_retry_irrawaddy,
+    fetch_html_via_brightdata_browser
     extract_body_irrawaddy,
     _parse_category_date_text,
     _article_date_from_meta_mmt,
@@ -1090,8 +1091,19 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
             title = ""
             body = ""
             try:
-                res = fetch_with_retry_irrawaddy(url, session=session)
-                soup = BeautifulSoup(getattr(res, "content", None) or res.text, "html.parser")
+                html = ""
+                try:
+                    res = fetch_with_retry_irrawaddy(url, session=session)
+                    html = (getattr(res, "content", None) or res.text or "")
+                    if getattr(res, "status_code", 200) == 403:
+                        html = ""
+                except Exception:
+                    html = ""
+                if not html:
+                    html = fetch_html_via_brightdata_browser(url)
+                if not html:
+                    raise Exception("html fetch failed (direct+brightdata)")
+                soup = BeautifulSoup(html, "html.parser")
                 meta_date = _article_date_from_meta_mmt(soup)
             except Exception:
                 soup = None

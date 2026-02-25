@@ -502,6 +502,7 @@ jobs:
             echo "MNA_SHEET_ID=${{ secrets.MNA_SHEET_ID }}";
             echo "RETRY_WAIT_SCHEDULE=120 240 480 900";
             echo "OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}";
+            echo "BRIGHTDATA_BROWSER_AUTH=${{ secrets.BRIGHTDATA_BROWSER_AUTH }}";
           } >> "$GITHUB_ENV"
 
           # ===== multi-line secret → ファイルに保存（$GITHUB_ENV には書かない）=====

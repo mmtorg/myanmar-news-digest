@@ -1107,6 +1107,46 @@ def fetch_with_retry_irrawaddy(url, retries=3, wait_seconds=2, session=None):
 
     raise Exception(f"Failed to fetch {url} after {retries} attempts.")
 
+def fetch_html_via_brightdata_browser(url: str, *, timeout_ms: int = 120_000) -> str:
+    """
+    Bright Data Browser API (Scraping Browser) 経由でHTMLを取得して返す。
+    - 認証: env BRIGHTDATA_BROWSER_AUTH="USER:PASS"
+    - 接続先: wss://{AUTH}@brd.superproxy.io:9222
+    """
+    import os, asyncio
+    auth = (os.getenv("BRIGHTDATA_BROWSER_AUTH") or "").strip()
+    if not auth:
+        return ""
+
+    try:
+        from playwright.async_api import async_playwright
+    except Exception:
+        # playwright が入ってない環境では何もしない
+        return ""
+
+    async def _run() -> str:
+        endpoint_url = f"wss://{auth}@brd.superproxy.io:9222"
+        async with async_playwright() as p:
+            browser = await p.chromium.connect_over_cdp(endpoint_url)
+            try:
+                page = await browser.new_page()
+                # Cloudflare系は待ちを少し長めに
+                await page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
+                # 必要なら networkidle まで待つ（重い場合は domcontentloaded のままでもOK）
+                # await page.wait_for_load_state("networkidle", timeout=timeout_ms)
+                html = await page.content()
+                return (html or "").strip()
+            finally:
+                await browser.close()
+
+    try:
+        return asyncio.run(_run())
+    except RuntimeError:
+        # 既に event loop がある環境向け保険（通常GitHub Actionsは不要）
+        loop = asyncio.get_event_loop()
+        return loop.run_until_complete(_run())
+    except Exception:
+        return ""
 
 # === DVB専用 ===
 def fetch_with_retry_dvb(url, retries=4, wait_seconds=2, session=None):
@@ -1887,13 +1927,27 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
     for rel_path in paths:
         url = f"{BASE}{rel_path}"
         # print(f"Fetching {url}")
+        html = ""
         try:
             res = fetch_with_retry_irrawaddy(url, session=session)
+            # 403 等でも content は取れていることがあるので一旦 HTML 化
+            html = (getattr(res, "content", None) or res.text or "")
+            # Cloudflare の 403 はここで弾く（len判定などより安全）
+            if getattr(res, "status_code", 200) == 403:
+                html = ""
         except Exception as e:
-            print(f"Error fetching {url}: {e}")
+            dbg(f"[irrawaddy] list fetch fail (direct) {url}: {e}")
+
+        # ★ direct がダメな時だけ Bright Data
+        if not html:
+            html = fetch_html_via_brightdata_browser(url)
+            if html:
+                dbg(f"[irrawaddy] list fetched via brightdata: {url}")
+            else:
+                dbg(f"[irrawaddy] list fetch fail (brightdata) {url}")
             continue
 
-        soup = BeautifulSoup(res.content, "html.parser")
+        soup = BeautifulSoup(html, "html.parser")
         wrapper = soup.select_one("div.jeg_content")  # テーマによっては無いこともある
 
         # ✅ union 方式：wrapper 内→見つからなければページ全体の順で探索
@@ -2246,6 +2300,8 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
             # ① 直接取得（1回だけ）
             try:
                 html_once = _fetch_text(url, timeout=20)
+                if not html_once:
+                    html_once = fetch_html_via_brightdata_browser(url)
                 if html_once:
                     soup_article = BeautifulSoup(html_once, "html.parser")
                     # Irrawaddy ドメインのときだけ、厳密に meta 日付を照合
