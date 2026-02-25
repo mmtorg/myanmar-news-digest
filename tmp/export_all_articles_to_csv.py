@@ -57,7 +57,7 @@ from fetch_articles import (
     client_summary,
     deduplicate_by_url,
     fetch_with_retry_irrawaddy,
-    fetch_html_via_brightdata_browser
+    fetch_html_via_brightdata_browser,
     extract_body_irrawaddy,
     _parse_category_date_text,
     _article_date_from_meta_mmt,
