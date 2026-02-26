@@ -2654,6 +2654,40 @@ def get_myanmar_now_articles_mm(date_obj, max_pages=3):
             return title
         return re.sub(r"\s*-\s*Myanmar Now\s*$", "", title).strip()
 
+    def _extract_title_from_soup(soup: BeautifulSoup) -> str:
+        try:
+            meta_og = soup.find("meta", attrs={"property": "og:title"})
+            if meta_og and meta_og.get("content"):
+                return _strip_source_suffix(unicodedata.normalize("NFC", meta_og["content"].strip()))
+        except Exception:
+            pass
+        title_raw = (soup.title.get_text(strip=True) if soup.title else "").strip()
+        if title_raw:
+            return _strip_source_suffix(unicodedata.normalize("NFC", title_raw))
+        try:
+            h1 = soup.find("h1")
+            if h1:
+                return _strip_source_suffix(unicodedata.normalize("NFC", h1.get_text(strip=True)))
+        except Exception:
+            pass
+        return ""
+
+    def _extract_title_from_jina(text_payload: str) -> str:
+        if not text_payload:
+            return ""
+        m = re.search(r"(?im)^\s*Title:\s*(.+?)\s*$", text_payload)
+        if not m:
+            return ""
+        return _strip_source_suffix(unicodedata.normalize("NFC", m.group(1).strip()))
+
+    def _clean_body_from_jina(text_payload: str) -> str:
+        if not text_payload:
+            return ""
+        t = unicodedata.normalize("NFC", text_payload).strip()
+        if "Markdown Content:" in t:
+            t = t.split("Markdown Content:", 1)[1].strip()
+        return t.lstrip("\n").strip()
+
     def _collect_article_urls_from_category(cat_url: str) -> set[str]:
         urls = set()
         for page in range(1, max_pages + 1):
@@ -2750,19 +2784,9 @@ def get_myanmar_now_articles_mm(date_obj, max_pages=3):
             # --- title ---
             title = ""
             if soup is not None:
-                title_raw = (soup.title.get_text(strip=True) if soup.title else "").strip()
-                title = _strip_source_suffix(unicodedata.normalize("NFC", title_raw))
-                if not title:
-                    h1 = soup.find("h1")
-                    if h1:
-                        title = _strip_source_suffix(
-                            unicodedata.normalize("NFC", h1.get_text(strip=True))
-                        )
+                title = _extract_title_from_soup(soup)
             if not title:
-                title = _oembed_title(url) or _title_from_slug(url)
-                title = _strip_source_suffix(title)
-            if not title:
-                continue
+                title = _strip_source_suffix(_oembed_title(url) or _title_from_slug(url))
 
             # --- body ---
             body = ""
@@ -2785,7 +2809,17 @@ def get_myanmar_now_articles_mm(date_obj, max_pages=3):
                         ),
                     ).strip()
             if not body:
-                body = _fetch_text_via_jina(url) or _fetch_text(url)
+                jina_raw = _fetch_text_via_jina(url)
+                if jina_raw:
+                    if (not title) or re.fullmatch(r"\d+", title or ""):
+                        jina_title = _extract_title_from_jina(jina_raw)
+                        if jina_title:
+                            title = jina_title
+                    body = _clean_body_from_jina(jina_raw)
+                if not body:
+                    body = _fetch_text(url)
+            if not title:
+                continue
             if not body:
                 continue
 
