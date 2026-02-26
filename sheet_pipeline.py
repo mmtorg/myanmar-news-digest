@@ -301,8 +301,10 @@ def _get_body_once(url: str, source: str, out_dir: str, title: str = "", summary
                 # ★ Irrawaddy: 専用フェッチャ + 専用抽出器
                 def _irw_fetch(u: str) -> str:
                     try:
-                        res = fetch_with_retry_irrawaddy(u)  # fetch_articles.py 側の関数
-                        return getattr(res, "text", "") or getattr(res, "content", b"").decode("utf-8", "ignore")
+                        b = fetch_once_irrawaddy(u)  # ← ここが direct→必要ならBD になる
+                        if isinstance(b, (bytes, bytearray)):
+                            return b.decode("utf-8", "ignore")
+                        return (b or "")
                     except Exception:
                         return ""
                 html_fetcher = _irw_fetch

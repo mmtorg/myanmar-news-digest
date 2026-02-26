@@ -1107,6 +1107,28 @@ def fetch_with_retry_irrawaddy(url, retries=3, wait_seconds=2, session=None):
 
     raise Exception(f"Failed to fetch {url} after {retries} attempts.")
 
+# --- Bright Data Browser usage logging ---
+import logging
+from collections import deque
+from threading import Lock
+
+_BD_LOCK = Lock()
+_BD_BROWSER_CALLS = 0
+_BD_BROWSER_URLS = deque(maxlen=200)
+
+_logger = logging.getLogger("brightdata_browser")
+if not _logger.handlers:
+    h = logging.StreamHandler()
+    fmt = logging.Formatter("[%(asctime)s][%(levelname)s][bd-browser] %(message)s")
+    h.setFormatter(fmt)
+    _logger.addHandler(h)
+_logger.setLevel(logging.INFO)
+
+def brightdata_browser_stats():
+    """(count, last_urls_list)"""
+    with _BD_LOCK:
+        return _BD_BROWSER_CALLS, list(_BD_BROWSER_URLS)
+
 def fetch_html_via_brightdata_browser(url: str, *, timeout_ms: int = 120_000) -> str:
     """
     Bright Data Browser API (Scraping Browser) 経由でHTMLを取得して返す。
@@ -1123,6 +1145,17 @@ def fetch_html_via_brightdata_browser(url: str, *, timeout_ms: int = 120_000) ->
     except Exception:
         # playwright が入ってない環境では何もしない
         return ""
+
+    # ✅ ここで「BD browser を呼ぶ」ことが確定
+    try:
+        with _BD_LOCK:
+            global _BD_BROWSER_CALLS
+            _BD_BROWSER_CALLS += 1
+            _BD_BROWSER_URLS.append(url)
+            n = _BD_BROWSER_CALLS
+        _logger.info(f"call#{n} url={url}")
+    except Exception:
+        pass
 
     async def _run() -> str:
         endpoint_url = f"wss://{auth}@brd.superproxy.io:9222"
@@ -1432,12 +1465,37 @@ def extract_body_irrawaddy(soup):
 
 
 #  Irrawaddy 用 fetch_once（既存の fetch_with_retry_irrawaddy を1回ラップ）
-def fetch_once_irrawaddy(url, session=None):
-    r = fetch_with_retry_irrawaddy(url, retries=1, wait_seconds=0, session=session)
-    # cloudscraper のレスポンスも bytes を返す（デコードは BeautifulSoup に任せる）
-    return r.content
+def fetch_once_irrawaddy(url, session=None, *, allow_brightdata_fallback: bool = True):
+    html_text = ""
+    status = None
+    try:
+        r = fetch_with_retry_irrawaddy(url, retries=1, wait_seconds=0, session=session)
+        status = getattr(r, "status_code", None)
+        if getattr(r, "content", None):
+            try:
+                html_text = r.content.decode("utf-8", "ignore")
+            except Exception:
+                html_text = (getattr(r, "text", "") or "")
+        else:
+            html_text = (getattr(r, "text", "") or "")
+    except Exception:
+        html_text = ""
 
+    # ✅ 本文DOMが見えているなら direct のまま返す（コスト削減）
+    if html_text and ("content-inner" in html_text):
+        return html_text.encode("utf-8", "ignore")
 
+    # ❗ direct が怪しいときだけ BD（許可されている場合）
+    if allow_brightdata_fallback:
+        try:
+            if (status in (403, 503)) or (html_text and ("content-inner" not in html_text)) or (not html_text):
+                html2 = (fetch_html_via_brightdata_browser(url) or "").strip()
+                if html2:
+                    return html2.encode("utf-8", "ignore")
+        except Exception:
+            pass
+
+    return (html_text or "").encode("utf-8", "ignore")
 # === ここまで ===
 
 
