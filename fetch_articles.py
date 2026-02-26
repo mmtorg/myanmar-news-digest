@@ -1130,6 +1130,37 @@ def fetch_html_via_brightdata_browser(url: str, *, timeout_ms: int = 120_000) ->
             browser = await p.chromium.connect_over_cdp(endpoint_url)
             try:
                 page = await browser.new_page()
+                
+                # 重いリソース＆広告/解析をブロック
+                BLOCK_RESOURCE_TYPES = {"image", "media", "font", "stylesheet"}
+                BLOCK_URL_KEYWORDS = (
+                    "doubleclick.net", "googletagmanager.com", "google-analytics.com",
+                    "adsystem", "adservice", "taboola", "outbrain", "scorecardresearch",
+                )
+
+                async def _route_handler(route):
+                    try:
+                        req = route.request
+                        rtype = (req.resource_type or "").lower()
+                        rurl = (req.url or "").lower()
+
+                        if rtype in BLOCK_RESOURCE_TYPES:
+                            await route.abort()
+                            return
+                        if any(k in rurl for k in BLOCK_URL_KEYWORDS):
+                            await route.abort()
+                            return
+
+                        await route.continue_()
+                    except Exception:
+                        # 失敗したら通す（安定優先）
+                        try:
+                            await route.continue_()
+                        except Exception:
+                            pass
+
+                await page.route("**/*", _route_handler)
+                
                 # Cloudflare系は待ちを少し長めに
                 await page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
                 # 必要なら networkidle まで待つ（重い場合は domcontentloaded のままでもOK）
