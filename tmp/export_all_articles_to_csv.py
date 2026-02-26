@@ -548,6 +548,52 @@ def collect_myanmar_now_mm_all_for_date(target_date_mmt: date, max_pages: int = 
             return title
         return re.sub(r"\s*-\s*Myanmar Now\s*$", "", title).strip()
 
+    def _extract_title_from_soup(soup: BeautifulSoup) -> str:
+        # Prefer explicit OG/meta title, then <title>, then <h1>
+        try:
+            meta_og = soup.find("meta", attrs={"property": "og:title"})
+            if meta_og and meta_og.get("content"):
+                return _strip_source_suffix(unicodedata.normalize("NFC", meta_og["content"].strip()))
+        except Exception:
+            pass
+        title_raw = (soup.title.get_text(strip=True) if soup.title else "").strip()
+        if title_raw:
+            return _strip_source_suffix(unicodedata.normalize("NFC", title_raw))
+        try:
+            h1 = soup.find("h1")
+            if h1:
+                return _strip_source_suffix(unicodedata.normalize("NFC", h1.get_text(strip=True)))
+        except Exception:
+            pass
+        return ""
+
+    def _extract_title_from_jina(text_payload: str) -> str:
+        # r.jina.ai may return "Title: ...", keep only the title part
+        if not text_payload:
+            return ""
+        m = re.search(r"(?im)^\s*Title:\s*(.+?)\s*$", text_payload)
+        if not m:
+            return ""
+        return _strip_source_suffix(unicodedata.normalize("NFC", m.group(1).strip()))
+
+    def _clean_body_from_jina(text_payload: str) -> str:
+        """
+        r.jina.ai sometimes returns a header block:
+          Title: ...
+          URL Source: ...
+          Published Time: ...
+          Markdown Content:
+          ...
+        We want the body ONLY (markdown content block if present).
+        """
+        if not text_payload:
+            return ""
+        t = unicodedata.normalize("NFC", text_payload).strip()
+        if "Markdown Content:" in t:
+            t = t.split("Markdown Content:", 1)[1].strip()
+        # Also trim any leading blank lines
+        return t.lstrip("\n").strip()
+
     today_label = f"{target_date_mmt.strftime('%B')} {target_date_mmt.day}, {target_date_mmt.year}"
 
     def _collect_article_urls_from_category(cat_url: str) -> set[str]:
@@ -652,17 +698,11 @@ def collect_myanmar_now_mm_all_for_date(target_date_mmt: date, max_pages: int = 
                     if dt_mmt.date() == target_date_mmt:
                         meta_date_ok = True
 
-            # タイトル
+            # タイトル（HTML→oEmbed→slug。jina由来のTitle行で後から上書きすることもある）
             if soup is not None:
-                title_raw = (soup.title.get_text(strip=True) if soup.title else "").strip()
-                title = _strip_source_suffix(unicodedata.normalize("NFC", title_raw))
-                if not title:
-                    h1 = soup.find("h1")
-                    if h1:
-                        title = _strip_source_suffix(unicodedata.normalize("NFC", h1.get_text(strip=True)))
+                title = _extract_title_from_soup(soup)
             if not title:
-                title = _oembed_title(url) or _title_from_slug(url)
-                title = _strip_source_suffix(title)
+                title = _strip_source_suffix(_oembed_title(url) or _title_from_slug(url))
             if not title:
                 continue
 
@@ -681,9 +721,26 @@ def collect_myanmar_now_mm_all_for_date(target_date_mmt: date, max_pages: int = 
                         p.get_text(strip=True) for p in paragraphs if getattr(p, "get_text", None)
                     )).strip()
             if not body:
-                body = _fetch_text_via_jina(url)
+                jina_raw = _fetch_text_via_jina(url)
+                if jina_raw:
+                    # If title extraction failed (or fell back to numeric slug), try to recover from jina header
+                    if (not title) or re.fullmatch(r"\d+", title or ""):
+                        jina_title = _extract_title_from_jina(jina_raw)
+                        if jina_title:
+                            title = jina_title
+                    body = _clean_body_from_jina(jina_raw)
                 if not body:
                     body = _fetch_text(url)
+            # bodyが取れていても title が空のままのケースがあるので、titleだけ救済（必要時のみ）
+            if not title:
+                jina_raw = _fetch_text_via_jina(url)
+                if jina_raw:
+                    jina_title = _extract_title_from_jina(jina_raw)
+                    if jina_title:
+                        title = jina_title
+
+            if not title:
+                continue
             if not body:
                 continue
 
