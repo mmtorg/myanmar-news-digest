@@ -1261,7 +1261,7 @@ def _collect_all_for(target_date_mmt: date) -> List[Dict]:
         (collect_irrawaddy_all_for_date, {}),
         # (collect_khitthit_all_for_date, {"max_pages": 5}),
         # (collect_dvb_all_for_date, {}),
-        # (collect_myanmar_now_mm_all_for_date, {"max_pages": 3}),
+        (collect_myanmar_now_mm_all_for_date, {"max_pages": 3}),
         # (collect_gnlm_all_for_date, {"max_pages": 3}),
         # (collect_popular_all_for_date, {}),
         # (collect_frontier_all_for_date, {}),
