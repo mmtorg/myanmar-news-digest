@@ -708,13 +708,21 @@ def collect_myanmar_now_mm_all_for_date(target_date_mmt: date, max_pages: int = 
 
             # 本文
             if soup is not None:
-                body_parts = []
-                content_root = soup.select_one("div.entry-content.entry.clearfix") or soup
-                for p in content_root.find_all("p"):
-                    txt = p.get_text(strip=True)
-                    if txt:
-                        body_parts.append(txt)
-                body = unicodedata.normalize("NFC", "\n".join(body_parts).strip())
+                content_root = soup.select_one("div.entry-content.entry.clearfix")
+                parts = []
+                if content_root:
+                    for p in content_root.find_all("p"):
+                        txt = p.get_text(" ", strip=True)
+                        if not txt:
+                            continue
+                        # 支援導線（本文ではない）に入ったら本文終了
+                        if "myanmar-now.org/mm/members" in txt or txt.startswith("Myanmar Now ဆက်လက်ရပ်တည်နိုင်ရေး"):
+                            break
+                        # 余計な空白をつぶす（NBSP等も混ざるため）
+                        txt = re.sub(r"\s+", " ", txt).strip()
+                        if txt:
+                            parts.append(txt)
+                body = unicodedata.normalize("NFC", "\n\n".join(parts).strip())
                 if not body:
                     paragraphs = extract_paragraphs_with_wait(soup)
                     body = unicodedata.normalize("NFC", "\n".join(
