@@ -2308,7 +2308,7 @@ function _clearLogSheetFor_(sheetName) {
   // ※書式も消したければ sh.clear(); に変更
 }
 
-// ミャンマー時間 16:00〜翌 2:00 の間だけ true を返す
+// ミャンマー時間 16:00〜翌 7:00 の間だけ true を返す
 function isWithinProcessingWindow_() {
   const now = new Date();
   const h = now.getHours();
@@ -2316,10 +2316,10 @@ function isWithinProcessingWindow_() {
   const t = h * 60 + m;
 
   const START = 16 * 60; // 16:00 → 960 分
-  const END = 2 * 60; // 02:00 → 120 分
+  const END = 7 * 60; // 07:00 → 420 分
 
   // 日付をまたぐウィンドウの判定:
-  // 16:00〜24:00 か 0:00〜2:00 のどちらかなら OK
+  // 16:00〜24:00 か 0:00〜7:00 のどちらかなら OK
   return t >= START || t <= END;
 }
 
@@ -2767,7 +2767,7 @@ function processRowsBatch() {
     // ★ ここで「前回の RUNNING」を NG に戻す
     cleanupStaleRunningStatuses_();
 
-    // ★ 時間帯外なら即スキップ（16:00〜翌2:00だけ動かす）
+    // ★ 時間帯外なら即スキップ（16:00〜翌7:00だけ動かす）
     if (!isWithinProcessingWindow_()) {
       Logger.log("[processRowsBatch] outside allowed time window → skip");
       return;
