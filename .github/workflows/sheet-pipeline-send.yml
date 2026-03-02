@@ -89,6 +89,8 @@ jobs:
       GEMINI_API_FULLTEXT_KEY: ${{ secrets.GEMINI_API_FULLTEXT_KEY }}
       # ===== OpenAI（全文翻訳: GPT-5 mini）=====
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      # ===== Bright Data =====
+      BRIGHTDATA_BROWSER_AUTH: ${{ secrets.BRIGHTDATA_BROWSER_AUTH }}
     steps:
       - name: Checkout (main)
         uses: actions/checkout@v4
@@ -186,6 +188,8 @@ jobs:
       GEMINI_API_FULLTEXT_KEY: ${{ secrets.GEMINI_API_FULLTEXT_KEY }}
       # ===== OpenAI（全文翻訳: GPT-5 mini）=====
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      # ===== Bright Data =====
+      BRIGHTDATA_BROWSER_AUTH: ${{ secrets.BRIGHTDATA_BROWSER_AUTH }}
     steps:
       - name: Checkout (main)
         uses: actions/checkout@v4
@@ -296,6 +300,9 @@ jobs:
 
       # ===== OpenAI（全文翻訳: GPT-5 mini）=====
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+
+      # ===== Bright Data =====
+      BRIGHTDATA_BROWSER_AUTH: ${{ secrets.BRIGHTDATA_BROWSER_AUTH }}
 
       # ===== Email (Gmail OAuth / Recipients) =====
       EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
@@ -544,6 +551,8 @@ jobs:
       GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
       GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
       PAID_PLAN_URL: ${{ secrets.PAID_PLAN_URL }}
+      # ===== Bright Data =====
+      BRIGHTDATA_BROWSER_AUTH: ${{ secrets.BRIGHTDATA_BROWSER_AUTH }}
     steps:
       - name: Checkout (手動で選んだブランチ)
         uses: actions/checkout@v4
