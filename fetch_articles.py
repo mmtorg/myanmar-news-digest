@@ -836,7 +836,7 @@ def extract_body_mail_pdf_scoped(url: str, soup) -> str:
     if ("dvb" in U):
         DOMAIN_SCOPES = DOMAIN_SCOPES or ["div.node-content", "div.entry-content", "article"]
     if ("myanmar-now" in U) or ("myanmarnow" in U):
-        DOMAIN_SCOPES = DOMAIN_SCOPES or ["div.article-content", "article .content-body", "article"]
+        DOMAIN_SCOPES = DOMAIN_SCOPES or ["div.entry-content.entry.clearfix", "div.entry-content", "article"]
     if ("gnlm.com.mm" in U):
         DOMAIN_SCOPES = DOMAIN_SCOPES or ["div.entry-content", "div.post-content", "article"]
 
