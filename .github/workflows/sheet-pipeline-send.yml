@@ -132,7 +132,7 @@ jobs:
 
       - name: Collect → write to sheet (15:50 run, clear yesterday once)
         run: |
-          python sheet_pipeline.py collect-to-sheet --clear-yesterday
+          python sheet_pipeline.py collect-to-sheet --clear-yesterday --schedule-cron "${{ github.event.schedule }}"
 
       # ★ 15:50 枠の収集完了時にメール通知（※一時的に無効化）
       # - name: Notify by email via Python (cron 15:50 MMT)
@@ -231,7 +231,7 @@ jobs:
 
       - name: Collect → append to sheet (17:50/20:50/21:50/22:50 runs)
         run: |
-          python sheet_pipeline.py collect-to-sheet
+          python sheet_pipeline.py collect-to-sheet --schedule-cron "${{ github.event.schedule }}"
 
       # ★ 17:50 / 20:50 / 21:50 / 22:50 枠ごとに、collect 完了後にメール通知（※一時的に無効化）
       # - name: Notify by email via Python (cron 17:50/20:50/21:50/22:50 MMT)
