@@ -6,7 +6,7 @@ on:
     # 15:50 MMT ≒ 09:20 UTC → 09:17 UTC（= 15:47 MMT, 3分前倒し）
     - cron: "17 9 * * *" # 15:47 MMT（実運用目標: 15:50）
 
-    # 17:50 / 20:50 / 21:50 / 22:50 MMT（= 11:20 / 14:20 / 15:20 / 16:20 UTC）: 追記のみ
+    # 17:50 / 20:50 / 21:50 / 22:50 / 23:30 MMT（= 11:20 / 14:20 / 15:20 / 16:20 / 17:00 UTC）: 追記のみ
     # 17:50 MMT ≒ 11:20 UTC → 11:17 UTC（= 17:47 MMT, 3分前倒し）
     - cron: "17 11 * * *" # 17:47 MMT（実運用目標: 17:50）
     # 20:50 MMT ≒ 14:20 UTC → 14:17 UTC（= 20:47 MMT, 3分前倒し）
@@ -15,6 +15,7 @@ on:
     - cron: "17 15 * * *" # 21:47 MMT（実運用目標: 21:50）
     # 22:50 MMT ≒ 16:20 UTC → 16:17 UTC（= 22:47 MMT, 3分前倒し）
     - cron: "17 16 * * *" # 22:47 MMT（実運用目標: 22:50）
+    - cron: "57 16 * * *" # 23:27 MMT（実運用目標: 23:30）
 
     # 02:00 MMT（= 19:30 UTC 前日）: bundle生成
     # → 19:27 UTC（= 02:00 MMT, 3分前倒し）
@@ -23,7 +24,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "collect16（15:50回） / collect（17:50/20:50/21:50/22:50回） / build-bundle（02:00） / send-only（artifactから再送）"
+        description: "collect16（15:50回） / collect（17:50/20:50/21:50/22:50/23:30回） / build-bundle（02:00） / send-only（artifactから再送）"
         type: choice
         required: true
         default: collect16
@@ -42,7 +43,9 @@ on:
 # どのイベントでも 1 workflow につき環境ごとに直列化
 concurrency:
   # 手動実行: main→production / develop→development / その他→production（元の式を踏襲）
-  group: mna-sheet-pipeline-${{ github.event_name == 'workflow_dispatch' && (github.ref_name == 'main' && 'production' || 'development') || 'production' }}
+  group: mna-sheet-pipeline-${{ github.event_name == 'workflow_dispatch'
+    && (github.ref_name == 'develop' && 'development' || 'production')
+    || 'production' }}
   cancel-in-progress: false
 
 permissions:
@@ -86,6 +89,8 @@ jobs:
       GEMINI_API_FULLTEXT_KEY: ${{ secrets.GEMINI_API_FULLTEXT_KEY }}
       # ===== OpenAI（全文翻訳: GPT-5 mini）=====
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      # ===== Bright Data =====
+      BRIGHTDATA_BROWSER_AUTH: ${{ secrets.BRIGHTDATA_BROWSER_AUTH }}
     steps:
       - name: Checkout (main)
         uses: actions/checkout@v4
@@ -119,16 +124,15 @@ jobs:
           PY
 
       - name: Write GOOGLE_APPLICATION_CREDENTIALS
-        if: env.GOOGLE_SERVICE_ACCOUNT_JSON != ''
         run: |
+          set -euo pipefail
           SA_FILE="$RUNNER_TEMP/sa.json"
-          printf '%s' "${GOOGLE_SERVICE_ACCOUNT_JSON}" > "$SA_FILE"
+          printf '%s' "$GOOGLE_SERVICE_ACCOUNT_JSON" > "$SA_FILE"
           echo "GOOGLE_APPLICATION_CREDENTIALS=$SA_FILE" >> "$GITHUB_ENV"
-          echo "GOOGLE_SERVICE_ACCOUNT_FILE=$SA_FILE" >> "$GITHUB_ENV"
 
       - name: Collect → write to sheet (15:50 run, clear yesterday once)
         run: |
-          python sheet_pipeline.py collect-to-sheet --clear-yesterday
+          python sheet_pipeline.py collect-to-sheet --clear-yesterday --schedule-cron "${{ github.event.schedule }}"
 
       # ★ 15:50 枠の収集完了時にメール通知（※一時的に無効化）
       # - name: Notify by email via Python (cron 15:50 MMT)
@@ -156,8 +160,8 @@ jobs:
       #     CSV_EMAIL_RECIPIENTS: ${{ secrets.CSV_EMAIL_RECIPIENTS }}
 
   schedule-collect:
-    # 17:50 / 20:50 / 21:50 / 22:50 枠
-    if: github.event_name == 'schedule' && contains(fromJson('["17 11 * * *","17 14 * * *","17 15 * * *","17 16 * * *"]'), github.event.schedule)
+    # 17:50 / 20:50 / 21:50 / 22:50 / 23:30 枠
+    if: github.event_name == 'schedule' && contains(fromJson('["17 11 * * *","17 14 * * *","17 15 * * *","17 16 * * *","57 16 * * *"]'), github.event.schedule)
     runs-on: ubuntu-latest
     environment: production
     env:
@@ -184,6 +188,8 @@ jobs:
       GEMINI_API_FULLTEXT_KEY: ${{ secrets.GEMINI_API_FULLTEXT_KEY }}
       # ===== OpenAI（全文翻訳: GPT-5 mini）=====
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      # ===== Bright Data =====
+      BRIGHTDATA_BROWSER_AUTH: ${{ secrets.BRIGHTDATA_BROWSER_AUTH }}
     steps:
       - name: Checkout (main)
         uses: actions/checkout@v4
@@ -217,16 +223,15 @@ jobs:
           PY
 
       - name: Write GOOGLE_APPLICATION_CREDENTIALS
-        if: env.GOOGLE_SERVICE_ACCOUNT_JSON != ''
         run: |
+          set -euo pipefail
           SA_FILE="$RUNNER_TEMP/sa.json"
-          printf '%s' "${GOOGLE_SERVICE_ACCOUNT_JSON}" > "$SA_FILE"
+          printf '%s' "$GOOGLE_SERVICE_ACCOUNT_JSON" > "$SA_FILE"
           echo "GOOGLE_APPLICATION_CREDENTIALS=$SA_FILE" >> "$GITHUB_ENV"
-          echo "GOOGLE_SERVICE_ACCOUNT_FILE=$SA_FILE" >> "$GITHUB_ENV"
 
       - name: Collect → append to sheet (17:50/20:50/21:50/22:50 runs)
         run: |
-          python sheet_pipeline.py collect-to-sheet
+          python sheet_pipeline.py collect-to-sheet --schedule-cron "${{ github.event.schedule }}"
 
       # ★ 17:50 / 20:50 / 21:50 / 22:50 枠ごとに、collect 完了後にメール通知（※一時的に無効化）
       # - name: Notify by email via Python (cron 17:50/20:50/21:50/22:50 MMT)
@@ -296,6 +301,9 @@ jobs:
       # ===== OpenAI（全文翻訳: GPT-5 mini）=====
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 
+      # ===== Bright Data =====
+      BRIGHTDATA_BROWSER_AUTH: ${{ secrets.BRIGHTDATA_BROWSER_AUTH }}
+
       # ===== Email (Gmail OAuth / Recipients) =====
       EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
       LITE_EMAIL_RECIPIENTS: ${{ secrets.LITE_EMAIL_RECIPIENTS }}
@@ -313,7 +321,7 @@ jobs:
       TRIGGER_COLUMN_RANGE: "K:K"
       # 送信済み日付を記録するセル（同一日の重複実行防止）
       SENT_MARK_CELL: "config!A1"
-      POLL_INTERVAL_SEC: "600" # 10分
+      POLL_INTERVAL_SEC: "1200" # 20分
       MAX_WATCH_SEC: "18000" # 5時間（GitHub Actions 実行上限を考慮）
       BUILD_FAIL_RETRY_LIMIT: "2" # build-bundle 失敗後、監視ループに戻る回数（最大2回）
       MAIL_RETRY_LIMIT: "2" # メール送信リトライ回数（最大2回）
@@ -338,12 +346,11 @@ jobs:
           pip install -q google-api-python-client google-auth
 
       - name: Write GOOGLE_APPLICATION_CREDENTIALS
-        if: env.GOOGLE_SERVICE_ACCOUNT_JSON != ''
         run: |
+          set -euo pipefail
           SA_FILE="$RUNNER_TEMP/sa.json"
-          printf '%s' "${GOOGLE_SERVICE_ACCOUNT_JSON}" > "$SA_FILE"
+          printf '%s' "$GOOGLE_SERVICE_ACCOUNT_JSON" > "$SA_FILE"
           echo "GOOGLE_APPLICATION_CREDENTIALS=$SA_FILE" >> "$GITHUB_ENV"
-          echo "GOOGLE_SERVICE_ACCOUNT_FILE=$SA_FILE" >> "$GITHUB_ENV"
 
       - name: Assert vendored fonts & export PDF_FONT_PATH
         run: |
@@ -365,59 +372,59 @@ jobs:
           echo "built=false" >> "$GITHUB_OUTPUT"
 
           check_sheet () {
-            python - <<'PY'
-            import os, sys
-            from datetime import datetime
-            from google.oauth2.service_account import Credentials
-            from googleapiclient.discovery import build
+          python - <<'PY'
+          import os, sys
+          from datetime import datetime
+          from google.oauth2.service_account import Credentials
+          from googleapiclient.discovery import build
 
-            SHEET_ID = os.environ['MNA_SHEET_ID']
-            SHEET_NAME = os.environ.get('MNA_SHEET_NAME', 'prod')
-            TRIGGER_VALUE = os.environ.get('TRIGGER_VALUE', 'a')
-            TRIGGER_RANGE = os.environ.get('TRIGGER_COLUMN_RANGE', 'K:K')
-            SENT_MARK_CELL = os.environ.get('SENT_MARK_CELL', 'config!A1')
-            WATCH_TZ = os.environ.get('WATCH_TZ', 'Asia/Yangon')
+          SHEET_ID = os.environ['MNA_SHEET_ID']
+          SHEET_NAME = os.environ.get('MNA_SHEET_NAME', 'prod')
+          TRIGGER_VALUE = os.environ.get('TRIGGER_VALUE', 'a')
+          TRIGGER_RANGE = os.environ.get('TRIGGER_COLUMN_RANGE', 'K:K')
+          SENT_MARK_CELL = os.environ.get('SENT_MARK_CELL', 'config!A1')
+          WATCH_TZ = os.environ.get('WATCH_TZ', 'Asia/Yangon')
 
-            creds = None
-            sa_json = os.environ.get('GOOGLE_SERVICE_ACCOUNT_JSON', '')
-            if os.environ.get('GOOGLE_APPLICATION_CREDENTIALS'):
-              creds = Credentials.from_service_account_file(
-                os.environ['GOOGLE_APPLICATION_CREDENTIALS'],
-                scopes=['https://www.googleapis.com/auth/spreadsheets']
-              )
-            elif sa_json:
-              import json, tempfile
-              fd, p = tempfile.mkstemp(suffix='.json')
-              with os.fdopen(fd, 'w') as f:
-                f.write(sa_json)
-              creds = Credentials.from_service_account_file(p, scopes=['https://www.googleapis.com/auth/spreadsheets'])
-            else:
-              print('missing service account json', file=sys.stderr)
-              sys.exit(2)
+          creds = None
+          sa_json = os.environ.get('GOOGLE_SERVICE_ACCOUNT_JSON', '')
+          if os.environ.get('GOOGLE_APPLICATION_CREDENTIALS'):
+            creds = Credentials.from_service_account_file(
+              os.environ['GOOGLE_APPLICATION_CREDENTIALS'],
+              scopes=['https://www.googleapis.com/auth/spreadsheets']
+            )
+          elif sa_json:
+            import json, tempfile
+            fd, p = tempfile.mkstemp(suffix='.json')
+            with os.fdopen(fd, 'w') as f:
+              f.write(sa_json)
+            creds = Credentials.from_service_account_file(p, scopes=['https://www.googleapis.com/auth/spreadsheets'])
+          else:
+            print('missing service account json', file=sys.stderr)
+            sys.exit(2)
 
-            service = build('sheets', 'v4', credentials=creds, cache_discovery=False)
-            sheets = service.spreadsheets().values()
+          service = build('sheets', 'v4', credentials=creds, cache_discovery=False)
+          sheets = service.spreadsheets().values()
 
-            # same-day guard: if config!A1 == today(Asia/Yangon) => exit 20
-            mark = sheets.get(spreadsheetId=SHEET_ID, range=SENT_MARK_CELL).execute().get('values', [])
-            mark_val = (mark[0][0] if mark and mark[0] else '').strip()
-            try:
-              import zoneinfo
-              tz = zoneinfo.ZoneInfo(WATCH_TZ)
-              today = datetime.now(tz).strftime('%Y-%m-%d')
-            except Exception:
-              today = datetime.utcnow().strftime('%Y-%m-%d')
-            if mark_val == today:
-              sys.exit(20)
+          # same-day guard: if config!A1 == today(Asia/Yangon) => exit 20
+          mark = sheets.get(spreadsheetId=SHEET_ID, range=SENT_MARK_CELL).execute().get('values', [])
+          mark_val = (mark[0][0] if mark and mark[0] else '').strip()
+          try:
+            import zoneinfo
+            tz = zoneinfo.ZoneInfo(WATCH_TZ)
+            today = datetime.now(tz).strftime('%Y-%m-%d')
+          except Exception:
+            today = datetime.utcnow().strftime('%Y-%m-%d')
+          if mark_val == today:
+            sys.exit(20)
 
-            # trigger check: any cell in K:K == 'a' (exact match, trim)
-            rng = f"{SHEET_NAME}!{TRIGGER_RANGE}"
-            vals = sheets.get(spreadsheetId=SHEET_ID, range=rng).execute().get('values', [])
-            flat = [v[0].strip() for v in vals if v and isinstance(v[0], str)]
-            if any(x == TRIGGER_VALUE for x in flat):
-              sys.exit(10)
-            sys.exit(0)
-            PY
+          # trigger check: any cell in K:K == 'a' (exact match, trim)
+          rng = f"{SHEET_NAME}!{TRIGGER_RANGE}"
+          vals = sheets.get(spreadsheetId=SHEET_ID, range=rng).execute().get('values', [])
+          flat = [v[0].strip() for v in vals if v and isinstance(v[0], str)]
+          if any(x == TRIGGER_VALUE for x in flat):
+            sys.exit(10)
+          sys.exit(0)
+          PY
           }
 
           POLL=${POLL_INTERVAL_SEC:-600}
@@ -528,6 +535,25 @@ jobs:
           ).execute()
           print('marked sent:', today)
           PY
+
+  manual-run:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    environment: ${{ github.ref_name == 'develop' && 'development' || 'production' }}
+    env:
+      GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+      EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
+      LITE_EMAIL_RECIPIENTS: ${{ secrets.LITE_EMAIL_RECIPIENTS }}
+      BUSINESS_EMAIL_RECIPIENTS: ${{ secrets.BUSINESS_EMAIL_RECIPIENTS }}
+      TRIAL_EMAIL_RECIPIENTS: ${{ secrets.TRIAL_EMAIL_RECIPIENTS }}
+      INTERNAL_EMAIL_RECIPIENTS: ${{ secrets.INTERNAL_EMAIL_RECIPIENTS }}
+      GMAIL_CLIENT_ID: ${{ secrets.GMAIL_CLIENT_ID }}
+      GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
+      GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
+      PAID_PLAN_URL: ${{ secrets.PAID_PLAN_URL }}
+      # ===== Bright Data =====
+      BRIGHTDATA_BROWSER_AUTH: ${{ secrets.BRIGHTDATA_BROWSER_AUTH }}
+    steps:
       - name: Checkout (手動で選んだブランチ)
         uses: actions/checkout@v4
         with:
@@ -588,6 +614,7 @@ jobs:
             echo "MNA_SHEET_ID=${{ secrets.MNA_SHEET_ID }}";
             echo "RETRY_WAIT_SCHEDULE=120 240 480 900";
             echo "OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}";
+            echo "BRIGHTDATA_BROWSER_AUTH=${{ secrets.BRIGHTDATA_BROWSER_AUTH }}";
           } >> "$GITHUB_ENV"
 
           # ===== multi-line secret → ファイルに保存（$GITHUB_ENV には書かない）=====
@@ -660,7 +687,7 @@ jobs:
           echo "PDF_FONT_PATH=${PDF_FONT_PATH:-<not-set>}"
 
       - name: Run selected mode
-        if: ${{ github.event_name != 'workflow_dispatch' || (inputs.mode != 'notify-email' && inputs.mode != 'send-only') }}
+        if: ${{ inputs.mode == 'collect16' || inputs.mode == 'collect' }}
         run: |
           set -euo pipefail
           echo "Run case \"${{ inputs.mode }}\" in"

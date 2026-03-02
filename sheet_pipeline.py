@@ -16,6 +16,41 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
+# ===== collect rules (no env var switching) =====
+_COLLECT_RULES_PATH = os.path.join(BASE_DIR, "collect_rules.json")
+_DEFAULT_IRRAWADDY_ALLOWED_CRONS = [
+    "17 14 * * *",  # 20:50枠（実際は20:47起動）
+    "17 15 * * *",  # 21:50枠
+    "17 16 * * *",  # 22:50枠
+    # "57 16 * * *",  # 23:30枠
+]
+
+def _load_collect_rules() -> dict:
+    """Load collect_rules.json if present; otherwise return empty dict."""
+    try:
+        if os.path.exists(_COLLECT_RULES_PATH):
+            with open(_COLLECT_RULES_PATH, "r", encoding="utf-8") as f:
+                return json.load(f) or {}
+    except Exception as e:
+        logging.warning(f"[rules] failed to load collect rules: {e}")
+    return {}
+
+def _should_collect_irrawaddy(schedule_cron: str | None) -> bool:
+    """
+    Decide whether to run Irrawaddy collector for this run.
+    - If schedule_cron is None/empty (e.g., local run / workflow_dispatch), run as before (True).
+    - If schedule_cron is provided, only run when it matches allowlist in collect_rules.json.
+    """
+    if not schedule_cron:
+        return True
+    rules = _load_collect_rules()
+    allowed = rules.get("irrawaddy_allowed_crons")
+    if isinstance(allowed, list) and all(isinstance(x, str) for x in allowed):
+        allowlist = [x.strip() for x in allowed if x and x.strip()]
+    else:
+        allowlist = _DEFAULT_IRRAWADDY_ALLOWED_CRONS
+    return schedule_cron.strip() in set(allowlist)
+
 def _setup_logger():
     level = (os.getenv("MNA_LOG_LEVEL") or "INFO").upper()
     try:
@@ -301,8 +336,10 @@ def _get_body_once(url: str, source: str, out_dir: str, title: str = "", summary
                 # ★ Irrawaddy: 専用フェッチャ + 専用抽出器
                 def _irw_fetch(u: str) -> str:
                     try:
-                        res = fetch_with_retry_irrawaddy(u)  # fetch_articles.py 側の関数
-                        return getattr(res, "text", "") or getattr(res, "content", b"").decode("utf-8", "ignore")
+                        b = fetch_once_irrawaddy(u)  # ← ここが direct→必要ならBD になる
+                        if isinstance(b, (bytes, bytearray)):
+                            return b.decode("utf-8", "ignore")
+                        return (b or "")
                     except Exception:
                         return ""
                 html_fetcher = _irw_fetch
@@ -1251,14 +1288,15 @@ def _is_ayeyarwady(title_raw: str, body_raw: str) -> bool:
         hay = f"{t} {b}"
         return any(kw in hay for kw in kws)
 
-def _collect_all_for(target_date_mmt: date) -> List[Dict]:
+def _collect_all_for(target_date_mmt: date, schedule_cron: str | None = None) -> List[Dict]:
     if not collectors_loaded:
         raise SystemExit("収集関数の読み込み失敗。export_all_articles_to_csv.py を配置してください。")
     items: List[Dict] = []
-    for fn, kwargs in [
+    plan: List[tuple] = [
         (collect_mizzima_all_for_date, {"max_pages": 3}),
         (collect_bbc_all_for_date, {}),
-        (collect_irrawaddy_all_for_date, {}),
+        # Irrawaddy は cron 枠で制御（schedule_cron が渡されたときのみ）
+        # allowed list は collect_rules.json の irrawaddy_allowed_crons で変更可能
         (collect_khitthit_all_for_date, {"max_pages": 5}),
         (collect_dvb_all_for_date, {}),
         (collect_myanmar_now_mm_all_for_date, {"max_pages": 3}),
@@ -1266,7 +1304,14 @@ def _collect_all_for(target_date_mmt: date) -> List[Dict]:
         (collect_popular_all_for_date, {}),
         (collect_frontier_all_for_date, {}),
         (collect_jetro_biznews_mm_all_for_date, {}),
-    ]:
+    ]
+    if _should_collect_irrawaddy(schedule_cron):
+        plan.insert(0, (collect_irrawaddy_all_for_date, {}))
+        logging.info(f"[rules] Irrawaddy enabled (schedule_cron={schedule_cron})")
+    else:
+        logging.info(f"[rules] Irrawaddy disabled (schedule_cron={schedule_cron})")
+
+    for fn, kwargs in plan:
         name = fn.__name__.replace("_all_for_date", "")
         try:
             with _timeit(f"collector:{name}", date=target_date_mmt.isoformat(), kwargs=kwargs or None):
@@ -1395,7 +1440,7 @@ def cmd_collect_to_sheet(args):
         logging.info(f"[clean] kept only {today} (removed {removed} rows)")
 
     # ① 各メディアから記事収集（export_all_articles_to_csv と同じ collectors）
-    items = _collect_all_for(target)
+    items = _collect_all_for(target, getattr(args, 'schedule_cron', None))
     if not items:
         logging.warning("[collect] no items to write")
         print("no items to write")
@@ -1702,6 +1747,7 @@ def main():
     p1 = sub.add_parser("collect-to-sheet", help="収集→要約→sheet追記（16/18/20/22）")
     p1.add_argument("--clear-yesterday", action="store_true", help="前日分だけA2:Jから除去（16:00用）")
     p1.add_argument("--bundle-dir", default="bundle", help="本文キャッシュ/成果物の保存先（既定: bundle）")
+    p1.add_argument("--schedule-cron", default=None, help="(GitHub Actions) github.event.schedule の cron 文字列。Irrawaddy の実行枠判定に使用")
     # === Gemini free tier を想定したレート設定（CLI指定 > 環境変数 > 既定）===
     p1.add_argument("--rpm", type=int, default=int(os.getenv("GEMINI_REQS_PER_MIN", "9")))
     p1.add_argument("--min-interval", type=float, default=float(os.getenv("GEMINI_MIN_INTERVAL_SEC", "2.0")))
