@@ -27,10 +27,10 @@ function exportProdRowsToMonthlyCsv() {
   for (let i = 0; i < dataRows.length; i++) {
     const row = dataRows[i];
 
-    const status = row[10]; // K列 (0始まりで index=10)
-    if (status !== "a") {
-      continue;
-    }
+    // const status = row[10]; // K列 (0始まりで index=10)
+    // if (status !== "a") {
+    //   continue;
+    // }
 
     const dateValue = row[0]; // A列 日付
     if (!(dateValue instanceof Date)) {
@@ -60,7 +60,7 @@ function exportProdRowsToMonthlyCsv() {
 
 // スクリプトプロパティからCSV出力先フォルダを取得
 const folderId = PropertiesService.getScriptProperties().getProperty(
-  "CSV_OUTPUT_FOLDER_ID"
+  "CSV_OUTPUT_FOLDER_ID",
 );
 
 function getCsvOutputFolder_() {
