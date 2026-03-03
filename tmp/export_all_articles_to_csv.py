@@ -577,14 +577,67 @@ def collect_myanmar_now_mm_all_for_date(target_date_mmt: date, max_pages: int = 
             return ""
         return _strip_source_suffix(unicodedata.normalize("NFC", m.group(1).strip()))
 
+    def _extract_myanmar_now_body_from_root(content_root) -> str:
+        import re, unicodedata
+        from bs4 import Tag
+
+        STOP_TEXTS = {
+            "Read Next",
+            "Related Articles",
+            "Subscribe to our channel",
+            "ဖတ်ရှုမှုအများဆုံး",
+            "Subscribe",
+        }
+        STOP_CLASS_ID_PAT = re.compile(
+            r"(read[-_ ]?next|related|popular|most[-_ ]?read|subscribe|newsletter|footer|sidebar|comments?)",
+            re.I,
+        )
+
+        def norm(s: str) -> str:
+            s = unicodedata.normalize("NFC", s or "")
+            s = re.sub(r"\s+", " ", s).strip()
+            return s
+
+        def should_stop(tag: Tag) -> bool:
+            cid = " ".join((tag.get("class") or [])) + " " + (tag.get("id") or "")
+            if cid and STOP_CLASS_ID_PAT.search(cid):
+                return True
+            if tag.name in ("h1", "h2", "h3", "h4", "h5"):
+                if norm(tag.get_text(" ", strip=True)) in STOP_TEXTS:
+                    return True
+            if norm(tag.get_text(" ", strip=True)) in STOP_TEXTS:
+                return True
+            return False
+
+        lines = []
+        last = None
+
+        for el in content_root.descendants:
+            if not isinstance(el, Tag):
+                continue
+            if should_stop(el):
+                break
+            if el.name == "p":
+                t = norm(el.get_text(" ", strip=True))
+                if not t:
+                    continue
+                if "ပံ့ပိုးကူညီပေးပါ" in t:
+                    continue
+                if last == t:
+                    continue
+                last = t
+                lines.append(t)
+
+        return "\n\n".join(lines).strip()
+
     def _clean_body_from_jina(text_payload: str) -> str:
         """
         r.jina.ai sometimes returns a header block:
-          Title: ...
-          URL Source: ...
-          Published Time: ...
-          Markdown Content:
-          ...
+        Title: ...
+        URL Source: ...
+        Published Time: ...
+        Markdown Content:
+        ...
         We want the body ONLY (markdown content block if present).
         """
         if not text_payload:
@@ -592,8 +645,21 @@ def collect_myanmar_now_mm_all_for_date(target_date_mmt: date, max_pages: int = 
         t = unicodedata.normalize("NFC", text_payload).strip()
         if "Markdown Content:" in t:
             t = t.split("Markdown Content:", 1)[1].strip()
-        # Also trim any leading blank lines
-        return t.lstrip("\n").strip()
+        t = t.lstrip("\n").strip()
+
+        # ここ以降に来たら本文ではない（関連記事/購読/人気記事など）ので打ち切る
+        for stopper in [
+            "\nRead Next\n",
+            "\nRelated Articles\n",
+            "\nSubscribe to our channel\n",
+            "\nဖတ်ရှုမှုအများဆုံး\n",
+        ]:
+            idx = t.find(stopper)
+            if idx != -1:
+                t = t[:idx].rstrip()
+                break
+
+        return t
 
     today_label = f"{target_date_mmt.strftime('%B')} {target_date_mmt.day}, {target_date_mmt.year}"
 
@@ -708,45 +774,47 @@ def collect_myanmar_now_mm_all_for_date(target_date_mmt: date, max_pages: int = 
                 continue
 
             # 本文
+            body = ""
+            jina_raw = ""  # jina は必要になった時だけ 1回取得して使い回す
+
+            # 1) まず HTML から本文抽出
             if soup is not None:
-                content_root = soup.select_one("div.entry-content.entry.clearfix")
-                parts = []
+                content_root = (
+                    soup.select_one("div.entry-content.entry.clearfix")
+                    or soup.select_one("div.entry-content")
+                )
                 if content_root:
-                    for p in content_root.find_all("p"):
-                        txt = p.get_text(" ", strip=True)
-                        if not txt:
-                            continue
-                        # 支援導線（本文ではない）に入ったら本文終了
-                        if "myanmar-now.org/mm/members" in txt or txt.startswith("Myanmar Now ဆက်လက်ရပ်တည်နိုင်ရေး"):
-                            break
-                        # 余計な空白をつぶす（NBSP等も混ざるため）
-                        txt = re.sub(r"\s+", " ", txt).strip()
-                        if txt:
-                            parts.append(txt)
-                body = unicodedata.normalize("NFC", "\n\n".join(parts).strip())
+                    body = _extract_myanmar_now_body_from_root(content_root)
+
+                # 念のためのフォールバック（サイト構造が崩れた時用）
                 if not body:
                     paragraphs = extract_paragraphs_with_wait(soup)
-                    body = unicodedata.normalize("NFC", "\n".join(
-                        p.get_text(strip=True) for p in paragraphs if getattr(p, "get_text", None)
-                    )).strip()
-            if not body:
-                jina_raw = _fetch_text_via_jina(url)
-                if jina_raw:
-                    # If title extraction failed (or fell back to numeric slug), try to recover from jina header
-                    if (not title) or re.fullmatch(r"\d+", title or ""):
-                        jina_title = _extract_title_from_jina(jina_raw)
-                        if jina_title:
-                            title = jina_title
-                    body = _clean_body_from_jina(jina_raw)
-                if not body:
-                    body = _fetch_text(url)
-            # bodyが取れていても title が空のままのケースがあるので、titleだけ救済（必要時のみ）
-            if not title:
-                jina_raw = _fetch_text_via_jina(url)
-                if jina_raw:
+                    body = unicodedata.normalize(
+                        "NFC",
+                        "\n".join(
+                            p.get_text(strip=True) for p in paragraphs
+                            if getattr(p, "get_text", None)
+                        ),
+                    ).strip()
+
+            # 2) タイトル or 本文が弱い/空なら jina を1回だけ取得して補完
+            need_title_from_jina = (not title) or re.fullmatch(r"\d+", title or "")
+            need_body_from_jina = not body
+
+            if need_title_from_jina or need_body_from_jina:
+                jina_raw = _fetch_text_via_jina(url) or ""
+
+                if need_title_from_jina and jina_raw:
                     jina_title = _extract_title_from_jina(jina_raw)
                     if jina_title:
                         title = jina_title
+
+                if need_body_from_jina and jina_raw:
+                    body = _clean_body_from_jina(jina_raw)
+
+            # 3) まだ本文がなければ最後の手段
+            if not body:
+                body = _fetch_text(url)
 
             if not title:
                 continue
