@@ -1,4 +1,5 @@
 ﻿import requests
+from requests.auth import HTTPProxyAuth
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta, timezone, date
 from dateutil.parser import parse as parse_date
@@ -1182,6 +1183,61 @@ def fetch_html_via_brightdata_browser(url: str, *, timeout_ms: int = 120_000) ->
     except Exception:
         return ""
 
+def fetch_html_via_brightdata_unlocker(url: str, *, timeout: int = 30) -> str:
+    """
+    Bright Data Web Unlocker 経由で HTML を取得して返す。
+
+    必要な環境変数:
+      - BRIGHTDATA_WEB_UNLOCKER_ZONE
+      - BRIGHTDATA_WEB_UNLOCKER_PASSWORD
+
+    備考:
+      - ZONE に username 完成形 (brd-customer-...-zone-...) を入れている場合はそのまま使う
+      - そうでない場合は、既存運用に合わせて "brd-customer-{ZONE}-zone-{ZONE}" を組み立てる
+    """
+    zone = (os.getenv("BRIGHTDATA_WEB_UNLOCKER_ZONE") or "").strip()
+    password = (os.getenv("BRIGHTDATA_WEB_UNLOCKER_PASSWORD") or "").strip()
+    if not zone or not password:
+        return ""
+
+    if zone.startswith("brd-customer-"):
+        proxy_user = zone
+    else:
+        proxy_user = f"brd-customer-{zone}-zone-{zone}"
+
+    proxy_host = os.getenv("BRIGHTDATA_WEB_UNLOCKER_HOST", "brd.superproxy.io")
+    proxy_port = os.getenv("BRIGHTDATA_WEB_UNLOCKER_PORT", "33335")
+    proxy_url = f"http://{proxy_host}:{proxy_port}"
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/128.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+    }
+
+    try:
+        r = requests.get(
+            url,
+            headers=headers,
+            proxies={"http": proxy_url, "https": proxy_url},
+            auth=HTTPProxyAuth(proxy_user, password),
+            timeout=timeout,
+            allow_redirects=True,
+        )
+        if r.status_code == 200 and (r.text or "").strip():
+            print(f"[bd-unlocker] ok status=200 len={len(r.text)} → {url}")
+            return r.text
+        print(f"[bd-unlocker] HTTP {r.status_code} len={len(r.text or '')} → {url}")
+    except Exception as e:
+        print(f"[bd-unlocker] EXC: {e} → {url}")
+    return ""
+
 # === DVB専用 ===
 def fetch_with_retry_dvb(url, retries=4, wait_seconds=2, session=None):
     """
@@ -1458,8 +1514,8 @@ def fetch_once_irrawaddy(url, session=None, *, allow_brightdata_fallback: bool =
     # ❗ direct が怪しいときだけ BD（許可されている場合）
     if allow_brightdata_fallback:
         try:
-            if (status in (403, 503)) or (html_text and ("content-inner" not in html_text)) or (not html_text):
-                html2 = (fetch_html_via_brightdata_browser(url) or "").strip()
+            if status == 403:
+                html2 = (fetch_html_via_brightdata_unlocker(url) or "").strip()
                 if html2:
                     return html2.encode("utf-8", "ignore")
         except Exception:

@@ -38,7 +38,7 @@ import sys
 import time
 import unicodedata
 from datetime import datetime, date, timedelta
-from typing import Dict, List, Iterable
+from typing import Dict, List, Iterable, Tuple, Optional
 import os
 import random
 from collections import deque
@@ -57,6 +57,7 @@ from fetch_articles import (
     client_summary,
     deduplicate_by_url,
     fetch_with_retry_irrawaddy,
+    fetch_html_via_brightdata_unlocker,
     fetch_html_via_brightdata_browser,
     extract_body_irrawaddy,
     _parse_category_date_text,
@@ -893,6 +894,55 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
         "/cartoons",  # "/category/Cartoons"は除外対象だがこのパターンもある
     ]
     
+    # URL単位キャッシュ:
+    #   key=url
+    #   value={"html": str, "status": int|None, "source": "direct"|"unlocker"|"none"}
+    html_fetch_cache: Dict[str, Dict[str, object]] = {}
+
+    def _fetch_irrawaddy_html_cached(url: str, *, session=None) -> Tuple[str, Optional[int], str]:
+        """
+        コスト抑制方針:
+          1) まず direct
+          2) direct が 403 のときだけ Web Unlocker
+          3) Unlocker 失敗でも Browser API には進まない
+        同一実行中は URL ごとに結果をキャッシュする。
+        """
+        cached = html_fetch_cache.get(url)
+        if cached is not None:
+            return (
+                cached.get("html", "") or "",
+                cached.get("status"),
+                cached.get("source", "none") or "none",
+            )
+
+        html = ""
+        status = None
+        source = "none"
+
+        try:
+            res = fetch_with_retry_irrawaddy(url, session=session)
+            status = getattr(res, "status_code", None)
+            html = getattr(res, "content", None) or getattr(res, "text", "") or ""
+            if html:
+                source = "direct"
+        except Exception as e:
+            print(f"[irrawaddy] direct fetch fail {url}: {e}")
+            html = ""
+            status = None
+
+        # 403 のときだけ Unlocker
+        if status == 403:
+            html = fetch_html_via_brightdata_unlocker(url) or ""
+            source = "unlocker" if html else "none"
+
+        # Unlocker失敗でも Browser API には進まない
+        html_fetch_cache[url] = {
+            "html": html,
+            "status": status,
+            "source": source,
+        }
+        return html, status, source
+    
     sess = _make_pooled_session()
 
     def _is_excluded_url(href: str) -> bool:
@@ -935,17 +985,13 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
     # 1) 各カテゴリを1回ずつ巡回し、当日候補URLを収集
     for rel in paths:
         url = f"{BASE}{rel}"
-        try:
-            res = fetch_with_retry_irrawaddy(url, session=session)
-        except Exception as e:
-            print(f"[irrawaddy] list fetch fail {url}: {e}")
+        html, status_code, source = _fetch_irrawaddy_html_cached(url, session=session)
+        if not html:
+            print(f"[irrawaddy] list fetch fail {url}: status={status_code} source={source}")
             continue
         if debug:
-            sc = getattr(res, "status_code", "?")
-            body = getattr(res, "content", None)
-            blen = len(body) if body is not None else len(getattr(res, "text", ""))
-            print(f"[irrawaddy][list] fetched: {url} status={sc} bytes={blen}")
-        soup = BeautifulSoup(getattr(res, "content", None) or getattr(res, "text", ""), "html.parser")
+            print(f"[irrawaddy][list] fetched: {url} status={status_code} source={source} bytes={len(html)}")
+        soup = BeautifulSoup(html, "html.parser")
         if debug:
             title_txt = (soup.title.get_text(strip=True) if soup.title else "")
             c_hero = len(soup.select('.jnews_category_hero_container'))
@@ -995,13 +1041,12 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
 
     # 1.5) ホーム特定カラム（data-id=kuDRpuo）でも当日候補を収集
     try:
-        res_home = fetch_with_retry_irrawaddy(f"{BASE}/", session=session)
+        html_home, status_home, source_home = _fetch_irrawaddy_html_cached(f"{BASE}/", session=session)
+        if not html_home:
+            raise Exception(f"home html fetch failed (status={status_home}, source={source_home})")
         if debug:
-            sc = getattr(res_home, "status_code", "?")
-            body = getattr(res_home, "content", None)
-            blen = len(body) if body is not None else len(getattr(res_home, "text", ""))
-            print(f"[irrawaddy][home] fetched: / status={sc} bytes={blen}")
-        soup_home = BeautifulSoup(getattr(res_home, "content", None) or getattr(res_home, "text", ""), "html.parser")
+            print(f"[irrawaddy][home] fetched: / status={status_home} source={source_home} bytes={len(html_home)}")
+        soup_home = BeautifulSoup(html_home, "html.parser")
         home_scope = soup_home.select_one(
             'div.elementor-element-kuDRpuo[data-id="kuDRpuo"], '
             "div.elementor-element-kuDRpuo, "
@@ -1224,18 +1269,9 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
             title = ""
             body = ""
             try:
-                html = ""
-                try:
-                    res = fetch_with_retry_irrawaddy(url, session=session)
-                    html = (getattr(res, "content", None) or res.text or "")
-                    if getattr(res, "status_code", 200) == 403:
-                        html = ""
-                except Exception:
-                    html = ""
+                html, status_code, source = _fetch_irrawaddy_html_cached(url, session=session)
                 if not html:
-                    html = fetch_html_via_brightdata_browser(url)
-                if not html:
-                    raise Exception("html fetch failed (direct+brightdata)")
+                    raise Exception(f"html fetch failed (status={status_code}, source={source})")
                 soup = BeautifulSoup(html, "html.parser")
                 meta_date = _article_date_from_meta_mmt(soup)
             except Exception:
