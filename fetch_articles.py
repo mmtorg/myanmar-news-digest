@@ -1,4 +1,5 @@
 ﻿import requests
+from urllib.parse import quote
 from requests.auth import HTTPProxyAuth
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta, timezone, date
@@ -1205,17 +1206,6 @@ def fetch_html_via_brightdata_browser(url: str, *, timeout_ms: int = 120_000) ->
         return ""
 
 def fetch_html_via_brightdata_unlocker(url: str, *, timeout: int = 30) -> str:
-    """
-    Bright Data Web Unlocker 経由で HTML を取得して返す。
-
-    必要な環境変数:
-      - BRIGHTDATA_WEB_UNLOCKER_ZONE
-      - BRIGHTDATA_WEB_UNLOCKER_PASSWORD
-
-    備考:
-      - ZONE に username 完成形 (brd-customer-...-zone-...) を入れている場合はそのまま使う
-      - そうでない場合は、既存運用に合わせて "brd-customer-{ZONE}-zone-{ZONE}" を組み立てる
-    """
     zone = (os.getenv("BRIGHTDATA_WEB_UNLOCKER_ZONE") or "").strip()
     password = (os.getenv("BRIGHTDATA_WEB_UNLOCKER_PASSWORD") or "").strip()
     if not zone or not password:
@@ -1228,7 +1218,11 @@ def fetch_html_via_brightdata_unlocker(url: str, *, timeout: int = 30) -> str:
 
     proxy_host = os.getenv("BRIGHTDATA_WEB_UNLOCKER_HOST", "brd.superproxy.io")
     proxy_port = os.getenv("BRIGHTDATA_WEB_UNLOCKER_PORT", "33335")
-    proxy_url = f"http://{proxy_host}:{proxy_port}"
+
+    # requests公式推奨の proxy URL に資格情報を埋め込む方式
+    proxy_user_enc = quote(proxy_user, safe="")
+    password_enc = quote(password, safe="")
+    proxy_url = f"http://{proxy_user_enc}:{password_enc}@{proxy_host}:{proxy_port}"
 
     headers = {
         "User-Agent": (
@@ -1247,16 +1241,19 @@ def fetch_html_via_brightdata_unlocker(url: str, *, timeout: int = 30) -> str:
             url,
             headers=headers,
             proxies={"http": proxy_url, "https": proxy_url},
-            auth=HTTPProxyAuth(proxy_user, password),
             timeout=timeout,
             allow_redirects=True,
+            # 動作確認用。恒久対応は Bright Data の SSL 証明書導入推奨
+            verify=False,
         )
         if r.status_code == 200 and (r.text or "").strip():
             print(f"[bd-unlocker] ok status=200 len={len(r.text)} → {url}")
             return r.text
+
         print(f"[bd-unlocker] HTTP {r.status_code} len={len(r.text or '')} → {url}")
     except Exception as e:
         print(f"[bd-unlocker] EXC: {e} → {url}")
+
     return ""
 
 # === DVB専用 ===
