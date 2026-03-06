@@ -1205,7 +1205,30 @@ def fetch_html_via_brightdata_browser(url: str, *, timeout_ms: int = 120_000) ->
     except Exception:
         return ""
 
-def fetch_html_via_brightdata_unlocker(url: str, *, timeout: int = 30) -> str:
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+_BD_SESSION = None
+
+def _get_bd_session():
+    global _BD_SESSION
+    if _BD_SESSION is None:
+        s = requests.Session()
+        s.headers.update({
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/128.0.0.0 Safari/537.36"
+            ),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
+            "Connection": "keep-alive",
+        })
+        _BD_SESSION = s
+    return _BD_SESSION
+
+def fetch_html_via_brightdata_unlocker(url: str, *, timeout=(10, 15)) -> str:
     zone = (os.getenv("BRIGHTDATA_WEB_UNLOCKER_ZONE") or "").strip()
     password = (os.getenv("BRIGHTDATA_WEB_UNLOCKER_PASSWORD") or "").strip()
     if not zone or not password:
@@ -1219,37 +1242,23 @@ def fetch_html_via_brightdata_unlocker(url: str, *, timeout: int = 30) -> str:
     proxy_host = os.getenv("BRIGHTDATA_WEB_UNLOCKER_HOST", "brd.superproxy.io")
     proxy_port = os.getenv("BRIGHTDATA_WEB_UNLOCKER_PORT", "33335")
 
-    # requests公式推奨の proxy URL に資格情報を埋め込む方式
     proxy_user_enc = quote(proxy_user, safe="")
     password_enc = quote(password, safe="")
     proxy_url = f"http://{proxy_user_enc}:{password_enc}@{proxy_host}:{proxy_port}"
 
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/128.0.0.0 Safari/537.36"
-        ),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Cache-Control": "no-cache",
-        "Pragma": "no-cache",
-    }
+    sess = _get_bd_session()
 
     try:
-        r = requests.get(
+        r = sess.get(
             url,
-            headers=headers,
             proxies={"http": proxy_url, "https": proxy_url},
             timeout=timeout,
             allow_redirects=True,
-            # 動作確認用。恒久対応は Bright Data の SSL 証明書導入推奨
             verify=False,
         )
         if r.status_code == 200 and (r.text or "").strip():
             print(f"[bd-unlocker] ok status=200 len={len(r.text)} → {url}")
             return r.text
-
         print(f"[bd-unlocker] HTTP {r.status_code} len={len(r.text or '')} → {url}")
     except Exception as e:
         print(f"[bd-unlocker] EXC: {e} → {url}")
@@ -1525,15 +1534,37 @@ def fetch_once_irrawaddy(url, session=None, *, allow_brightdata_fallback: bool =
     except Exception:
         html_text = ""
 
-    # ✅ 本文DOMが見えているなら direct のまま返す（コスト削減）
-    if html_text and ("content-inner" in html_text):
+    def _has_irrawaddy_body(html: str) -> bool:
+        if not html:
+            return False
+        try:
+            soup = BeautifulSoup(html, "html.parser")
+            body = extract_body_irrawaddy(soup)
+            return bool((body or "").strip())
+        except Exception:
+            return False
+
+    # ✅ direct で本文抽出できるならそのまま返す
+    if _has_irrawaddy_body(html_text):
         return html_text.encode("utf-8", "ignore")
 
-    # ❗ direct が怪しいときだけ BD（許可されている場合）
+    # ❗ direct で本文抽出できないときは BD を順に試す
     if allow_brightdata_fallback:
         try:
-            if status == 403:
+            # まず Web Unlocker
+            # 403 のときはもちろん、それ以外でも本文抽出できていないなら試す
+            if status == 403 or not _has_irrawaddy_body(html_text):
                 html2 = (fetch_html_via_brightdata_unlocker(url) or "").strip()
+                if _has_irrawaddy_body(html2):
+                    return html2.encode("utf-8", "ignore")
+                # Unlocker でも本文が取れない場合のみ Browser API
+                html3 = (fetch_html_via_brightdata_browser(url) or "").strip()
+                if _has_irrawaddy_body(html3):
+                    return html3.encode("utf-8", "ignore")
+                # 本文抽出はできないが、後段での再抽出材料としては
+                # Browser API の HTML が最も期待できるので残す
+                if html3:
+                    return html3.encode("utf-8", "ignore")
                 if html2:
                     return html2.encode("utf-8", "ignore")
         except Exception:
@@ -2071,13 +2102,15 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
         except Exception as e:
             dbg(f"[irrawaddy] list fetch fail (direct) {url}: {e}")
 
-        # ★ direct がダメな時だけ Bright Data
+        # ★ direct がダメな時だけ Web Unlocker にフォールバック
         if not html:
-            html = fetch_html_via_brightdata_browser(url)
+            html = (fetch_html_via_brightdata_unlocker(url) or "").strip()
             if html:
-                dbg(f"[irrawaddy] list fetched via brightdata: {url}")
+                dbg(f"[irrawaddy] list fetched via web unlocker: {url}")
             else:
-                dbg(f"[irrawaddy] list fetch fail (brightdata) {url}")
+                dbg(f"[irrawaddy] list fetch fail (web unlocker) {url}")
+
+        if not html:
             continue
 
         soup = BeautifulSoup(html, "html.parser")
