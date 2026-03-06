@@ -91,6 +91,8 @@ jobs:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       # ===== Bright Data =====
       BRIGHTDATA_BROWSER_AUTH: ${{ secrets.BRIGHTDATA_BROWSER_AUTH }}
+      BRIGHTDATA_WEB_UNLOCKER_ZONE: ${{ secrets.BRIGHTDATA_WEB_UNLOCKER_ZONE }}
+      BRIGHTDATA_WEB_UNLOCKER_PASSWORD: ${{ secrets.BRIGHTDATA_WEB_UNLOCKER_PASSWORD }}
     steps:
       - name: Checkout (main)
         uses: actions/checkout@v4
@@ -190,6 +192,8 @@ jobs:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       # ===== Bright Data =====
       BRIGHTDATA_BROWSER_AUTH: ${{ secrets.BRIGHTDATA_BROWSER_AUTH }}
+      BRIGHTDATA_WEB_UNLOCKER_ZONE: ${{ secrets.BRIGHTDATA_WEB_UNLOCKER_ZONE }}
+      BRIGHTDATA_WEB_UNLOCKER_PASSWORD: ${{ secrets.BRIGHTDATA_WEB_UNLOCKER_PASSWORD }}
     steps:
       - name: Checkout (main)
         uses: actions/checkout@v4
@@ -303,6 +307,8 @@ jobs:
 
       # ===== Bright Data =====
       BRIGHTDATA_BROWSER_AUTH: ${{ secrets.BRIGHTDATA_BROWSER_AUTH }}
+      BRIGHTDATA_WEB_UNLOCKER_ZONE: ${{ secrets.BRIGHTDATA_WEB_UNLOCKER_ZONE }}
+      BRIGHTDATA_WEB_UNLOCKER_PASSWORD: ${{ secrets.BRIGHTDATA_WEB_UNLOCKER_PASSWORD }}
 
       # ===== Email (Gmail OAuth / Recipients) =====
       EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
@@ -553,6 +559,8 @@ jobs:
       PAID_PLAN_URL: ${{ secrets.PAID_PLAN_URL }}
       # ===== Bright Data =====
       BRIGHTDATA_BROWSER_AUTH: ${{ secrets.BRIGHTDATA_BROWSER_AUTH }}
+      BRIGHTDATA_WEB_UNLOCKER_ZONE: ${{ secrets.BRIGHTDATA_WEB_UNLOCKER_ZONE }}
+      BRIGHTDATA_WEB_UNLOCKER_PASSWORD: ${{ secrets.BRIGHTDATA_WEB_UNLOCKER_PASSWORD }}
     steps:
       - name: Checkout (手動で選んだブランチ)
         uses: actions/checkout@v4
@@ -615,6 +623,8 @@ jobs:
             echo "RETRY_WAIT_SCHEDULE=120 240 480 900";
             echo "OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}";
             echo "BRIGHTDATA_BROWSER_AUTH=${{ secrets.BRIGHTDATA_BROWSER_AUTH }}";
+            echo "BRIGHTDATA_WEB_UNLOCKER_ZONE=${{ secrets.BRIGHTDATA_WEB_UNLOCKER_ZONE }}";
+            echo "BRIGHTDATA_WEB_UNLOCKER_PASSWORD=${{ secrets.BRIGHTDATA_WEB_UNLOCKER_PASSWORD }}";
           } >> "$GITHUB_ENV"
 
           # ===== multi-line secret → ファイルに保存（$GITHUB_ENV には書かない）=====
