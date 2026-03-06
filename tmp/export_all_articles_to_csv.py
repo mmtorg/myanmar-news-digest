@@ -904,7 +904,7 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
         コスト抑制方針:
           1) まず direct
           2) direct が 403 のときだけ Web Unlocker
-          3) Unlocker 失敗でも Browser API には進まない
+          3) Unlocker で取れなければ Browser API
         同一実行中は URL ごとに結果をキャッシュする。
         """
         cached = html_fetch_cache.get(url)
@@ -935,7 +935,15 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
             html = fetch_html_via_brightdata_unlocker(url) or ""
             source = "unlocker" if html else "none"
 
-        # Unlocker失敗でも Browser API には進まない
+        # Unlocker で取れない場合のみ Browser API
+        if not html:
+            try:
+                html = fetch_html_via_brightdata_browser(url) or ""
+                if html:
+                    source = "browser"
+            except Exception as e:
+                print(f"[irrawaddy] browser fetch fail {url}: {e}")
+
         html_fetch_cache[url] = {
             "html": html,
             "status": status,

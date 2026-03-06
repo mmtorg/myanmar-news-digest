@@ -1228,7 +1228,7 @@ def _get_bd_session():
         _BD_SESSION = s
     return _BD_SESSION
 
-def fetch_html_via_brightdata_unlocker(url: str, *, timeout=(10, 30)) -> str:
+def fetch_html_via_brightdata_unlocker(url: str, *, timeout=(10, 15)) -> str:
     zone = (os.getenv("BRIGHTDATA_WEB_UNLOCKER_ZONE") or "").strip()
     password = (os.getenv("BRIGHTDATA_WEB_UNLOCKER_PASSWORD") or "").strip()
     if not zone or not password:
