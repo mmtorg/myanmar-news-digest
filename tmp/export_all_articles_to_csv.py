@@ -59,6 +59,7 @@ from fetch_articles import (
     fetch_with_retry_irrawaddy,
     fetch_html_via_brightdata_unlocker,
     fetch_html_via_brightdata_browser,
+    BD_UNLOCKER_TIMEOUT,
     extract_body_irrawaddy,
     _parse_category_date_text,
     _article_date_from_meta_mmt,
@@ -932,8 +933,7 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
 
         # 403 のときだけ Unlocker
         if status == 403:
-            html = fetch_html_via_brightdata_unlocker(url) or ""
-            source = "unlocker" if html else "none"
+            html = fetch_html_via_brightdata_unlocker(url, timeout=BD_UNLOCKER_TIMEOUT) or ""
 
         # Unlocker で取れない場合のみ Browser API
         if not html:

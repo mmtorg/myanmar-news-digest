@@ -1207,28 +1207,27 @@ def fetch_html_via_brightdata_browser(url: str, *, timeout_ms: int = 120_000) ->
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-_BD_SESSION = None
+BD_UNLOCKER_CONNECT_TIMEOUT = int(os.getenv("BD_UNLOCKER_CONNECT_TIMEOUT", "10"))
+BD_UNLOCKER_READ_TIMEOUT = int(os.getenv("BD_UNLOCKER_READ_TIMEOUT", "30"))
+BD_UNLOCKER_TIMEOUT = (BD_UNLOCKER_CONNECT_TIMEOUT, BD_UNLOCKER_READ_TIMEOUT)
 
-def _get_bd_session():
-    global _BD_SESSION
-    if _BD_SESSION is None:
-        s = requests.Session()
-        s.headers.update({
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/128.0.0.0 Safari/537.36"
-            ),
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Cache-Control": "no-cache",
-            "Pragma": "no-cache",
-            "Connection": "keep-alive",
-        })
-        _BD_SESSION = s
-    return _BD_SESSION
+def _new_bd_session():
+    s = requests.Session()
+    s.headers.update({
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/128.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+        "Connection": "close",
+    })
+    return s
 
-def fetch_html_via_brightdata_unlocker(url: str, *, timeout=(10, 15)) -> str:
+def fetch_html_via_brightdata_unlocker(url: str, *, timeout=BD_UNLOCKER_TIMEOUT, retry_once: bool = True) -> str:
     zone = (os.getenv("BRIGHTDATA_WEB_UNLOCKER_ZONE") or "").strip()
     password = (os.getenv("BRIGHTDATA_WEB_UNLOCKER_PASSWORD") or "").strip()
     if not zone or not password:
@@ -1246,22 +1245,44 @@ def fetch_html_via_brightdata_unlocker(url: str, *, timeout=(10, 15)) -> str:
     password_enc = quote(password, safe="")
     proxy_url = f"http://{proxy_user_enc}:{password_enc}@{proxy_host}:{proxy_port}"
 
-    sess = _get_bd_session()
+    attempts = 2 if retry_once else 1
+    last_exc = None
 
-    try:
-        r = sess.get(
-            url,
-            proxies={"http": proxy_url, "https": proxy_url},
-            timeout=timeout,
-            allow_redirects=True,
-            verify=False,
-        )
-        if r.status_code == 200 and (r.text or "").strip():
-            print(f"[bd-unlocker] ok status=200 len={len(r.text)} → {url}")
-            return r.text
-        print(f"[bd-unlocker] HTTP {r.status_code} len={len(r.text or '')} → {url}")
-    except Exception as e:
-        print(f"[bd-unlocker] EXC: {e} → {url}")
+    for attempt in range(1, attempts + 1):
+        sess = _new_bd_session()
+        try:
+            r = sess.get(
+                url,
+                proxies={"http": proxy_url, "https": proxy_url},
+                timeout=timeout,
+                allow_redirects=True,
+                verify=False,
+            )
+            if r.status_code == 200 and (r.text or "").strip():
+                print(
+                    f"[bd-unlocker] ok attempt={attempt}/{attempts} "
+                    f"timeout={timeout} len={len(r.text)} → {url}"
+                )
+                return r.text
+            print(
+                f"[bd-unlocker] HTTP {r.status_code} "
+                f"attempt={attempt}/{attempts} timeout={timeout} "
+                f"len={len(r.text or '')} → {url}"
+            )
+        except Exception as e:
+            last_exc = e
+            print(
+                f"[bd-unlocker] EXC attempt={attempt}/{attempts} "
+                f"timeout={timeout}: {e} → {url}"
+            )
+        finally:
+            try:
+                sess.close()
+            except Exception:
+                pass
+
+    if last_exc is not None:
+        pass
 
     return ""
 
@@ -1554,7 +1575,7 @@ def fetch_once_irrawaddy(url, session=None, *, allow_brightdata_fallback: bool =
             # まず Web Unlocker
             # 403 のときはもちろん、それ以外でも本文抽出できていないなら試す
             if status == 403 or not _has_irrawaddy_body(html_text):
-                html2 = (fetch_html_via_brightdata_unlocker(url) or "").strip()
+                html2 = (fetch_html_via_brightdata_unlocker(url, timeout=BD_UNLOCKER_TIMEOUT) or "").strip()
                 if _has_irrawaddy_body(html2):
                     return html2.encode("utf-8", "ignore")
                 # Unlocker でも本文が取れない場合のみ Browser API
@@ -2104,7 +2125,7 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
 
         # ★ direct がダメな時だけ Web Unlocker → Browser API にフォールバック
         if not html:
-            html = (fetch_html_via_brightdata_unlocker(url) or "").strip()
+            html = (fetch_html_via_brightdata_unlocker(url, timeout=BD_UNLOCKER_TIMEOUT) or "").strip()
             if html:
                 dbg(f"[irrawaddy] list fetched via web unlocker: {url}")
             else:
