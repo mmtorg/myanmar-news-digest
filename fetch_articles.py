@@ -1040,6 +1040,19 @@ def fetch_with_retry_irrawaddy(url, retries=3, wait_seconds=2, session=None):
             u = u + "/"
         return urllib.parse.urljoin(u, "amp")
 
+    def _as_response_like(status_code: int, text: str = "", content: bytes | None = None):
+        """
+        呼び出し元が getattr(res, "status_code"/"text"/"content") で扱える
+        最小の Response 互換オブジェクトを返す。
+        403 を例外化せず上位へ伝えるために使う。
+        """
+        if content is None:
+            try:
+                content = (text or "").encode("utf-8", "ignore")
+            except Exception:
+                content = b""
+        return SimpleNamespace(status_code=status_code, text=(text or ""), content=content, url=url)
+
     # --- Try 1: curl_cffi (Chrome 指紋) 単発 ---
     try:
         from curl_cffi import requests as cfr  # type: ignore[import-not-found]
@@ -1058,6 +1071,8 @@ def fetch_with_retry_irrawaddy(url, retries=3, wait_seconds=2, session=None):
         )
         if r.status_code == 200 and (r.text or "").strip():
             return r
+        if r.status_code == 403:
+            return _as_response_like(403, getattr(r, "text", "") or "")
     except Exception as e:
         print(f"[fetch-cffi] EXC: {e} → {url}")
 
@@ -1074,6 +1089,8 @@ def fetch_with_retry_irrawaddy(url, retries=3, wait_seconds=2, session=None):
         r = scraper.get(url, headers=HEADERS, timeout=30, allow_redirects=True)
         if r.status_code == 200 and getattr(r, "text", "").strip():
             return r
+        if r.status_code == 403:
+            return _as_response_like(403, getattr(r, "text", "") or "")
     except Exception as e:
         print(f"[fetch-cs] EXC: {e} → {url}")
 
@@ -1087,6 +1104,8 @@ def fetch_with_retry_irrawaddy(url, retries=3, wait_seconds=2, session=None):
         )
         if r2.status_code == 200 and getattr(r2, "text", "").strip():
             return r2
+        if r2.status_code == 403:
+            return _as_response_like(403, getattr(r2, "text", "") or "")
         # 403/503 かつ /news/ の記事URLに限り、/amp を“1回だけ”試す
         if r2.status_code in (403, 503) and "/news/" in url and "/category/" not in url:
             amp = _amp_url(url)
@@ -1096,6 +1115,8 @@ def fetch_with_retry_irrawaddy(url, retries=3, wait_seconds=2, session=None):
             )
             if r3.status_code == 200 and getattr(r3, "text", "").strip():
                 return r3
+            if r3.status_code == 403:
+                return _as_response_like(403, getattr(r3, "text", "") or "")
         try:
             svr = r2.headers.get("server") or r2.headers.get("Server")
             ray = r2.headers.get("cf-ray")
