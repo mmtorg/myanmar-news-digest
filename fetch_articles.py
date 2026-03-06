@@ -1228,7 +1228,7 @@ def _get_bd_session():
         _BD_SESSION = s
     return _BD_SESSION
 
-def fetch_html_via_brightdata_unlocker(url: str, *, timeout=(10, 15)) -> str:
+def fetch_html_via_brightdata_unlocker(url: str, *, timeout=(10, 30)) -> str:
     zone = (os.getenv("BRIGHTDATA_WEB_UNLOCKER_ZONE") or "").strip()
     password = (os.getenv("BRIGHTDATA_WEB_UNLOCKER_PASSWORD") or "").strip()
     if not zone or not password:
@@ -2102,13 +2102,23 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
         except Exception as e:
             dbg(f"[irrawaddy] list fetch fail (direct) {url}: {e}")
 
-        # ★ direct がダメな時だけ Web Unlocker にフォールバック
+        # ★ direct がダメな時だけ Web Unlocker → Browser API にフォールバック
         if not html:
             html = (fetch_html_via_brightdata_unlocker(url) or "").strip()
             if html:
                 dbg(f"[irrawaddy] list fetched via web unlocker: {url}")
             else:
                 dbg(f"[irrawaddy] list fetch fail (web unlocker) {url}")
+
+        if not html:
+            try:
+                html = (fetch_html_via_brightdata_browser(url) or "").strip()
+                if html:
+                    dbg(f"[irrawaddy] list fetched via browser api: {url}")
+                else:
+                    dbg(f"[irrawaddy] list fetch fail (browser api) {url}")
+            except Exception as e:
+                dbg(f"[irrawaddy] list fetch fail (browser api) {url}: {e}")
 
         if not html:
             continue
