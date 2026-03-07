@@ -1049,6 +1049,86 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
         except Exception:
             pass
         return s
+    def _resolve_google_news_link_irrawaddy(g_link: str, timeout: int = 20) -> str:
+        """
+        Google News の news.google.com/rss/articles/... URL を
+        可能なら配信元の実記事URLへ解決する。
+        失敗時は元のURLを返す。
+        """
+        if not g_link:
+            return ""
+
+        try:
+            host = urlparse(g_link).netloc.lower()
+        except Exception:
+            host = ""
+        if "news.google.com" not in host:
+            return g_link
+
+        # 1) /rss/articles/<token> の token から URL を直接復元
+        try:
+            import base64
+            parts = urlparse(g_link).path.split("/")
+            if "articles" in parts:
+                token = parts[parts.index("articles") + 1]
+                if token:
+                    token += "=" * (-len(token) % 4)
+                    raw = base64.urlsafe_b64decode(token)
+                    m = re.search(rb"https?://[^\s\"'<>\\x00]+", raw)
+                    if m:
+                        decoded = m.group(0).decode("utf-8", errors="ignore")
+                        if "irrawaddy.com" in decoded:
+                            return decoded
+        except Exception:
+            pass
+
+        # 2) 通常のリダイレクト解決
+        try:
+            r = sess.get(
+                g_link,
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=timeout,
+                allow_redirects=True,
+            )
+            final_url = (getattr(r, "url", "") or "").strip()
+            if final_url and "news.google.com" not in urlparse(final_url).netloc.lower():
+                return final_url
+        except Exception:
+            pass
+
+        # 3) HTML から canonical / og:url を拾う
+        try:
+            html = _fetch_text(g_link, timeout=timeout) or _fetch_text_via_jina(g_link, timeout=timeout + 5)
+            if html:
+                m = re.search(
+                    r'<link[^>]+rel=["\']canonical["\'][^>]+href=["\']([^"\']+)["\']',
+                    html,
+                    re.I,
+                )
+                if m and "irrawaddy.com" in m.group(1):
+                    return m.group(1).strip()
+                m = re.search(
+                    r'<meta[^>]+property=["\']og:url["\'][^>]+content=["\']([^"\']+)["\']',
+                    html,
+                    re.I,
+                )
+                if m and "irrawaddy.com" in m.group(1):
+                    return m.group(1).strip()
+        except Exception:
+            pass
+
+        return g_link
+
+    def _clean_summary_text(s: str) -> str:
+        s = (s or "").strip()
+        if not s:
+            return ""
+        try:
+            s = re.sub(r"<[^>]+>", " ", s)
+            s = re.sub(r"\s+", " ", s).strip()
+        except Exception:
+            pass
+        return s
 
     def _rss_items_from_google_news() -> List[Dict[str, str]]:
         # 当日限定（MMT判定は後段）
@@ -1122,6 +1202,7 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
         except Exception:
             pass
 
+    print(f"[irrawaddy] stage=wp-json candidates={len(candidate_urls)}")
     # 2) feed
     if len(candidate_urls) == 0:
         feed_url = "https://www.irrawaddy.com/feed"
@@ -1152,6 +1233,7 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
             except Exception:
                 pass
 
+    print(f"[irrawaddy] stage=feed candidates={len(candidate_urls)}")
     # 3) category crawl
     if len(candidate_urls) == 0:
         for rel in paths:
@@ -1249,6 +1331,7 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
         except Exception as e:
             print(f"[irrawaddy] home scan fail: {e}")
 
+    print(f"[irrawaddy] stage=category-crawl candidates={len(candidate_urls)}")
     # 4) Google News（当日のみ）
     if len(candidate_urls) == 0:
         for it in _rss_items_from_google_news():
@@ -1259,17 +1342,30 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
                 dt = parse_date(pub)
             except Exception:
                 dt = None
-            if link and dt and _mmt_date(dt) == target_date_mmt and not _is_excluded_url(link):
-                if link not in seen_urls:
-                    candidate_urls.append(link)
-                    seen_urls.add(link)
-                    origins[link] = "feed"
-                feed_hints[link] = {
+            real_link = link
+            try:
+                if "news.google.com" in urlparse(link).netloc.lower():
+                    real_link = _resolve_google_news_link_irrawaddy(link)
+            except Exception:
+                real_link = link
+
+            if debug and link != real_link:
+                print(f"[irrawaddy][gnews] resolved {link} -> {real_link}")
+
+            final_link = (real_link or link or "").strip()
+                
+            if final_link and dt and _mmt_date(dt) == target_date_mmt and not _is_excluded_url(final_link):
+                if final_link not in seen_urls:
+                    candidate_urls.append(final_link)
+                    seen_urls.add(final_link)
+                    origins[final_link] = "gnews"
+                feed_hints[final_link] = {
                     "title": title,
                     "summary": _clean_summary_text(it.get("summary") or ""),
                     "date": target_date_mmt.isoformat(),
                 }
 
+    print(f"[irrawaddy] stage=google-news candidates={len(candidate_urls)}")
     if debug:
         print(f"[irrawaddy] candidates(unique)={len(candidate_urls)}")
         for u in candidate_urls[:5]:
