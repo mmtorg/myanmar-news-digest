@@ -1080,38 +1080,6 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
     def _fetch_feed_text_irrawaddy(url: str) -> tuple[str, str, Optional[int]]:
         return _fetch_irrawaddy_meta_text(url, "feed")
 
-    def _fetch_json_text_irrawaddy(url: str) -> tuple[str, str]:
-        """
-        JSON として妥当な文字列だけ返す。
-        direct / unlocker で JSON でなければ jina にフォールバック。
-        """
-        text, source = _fetch_text_irrawaddy_meta(url)
-        if text and text.lstrip().startswith(("[", "{")):
-            return text, source
-
-        alt = _fetch_text_via_jina(url)
-        if alt and alt.lstrip().startswith(("[", "{")):
-            return alt, "jina"
-
-        return "", source
-
-    def _fetch_feed_text_irrawaddy(url: str) -> tuple[str, str]:
-        """
-        RSS/Atom として妥当な文字列だけ返す。
-        direct / unlocker で XML でなければ jina にフォールバック。
-        """
-        text, source = _fetch_text_irrawaddy_meta(url)
-        low = text.lower() if text else ""
-        if text and ("<rss" in low or "<feed" in low):
-            return text, source
-
-        alt = _fetch_text_via_jina(url)
-        low_alt = alt.lower() if alt else ""
-        if alt and ("<rss" in low_alt or "<feed" in low_alt):
-            return alt, "jina"
-
-        return "", source
-
     def _fetch_text(url: str, timeout: int = 20) -> str:
         try:
             r = sess.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=timeout)
@@ -1223,24 +1191,13 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
 
         return g_link
 
-    def _clean_summary_text(s: str) -> str:
-        s = (s or "").strip()
-        if not s:
-            return ""
-        try:
-            s = re.sub(r"<[^>]+>", " ", s)
-            s = re.sub(r"\s+", " ", s).strip()
-        except Exception:
-            pass
-        return s
-
     def _rss_items_from_google_news() -> List[Dict[str, str]]:
         # 当日限定（MMT判定は後段）
         gnews = (
             "https://news.google.com/rss/search?"
             "q=site:irrawaddy.com+when:1d&hl=en-US&gl=US&ceid=US:en"
         )
-        xml, _ = _fetch_text_irrawaddy_meta(gnews)
+        xml, _, _ = _fetch_irrawaddy_meta_text(gnews, "feed")
         if not xml:
             xml = _fetch_text_via_jina(gnews)
             if not xml:
