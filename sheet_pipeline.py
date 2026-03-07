@@ -233,6 +233,22 @@ def _simple_fetch(url: str) -> str:
     r.raise_for_status()
     return r.text
 
+def _resolve_news_google_redirect_global(u: str, timeout: int = 20) -> str:
+    """news.google.com/rss/articles/... を publisher の最終URLへ解決。失敗時は空。"""
+    try:
+        r = requests.get(
+            u,
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=timeout,
+            allow_redirects=True
+        )
+        final_url = (getattr(r, "url", "") or "").strip()
+        if "irrawaddy.com" in final_url:
+            return final_url
+        return ""
+    except Exception:
+        return ""
+
 def _fetch_once_dvb(url: str, session: Optional[requests.Session] = None) -> bytes:
     """
     DVB 用：fetch_articles.py の fetch_with_retry_dvb を “1回だけ”呼ぶラッパ。
@@ -280,22 +296,6 @@ def _get_body_once(url: str, source: str, out_dir: str, title: str = "", summary
     import requests
     from bs4 import BeautifulSoup
 
-    def _resolve_news_google_redirect(u: str, timeout: int = 20) -> str:
-        """news.google.com/rss/articles/... を publisher の最終URLへ解決。失敗時は空。"""
-        try:
-            r = requests.get(
-                u,
-                headers={"User-Agent": "Mozilla/5.0"},
-                timeout=timeout,
-                allow_redirects=True
-            )
-            final_url = (getattr(r, "url", "") or "").strip()
-            if "irrawaddy.com" in final_url:
-                return final_url
-            return ""
-        except Exception:
-            return ""
-
     def _fetch_text_via_jina(u: str, timeout: int = 25) -> str:
         """r.jina.ai 経由でプレーンテキストを取得（本文がHTMLで取れなかった時の救済）"""
         try:
@@ -321,7 +321,7 @@ def _get_body_once(url: str, source: str, out_dir: str, title: str = "", summary
     except Exception:
         host = ""
     if "news.google.com" in host:
-        resolved = _resolve_news_google_redirect(url)
+        resolved = _resolve_news_google_redirect_global(url)
         if not resolved:
             logging.warning(f"[body] unresolved google-news url={url}")
             return ""
@@ -1468,6 +1468,7 @@ def cmd_collect_to_sheet(args):
     for it in items:
         source = it.get("source") or ""
         title  = it.get("title") or ""
+        url    = (it.get("url") or "").strip()
         
         # Google News URL は可能なら実記事URLへ正規化してから、
         # 重複判定 / 本文取得 / シート出力のすべてに使う
@@ -1479,7 +1480,7 @@ def cmd_collect_to_sheet(args):
             host = ""
         if "news.google.com" in host:
             try:
-                normalized_url = _resolve_news_google_redirect(url)
+                normalized_url = _resolve_news_google_redirect_global(url)
             except Exception:
                 normalized_url = url
 
