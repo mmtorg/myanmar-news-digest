@@ -1478,17 +1478,25 @@ def cmd_collect_to_sheet(args):
             host = urlparse(url).netloc.lower()
         except Exception:
             host = ""
+
         if "news.google.com" in host:
             try:
-                normalized_url = _resolve_news_google_redirect_global(url)
-            except Exception:
+                resolved = (_resolve_news_google_redirect_global(url) or "").strip()
+                normalized_url = resolved or url
+                if resolved and resolved != url:
+                    logging.info(f"[url] normalized source={source} from={url} to={normalized_url}")
+                elif not resolved:
+                    logging.warning(f"[url] normalize failed; keep original source={source} url={url}")
+            except Exception as e:
                 normalized_url = url
+                logging.warning(f"[url] normalize error; keep original source={source} url={url} err={e}")
 
-        if normalized_url != url:
-            logging.info(f"[url] normalized source={source} from={url} to={normalized_url}")
-        
-        if not normalized_url or normalized_url in existing:
-            logging.debug(f"[skip] url empty or duplicated url={normalized_url!r}")
+        if not normalized_url:
+            logging.warning(f"[skip] normalized_url empty source={source} raw_url={url!r}")
+            continue
+
+        if normalized_url in existing:
+            logging.debug(f"[skip] duplicated url={normalized_url!r}")
             continue
 
         # collector が本文を持っていればそれを最優先（再取得しない）

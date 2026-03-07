@@ -929,9 +929,17 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
         try:
             res = fetch_with_retry_irrawaddy(url, session=session)
             status = getattr(res, "status_code", None)
+            content_type = ""
+            try:
+                content_type = (getattr(res, "headers", {}) or {}).get("Content-Type", "")
+            except Exception:
+                content_type = ""
+
             html = getattr(res, "content", None) or getattr(res, "text", "") or ""
             if html:
                 source = "direct"
+                if "/wp-json/" in url or url.rstrip("/").endswith("/feed"):
+                    print(f"[irrawaddy] meta direct status={status} content_type={content_type} url={url}")
         except Exception as e:
             print(f"[irrawaddy] direct fetch fail {url}: {e}")
             html = ""
@@ -1000,24 +1008,77 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
     if debug:
         print(f"[irrawaddy] target_date={target_date_mmt}")
 
-    def _fetch_text_irrawaddy_meta(url: str) -> tuple[str, str]:
+    def _to_text(x) -> str:
+        if isinstance(x, bytes):
+            try:
+                return x.decode("utf-8", "ignore")
+            except Exception:
+                return ""
+        return (x or "").strip()
+
+    def _looks_like_json(text: str) -> bool:
+        t = (text or "").lstrip()
+        return t.startswith("{") or t.startswith("[")
+
+    def _looks_like_feed(text: str) -> bool:
+        low = (text or "").lower()
+        return ("<rss" in low) or ("<feed" in low) or ("<rdf:rdf" in low)
+
+    def _debug_head(label: str, source: str, status_code, text: str) -> None:
+        head = re.sub(r"\s+", " ", (text or "")[:220]).strip()
+        print(f"[irrawaddy] {label} invalid payload source={source} status={status_code} head={head!r}")
+
+    def _fetch_irrawaddy_meta_text(url: str, kind: str) -> tuple[str, str, Optional[int]]:
         """
-        wp-json / feed / category 用。
+        kind: 'json' or 'feed'
         Browser API は使わない。
-        戻り値: (text, source)
+        direct の中身が不正なら unlocker/jina に進む。
         """
-        html, _, source = _fetch_irrawaddy_html_cached(
+        def ok(txt: str) -> bool:
+            return _looks_like_json(txt) if kind == "json" else _looks_like_feed(txt)
+
+        # 1) direct / unlocker（Browserなし）
+        text, source, status_code = "", "none", None
+        raw, status_code, source = _fetch_irrawaddy_html_cached(
             url,
             session=session,
             allow_browser=False,
         )
-        if isinstance(html, bytes):
-            try:
-                html = html.decode("utf-8", "ignore")
-            except Exception:
-                html = ""
-        text = (html or "").strip()
-        return text, (source or "none")
+        text = _to_text(raw)
+        if ok(text):
+            return text, source, status_code
+
+        if text:
+            _debug_head(kind, source, status_code, text)
+
+        # 2) unlocker を明示的に単独で再試行
+        try:
+            raw2 = fetch_html_via_brightdata_unlocker(url, timeout=BD_UNLOCKER_TIMEOUT) or ""
+            text2 = _to_text(raw2)
+            if ok(text2):
+                return text2, "unlocker", 200
+            if text2:
+                _debug_head(kind, "unlocker", 200, text2)
+        except Exception as e:
+            print(f"[irrawaddy] {kind} unlocker fetch fail {url}: {e}")
+
+        # 3) jina
+        try:
+            text3 = _fetch_text_via_jina(url) or ""
+            if ok(text3):
+                return text3, "jina", 200
+            if text3:
+                _debug_head(kind, "jina", 200, text3)
+        except Exception as e:
+            print(f"[irrawaddy] {kind} jina fetch fail {url}: {e}")
+
+        return "", source, status_code
+
+    def _fetch_json_text_irrawaddy(url: str) -> tuple[str, str, Optional[int]]:
+        return _fetch_irrawaddy_meta_text(url, "json")
+
+    def _fetch_feed_text_irrawaddy(url: str) -> tuple[str, str, Optional[int]]:
+        return _fetch_irrawaddy_meta_text(url, "feed")
 
     def _fetch_json_text_irrawaddy(url: str) -> tuple[str, str]:
         """
@@ -1211,40 +1272,25 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
 
     # 1) WP JSON
     wp_url = "https://www.irrawaddy.com/wp-json/wp/v2/posts?per_page=50&_fields=link,date,title,excerpt"
-    wp_json, wp_source = _fetch_json_text_irrawaddy(wp_url)
-
-    if debug:
-        print(f"[irrawaddy][wp-json] source={wp_source} bytes={len(wp_json or '')}")
+    wp_json, wp_source, wp_status = _fetch_json_text_irrawaddy(wp_url)
 
     if wp_json:
         try:
             arr = json.loads(wp_json)
-            if debug:
-                print(f"[irrawaddy][wp-json] parsed_items={len(arr) if isinstance(arr, list) else 'non-list'}")
-
             for o in arr:
                 link = (o.get("link") or "").strip()
                 ds = o.get("date") or ""
 
                 t = o.get("title")
-                if isinstance(t, dict):
-                    tt = (t.get("rendered") or "").strip()
-                else:
-                    tt = (t or "").strip()
+                tt = (t.get("rendered") or "").strip() if isinstance(t, dict) else (t or "").strip()
 
                 ex = o.get("excerpt")
-                if isinstance(ex, dict):
-                    sx = _clean_summary_text(ex.get("rendered") or "")
-                else:
-                    sx = _clean_summary_text(ex or "")
+                sx = _clean_summary_text(ex.get("rendered") or "") if isinstance(ex, dict) else _clean_summary_text(ex or "")
 
                 try:
                     dt = parse_date(ds)
                 except Exception:
                     dt = None
-
-                if debug and link:
-                    print(f"[irrawaddy][wp-json] cand link={link} date={ds} mmt={_mmt_date(dt).isoformat() if dt else None}")
 
                 if link and dt and _mmt_date(dt) == target_date_mmt and not _is_excluded_url(link):
                     if link not in seen_urls:
@@ -1256,32 +1302,24 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
                         "summary": sx,
                         "date": target_date_mmt.isoformat(),
                     }
-
         except Exception as e:
-            print(f"[irrawaddy] wp-json parse failed: {e} head={(wp_json or '')[:200]!r}")
+            print(f"[irrawaddy] wp-json parse failed: source={wp_source} status={wp_status} err={e} head={(wp_json or '')[:200]!r}")
     else:
-        print(f"[irrawaddy] wp-json invalid payload source={wp_source}")
+        print(f"[irrawaddy] wp-json invalid payload source={wp_source} status={wp_status}")
 
     print(f"[irrawaddy] stage=wp-json candidates={len(candidate_urls)}")
     
     # 2) feed
     if len(candidate_urls) == 0:
         feed_url = "https://www.irrawaddy.com/feed"
-        feed_xml, feed_source = _fetch_feed_text_irrawaddy(feed_url)
-
-        if debug:
-            print(f"[irrawaddy][feed] source={feed_source} bytes={len(feed_xml or '')}")
+        feed_xml, feed_source, feed_status = _fetch_feed_text_irrawaddy(feed_url)
 
         if feed_xml:
             try:
                 from xml.etree import ElementTree as ET
                 root = ET.fromstring(feed_xml)
-                items = root.findall(".//item")
 
-                if debug:
-                    print(f"[irrawaddy][feed] parsed_items={len(items)}")
-
-                for it in items:
+                for it in root.findall(".//item"):
                     title = (it.findtext("title") or "").strip()
                     link = (it.findtext("link") or "").strip()
                     pub = (it.findtext("pubDate") or "").strip()
@@ -1291,9 +1329,6 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
                         dt = parse_date(pub)
                     except Exception:
                         dt = None
-
-                    if debug and link:
-                        print(f"[irrawaddy][feed] cand link={link} pub={pub} mmt={_mmt_date(dt).isoformat() if dt else None}")
 
                     if link and dt and _mmt_date(dt) == target_date_mmt and not _is_excluded_url(link):
                         if link not in seen_urls:
@@ -1307,9 +1342,9 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
                         }
 
             except Exception as e:
-                print(f"[irrawaddy] feed parse failed: {e} head={(feed_xml or '')[:200]!r}")
+                print(f"[irrawaddy] feed parse failed: source={feed_source} status={feed_status} err={e} head={(feed_xml or '')[:200]!r}")
         else:
-            print(f"[irrawaddy] feed invalid payload source={feed_source}")
+            print(f"[irrawaddy] feed invalid payload source={feed_source} status={feed_status}")
 
     print(f"[irrawaddy] stage=feed candidates={len(candidate_urls)}")
     
