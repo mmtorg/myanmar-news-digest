@@ -1572,7 +1572,11 @@ def fetch_once_irrawaddy_html(url, session=None, *, allow_brightdata_fallback: b
 
     if allow_brightdata_fallback:
         try:
-            html2 = (fetch_html_via_brightdata_unlocker(url, timeout=BD_UNLOCKER_TIMEOUT) or "").strip()
+            html2 = (fetch_html_via_brightdata_unlocker(
+                url,
+                timeout=BD_UNLOCKER_TIMEOUT,
+                retry_once=False,
+            ) or "").strip()
             if html2:
                 print(f"[irrawaddy-html] unlocker ok len={len(html2)} → {url}")
                 return html2, 200, "unlocker"
