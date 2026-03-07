@@ -896,19 +896,25 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
     ]
     
     # URL単位キャッシュ:
-    #   key=url
-    #   value={"html": str, "status": int|None, "source": "direct"|"unlocker"|"none"}
-    html_fetch_cache: Dict[str, Dict[str, object]] = {}
+    #   key=(url, allow_browser)
+    #   value={"html": str, "status": int|None, "source": "direct"|"unlocker"|"browser"|"none"}
+    html_fetch_cache: Dict[Tuple[str, bool], Dict[str, object]] = {}
 
-    def _fetch_irrawaddy_html_cached(url: str, *, session=None) -> Tuple[str, Optional[int], str]:
+    def _fetch_irrawaddy_html_cached(
+        url: str,
+        *,
+        session=None,
+        allow_browser: bool = True,
+    ) -> Tuple[str, Optional[int], str]:
         """
-        コスト抑制方針:
-          1) まず direct
-          2) direct が 403 のときだけ Web Unlocker
-          3) Unlocker で取れなければ Browser API
+        フェッチ順:
+          1) direct
+          2) Web Unlocker
+          3) Browser API（allow_browser=True の場合）
         同一実行中は URL ごとに結果をキャッシュする。
         """
-        cached = html_fetch_cache.get(url)
+        cache_key = (url, allow_browser)
+        cached = html_fetch_cache.get(cache_key)
         if cached is not None:
             return (
                 cached.get("html", "") or "",
@@ -931,12 +937,16 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
             html = ""
             status = None
 
-        # 403 のときだけ Unlocker
-        if status == 403:
-            html = fetch_html_via_brightdata_unlocker(url, timeout=BD_UNLOCKER_TIMEOUT) or ""
-
-        # Unlocker で取れない場合のみ Browser API
         if not html:
+            try:
+                html = fetch_html_via_brightdata_unlocker(url, timeout=BD_UNLOCKER_TIMEOUT) or ""
+                if html:
+                    source = "unlocker"
+            except Exception as e:
+                print(f"[irrawaddy] unlocker fetch fail {url}: {e}")
+                html = ""
+
+        if not html and allow_browser:
             try:
                 html = fetch_html_via_brightdata_browser(url) or ""
                 if html:
@@ -944,7 +954,7 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
             except Exception as e:
                 print(f"[irrawaddy] browser fetch fail {url}: {e}")
 
-        html_fetch_cache[url] = {
+        html_fetch_cache[cache_key] = {
             "html": html,
             "status": status,
             "source": source,
@@ -990,118 +1000,18 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
     if debug:
         print(f"[irrawaddy] target_date={target_date_mmt}")
 
-    # 1) 各カテゴリを1回ずつ巡回し、当日候補URLを収集
-    for rel in paths:
-        url = f"{BASE}{rel}"
-        html, status_code, source = _fetch_irrawaddy_html_cached(url, session=session)
-        if not html:
-            print(f"[irrawaddy] list fetch fail {url}: status={status_code} source={source}")
-            continue
-        if debug:
-            print(f"[irrawaddy][list] fetched: {url} status={status_code} source={source} bytes={len(html)}")
-        soup = BeautifulSoup(html, "html.parser")
-        if debug:
-            title_txt = (soup.title.get_text(strip=True) if soup.title else "")
-            c_hero = len(soup.select('.jnews_category_hero_container'))
-            c_postmeta = len(soup.select('.jeg_post_meta'))
-            c_date_links = len(soup.select('.jeg_meta_date a[href]'))
-            c_titles = len(soup.select('.jeg_post_title a[href]'))
-            c_rel_next = len([ln for ln in soup.select('link[rel="next"]') if ln.get('href')])
-            print(f"[irrawaddy][list] title='{title_txt[:60]}' hero={c_hero} post_meta={c_postmeta} date_links={c_date_links} titles={c_titles} rel_next={c_rel_next}")
-        wrapper = soup.select_one("div.jeg_content")
-        if debug:
-            print(f"[irrawaddy][list] wrapper_found={'yes' if wrapper else 'no'}")
-        scopes = ([wrapper] if wrapper else []) + [soup]
+    def _fetch_text_irrawaddy(url: str) -> str:
+        html, _, _ = _fetch_irrawaddy_html_cached(url, session=session, allow_browser=True)
+        if isinstance(html, bytes):
+            try:
+                return html.decode("utf-8", "ignore")
+            except Exception:
+                return ""
+        return (html or "").strip()
 
-        cat_added = 0
-        for scope in scopes:
-            links = scope.select(
-                ".jnews_category_hero_container .jeg_meta_date a[href], "
-                "div.jeg_postblock_content .jeg_meta_date a[href], "
-                ".jeg_post_meta .jeg_meta_date a[href]"
-            )
-            # 時計アイコン <i class="fa fa-clock-o"> が無い要素も許容する
-            if debug:
-                print(f"[irrawaddy][list] candidates in-page: raw={len(links)}")
-
-            found = 0
-            for a in links:
-                href = (a.get("href") or "").strip()
-                raw = a.get_text(" ", strip=True)
-                try:
-                    shown_date = _parse_category_date_text(raw)
-                except Exception:
-                    continue
-                if _is_excluded_url(href):
-                    continue
-                if shown_date == target_date_mmt and href and href not in seen_urls:
-                    candidate_urls.append(href)
-                    seen_urls.add(href)
-                    origins[href] = origins.get(href, "cat")
-                    found += 1
-                    cat_added += 1
-            if found > 0:
-                break
-        if debug:
-            print(f"[irrawaddy][list] added_from_category={found} total_candidates={len(candidate_urls)}")
-
-        # カテゴリRSSフォールバックは無効化（不要のため削除）
-
-    # 1.5) ホーム特定カラム（data-id=kuDRpuo）でも当日候補を収集
-    try:
-        html_home, status_home, source_home = _fetch_irrawaddy_html_cached(f"{BASE}/", session=session)
-        if not html_home:
-            raise Exception(f"home html fetch failed (status={status_home}, source={source_home})")
-        if debug:
-            print(f"[irrawaddy][home] fetched: / status={status_home} source={source_home} bytes={len(html_home)}")
-        soup_home = BeautifulSoup(html_home, "html.parser")
-        home_scope = soup_home.select_one(
-            'div.elementor-element-kuDRpuo[data-id="kuDRpuo"], '
-            "div.elementor-element-kuDRpuo, "
-            '[data-id="kuDRpuo"]'
-        )
-        if debug:
-            print(f"[irrawaddy][home] home_scope_found={'yes' if home_scope else 'no'}")
-        if home_scope:
-            links = home_scope.select(".jeg_meta_date a[href]")
-            # 時計アイコン <i class="fa fa-clock-o"> が無い要素も許容する
-            if debug:
-                print(f"[irrawaddy][home] raw={len(links)}")
-            for a in links:
-                href = (a.get("href") or "").strip()
-                raw = a.get_text(" ", strip=True)
-                try:
-                    shown_date = _parse_category_date_text(raw)
-                except Exception:
-                    continue
-                if _is_excluded_url(href):
-                    continue
-                if shown_date == target_date_mmt and href and href not in seen_urls:
-                    candidate_urls.append(href)
-                    seen_urls.add(href)
-                    origins[href] = origins.get(href, "home")
-    except Exception as e:
-        print(f"[irrawaddy] home scan fail: {e}")
-
-    if debug:
-        print(f"[irrawaddy] candidates(unique)={len(candidate_urls)}")
-        for u in candidate_urls[:5]:
-            print(f"  - {u}")
-
-    # 1.9) 候補が空なら RSS / Google News からフォールバック
     def _fetch_text(url: str, timeout: int = 20) -> str:
         try:
-            r = sess.get(
-                url,
-                headers={
-                    "User-Agent": (
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/128.0.0.0 Safari/537.36"
-                    )
-                },
-                timeout=timeout,
-            )
+            r = sess.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=timeout)
             if r.status_code == 200 and (r.text or "").strip():
                 return r.text
         except Exception:
@@ -1146,7 +1056,7 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
             "https://news.google.com/rss/search?"
             "q=site:irrawaddy.com+when:1d&hl=en-US&gl=US&ceid=US:en"
         )
-        xml = _fetch_text(gnews)
+        xml = _fetch_text_irrawaddy(gnews)
         if not xml:
             xml = _fetch_text_via_jina(gnews)
             if not xml:
@@ -1176,83 +1086,27 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
             })
         return items
 
-    if len(candidate_urls) == 0:
-        # 1) WP JSON
-        wp_url = (
-            "https://www.irrawaddy.com/wp-json/wp/v2/posts?per_page=50&_fields=link,date,title,excerpt"
-        )
-        wp_json = _fetch_text(wp_url) or _fetch_text_via_jina(wp_url)
-        if wp_json:
-            try:
-                arr = json.loads(wp_json)
-                for o in arr:
-                    link = (o.get("link") or "").strip()
-                    ds = o.get("date") or ""
-                    t = o.get("title")
-                    if isinstance(t, dict):
-                        tt = (t.get("rendered") or "").strip()
-                    else:
-                        tt = (t or "").strip()
-                    ex = o.get("excerpt")
-                    if isinstance(ex, dict):
-                        sx = _clean_summary_text(ex.get("rendered") or "")
-                    else:
-                        sx = _clean_summary_text(ex or "")
-                    try:
-                        dt = parse_date(ds)
-                    except Exception:
-                        dt = None
-                    if link and dt and _mmt_date(dt) == target_date_mmt and not _is_excluded_url(link):
-                        if link not in seen_urls:
-                            candidate_urls.append(link)
-                            seen_urls.add(link)
-                            origins[link] = "feed"
-                        feed_hints[link] = {
-                            "title": tt,
-                            "summary": sx,
-                            "date": target_date_mmt.isoformat(),
-                        }
-            except Exception:
-                pass
-
-        # 2) RSS
-        if len(candidate_urls) == 0:
-            feed_url = "https://www.irrawaddy.com/feed"
-            feed_xml = _fetch_text(feed_url) or _fetch_text_via_jina(feed_url)
-            if feed_xml:
+    # 1) WP JSON
+    wp_url = "https://www.irrawaddy.com/wp-json/wp/v2/posts?per_page=50&_fields=link,date,title,excerpt"
+    wp_json = _fetch_text_irrawaddy(wp_url) or _fetch_text_via_jina(wp_url)
+    if wp_json:
+        try:
+            arr = json.loads(wp_json)
+            for o in arr:
+                link = (o.get("link") or "").strip()
+                ds = o.get("date") or ""
+                t = o.get("title")
+                if isinstance(t, dict):
+                    tt = (t.get("rendered") or "").strip()
+                else:
+                    tt = (t or "").strip()
+                ex = o.get("excerpt")
+                if isinstance(ex, dict):
+                    sx = _clean_summary_text(ex.get("rendered") or "")
+                else:
+                    sx = _clean_summary_text(ex or "")
                 try:
-                    from xml.etree import ElementTree as ET
-                    root = ET.fromstring(feed_xml)
-                    for it in root.findall(".//item"):
-                        title = (it.findtext("title") or "").strip()
-                        link = (it.findtext("link") or "").strip()
-                        pub = (it.findtext("pubDate") or "").strip()
-                        desc = (it.findtext("description") or "").strip()
-                        try:
-                            dt = parse_date(pub)
-                        except Exception:
-                            dt = None
-                        if link and dt and _mmt_date(dt) == target_date_mmt and not _is_excluded_url(link):
-                            if link not in seen_urls:
-                                candidate_urls.append(link)
-                                seen_urls.add(link)
-                                origins[link] = "feed"
-                            feed_hints[link] = {
-                                "title": title,
-                                "summary": _clean_summary_text(desc),
-                                "date": target_date_mmt.isoformat(),
-                            }
-                except Exception:
-                    pass
-
-        # 3) Google News（当日のみ）
-        if len(candidate_urls) == 0:
-            for it in _rss_items_from_google_news():
-                title = it.get("title") or ""
-                link = (it.get("link") or "").strip()
-                pub = it.get("pubDate") or ""
-                try:
-                    dt = parse_date(pub)
+                    dt = parse_date(ds)
                 except Exception:
                     dt = None
                 if link and dt and _mmt_date(dt) == target_date_mmt and not _is_excluded_url(link):
@@ -1261,12 +1115,165 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
                         seen_urls.add(link)
                         origins[link] = "feed"
                     feed_hints[link] = {
-                        "title": title,
-                        "summary": _clean_summary_text(it.get("summary") or ""),
+                        "title": tt,
+                        "summary": sx,
                         "date": target_date_mmt.isoformat(),
                     }
-        if debug:
-            print(f"[irrawaddy] fallback candidates={len(candidate_urls)}")
+        except Exception:
+            pass
+
+    # 2) feed
+    if len(candidate_urls) == 0:
+        feed_url = "https://www.irrawaddy.com/feed"
+        feed_xml = _fetch_text_irrawaddy(feed_url) or _fetch_text_via_jina(feed_url)
+        if feed_xml:
+            try:
+                from xml.etree import ElementTree as ET
+                root = ET.fromstring(feed_xml)
+                for it in root.findall(".//item"):
+                    title = (it.findtext("title") or "").strip()
+                    link = (it.findtext("link") or "").strip()
+                    pub = (it.findtext("pubDate") or "").strip()
+                    desc = (it.findtext("description") or "").strip()
+                    try:
+                        dt = parse_date(pub)
+                    except Exception:
+                        dt = None
+                    if link and dt and _mmt_date(dt) == target_date_mmt and not _is_excluded_url(link):
+                        if link not in seen_urls:
+                            candidate_urls.append(link)
+                            seen_urls.add(link)
+                            origins[link] = "feed"
+                        feed_hints[link] = {
+                            "title": title,
+                            "summary": _clean_summary_text(desc),
+                            "date": target_date_mmt.isoformat(),
+                        }
+            except Exception:
+                pass
+
+    # 3) category crawl
+    if len(candidate_urls) == 0:
+        for rel in paths:
+            url = f"{BASE}{rel}"
+            html, status_code, source = _fetch_irrawaddy_html_cached(
+                url,
+                session=session,
+                allow_browser=True,
+            )
+            if not html:
+                print(f"[irrawaddy] list fetch fail {url}: status={status_code} source={source}")
+                continue
+            if debug:
+                print(f"[irrawaddy][list] fetched: {url} status={status_code} source={source} bytes={len(html)}")
+            soup = BeautifulSoup(html, "html.parser")
+            if debug:
+                title_txt = (soup.title.get_text(strip=True) if soup.title else "")
+                c_hero = len(soup.select('.jnews_category_hero_container'))
+                c_postmeta = len(soup.select('.jeg_post_meta'))
+                c_date_links = len(soup.select('.jeg_meta_date a[href]'))
+                c_titles = len(soup.select('.jeg_post_title a[href]'))
+                c_rel_next = len([ln for ln in soup.select('link[rel="next"]') if ln.get('href')])
+                print(f"[irrawaddy][list] title='{title_txt[:60]}' hero={c_hero} post_meta={c_postmeta} date_links={c_date_links} titles={c_titles} rel_next={c_rel_next}")
+            wrapper = soup.select_one("div.jeg_content")
+            if debug:
+                print(f"[irrawaddy][list] wrapper_found={'yes' if wrapper else 'no'}")
+            scopes = ([wrapper] if wrapper else []) + [soup]
+
+            cat_added = 0
+            for scope in scopes:
+                links = scope.select(
+                    ".jnews_category_hero_container .jeg_meta_date a[href], "
+                    "div.jeg_postblock_content .jeg_meta_date a[href], "
+                    ".jeg_post_meta .jeg_meta_date a[href]"
+                )
+                if debug:
+                    print(f"[irrawaddy][list] candidates in-page: raw={len(links)}")
+
+                found = 0
+                for a in links:
+                    href = (a.get("href") or "").strip()
+                    raw = a.get_text(" ", strip=True)
+                    try:
+                        shown_date = _parse_category_date_text(raw)
+                    except Exception:
+                        continue
+                    if _is_excluded_url(href):
+                        continue
+                    if shown_date == target_date_mmt and href and href not in seen_urls:
+                        candidate_urls.append(href)
+                        seen_urls.add(href)
+                        origins[href] = origins.get(href, "cat")
+                        found += 1
+                        cat_added += 1
+                if found > 0:
+                    break
+            if debug:
+                print(f"[irrawaddy][list] added_from_category={found} total_candidates={len(candidate_urls)}")
+
+        try:
+            html_home, status_home, source_home = _fetch_irrawaddy_html_cached(
+                f"{BASE}/",
+                session=session,
+                allow_browser=True,
+            )
+            if not html_home:
+                raise Exception(f"home html fetch failed (status={status_home}, source={source_home})")
+            if debug:
+                print(f"[irrawaddy][home] fetched: / status={status_home} source={source_home} bytes={len(html_home)}")
+            soup_home = BeautifulSoup(html_home, "html.parser")
+            home_scope = soup_home.select_one(
+                'div.elementor-element-kuDRpuo[data-id="kuDRpuo"], '
+                "div.elementor-element-kuDRpuo, "
+                '[data-id="kuDRpuo"]'
+            )
+            if debug:
+                print(f"[irrawaddy][home] home_scope_found={'yes' if home_scope else 'no'}")
+            if home_scope:
+                links = home_scope.select(".jeg_meta_date a[href]")
+                if debug:
+                    print(f"[irrawaddy][home] raw={len(links)}")
+                for a in links:
+                    href = (a.get("href") or "").strip()
+                    raw = a.get_text(" ", strip=True)
+                    try:
+                        shown_date = _parse_category_date_text(raw)
+                    except Exception:
+                        continue
+                    if _is_excluded_url(href):
+                        continue
+                    if shown_date == target_date_mmt and href and href not in seen_urls:
+                        candidate_urls.append(href)
+                        seen_urls.add(href)
+                        origins[href] = origins.get(href, "home")
+        except Exception as e:
+            print(f"[irrawaddy] home scan fail: {e}")
+
+    # 4) Google News（当日のみ）
+    if len(candidate_urls) == 0:
+        for it in _rss_items_from_google_news():
+            title = it.get("title") or ""
+            link = (it.get("link") or "").strip()
+            pub = it.get("pubDate") or ""
+            try:
+                dt = parse_date(pub)
+            except Exception:
+                dt = None
+            if link and dt and _mmt_date(dt) == target_date_mmt and not _is_excluded_url(link):
+                if link not in seen_urls:
+                    candidate_urls.append(link)
+                    seen_urls.add(link)
+                    origins[link] = "feed"
+                feed_hints[link] = {
+                    "title": title,
+                    "summary": _clean_summary_text(it.get("summary") or ""),
+                    "date": target_date_mmt.isoformat(),
+                }
+
+    if debug:
+        print(f"[irrawaddy] candidates(unique)={len(candidate_urls)}")
+        for u in candidate_urls[:5]:
+            print(f"  - {u}")
 
     # 2) 各候補記事の meta 日付を MMT で厳密確認し、タイトル/本文を抽出
     for url in candidate_urls:
@@ -1277,7 +1284,11 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
             title = ""
             body = ""
             try:
-                html, status_code, source = _fetch_irrawaddy_html_cached(url, session=session)
+                html, status_code, source = _fetch_irrawaddy_html_cached(
+                    url,
+                    session=session,
+                    allow_browser=True,
+                )
                 if not html:
                     raise Exception(f"html fetch failed (status={status_code}, source={source})")
                 soup = BeautifulSoup(html, "html.parser")
@@ -1293,17 +1304,16 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
                 hint = feed_hints.get(url)
                 if hint and (hint.get("date") == target_date_mmt.isoformat()):
                     title_fb = (hint.get("title") or "").strip()
-                    body_fb = (hint.get("summary") or "").strip()
                     if title_fb:
                         if debug:
-                            print("  -> fallback: use feed title/date/summary (meta_date mismatch)")
+                            print("  -> fallback: use feed title/date (meta_date mismatch)")
                         results.append(
                             {
                                 "source": "Irrawaddy",
                                 "title": unicodedata.normalize("NFC", title_fb),
                                 "url": url,
                                 "date": target_date_mmt.isoformat(),
-                                "body": unicodedata.normalize("NFC", body_fb),
+                                "body": "",
                             }
                         )
                         continue
@@ -1328,9 +1338,7 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
                             "title": unicodedata.normalize("NFC", title_fb),
                             "url": url,
                             "date": target_date_mmt.isoformat(),
-                            "body": unicodedata.normalize(
-                                "NFC", (feed_hints.get(url, {}).get("summary") or "").strip()
-                            ),
+                            "body": "",
                         }
                     )
                     continue
@@ -1405,11 +1413,6 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
                     txt = _fetch_text(alt2, timeout=25)
                 if txt:
                     body = unicodedata.normalize("NFC", txt).strip()
-            # 2.4) それでも本文が空なら feed/google の summary を本文として採用
-            if not body:
-                hint_summary = (feed_hints.get(url, {}).get("summary") or "").strip()
-                if hint_summary:
-                    body = unicodedata.normalize("NFC", hint_summary)
             if not body and debug:
                 print("  -> note: empty body")
 

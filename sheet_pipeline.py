@@ -396,10 +396,11 @@ def _get_body_once(url: str, source: str, out_dir: str, title: str = "", summary
                 except Exception:
                     pass
             body = (txt or "").strip()
+            if body:
+                logging.info(f"[body] irrawaddy rescued via jina/amp url={url} body_len={len(body)}")
 
-    # --- 3.5) まだ空なら、収集器が持っていた summary を本文として採用 ---
     if not (body or "").strip():
-        body = (summary or "").strip()
+        logging.warning(f"[body] empty source={source} url={url}")
 
     # --- 4) 空本文はキャッシュしない（将来の再取得の余地を残す）---
     if body.strip():
