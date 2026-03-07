@@ -233,6 +233,22 @@ def _simple_fetch(url: str) -> str:
     r.raise_for_status()
     return r.text
 
+def _resolve_news_google_redirect_global(u: str, timeout: int = 20) -> str:
+    """news.google.com/rss/articles/... を publisher の最終URLへ解決。失敗時は空。"""
+    try:
+        r = requests.get(
+            u,
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=timeout,
+            allow_redirects=True
+        )
+        final_url = (getattr(r, "url", "") or "").strip()
+        if "irrawaddy.com" in final_url:
+            return final_url
+        return ""
+    except Exception:
+        return ""
+
 def _fetch_once_dvb(url: str, session: Optional[requests.Session] = None) -> bytes:
     """
     DVB 用：fetch_articles.py の fetch_with_retry_dvb を “1回だけ”呼ぶラッパ。
@@ -280,15 +296,6 @@ def _get_body_once(url: str, source: str, out_dir: str, title: str = "", summary
     import requests
     from bs4 import BeautifulSoup
 
-    def _resolve_news_google_redirect(u: str, timeout: int = 20) -> str:
-        """news.google.com/rss/articles/... を publisher の最終URLへ解決（成功時のみ差し替え）"""
-        try:
-            r = requests.get(u, headers={"User-Agent": "Mozilla/5.0"}, timeout=timeout, allow_redirects=True)
-            final_url = getattr(r, "url", "") or u
-            return final_url
-        except Exception:
-            return u
-
     def _fetch_text_via_jina(u: str, timeout: int = 25) -> str:
         """r.jina.ai 経由でプレーンテキストを取得（本文がHTMLで取れなかった時の救済）"""
         try:
@@ -314,7 +321,11 @@ def _get_body_once(url: str, source: str, out_dir: str, title: str = "", summary
     except Exception:
         host = ""
     if "news.google.com" in host:
-        url = _resolve_news_google_redirect(url)
+        resolved = _resolve_news_google_redirect_global(url)
+        if not resolved:
+            logging.warning(f"[body] unresolved google-news url={url}")
+            return ""
+        url = resolved
 
     # --- 2) 本文取得（Irrawaddy / DVB は専用フェッチャ。その他は共通フェッチャ＆抽出器）---
     body = ""
@@ -396,10 +407,11 @@ def _get_body_once(url: str, source: str, out_dir: str, title: str = "", summary
                 except Exception:
                     pass
             body = (txt or "").strip()
+            if body:
+                logging.info(f"[body] irrawaddy rescued via jina/amp url={url} body_len={len(body)}")
 
-    # --- 3.5) まだ空なら、収集器が持っていた summary を本文として採用 ---
     if not (body or "").strip():
-        body = (summary or "").strip()
+        logging.warning(f"[body] empty source={source} url={url}")
 
     # --- 4) 空本文はキャッシュしない（将来の再取得の余地を残す）---
     if body.strip():
@@ -1457,8 +1469,34 @@ def cmd_collect_to_sheet(args):
         source = it.get("source") or ""
         title  = it.get("title") or ""
         url    = (it.get("url") or "").strip()
-        if not url or url in existing:
-            logging.debug(f"[skip] url empty or duplicated url={url!r}")
+        
+        # Google News URL は可能なら実記事URLへ正規化してから、
+        # 重複判定 / 本文取得 / シート出力のすべてに使う
+        normalized_url = url
+        try:
+            from urllib.parse import urlparse
+            host = urlparse(url).netloc.lower()
+        except Exception:
+            host = ""
+
+        if "news.google.com" in host:
+            try:
+                resolved = (_resolve_news_google_redirect_global(url) or "").strip()
+                normalized_url = resolved or url
+                if resolved and resolved != url:
+                    logging.info(f"[url] normalized source={source} from={url} to={normalized_url}")
+                elif not resolved:
+                    logging.warning(f"[url] normalize failed; keep original source={source} url={url}")
+            except Exception as e:
+                normalized_url = url
+                logging.warning(f"[url] normalize error; keep original source={source} url={url} err={e}")
+
+        if not normalized_url:
+            logging.warning(f"[skip] normalized_url empty source={source} raw_url={url!r}")
+            continue
+
+        if normalized_url in existing:
+            logging.debug(f"[skip] duplicated url={normalized_url!r}")
             continue
 
         # collector が本文を持っていればそれを最優先（再取得しない）
@@ -1467,17 +1505,17 @@ def cmd_collect_to_sheet(args):
         if body:
             with _BODIES_LOCK:
                 cache = _load_bodies_cache(bundle_dir)
-                cache[url] = {"source": source, "title": title, "body": body}
+                cache[normalized_url] = {"source": source, "title": title, "body": body}
                 _save_bodies_cache(bundle_dir, cache)
         else:
             # なければ堅牢抽出器で1回だけ取得→キャッシュ
-            body = _get_body_once(url, source, out_dir=bundle_dir, title=title, summary=summary)
+            body = _get_body_once(normalized_url, source, out_dir=bundle_dir, title=title, summary=summary)
 
         # ★ ここから：Gemini は使わず、エーヤワディ判定だけを行う
         is_ay = _is_ayeyarwady(title, body)
         logging.info(
             f"[row] source={source} body_len={len(body)} "
-            f"ayeyarwady={is_ay} url={url}"
+            f"ayeyarwady={is_ay} url={normalized_url}"
         )
 
         # ★ E/F/G はブランク, M にタイトル原文, N に本文原文（ただしセル上限対策でクリップ）
@@ -1489,13 +1527,13 @@ def cmd_collect_to_sheet(args):
             "", "", "",                          # E/F/G 見出し訳３案（今回は空）
             "",                                  # H 確定見出し（手動）
             "",                                  # I 本文要約（空）
-            url,                                 # J URL
+            normalized_url,                      # J URL
             "",                                  # K 採用フラグ（初期値空）
             "",                                  # L（将来用など、現状不使用なら空）
             title,                               # M 記事タイトル原文
             _clip_for_sheet_cell(body),          # N 記事本文原文（セル上限に合わせてクリップ）
         ])
-        existing.add(url)
+        existing.add(normalized_url)
 
     _append_rows(rows_to_append)
     print(f"appended {len(rows_to_append)} rows")

@@ -27,10 +27,10 @@ function exportProdRowsToMonthlyCsv() {
   for (let i = 0; i < dataRows.length; i++) {
     const row = dataRows[i];
 
-    const status = row[10]; // K列 (0始まりで index=10)
-    if (status !== "a") {
-      continue;
-    }
+    // const status = row[10]; // K列 (0始まりで index=10)
+    // if (status !== "a") {
+    //   continue;
+    // }
 
     const dateValue = row[0]; // A列 日付
     if (!(dateValue instanceof Date)) {
@@ -49,6 +49,7 @@ function exportProdRowsToMonthlyCsv() {
   // 何も対象がなければ終了
   const monthKeys = Object.keys(monthBuckets);
   if (monthKeys.length === 0) {
+    appendProdArchiveRowsToTitleSheet_();
     return;
   }
 
@@ -56,11 +57,14 @@ function exportProdRowsToMonthlyCsv() {
   monthKeys.forEach(function (monthKey) {
     appendRowsToMonthlySpreadsheet_(monthKey, header, monthBuckets[monthKey]);
   });
+
+  // 既存の月別アーカイブに加えて、指定スプレッドシートのtitleシートにも追記する
+  appendProdArchiveRowsToTitleSheet_();
 }
 
 // スクリプトプロパティからCSV出力先フォルダを取得
 const folderId = PropertiesService.getScriptProperties().getProperty(
-  "CSV_OUTPUT_FOLDER_ID"
+  "CSV_OUTPUT_FOLDER_ID",
 );
 
 function getCsvOutputFolder_() {
@@ -137,4 +141,74 @@ function appendRowsToMonthlySpreadsheet_(monthKey, headerRow, rows) {
   outSheet
     .getRange(outSheet.getLastRow() + 1, 1, rowsFixed.length, headerRow.length)
     .setValues(rowsFixed);
+}
+
+/**
+ * 固定IDのprodシートから、K列が "a" の行をtitleシートへ追記する。
+ * マッピングは以下:
+ * - A列 -> A列
+ * - G列 -> B列
+ * - H列 -> C列
+ * - J列 -> D列
+ */
+function appendProdArchiveRowsToTitleSheet_() {
+  const sourceSpreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  const sourceSheetName = "prod";
+  const destinationSheetName = "title";
+  const destinationSpreadsheetId = PropertiesService.getScriptProperties().getProperty(
+    "TITLE_EXAMPLES_SPREADSHEET_ID",
+  );
+  if (!destinationSpreadsheetId) {
+    throw new Error(
+      "スクリプトプロパティ TITLE_EXAMPLES_SPREADSHEET_ID が未設定です",
+    );
+  }
+
+  const sourceSheet = sourceSpreadsheet.getSheetByName(sourceSheetName);
+  if (!sourceSheet) {
+    throw new Error('シート "prod" が見つかりません。');
+  }
+
+  const destinationSpreadsheet = SpreadsheetApp.openById(destinationSpreadsheetId);
+  const destinationSheet =
+    destinationSpreadsheet.getSheetByName(destinationSheetName);
+  if (!destinationSheet) {
+    throw new Error('シート "title" が見つかりません。');
+  }
+
+  const values = sourceSheet.getDataRange().getValues();
+  if (values.length < 2) {
+    return;
+  }
+
+  const dataRows = values.slice(1);
+  const rowsToAppend = [];
+
+  for (let i = 0; i < dataRows.length; i++) {
+    const row = dataRows[i];
+    const status = row[10]; // K列
+    const hValue = row[7]; // H列
+    const hasHValue =
+      hValue !== null &&
+      hValue !== undefined &&
+      String(hValue).trim() !== "";
+    if (status !== "a" || !hasHValue) {
+      continue;
+    }
+
+    rowsToAppend.push([
+      row[0], // A列 -> A列
+      row[6], // G列 -> B列
+      row[7], // H列 -> C列
+      row[9], // J列 -> D列
+    ]);
+  }
+
+  if (rowsToAppend.length === 0) {
+    return;
+  }
+
+  destinationSheet
+    .getRange(destinationSheet.getLastRow() + 1, 1, rowsToAppend.length, 4)
+    .setValues(rowsToAppend);
 }

@@ -3350,7 +3350,7 @@ function onEditClearGeminiLogs(e) {
 }
 
 /************************************************************
- * 12時間より古いログを削除しつつ、値のある行だけ上に詰める（ヘッダー無し版）
+ * 24時間より古いログを削除しつつ、値のある行だけ上に詰める（ヘッダー無し版）
  * 対象シート: gemini_logs_prod / gemini_logs_dev
  ************************************************************/
 function _cleanupOldGeminiLogs_() {
@@ -3358,7 +3358,7 @@ function _cleanupOldGeminiLogs_() {
   const logSheetNames = [GEMINI_LOG_SHEET_NAME_PROD, GEMINI_LOG_SHEET_NAME_DEV];
 
   const now = new Date();
-  const cutoffMs = now.getTime() - 12 * 60 * 60 * 1000; // 12時間前
+  const cutoffMs = now.getTime() - 24 * 60 * 60 * 1000; // 24時間前
 
   logSheetNames.forEach(function (logSheetName) {
     const sh = ss.getSheetByName(logSheetName);
@@ -3402,7 +3402,7 @@ function _cleanupOldGeminiLogs_() {
         continue;
       }
 
-      // 12時間より古いログを削除
+      // 24時間より古いログを削除
       if (tsDate.getTime() >= cutoffMs) {
         keptRows.push(row);
       }

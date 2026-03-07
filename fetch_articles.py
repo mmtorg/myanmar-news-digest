@@ -1,4 +1,6 @@
 ﻿import requests
+from urllib.parse import quote
+from requests.auth import HTTPProxyAuth
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta, timezone, date
 from dateutil.parser import parse as parse_date
@@ -1039,6 +1041,19 @@ def fetch_with_retry_irrawaddy(url, retries=3, wait_seconds=2, session=None):
             u = u + "/"
         return urllib.parse.urljoin(u, "amp")
 
+    def _as_response_like(status_code: int, text: str = "", content: bytes | None = None):
+        """
+        呼び出し元が getattr(res, "status_code"/"text"/"content") で扱える
+        最小の Response 互換オブジェクトを返す。
+        403 を例外化せず上位へ伝えるために使う。
+        """
+        if content is None:
+            try:
+                content = (text or "").encode("utf-8", "ignore")
+            except Exception:
+                content = b""
+        return SimpleNamespace(status_code=status_code, text=(text or ""), content=content, url=url)
+
     # --- Try 1: curl_cffi (Chrome 指紋) 単発 ---
     try:
         from curl_cffi import requests as cfr  # type: ignore[import-not-found]
@@ -1057,6 +1072,8 @@ def fetch_with_retry_irrawaddy(url, retries=3, wait_seconds=2, session=None):
         )
         if r.status_code == 200 and (r.text or "").strip():
             return r
+        if r.status_code == 403:
+            return _as_response_like(403, getattr(r, "text", "") or "")
     except Exception as e:
         print(f"[fetch-cffi] EXC: {e} → {url}")
 
@@ -1073,6 +1090,8 @@ def fetch_with_retry_irrawaddy(url, retries=3, wait_seconds=2, session=None):
         r = scraper.get(url, headers=HEADERS, timeout=30, allow_redirects=True)
         if r.status_code == 200 and getattr(r, "text", "").strip():
             return r
+        if r.status_code == 403:
+            return _as_response_like(403, getattr(r, "text", "") or "")
     except Exception as e:
         print(f"[fetch-cs] EXC: {e} → {url}")
 
@@ -1086,6 +1105,8 @@ def fetch_with_retry_irrawaddy(url, retries=3, wait_seconds=2, session=None):
         )
         if r2.status_code == 200 and getattr(r2, "text", "").strip():
             return r2
+        if r2.status_code == 403:
+            return _as_response_like(403, getattr(r2, "text", "") or "")
         # 403/503 かつ /news/ の記事URLに限り、/amp を“1回だけ”試す
         if r2.status_code in (403, 503) and "/news/" in url and "/category/" not in url:
             amp = _amp_url(url)
@@ -1095,6 +1116,8 @@ def fetch_with_retry_irrawaddy(url, retries=3, wait_seconds=2, session=None):
             )
             if r3.status_code == 200 and getattr(r3, "text", "").strip():
                 return r3
+            if r3.status_code == 403:
+                return _as_response_like(403, getattr(r3, "text", "") or "")
         try:
             svr = r2.headers.get("server") or r2.headers.get("Server")
             ray = r2.headers.get("cf-ray")
@@ -1181,6 +1204,89 @@ def fetch_html_via_brightdata_browser(url: str, *, timeout_ms: int = 120_000) ->
         return loop.run_until_complete(_run())
     except Exception:
         return ""
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+BD_UNLOCKER_CONNECT_TIMEOUT = int(os.getenv("BD_UNLOCKER_CONNECT_TIMEOUT", "10"))
+BD_UNLOCKER_READ_TIMEOUT = int(os.getenv("BD_UNLOCKER_READ_TIMEOUT", "60"))
+BD_UNLOCKER_TIMEOUT = (BD_UNLOCKER_CONNECT_TIMEOUT, BD_UNLOCKER_READ_TIMEOUT)
+
+def _new_bd_session():
+    s = requests.Session()
+    s.headers.update({
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/128.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+        "Connection": "close",
+    })
+    return s
+
+def fetch_html_via_brightdata_unlocker(url: str, *, timeout=BD_UNLOCKER_TIMEOUT, retry_once: bool = True) -> str:
+    zone = (os.getenv("BRIGHTDATA_WEB_UNLOCKER_ZONE") or "").strip()
+    password = (os.getenv("BRIGHTDATA_WEB_UNLOCKER_PASSWORD") or "").strip()
+    if not zone or not password:
+        print(f"[bd-unlocker] skip missing credentials → {url}")
+        return ""
+
+    if zone.startswith("brd-customer-"):
+        proxy_user = zone
+    else:
+        proxy_user = f"brd-customer-{zone}-zone-{zone}"
+
+    proxy_host = os.getenv("BRIGHTDATA_WEB_UNLOCKER_HOST", "brd.superproxy.io")
+    proxy_port = os.getenv("BRIGHTDATA_WEB_UNLOCKER_PORT", "33335")
+
+    proxy_user_enc = quote(proxy_user, safe="")
+    password_enc = quote(password, safe="")
+    proxy_url = f"http://{proxy_user_enc}:{password_enc}@{proxy_host}:{proxy_port}"
+
+    attempts = 2 if retry_once else 1
+    last_exc = None
+    print(f"[bd-unlocker] start attempts={attempts} timeout={timeout} → {url}")
+
+    for attempt in range(1, attempts + 1):
+        sess = _new_bd_session()
+        try:
+            r = sess.get(
+                url,
+                proxies={"http": proxy_url, "https": proxy_url},
+                timeout=timeout,
+                allow_redirects=True,
+                verify=False,
+            )
+            if r.status_code == 200 and (r.text or "").strip():
+                print(
+                    f"[bd-unlocker] ok attempt={attempt}/{attempts} "
+                    f"timeout={timeout} len={len(r.text)} → {url}"
+                )
+                return r.text
+            print(
+                f"[bd-unlocker] HTTP {r.status_code} "
+                f"attempt={attempt}/{attempts} timeout={timeout} "
+                f"len={len(r.text or '')} → {url}"
+            )
+        except Exception as e:
+            last_exc = e
+            print(
+                f"[bd-unlocker] EXC attempt={attempt}/{attempts} "
+                f"timeout={timeout}: {e} → {url}"
+            )
+        finally:
+            try:
+                sess.close()
+            except Exception:
+                pass
+
+    if last_exc is not None:
+        print(f"[bd-unlocker] exhausted with last error: {last_exc} → {url}")
+
+    return ""
 
 # === DVB専用 ===
 def fetch_with_retry_dvb(url, retries=4, wait_seconds=2, session=None):
@@ -1433,9 +1539,84 @@ def extract_body_irrawaddy(soup):
                 paragraphs.append(_norm_text(txt))
     return "\n".join(paragraphs).strip()
 
+def _is_irrawaddy_excluded_url(url: str) -> bool:
+    EXCLUDE_PREFIXES = [
+        "/category/news/asia",
+        "/category/news/world",
+        "/video",
+        "/cartoons",
+    ]
+    try:
+        p = urlparse(url or "").path.lower()
+    except Exception:
+        p = (url or "").lower()
+    return any(p.startswith(x) for x in EXCLUDE_PREFIXES)
 
 #  Irrawaddy 用 fetch_once（既存の fetch_with_retry_irrawaddy を1回ラップ）
+def fetch_once_irrawaddy_html(url, session=None, *, allow_brightdata_fallback: bool = True):
+    """
+    Irrawaddy の一覧ページ / feed / wp-json / 記事HTML を 1 回取得する軽量ラッパ。
+    本文抽出の成否ではなく、HTML/テキスト取得そのものを重視する。
+    戻り値: (html_text, status_code, source)
+    source: direct / unlocker / browser / none
+    """
+    # EXCLUDE_PREFIXES 該当URLは取得不要。
+    # direct / Unlocker / Browser API を一切叩かない。
+    if _is_irrawaddy_excluded_url(url):
+        return "", None, "excluded"
+    
+    html_text = ""
+    status = None
+    source = "none"
+
+    try:
+        r = fetch_with_retry_irrawaddy(url, retries=1, wait_seconds=0, session=session)
+        status = getattr(r, "status_code", None)
+        if getattr(r, "content", None):
+            try:
+                html_text = r.content.decode("utf-8", "ignore")
+            except Exception:
+                html_text = (getattr(r, "text", "") or "")
+        else:
+            html_text = (getattr(r, "text", "") or "")
+        if (html_text or "").strip():
+            source = "direct"
+            return html_text, status, source
+    except Exception as e:
+        print(f"[irrawaddy-html] direct fail: {e} → {url}")
+        html_text = ""
+        status = None
+
+    if allow_brightdata_fallback:
+        try:
+            html2 = (fetch_html_via_brightdata_unlocker(
+                url,
+                timeout=BD_UNLOCKER_TIMEOUT,
+                retry_once=False,
+            ) or "").strip()
+            if html2:
+                print(f"[irrawaddy-html] unlocker ok len={len(html2)} → {url}")
+                return html2, 200, "unlocker"
+        except Exception as e:
+            print(f"[irrawaddy-html] unlocker fail: {e} → {url}")
+
+        try:
+            html3 = (fetch_html_via_brightdata_browser(url) or "").strip()
+            if html3:
+                print(f"[irrawaddy-html] browser ok len={len(html3)} → {url}")
+                return html3, 200, "browser"
+        except Exception as e:
+            print(f"[irrawaddy-html] browser fail: {e} → {url}")
+
+    return html_text, status, source
+
+
 def fetch_once_irrawaddy(url, session=None, *, allow_brightdata_fallback: bool = True):
+    # EXCLUDE_PREFIXES 該当URLは取得不要。
+    # direct / Unlocker / Browser API を一切叩かない。
+    if _is_irrawaddy_excluded_url(url):
+        return b""
+    
     html_text = ""
     status = None
     try:
@@ -1448,22 +1629,51 @@ def fetch_once_irrawaddy(url, session=None, *, allow_brightdata_fallback: bool =
                 html_text = (getattr(r, "text", "") or "")
         else:
             html_text = (getattr(r, "text", "") or "")
+        print(f"[irrawaddy-body] direct status={status} len={len(html_text or '')} → {url}")
     except Exception:
+        print(f"[irrawaddy-body] direct fail → {url}")
         html_text = ""
 
-    # ✅ 本文DOMが見えているなら direct のまま返す（コスト削減）
-    if html_text and ("content-inner" in html_text):
+    def _has_irrawaddy_body(html: str) -> bool:
+        if not html:
+            return False
+        try:
+            soup = BeautifulSoup(html, "html.parser")
+            body = extract_body_irrawaddy(soup)
+            return bool((body or "").strip())
+        except Exception:
+            return False
+
+    # ✅ direct で本文抽出できるならそのまま返す
+    if _has_irrawaddy_body(html_text):
+        print(f"[irrawaddy-body] direct ok → {url}")
         return html_text.encode("utf-8", "ignore")
 
-    # ❗ direct が怪しいときだけ BD（許可されている場合）
+    # ❗ direct で本文抽出できないときは BD を順に試す
     if allow_brightdata_fallback:
         try:
-            if (status in (403, 503)) or (html_text and ("content-inner" not in html_text)) or (not html_text):
-                html2 = (fetch_html_via_brightdata_browser(url) or "").strip()
+            # まず Web Unlocker
+            # 403 のときはもちろん、それ以外でも本文抽出できていないなら試す
+            if status == 403 or not _has_irrawaddy_body(html_text):
+                html2 = (fetch_html_via_brightdata_unlocker(url, timeout=BD_UNLOCKER_TIMEOUT) or "").strip()
+                if _has_irrawaddy_body(html2):
+                    print(f"[irrawaddy-body] unlocker ok → {url}")
+                    return html2.encode("utf-8", "ignore")
+                print(f"[irrawaddy-body] unlocker no-body len={len(html2 or '')} → {url}")
+                # Unlocker でも本文が取れない場合のみ Browser API
+                html3 = (fetch_html_via_brightdata_browser(url) or "").strip()
+                if _has_irrawaddy_body(html3):
+                    print(f"[irrawaddy-body] browser ok → {url}")
+                    return html3.encode("utf-8", "ignore")
+                print(f"[irrawaddy-body] browser no-body len={len(html3 or '')} → {url}")
+                # 本文抽出はできないが、後段での再抽出材料としては
+                # Browser API の HTML が最も期待できるので残す
+                if html3:
+                    return html3.encode("utf-8", "ignore")
                 if html2:
                     return html2.encode("utf-8", "ignore")
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[irrawaddy-body] bd fallback fail: {e} → {url}")
 
     return (html_text or "").encode("utf-8", "ignore")
 # === ここまで ===
@@ -1980,7 +2190,6 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
     seen_urls = set()
     candidate_urls = []
     fallback_titles: Dict[str, str] = {}
-    fallback_summaries: Dict[str, str] = {}
 
     # ==== 1) 各カテゴリURLを1回ずつ巡回 → 当日候補抽出 ====
     for rel_path in paths:
@@ -1997,13 +2206,25 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
         except Exception as e:
             dbg(f"[irrawaddy] list fetch fail (direct) {url}: {e}")
 
-        # ★ direct がダメな時だけ Bright Data
+        # ★ direct がダメな時だけ Web Unlocker → Browser API にフォールバック
         if not html:
-            html = fetch_html_via_brightdata_browser(url)
+            html = (fetch_html_via_brightdata_unlocker(url, timeout=BD_UNLOCKER_TIMEOUT) or "").strip()
             if html:
-                dbg(f"[irrawaddy] list fetched via brightdata: {url}")
+                dbg(f"[irrawaddy] list fetched via web unlocker: {url}")
             else:
-                dbg(f"[irrawaddy] list fetch fail (brightdata) {url}")
+                dbg(f"[irrawaddy] list fetch fail (web unlocker) {url}")
+
+        if not html:
+            try:
+                html = (fetch_html_via_brightdata_browser(url) or "").strip()
+                if html:
+                    dbg(f"[irrawaddy] list fetched via browser api: {url}")
+                else:
+                    dbg(f"[irrawaddy] list fetch fail (browser api) {url}")
+            except Exception as e:
+                dbg(f"[irrawaddy] list fetch fail (browser api) {url}: {e}")
+
+        if not html:
             continue
 
         soup = BeautifulSoup(html, "html.parser")
@@ -2101,22 +2322,14 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
 
     def _fetch_text(url: str, timeout: int = 20) -> str:
         try:
-            r = requests.get(
+            html, _, _ = fetch_once_irrawaddy_html(
                 url,
-                headers={
-                    "User-Agent": (
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/128.0.0.0 Safari/537.36"
-                    )
-                },
-                timeout=timeout,
+                session=session,
+                allow_brightdata_fallback=True,
             )
-            if r.status_code == 200 and (r.text or "").strip():
-                return r.text
+            return (html or "").strip()
         except Exception:
-            pass
-        return ""
+            return ""
 
     def _fetch_text_via_jina(url: str, timeout: int = 25) -> str:
         try:
@@ -2198,7 +2411,7 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
             return None
 
     def _fallback_candidates_via_feeds() -> List[Dict[str, str]]:
-        # 1) WordPress JSON（多くの場合WAF対象）
+        # 1) WordPress JSON
         wp_url = "https://www.irrawaddy.com/wp-json/wp/v2/posts?per_page=50&_fields=link,date,title,excerpt"
         wp_json = _fetch_text(wp_url) or _fetch_text_via_jina(wp_url)
         cands: List[Dict[str, str]] = []
@@ -2232,8 +2445,8 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
             except Exception:
                 pass
 
-        # 2) サイトRSS（403の可能性あり → 失敗時はスキップ）
-        if not cands:
+        # 2) site feed
+        if len(cands) == 0:
             feed_url = "https://www.irrawaddy.com/feed"
             feed_xml = _fetch_text(feed_url) or _fetch_text_via_jina(feed_url)
             if feed_xml:
@@ -2254,75 +2467,40 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
                 except Exception:
                     pass
 
-        # 3) Google News RSS（最終フォールバック）
-        if not cands:
-            # Google News RSS も通常取得→ダメなら Jina 経由で試す
-            items = _rss_items_from_google_news()
-            if not items:
-                gnews = (
-                    "https://news.google.com/rss/search?q=site:irrawaddy.com+when:1d&hl=en-US&gl=US&ceid=US:en"
-                )
-                xml = _fetch_text_via_jina(gnews)
-                if xml:
-                    try:
-                        root = ET.fromstring(xml)
-                        href_re = re.compile(r'href=["\']([^"\']+)["\']', re.I)
-                        items = []
-                        for it in root.findall(".//item"):
-                            title = (it.findtext("title") or "").strip()
-                            link = (it.findtext("link") or "").strip()
-                            pub = (it.findtext("pubDate") or "").strip()
-                            desc = (it.findtext("description") or "").strip()
-                            direct = None
-                            m = href_re.search(desc)
-                            if m and "irrawaddy.com" in m.group(1):
-                                direct = m.group(1)
-                            items.append({
-                                "title": title,
-                                "link": direct or link,
-                                "pubDate": pub,
-                            })
-                    except Exception:
-                        items = []
+        return cands
 
-            def _resolve_gnews(u: str) -> str:
-                try:
-                    if "irrawaddy.com" in u or not u:
-                        return u
-                    if "news.google.com" not in u:
-                        return u
-                    UA = (
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/128.0.0.0 Safari/537.36"
-                    )
-                    r = requests.get(
-                        u,
-                        headers={"User-Agent": UA},
-                        timeout=10,
-                        allow_redirects=False,
-                    )
-                    loc = r.headers.get("location") or r.headers.get("Location")
-                    if loc and "irrawaddy.com" in loc:
-                        return loc
-                except Exception:
-                    pass
-                return u
+    def _fallback_candidates_via_google_news() -> List[Dict[str, str]]:
+        cands: List[Dict[str, str]] = []
+        # Google News RSS（最終フォールバック）
+        items = _rss_items_from_google_news()
+        if not items:
+            gnews = (
+                "https://news.google.com/rss/search?"
+                "q=site:irrawaddy.com+when:1d&hl=en-US&gl=US&ceid=US:en"
+            )
+            xml = _fetch_text(gnews) or _fetch_text_via_jina(gnews)
+            items = _rss_items_from_xml(xml) if xml else []
 
-            for it in items:
-                link = _resolve_gnews(it.get("link") or "")
-                title = it.get("title") or ""
-                pub = it.get("pubDate") or ""
-                dt = _parse_rfc822_date(pub)
-                if not link or _is_excluded_url(link):
-                    continue
-                if dt and _mmt_date(dt) == date_obj:
-                    cands.append({
-                        "url": link,
-                        "title": title,
-                        "summary": _clean_summary_text(it.get("summary") or ""),
-                        "date": date_obj.isoformat(),
-                    })
+        for it in items:
+            link = (it.get("link") or "").strip()
+            title = (it.get("title") or "").strip()
+            pub = it.get("pubDate") or ""
+            dt = _parse_rfc822_date(pub)
+            if not link:
+                continue
+            try:
+                real = _resolve_google_news_link(link)
+            except Exception:
+                real = link
+            if _is_excluded_url(real):
+                continue
+            if dt and _mmt_date(dt) == date_obj:
+                cands.append({
+                    "url": real,
+                    "title": title,
+                    "summary": _clean_summary_text(it.get("summary") or ""),
+                    "date": date_obj.isoformat(),
+                })
 
         # ユニーク化
         seen = set()
@@ -2334,11 +2512,13 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
                 uniq.append(o)
         return uniq
 
-    if len(candidate_urls) == 0:
-        dbg("[irrawaddy] fallback to RSS/Google News due to 0 candidates")
-        feed_cands = _fallback_candidates_via_feeds()
+    # wp-json → feed を category/home より優先
+    feed_cands = _fallback_candidates_via_feeds()
+    if feed_cands:
         dbg(f"[irrawaddy] feed candidates={len(feed_cands)}")
-        # 既存パスと同じ形式に合わせる
+        candidate_urls = []
+        seen_urls = set()
+        fallback_titles = {}
         for o in feed_cands:
             u = o.get("url") or ""
             if u and u not in seen_urls:
@@ -2346,8 +2526,19 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
                 seen_urls.add(u)
                 if o.get("title"):
                     fallback_titles[u] = o.get("title") or ""
-                if o.get("summary"):
-                    fallback_summaries[u] = o.get("summary") or ""
+
+    # category/home でも拾えず、wp-json/feed も空なら最後に Google News
+    if len(candidate_urls) == 0:
+        dbg("[irrawaddy] fallback to Google News due to 0 candidates")
+        gnews_cands = _fallback_candidates_via_google_news()
+        dbg(f"[irrawaddy] google news candidates={len(gnews_cands)}")
+        for o in gnews_cands:
+            u = o.get("url") or ""
+            if u and u not in seen_urls:
+                candidate_urls.append(u)
+                seen_urls.add(u)
+                if o.get("title"):
+                    fallback_titles[u] = o.get("title") or ""
 
     # ==== 2) 候補記事で厳密確認（meta日付/本文/キーワード） ====
     for url in candidate_urls:
@@ -2395,12 +2586,6 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
                     if not title:
                         # フィードで拾ったタイトルを最終手段として流用
                         title = fallback_titles.get(url, "")
-
-            # ②.5) まだ本文が空なら、feed/googleの summary を本文として採用
-            if not body:
-                hint_body = (fallback_summaries.get(url) or "").strip()
-                if hint_body:
-                    body = hint_body
 
             # ③ それでもタイトルが空なら、oEmbed またはスラッグから補完
             if not title:
