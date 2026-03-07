@@ -1000,14 +1000,56 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
     if debug:
         print(f"[irrawaddy] target_date={target_date_mmt}")
 
-    def _fetch_text_irrawaddy(url: str) -> str:
-        html, _, _ = _fetch_irrawaddy_html_cached(url, session=session, allow_browser=True)
+    def _fetch_text_irrawaddy_meta(url: str) -> tuple[str, str]:
+        """
+        wp-json / feed / category 用。
+        Browser API は使わない。
+        戻り値: (text, source)
+        """
+        html, _, source = _fetch_irrawaddy_html_cached(
+            url,
+            session=session,
+            allow_browser=False,
+        )
         if isinstance(html, bytes):
             try:
-                return html.decode("utf-8", "ignore")
+                html = html.decode("utf-8", "ignore")
             except Exception:
-                return ""
-        return (html or "").strip()
+                html = ""
+        text = (html or "").strip()
+        return text, (source or "none")
+
+        def _fetch_json_text_irrawaddy(url: str) -> tuple[str, str]:
+            """
+            JSON として妥当な文字列だけ返す。
+            direct / unlocker で JSON でなければ jina にフォールバック。
+            """
+            text, source = _fetch_text_irrawaddy_meta(url)
+            if text and text.lstrip().startswith(("[", "{")):
+                return text, source
+
+            alt = _fetch_text_via_jina(url)
+            if alt and alt.lstrip().startswith(("[", "{")):
+                return alt, "jina"
+
+            return "", source
+
+        def _fetch_feed_text_irrawaddy(url: str) -> tuple[str, str]:
+            """
+            RSS/Atom として妥当な文字列だけ返す。
+            direct / unlocker で XML でなければ jina にフォールバック。
+            """
+            text, source = _fetch_text_irrawaddy_meta(url)
+            low = text.lower() if text else ""
+            if text and ("<rss" in low or "<feed" in low):
+                return text, source
+
+            alt = _fetch_text_via_jina(url)
+            low_alt = alt.lower() if alt else ""
+            if alt and ("<rss" in low_alt or "<feed" in low_alt):
+                return alt, "jina"
+
+            return "", source
 
     def _fetch_text(url: str, timeout: int = 20) -> str:
         try:
@@ -1049,6 +1091,7 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
         except Exception:
             pass
         return s
+    
     def _resolve_google_news_link_irrawaddy(g_link: str, timeout: int = 20) -> str:
         """
         Google News の news.google.com/rss/articles/... URL を
@@ -1136,7 +1179,7 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
             "https://news.google.com/rss/search?"
             "q=site:irrawaddy.com+when:1d&hl=en-US&gl=US&ceid=US:en"
         )
-        xml = _fetch_text_irrawaddy(gnews)
+        xml, _ = _fetch_text_irrawaddy_meta(gnews)
         if not xml:
             xml = _fetch_text_via_jina(gnews)
             if not xml:
@@ -1168,58 +1211,90 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
 
     # 1) WP JSON
     wp_url = "https://www.irrawaddy.com/wp-json/wp/v2/posts?per_page=50&_fields=link,date,title,excerpt"
-    wp_json = _fetch_text_irrawaddy(wp_url) or _fetch_text_via_jina(wp_url)
+    wp_json, wp_source = _fetch_json_text_irrawaddy(wp_url)
+
+    if debug:
+        print(f"[irrawaddy][wp-json] source={wp_source} bytes={len(wp_json or '')}")
+
     if wp_json:
         try:
             arr = json.loads(wp_json)
+            if debug:
+                print(f"[irrawaddy][wp-json] parsed_items={len(arr) if isinstance(arr, list) else 'non-list'}")
+
             for o in arr:
                 link = (o.get("link") or "").strip()
                 ds = o.get("date") or ""
+
                 t = o.get("title")
                 if isinstance(t, dict):
                     tt = (t.get("rendered") or "").strip()
                 else:
                     tt = (t or "").strip()
+
                 ex = o.get("excerpt")
                 if isinstance(ex, dict):
                     sx = _clean_summary_text(ex.get("rendered") or "")
                 else:
                     sx = _clean_summary_text(ex or "")
+
                 try:
                     dt = parse_date(ds)
                 except Exception:
                     dt = None
+
+                if debug and link:
+                    print(f"[irrawaddy][wp-json] cand link={link} date={ds} mmt={_mmt_date(dt).isoformat() if dt else None}")
+
                 if link and dt and _mmt_date(dt) == target_date_mmt and not _is_excluded_url(link):
                     if link not in seen_urls:
                         candidate_urls.append(link)
                         seen_urls.add(link)
-                        origins[link] = "feed"
+                        origins[link] = "wp-json"
                     feed_hints[link] = {
                         "title": tt,
                         "summary": sx,
                         "date": target_date_mmt.isoformat(),
                     }
-        except Exception:
-            pass
+
+        except Exception as e:
+            print(f"[irrawaddy] wp-json parse failed: {e} head={(wp_json or '')[:200]!r}")
+    else:
+        print(f"[irrawaddy] wp-json invalid payload source={wp_source}")
 
     print(f"[irrawaddy] stage=wp-json candidates={len(candidate_urls)}")
+    
     # 2) feed
     if len(candidate_urls) == 0:
         feed_url = "https://www.irrawaddy.com/feed"
-        feed_xml = _fetch_text_irrawaddy(feed_url) or _fetch_text_via_jina(feed_url)
+        feed_xml, feed_source = _fetch_feed_text_irrawaddy(feed_url)
+
+        if debug:
+            print(f"[irrawaddy][feed] source={feed_source} bytes={len(feed_xml or '')}")
+
         if feed_xml:
             try:
                 from xml.etree import ElementTree as ET
                 root = ET.fromstring(feed_xml)
-                for it in root.findall(".//item"):
+                items = root.findall(".//item")
+
+                if debug:
+                    print(f"[irrawaddy][feed] parsed_items={len(items)}")
+
+                for it in items:
                     title = (it.findtext("title") or "").strip()
                     link = (it.findtext("link") or "").strip()
                     pub = (it.findtext("pubDate") or "").strip()
                     desc = (it.findtext("description") or "").strip()
+
                     try:
                         dt = parse_date(pub)
                     except Exception:
                         dt = None
+
+                    if debug and link:
+                        print(f"[irrawaddy][feed] cand link={link} pub={pub} mmt={_mmt_date(dt).isoformat() if dt else None}")
+
                     if link and dt and _mmt_date(dt) == target_date_mmt and not _is_excluded_url(link):
                         if link not in seen_urls:
                             candidate_urls.append(link)
@@ -1230,10 +1305,14 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
                             "summary": _clean_summary_text(desc),
                             "date": target_date_mmt.isoformat(),
                         }
-            except Exception:
-                pass
+
+            except Exception as e:
+                print(f"[irrawaddy] feed parse failed: {e} head={(feed_xml or '')[:200]!r}")
+        else:
+            print(f"[irrawaddy] feed invalid payload source={feed_source}")
 
     print(f"[irrawaddy] stage=feed candidates={len(candidate_urls)}")
+    
     # 3) category crawl
     if len(candidate_urls) == 0:
         for rel in paths:
