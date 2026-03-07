@@ -913,6 +913,11 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
           3) Browser API（allow_browser=True の場合）
         同一実行中は URL ごとに結果をキャッシュする。
         """
+        # EXCLUDE_PREFIXES 該当URLは取得不要。
+        # direct / Unlocker / Browser API を一切叩かない。
+        if _is_excluded_url(url):
+            return "", None, "excluded"
+
         cache_key = (url, allow_browser)
         cached = html_fetch_cache.get(cache_key)
         if cached is not None:

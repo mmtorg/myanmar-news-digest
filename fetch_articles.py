@@ -1539,6 +1539,18 @@ def extract_body_irrawaddy(soup):
                 paragraphs.append(_norm_text(txt))
     return "\n".join(paragraphs).strip()
 
+def _is_irrawaddy_excluded_url(url: str) -> bool:
+    EXCLUDE_PREFIXES = [
+        "/category/news/asia",
+        "/category/news/world",
+        "/video",
+        "/cartoons",
+    ]
+    try:
+        p = urlparse(url or "").path.lower()
+    except Exception:
+        p = (url or "").lower()
+    return any(p.startswith(x) for x in EXCLUDE_PREFIXES)
 
 #  Irrawaddy 用 fetch_once（既存の fetch_with_retry_irrawaddy を1回ラップ）
 def fetch_once_irrawaddy_html(url, session=None, *, allow_brightdata_fallback: bool = True):
@@ -1548,6 +1560,11 @@ def fetch_once_irrawaddy_html(url, session=None, *, allow_brightdata_fallback: b
     戻り値: (html_text, status_code, source)
     source: direct / unlocker / browser / none
     """
+    # EXCLUDE_PREFIXES 該当URLは取得不要。
+    # direct / Unlocker / Browser API を一切叩かない。
+    if _is_irrawaddy_excluded_url(url):
+        return "", None, "excluded"
+    
     html_text = ""
     status = None
     source = "none"
@@ -1595,6 +1612,11 @@ def fetch_once_irrawaddy_html(url, session=None, *, allow_brightdata_fallback: b
 
 
 def fetch_once_irrawaddy(url, session=None, *, allow_brightdata_fallback: bool = True):
+    # EXCLUDE_PREFIXES 該当URLは取得不要。
+    # direct / Unlocker / Browser API を一切叩かない。
+    if _is_irrawaddy_excluded_url(url):
+        return b""
+    
     html_text = ""
     status = None
     try:
