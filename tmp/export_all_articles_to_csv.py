@@ -61,6 +61,7 @@ from fetch_articles import (
     fetch_html_via_brightdata_browser,
     BD_UNLOCKER_TIMEOUT,
     extract_body_irrawaddy,
+    _is_irrawaddy_excluded_url,
     _parse_category_date_text,
     _article_date_from_meta_mmt,
     _extract_title,
@@ -977,11 +978,7 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
     sess = _make_pooled_session()
 
     def _is_excluded_url(href: str) -> bool:
-        try:
-            p = urlparse(href or "").path.lower()
-        except Exception:
-            p = (href or "").lower()
-        return any(p.startswith(x) for x in EXCLUDE_PREFIXES)
+        return _is_irrawaddy_excluded_url(href)
 
     def _norm_path(p: str) -> str:
         p = (p or "").strip()
@@ -1130,17 +1127,32 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
         """
         Google News の news.google.com/rss/articles/... URL を
         可能なら配信元の実記事URLへ解決する。
-        失敗時は元のURLを返す。
+        burma.irrawaddy.com は返さない。
+        失敗時は元のURLではなく空文字を返す。
         """
         if not g_link:
             return ""
+
+        def _is_allowed_irrawaddy_url(u: str) -> bool:
+            try:
+                p = urlparse(u or "")
+                host = (p.netloc or "").lower()
+            except Exception:
+                return False
+
+            if not host.endswith("irrawaddy.com"):
+                return False
+            if _is_irrawaddy_excluded_url(u):
+                return False
+            return True
 
         try:
             host = urlparse(g_link).netloc.lower()
         except Exception:
             host = ""
+
         if "news.google.com" not in host:
-            return g_link
+            return g_link if _is_allowed_irrawaddy_url(g_link) else ""
 
         # 1) /rss/articles/<token> の token から URL を直接復元
         try:
@@ -1153,9 +1165,10 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
                     raw = base64.urlsafe_b64decode(token)
                     m = re.search(rb"https?://[^\s\"'<>\\x00]+", raw)
                     if m:
-                        decoded = m.group(0).decode("utf-8", errors="ignore")
-                        if "irrawaddy.com" in decoded:
+                        decoded = m.group(0).decode("utf-8", errors="ignore").strip()
+                        if _is_allowed_irrawaddy_url(decoded):
                             return decoded
+                        return ""
         except Exception:
             pass
 
@@ -1168,7 +1181,7 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
                 allow_redirects=True,
             )
             final_url = (getattr(r, "url", "") or "").strip()
-            if final_url and "news.google.com" not in urlparse(final_url).netloc.lower():
+            if _is_allowed_irrawaddy_url(final_url):
                 return final_url
         except Exception:
             pass
@@ -1182,19 +1195,24 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
                     html,
                     re.I,
                 )
-                if m and "irrawaddy.com" in m.group(1):
-                    return m.group(1).strip()
+                if m:
+                    cand = m.group(1).strip()
+                    if _is_allowed_irrawaddy_url(cand):
+                        return cand
+
                 m = re.search(
                     r'<meta[^>]+property=["\']og:url["\'][^>]+content=["\']([^"\']+)["\']',
                     html,
                     re.I,
                 )
-                if m and "irrawaddy.com" in m.group(1):
-                    return m.group(1).strip()
+                if m:
+                    cand = m.group(1).strip()
+                    if _is_allowed_irrawaddy_url(cand):
+                        return cand
         except Exception:
             pass
 
-        return g_link
+        return ""
 
     def _rss_items_from_google_news() -> List[Dict[str, str]]:
         # 当日限定（MMT判定は後段）
