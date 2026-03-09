@@ -1546,11 +1546,22 @@ def _is_irrawaddy_excluded_url(url: str) -> bool:
         "/video",
         "/cartoons",
     ]
+    EXCLUDE_HOSTS = {
+        "burma.irrawaddy.com",
+    }
+
     try:
-        p = urlparse(url or "").path.lower()
+        parsed = urlparse(url or "")
+        host = (parsed.netloc or "").lower()
+        path = (parsed.path or "").lower()
     except Exception:
-        p = (url or "").lower()
-    return any(p.startswith(x) for x in EXCLUDE_PREFIXES)
+        host = ""
+        path = (url or "").lower()
+
+    if host in EXCLUDE_HOSTS:
+        return True
+
+    return any(path.startswith(x) for x in EXCLUDE_PREFIXES)
 
 #  Irrawaddy 用 fetch_once（既存の fetch_with_retry_irrawaddy を1回ラップ）
 def fetch_once_irrawaddy_html(url, session=None, *, allow_brightdata_fallback: bool = True):

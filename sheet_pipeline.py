@@ -209,14 +209,15 @@ from bs4 import BeautifulSoup
 try:
     # fetch_articles.py の実装を再利用
     from fetch_articles import (
-    get_body_with_refetch,
-    fetch_once_irrawaddy,
-    extract_body_irrawaddy,
-    extract_body_generic_from_soup,
-    extract_body_mail_pdf_scoped,
-    translate_fulltexts_for_business,
-    build_combined_pdf_for_business,
-    _jp_date,
+        get_body_with_refetch,
+        fetch_once_irrawaddy,
+        extract_body_irrawaddy,
+        extract_body_generic_from_soup,
+        extract_body_mail_pdf_scoped,
+        translate_fulltexts_for_business,
+        build_combined_pdf_for_business,
+        _jp_date,
+        _is_irrawaddy_excluded_url,
     )
     from fetch_articles import fetch_with_retry_dvb  # ★DVB専用フェッチャ（既存を呼ぶだけ）
 except Exception:
@@ -234,7 +235,7 @@ def _simple_fetch(url: str) -> str:
     return r.text
 
 def _resolve_news_google_redirect_global(u: str, timeout: int = 20) -> str:
-    """news.google.com/rss/articles/... を publisher の最終URLへ解決。失敗時は空。"""
+    """news.google.com/rss/articles/. を publisher の最終URLへ解決。除外URLは空を返す。"""
     try:
         r = requests.get(
             u,
@@ -243,6 +244,10 @@ def _resolve_news_google_redirect_global(u: str, timeout: int = 20) -> str:
             allow_redirects=True
         )
         final_url = (getattr(r, "url", "") or "").strip()
+        if not final_url:
+            return ""
+        if _is_irrawaddy_excluded_url(final_url):
+            return ""
         if "irrawaddy.com" in final_url:
             return final_url
         return ""
@@ -1493,6 +1498,10 @@ def cmd_collect_to_sheet(args):
 
         if not normalized_url:
             logging.warning(f"[skip] normalized_url empty source={source} raw_url={url!r}")
+            continue
+
+        if _is_irrawaddy_excluded_url(normalized_url):
+            logging.info(f"[skip] excluded irrawaddy url={normalized_url}")
             continue
 
         if normalized_url in existing:
