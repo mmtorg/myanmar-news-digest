@@ -898,10 +898,11 @@ function _isApiKeyExhaustedToday_(apiPropName) {
 }
 
 /**
- * メディアごとのローテ設定
+ * メディアごとのローテ設定（prodシート専用）
  * - キーの切替をしたいメディアだけ書く（それ以外は従来どおり単一キー）
  * - baseKeys は「末尾（baseKey）」の配列（prefixはprod/devで自動）
  *   例: prodなら "GEMINI_API_KEY_" + "MIZZIMA2" → Script Propertiesに GEMINI_API_KEY_MIZZIMA2 を用意
+ * - dev を含む prod 以外のシートでは、この設定は参照しない
  */
 const API_KEY_ROTATION_RULES = {
   "khit thit": { baseKeys: ["KHITTHIT", "KHITTHIT2"] },
@@ -938,9 +939,14 @@ function _pickApiKeyPropNameWithRotation_(sheetName, sourceRaw) {
   const props = PropertiesService.getScriptProperties();
   const prefix = SHEET_KEY_PREFIX_MAP[sheetName] || DEFAULT_PREFIX;
   const norm = normalizeSourceName_(sourceRaw || "");
-
-  // ローテ設定が無いメディアは従来通り
   const baseKeyDefault = SOURCE_KEY_BASE_MAP[norm] || DEFAULT_BASE_KEY;
+
+  // ローテーション対象は prod シートのみ（それ以外は常に単一キー）
+  if (sheetName !== "prod") {
+    return prefix + baseKeyDefault;
+  }
+
+  // prod でローテ設定が無いメディアは従来どおり単一キー
   let rule = API_KEY_ROTATION_RULES[norm];
 
   // ルール未定義でも「末尾2キー」が存在すれば自動で2本ローテ（安全のため値が入っている場合のみ）
