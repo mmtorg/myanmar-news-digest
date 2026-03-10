@@ -368,7 +368,25 @@ const SUMMARY_TASK = `
 - 思考手順（Step1/2、Q1/Q2、→ など）は出力に含めないでください。
 `;
 
-// 3タスク（見出しA / 見出しB' / 本文要約）を1回で投げるまとめプロンプト
+// F列比較用: Task2（見出しB'）+ few-shot ありのシングルタスクプロンプト
+// 出力は見出し1行のみ（JSON不要）。G列（few-shotなし）と対比させる。
+function buildFewShotHeadlineBPrimePrompt_(params) {
+  const { bodyRaw, bodyGlossaryRules, fewShotSection } = params;
+  return `【共通ルール（最優先）】
+${COMMON_TRANSLATION_RULES}
+
+${fewShotSection || ""}以下の記事本文を読み、日本語の報道見出しを1行で作成してください。
+--- HEADLINE_PROMPT_3 ---
+${HEADLINE_PROMPT_3}
+-------------------------
+【本文用 用語固定ルール】
+${bodyGlossaryRules || "(なし)"}
+
+[記事本文]
+${bodyRaw || ""}`.trim();
+}
+
+// 4タスク（見出しA / 見出しB' / 見出しB'few-shot / 本文要約）を1回で投げるまとめプロンプト
 function buildMultiTaskPromptForRow_(params) {
   const {
     titleRaw,
@@ -377,16 +395,16 @@ function buildMultiTaskPromptForRow_(params) {
     urlVal,
     titleGlossaryRules,
     bodyGlossaryRules,
-    fewShotSection,
   } = params;
 
+  const fewShotSection = buildFewShotExamplesSection_(loadTitleCorrectionExamples_());
+
   return `
-【共通ルール（Task1/2/3すべてに適用・最優先）】
+【共通ルール（Task1/2/2'/3すべてに適用・最優先）】
 ${COMMON_TRANSLATION_RULES}
 
-${fewShotSection || ""}
 以下は1つのニュース記事です。
-あなたはこの1記事から、次の3つの結果を同時に生成してください。
+あなたはこの1記事から、次の4つの結果を同時に生成してください。
 
 [記事タイトル]
 ${titleRaw || ""}
@@ -405,13 +423,21 @@ ${HEADLINE_PROMPT_1}
 ${titleGlossaryRules || "(なし)"}
 
 ====================
-[Task2: 見出しB'（本文を読んで作る見出し）]
+[Task2: 見出しB'（本文を読んで作る見出し・スタイル参考例なし）]
 - 記事本文をインプットとしてください。
 - 次のプロンプトとルールに従って、日本語見出しB'を1行で作成してください。
 --- HEADLINE_PROMPT_3 ---
 ${HEADLINE_PROMPT_3}
 ---------------------------
 【本文用 用語固定ルール】
+${bodyGlossaryRules || "(なし)"}
+本文を主な根拠としつつ、必要であればタイトルも補助情報として用いて構いません。
+
+====================
+[Task2': 見出しB'（本文を読んで作る見出し・スタイル参考例あり）]
+- 記事本文をインプットとしてください。
+- Task2と同じプロンプト・ルールに従いつつ、以下のスタイル参考例も反映して、日本語見出しB'を1行で作成してください。
+${fewShotSection}【本文用 用語固定ルール】
 ${bodyGlossaryRules || "(なし)"}
 本文を主な根拠としつつ、必要であればタイトルも補助情報として用いて構いません。
 
@@ -431,11 +457,12 @@ ${PROMPT_SELF_CHECK_RULE}
 
 【最終出力フォーマット（必須）】
 
-3つのタスク結果だけを含む JSON オブジェクトを 1 つだけ出力してください。
+4つのタスク結果だけを含む JSON オブジェクトを 1 つだけ出力してください。
 
 {
   "headlineA": "ここにTask1の見出しAを入れる",
   "headlineBPrime": "ここにTask2の見出しB'を入れる",
+  "headlineBPrimeFewShot": "ここにTask2'の見出しB'を入れる",
   "summary": "ここにTask3の本文要約を入れる"
 }
 
@@ -1555,9 +1582,10 @@ const GPT_MULTI2_WRAPPED_SCHEMA_ = {
           id: { type: "string" },
           headlineA: { type: "string" },
           headlineBPrime: { type: "string" },
+          headlineBPrimeFewShot: { type: "string" },
           summary: { type: "string" },
         },
-        required: ["id", "headlineA", "headlineBPrime", "summary"],
+        required: ["id", "headlineA", "headlineBPrime", "headlineBPrimeFewShot", "summary"],
       },
     },
   },
@@ -1860,16 +1888,14 @@ function processRow_(sheet, row, prevStatus) {
   const sheetName = sheet.getName();
 
   /********************************************
-   * E / G / I を 1回の Gemini 呼び出しでまとめて生成
+   * E / F / G / I を 1回の Gemini 呼び出しでまとめて生成
    ********************************************/
   let headlineA = "";
   let headlineB2 = "";
+  let headlineBFewShot = "";
   let summaryJa = "";
 
   if (titleRaw || bodyRaw) {
-    const fewShotSection = buildFewShotExamplesSection_(
-      loadTitleCorrectionExamples_()
-    );
     const multiParams = {
       titleRaw: titleRaw || "",
       bodyRaw: bodyRaw || "",
@@ -1877,7 +1903,6 @@ function processRow_(sheet, row, prevStatus) {
       urlVal: urlVal || "",
       titleGlossaryRules: titleGlossaryRules || "",
       bodyGlossaryRules: bodyGlossaryRules || "",
-      fewShotSection: fewShotSection,
     };
 
     const multiPrompt = buildMultiTaskPromptForRow_(multiParams);
@@ -1932,9 +1957,10 @@ function processRow_(sheet, row, prevStatus) {
     }
 
     if (typeof resp === "string" && resp.indexOf("ERROR:") === 0) {
-      // callGeminiWithKey_ 自体がエラーを返した場合 → そのまま3列とも同じエラー扱い
+      // callGeminiWithKey_ 自体がエラーを返した場合 → そのまま全列同じエラー扱い
       headlineA = resp;
       headlineB2 = resp;
+      headlineBFewShot = resp;
       summaryJa = resp;
     } else {
       try {
@@ -1958,6 +1984,7 @@ function processRow_(sheet, row, prevStatus) {
         headlineB2 = (obj.headlineBPrime || obj.headlineB || "")
           .toString()
           .trim();
+        headlineBFewShot = (obj.headlineBPrimeFewShot || "").toString().trim();
         summaryJa = decodeJsonNewlines_((obj.summary || "").toString().trim());
         summaryJa = normalizeSummaryHeader_(summaryJa);
 
@@ -1995,12 +2022,14 @@ function processRow_(sheet, row, prevStatus) {
 
         headlineA = headlineA || "";
         headlineB2 = headlineB2 || "";
+        headlineBFewShot = headlineBFewShot || "";
         summaryJa = summaryJa || "";
       } catch (e) {
         const errMsg =
           "ERROR: invalid JSON from Gemini: " + String(resp).substring(0, 200);
         headlineA = errMsg;
         headlineB2 = errMsg;
+        headlineBFewShot = errMsg;
         summaryJa = errMsg;
       }
     }
@@ -2016,10 +2045,10 @@ function processRow_(sheet, row, prevStatus) {
   }
 
   // シートに書き込み
-  sheet.getRange(row, colE).setValue(headlineA); // 見出しA
-  // F列（見出しA'）は従来どおり一時停止のまま
-  sheet.getRange(row, colG).setValue(headlineB2); // 見出しB'
-  sheet.getRange(row, colI).setValue(summaryJa); // 本文要約
+  sheet.getRange(row, colE).setValue(headlineA);             // 見出しA
+  sheet.getRange(row, colF).setValue(headlineBFewShot);      // 見出しB'（few-shotあり）
+  sheet.getRange(row, colG).setValue(headlineB2);            // 見出しB'（few-shotなし）
+  sheet.getRange(row, colI).setValue(summaryJa);             // 本文要約
 
   /********************************************
    * L列：ステータス判定（詳細エラー + 複数記録）
@@ -2354,6 +2383,8 @@ function _propNameForSheetAndSource_(sheetName, sourceRaw) {
 // 2件まとめ用：配列(JSON)で返させるプロンプト
 function buildMultiTaskPromptForRows_(items) {
   // items: [{id,titleRaw,bodyRaw,titleGlossaryRules,bodyGlossaryRules}]
+  const fewShotSection = buildFewShotExamplesSection_(loadTitleCorrectionExamples_());
+
   const blocks = items
     .map(function (it, idx) {
       return `
@@ -2371,10 +2402,16 @@ ${HEADLINE_PROMPT_1}
 【タイトル用 用語固定ルール】
 ${it.titleGlossaryRules || "(なし)"}
 
---- Task2 見出しB'ルール ---
+--- Task2 見出しB'ルール（スタイル参考例なし）---
 ${HEADLINE_PROMPT_3}
 【本文用 用語固定ルール】
 ${it.bodyGlossaryRules || "(なし)"}
+
+--- Task2' 見出しB'ルール（スタイル参考例あり）---
+${HEADLINE_PROMPT_3}
+${fewShotSection}【本文用 用語固定ルール】
+${it.bodyGlossaryRules || "(なし)"}
+
 --- Task3 本文要約ルール ---
 ${SUMMARY_TASK}
 【本文用 用語固定ルール】
@@ -2388,10 +2425,11 @@ ${it.bodyGlossaryRules || "(なし)"}
 ${COMMON_TRANSLATION_RULES}
 
 以下は複数のニュース記事です（最大2件）。
-各記事ごとに、次の3つの結果を同時に生成してください：
+各記事ごとに、次の4つの結果を同時に生成してください：
 1) 見出しA（タイトル翻訳ベース）
-2) 見出しB'（本文を読んで作る見出し）
-3) 本文要約
+2) 見出しB'（本文を読んで作る見出し・スタイル参考例なし）
+3) 見出しB'（本文を読んで作る見出し・スタイル参考例あり）
+4) 本文要約
 
 ${PROMPT_SELF_CHECK_RULE}
 
@@ -2403,6 +2441,7 @@ ${PROMPT_SELF_CHECK_RULE}
     "id": "入力の id をそのまま入れる",
     "headlineA": "Task1 の見出しA",
     "headlineBPrime": "Task2 の見出しB'",
+    "headlineBPrimeFewShot": "Task2' の見出しB'",
     "summary": "Task3 の本文要約"
   }
 ]
@@ -2426,9 +2465,11 @@ function _applyOutputsToRow_(
   headlineA,
   headlineB2,
   summaryJa,
+  headlineBFewShot,
   retryKindOpt,
 ) {
   const colE = 5;
+  const colF = 6;
   const colG = 7;
   const colI = 9;
   const colL = 12;
@@ -2485,6 +2526,7 @@ function _applyOutputsToRow_(
 
   // 書き込み
   sheet.getRange(row, colE).setValue(headlineA);
+  sheet.getRange(row, colF).setValue(headlineBFewShot || ""); // 見出しB'（few-shotあり）
   sheet.getRange(row, colG).setValue(headlineB2);
   sheet.getRange(row, colI).setValue(summaryJa);
 
@@ -2828,6 +2870,7 @@ function processRowsBatch() {
                 resp,
                 resp,
                 resp,
+                resp,
                 groupKey === "__OPENAI__" ? "GPTNG" : "NG",
               );
             });
@@ -2884,12 +2927,14 @@ function processRowsBatch() {
                   errMsg,
                   errMsg,
                   errMsg,
+                  errMsg,
                   groupKey === "__OPENAI__" ? "GPTNG" : "NG",
                 );
                 return;
               }
               const hA = String(o.headlineA || "").trim();
               const hB = String(o.headlineBPrime || o.headlineB || "").trim();
+              const hBF = String(o.headlineBPrimeFewShot || "").trim();
               const sm = decodeJsonNewlines_(String(o.summary || "").trim());
               const sm2 = normalizeSummaryHeader_(sm);
 
@@ -2906,6 +2951,7 @@ function processRowsBatch() {
                 hA || "",
                 hB || "",
                 sm2 || "",
+                hBF || "",
                 groupKey === "__OPENAI__" ? "GPTNG" : "NG",
               );
             });
@@ -2927,6 +2973,7 @@ function processRowsBatch() {
                   titleRaw: pi.titleRaw,
                   bodyRaw: pi.bodyRaw,
                 },
+                errMsg,
                 errMsg,
                 errMsg,
                 errMsg,
