@@ -167,6 +167,92 @@ const PROMPT_SELF_CHECK_RULE = `
 上記のセルフチェックを経るまでは、翻訳結果を出力してはならない。
 `;
 
+// ==== タイトル修正例（Few-shot）読み込み ====
+// 過去の修正前→後ペアを記録したスプレッドシート
+const TITLE_CORRECTION_SS_ID_PROP = "TITLE_CORRECTION_SS_ID";
+const TITLE_CORRECTION_SHEET_NAME = "title";
+const FEW_SHOT_SAMPLE_SIZE = 15; // プロンプトに挿入するサンプル数
+
+// 実行中キャッシュ（1バッチで1回だけスプレッドシートを読む）
+let _fewShotCache_ = null;
+
+/**
+ * タイトル修正スプレッドシートから修正前→後ペアをロードしてランダムサンプリングする。
+ * B列: AI生成タイトル、C列: 確定タイトル（2行目以降）
+ * @returns {{before: string, after: string}[]}
+ */
+function loadTitleCorrectionExamples_() {
+  if (_fewShotCache_ !== null) return _fewShotCache_;
+  try {
+    const props = PropertiesService.getScriptProperties();
+    const ssId = props.getProperty(TITLE_CORRECTION_SS_ID_PROP) || "";
+    if (!ssId) {
+      Logger.log(
+        "[loadTitleCorrectionExamples_] missing script property: " +
+          TITLE_CORRECTION_SS_ID_PROP,
+      );
+      _fewShotCache_ = [];
+      return _fewShotCache_;
+    }
+
+    const ss = SpreadsheetApp.openById(ssId);
+    const sh = ss.getSheetByName(TITLE_CORRECTION_SHEET_NAME);
+    if (!sh) {
+      Logger.log(
+        "[loadTitleCorrectionExamples_] sheet not found: " +
+          TITLE_CORRECTION_SHEET_NAME,
+      );
+      _fewShotCache_ = [];
+      return _fewShotCache_;
+    }
+    const lastRow = sh.getLastRow();
+    if (lastRow < 2) {
+      _fewShotCache_ = [];
+      return _fewShotCache_;
+    }
+    const values = sh.getRange(2, 2, lastRow - 1, 2).getValues(); // B・C列
+    const pairs = values
+      .map(function(row) {
+        return {
+          before: String(row[0] || "").trim(),
+          after:  String(row[1] || "").trim(),
+        };
+      })
+      .filter(function(p) { return p.before && p.after && p.before !== p.after; });
+
+    // Fisher-Yates でシャッフルして先頭N件を取る
+    for (let i = pairs.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const tmp = pairs[i]; pairs[i] = pairs[j]; pairs[j] = tmp;
+    }
+    _fewShotCache_ = pairs.slice(0, FEW_SHOT_SAMPLE_SIZE);
+    Logger.log("[loadTitleCorrectionExamples_] loaded %s examples", _fewShotCache_.length);
+  } catch (e) {
+    Logger.log("[loadTitleCorrectionExamples_] error: " + e);
+    _fewShotCache_ = [];
+  }
+  return _fewShotCache_;
+}
+
+/**
+ * 修正例リストからプロンプト挿入用テキストを生成する。
+ * @param {{before: string, after: string}[]} examples
+ * @returns {string}
+ */
+function buildFewShotExamplesSection_(examples) {
+  if (!examples || examples.length === 0) return "";
+  const lines = examples.map(function(ex) {
+    return "修正前: " + ex.before + "\n修正後: " + ex.after;
+  }).join("\n\n");
+  return `【見出しスタイル参考例（Task1・Task2に適用）】
+以下は過去の見出し修正例です。左（修正前）がAIの初期出力、右（修正後）が編集者が確定した見出しです。
+修正後のスタイル・傾向（情報の優先度、表現の簡潔さ、具体的な地名・数値の扱いなど）を参考にして、Task1・Task2の見出しを生成してください。
+
+${lines}
+
+`;
+}
+
 // タイトルの出力ルール（TITLE_OUTPUT_RULES 相当）
 const TITLE_OUTPUT_RULES = `
 出力は見出し文だけを1行で返してください。
@@ -291,12 +377,14 @@ function buildMultiTaskPromptForRow_(params) {
     urlVal,
     titleGlossaryRules,
     bodyGlossaryRules,
+    fewShotSection,
   } = params;
 
   return `
 【共通ルール（Task1/2/3すべてに適用・最優先）】
 ${COMMON_TRANSLATION_RULES}
 
+${fewShotSection || ""}
 以下は1つのニュース記事です。
 あなたはこの1記事から、次の3つの結果を同時に生成してください。
 
@@ -1779,6 +1867,9 @@ function processRow_(sheet, row, prevStatus) {
   let summaryJa = "";
 
   if (titleRaw || bodyRaw) {
+    const fewShotSection = buildFewShotExamplesSection_(
+      loadTitleCorrectionExamples_()
+    );
     const multiParams = {
       titleRaw: titleRaw || "",
       bodyRaw: bodyRaw || "",
@@ -1786,6 +1877,7 @@ function processRow_(sheet, row, prevStatus) {
       urlVal: urlVal || "",
       titleGlossaryRules: titleGlossaryRules || "",
       bodyGlossaryRules: bodyGlossaryRules || "",
+      fewShotSection: fewShotSection,
     };
 
     const multiPrompt = buildMultiTaskPromptForRow_(multiParams);
