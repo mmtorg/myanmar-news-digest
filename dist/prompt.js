@@ -2344,19 +2344,20 @@ function removeYenForNonKyat_(text) {
   const NON_KYAT_CCY =
     "(?:米ドル|ドル|USD|US\\$|\\$|バーツ|THB|ユーロ|EUR|ポンド|GBP|元|人民元|CNY|ウォン|KRW)";
 
-  // 「（約…円）」の中身は数字/カンマ/兆億万などを許容（“約”の有無も吸収）
-  const YEN_PAREN = "（\\s*(?:約)?\\s*[0-9０-９,，兆億万\\.]+(?:円|えん)\\s*）";
+  // 「（約…円）」の中身は数字/カンマ/兆億万/範囲表記（〜, -, ～）を許容（“約”の有無も吸収）
+  const NUM_RANGE = "[0-9０-９,，\\s兆億万\\.〜～\\-−–]+";
+  const YEN_PAREN = "（\\s*(?:約)?\\s*" + NUM_RANGE + "(?:円|えん)\\s*）";
 
   // 1) 「10億ドル（約…円）」のように “金額→通貨→円” の順
   const pat1 = new RegExp(
-    "([0-9０-９,，\\s兆億万\\.]+\\s*" + NON_KYAT_CCY + ")\\s*" + YEN_PAREN,
+    "(" + NUM_RANGE + "\\s*" + NON_KYAT_CCY + ")\\s*" + YEN_PAREN,
     "g",
   );
   s = s.replace(pat1, "$1");
 
   // 2) 「USD 1 billion（約…円）」のように “通貨→金額→円” の順（保険）
   const pat2 = new RegExp(
-    "(" + NON_KYAT_CCY + "\\s*[0-9０-９,，\\s兆億万\\.]+)\\s*" + YEN_PAREN,
+    "(" + NON_KYAT_CCY + "\\s*" + NUM_RANGE + ")\\s*" + YEN_PAREN,
     "g",
   );
   s = s.replace(pat2, "$1");
