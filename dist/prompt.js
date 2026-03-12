@@ -212,21 +212,28 @@ function loadTitleCorrectionExamples_() {
     }
     const values = sh.getRange(2, 2, lastRow - 1, 2).getValues(); // B・C列
     const pairs = values
-      .map(function(row) {
+      .map(function (row) {
         return {
           before: String(row[0] || "").trim(),
-          after:  String(row[1] || "").trim(),
+          after: String(row[1] || "").trim(),
         };
       })
-      .filter(function(p) { return p.before && p.after && p.before !== p.after; });
+      .filter(function (p) {
+        return p.before && p.after && p.before !== p.after;
+      });
 
     // Fisher-Yates でシャッフルして先頭N件を取る
     for (let i = pairs.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
-      const tmp = pairs[i]; pairs[i] = pairs[j]; pairs[j] = tmp;
+      const tmp = pairs[i];
+      pairs[i] = pairs[j];
+      pairs[j] = tmp;
     }
     _fewShotCache_ = pairs.slice(0, FEW_SHOT_SAMPLE_SIZE);
-    Logger.log("[loadTitleCorrectionExamples_] loaded %s examples", _fewShotCache_.length);
+    Logger.log(
+      "[loadTitleCorrectionExamples_] loaded %s examples",
+      _fewShotCache_.length,
+    );
   } catch (e) {
     Logger.log("[loadTitleCorrectionExamples_] error: " + e);
     _fewShotCache_ = [];
@@ -241,9 +248,11 @@ function loadTitleCorrectionExamples_() {
  */
 function buildFewShotExamplesSection_(examples) {
   if (!examples || examples.length === 0) return "";
-  const lines = examples.map(function(ex) {
-    return "修正前: " + ex.before + "\n修正後: " + ex.after;
-  }).join("\n\n");
+  const lines = examples
+    .map(function (ex) {
+      return "修正前: " + ex.before + "\n修正後: " + ex.after;
+    })
+    .join("\n\n");
   return `【見出しスタイル参考例（Task1・Task2に適用）】
 以下は過去の見出し修正例です。左（修正前）がAIの初期出力、右（修正後）が編集者が確定した見出しです。
 修正後のスタイル・傾向（情報の優先度、表現の簡潔さ、具体的な地名・数値の扱いなど）を参考にして、Task1・Task2の見出しを生成してください。
@@ -397,7 +406,9 @@ function buildMultiTaskPromptForRow_(params) {
     bodyGlossaryRules,
   } = params;
 
-  const fewShotSection = buildFewShotExamplesSection_(loadTitleCorrectionExamples_());
+  const fewShotSection = buildFewShotExamplesSection_(
+    loadTitleCorrectionExamples_(),
+  );
 
   return `
 【共通ルール（Task1/2/2'/3すべてに適用・最優先）】
@@ -1585,7 +1596,13 @@ const GPT_MULTI2_WRAPPED_SCHEMA_ = {
           headlineBPrimeFewShot: { type: "string" },
           summary: { type: "string" },
         },
-        required: ["id", "headlineA", "headlineBPrime", "headlineBPrimeFewShot", "summary"],
+        required: [
+          "id",
+          "headlineA",
+          "headlineBPrime",
+          "headlineBPrimeFewShot",
+          "summary",
+        ],
       },
     },
   },
@@ -1988,6 +2005,8 @@ function processRow_(sheet, row, prevStatus) {
         summaryJa = decodeJsonNewlines_((obj.summary || "").toString().trim());
         summaryJa = normalizeSummaryHeader_(summaryJa);
 
+        // ★ まず「クロー / crore」を日本語のルピー表記へ正規化
+        summaryJa = normalizeRupeeCroreInText_(summaryJa);
         // ★ まず「チャット以外」の（約◯◯円）を削除（ドル等の誤換算対策）
         summaryJa = removeYenForNonKyat_(summaryJa);
         // ★ 次に「チャット」の（約◯◯円）だけを再計算で矯正
@@ -2005,6 +2024,7 @@ function processRow_(sheet, row, prevStatus) {
           if (!(typeof resp2 === "string" && resp2.indexOf("ERROR:") === 0)) {
             summaryJa = normalizeSummaryHeader_(String(resp2 || "").trim());
             // 圧縮後も円表記補正をかけ直す
+            summaryJa = normalizeRupeeCroreInText_(summaryJa);
             summaryJa = removeYenForNonKyat_(summaryJa);
             summaryJa = fixKyatYenInText_(summaryJa);
           }
@@ -2045,10 +2065,10 @@ function processRow_(sheet, row, prevStatus) {
   }
 
   // シートに書き込み
-  sheet.getRange(row, colE).setValue(headlineA);             // 見出しA
-  sheet.getRange(row, colF).setValue(headlineBFewShot);      // 見出しB'（few-shotあり）
-  sheet.getRange(row, colG).setValue(headlineB2);            // 見出しB'（few-shotなし）
-  sheet.getRange(row, colI).setValue(summaryJa);             // 本文要約
+  sheet.getRange(row, colE).setValue(headlineA); // 見出しA
+  sheet.getRange(row, colF).setValue(headlineBFewShot); // 見出しB'（few-shotあり）
+  sheet.getRange(row, colG).setValue(headlineB2); // 見出しB'（few-shotなし）
+  sheet.getRange(row, colI).setValue(summaryJa); // 本文要約
 
   /********************************************
    * L列：ステータス判定（詳細エラー + 複数記録）
@@ -2335,32 +2355,82 @@ function fixKyatYenInText_(text) {
   );
 }
 
-// チャット以外の通貨（ドル/バーツ等）に誤って付いた「（約◯◯円）」を削除
+// チャット以外の通貨（ドル/バーツ/ルピー等）に誤って付いた「（約◯◯円）」を削除
 // 例: 「10億ドル（約390億円）」→「10億ドル」
+//     「31億7300万ルピー（約58億円）」→「31億7300万ルピー」
 function removeYenForNonKyat_(text) {
   if (!text) return text;
   let s = String(text);
-  // 代表的な「非チャット」通貨ラベル（必要なら増やせます）
+
+  // 代表的な「非チャット」通貨ラベル
+  // ルピー系・crore / crore rupees / クロール系も含める
   const NON_KYAT_CCY =
-    "(?:米ドル|ドル|USD|US\\$|\\$|バーツ|THB|ユーロ|EUR|ポンド|GBP|元|人民元|CNY|ウォン|KRW)";
+    "(?:米ドル|ドル|USD|US\\$|\\$|バーツ|THB|ユーロ|EUR|ポンド|GBP|元|人民元|CNY|ウォン|KRW|ルピー|インドルピー|INR|Rs\\.?|₹|crore\\s*rupees?|crore|クロール|クロー)";
 
   // 「（約…円）」の中身は数字/カンマ/兆億万/範囲表記（〜, -, ～）を許容（“約”の有無も吸収）
   const NUM_RANGE = "[0-9０-９,，\\s兆億万\\.〜～\\-−–]+";
   const YEN_PAREN = "（\\s*(?:約)?\\s*" + NUM_RANGE + "(?:円|えん)\\s*）";
 
-  // 1) 「10億ドル（約…円）」のように “金額→通貨→円” の順
+  // 1) 「10億ドル（約…円）」「317.30クロー（約…円）」のように “金額→通貨→円” の順
   const pat1 = new RegExp(
     "(" + NUM_RANGE + "\\s*" + NON_KYAT_CCY + ")\\s*" + YEN_PAREN,
-    "g",
+    "gi",
   );
   s = s.replace(pat1, "$1");
 
-  // 2) 「USD 1 billion（約…円）」のように “通貨→金額→円” の順（保険）
+  // 2) 「USD 1 billion（約…円）」「INR 317.30 crore（約…円）」のように “通貨→金額→円” の順
   const pat2 = new RegExp(
     "(" + NON_KYAT_CCY + "\\s*" + NUM_RANGE + ")\\s*" + YEN_PAREN,
-    "g",
+    "gi",
   );
   s = s.replace(pat2, "$1");
+
+  return s;
+}
+
+// 「317.30クロー」「317.30クロール」「317.30 crore rupees」などを
+// 日本語として自然な「31億7300万ルピー」に正規化する
+function normalizeRupeeCroreInText_(text) {
+  if (!text) return text;
+  let s = String(text);
+
+  // 317.30クロー / 317.30クロール / 317.30 crore / 317.30 crore rupees
+  const pat1 =
+    /([0-9０-９]+(?:\.[0-9０-９]+)?)\s*(?:クロー|クロール|crore(?:\s*rupees?)?)(?![A-Za-z])/gi;
+
+  // INR 317.30 crore / Rs. 317.30 crore / ₹317.30 crore
+  const pat2 =
+    /(?:INR|Rs\.?|₹)\s*([0-9０-９]+(?:\.[0-9０-９]+)?)\s*crore(?:\s*rupees?)?/gi;
+
+  function toJaRupees_(numStr) {
+    const ascii = zenkakuDigitsToAscii_(String(numStr || ""));
+    const crore = parseFloat(ascii);
+    if (!Number.isFinite(crore)) return null;
+
+    // 1 crore = 10,000,000 rupees
+    const rupees = Math.round(crore * 10000000);
+
+    const oku = Math.floor(rupees / 100000000);
+    const man = Math.floor((rupees % 100000000) / 10000);
+    const rest = rupees % 10000;
+
+    let out = "";
+    if (oku > 0) out += oku + "億";
+    if (man > 0) out += man + "万";
+    if (rest > 0 || !out) out += rest;
+    out += "ルピー";
+    return out;
+  }
+
+  s = s.replace(pat1, function (_m, n) {
+    const ja = toJaRupees_(n);
+    return ja || _m;
+  });
+
+  s = s.replace(pat2, function (_m, n) {
+    const ja = toJaRupees_(n);
+    return ja || _m;
+  });
 
   return s;
 }
@@ -2384,7 +2454,9 @@ function _propNameForSheetAndSource_(sheetName, sourceRaw) {
 // 2件まとめ用：配列(JSON)で返させるプロンプト
 function buildMultiTaskPromptForRows_(items) {
   // items: [{id,titleRaw,bodyRaw,titleGlossaryRules,bodyGlossaryRules}]
-  const fewShotSection = buildFewShotExamplesSection_(loadTitleCorrectionExamples_());
+  const fewShotSection = buildFewShotExamplesSection_(
+    loadTitleCorrectionExamples_(),
+  );
 
   const blocks = items
     .map(function (it, idx) {
@@ -2478,6 +2550,8 @@ function _applyOutputsToRow_(
   const titleRaw = ctx.titleRaw;
   const bodyRaw = ctx.bodyRaw;
 
+  // ★ まず「クロー / crore」を日本語のルピー表記へ正規化
+  summaryJa = normalizeRupeeCroreInText_(summaryJa);
   // ★ まず「チャット以外」の（約◯◯円）を削除（ドル等の誤換算対策）
   summaryJa = removeYenForNonKyat_(summaryJa);
   // ★ 次に「チャット」の（約◯◯円）だけを再計算で矯正
@@ -2500,6 +2574,7 @@ function _applyOutputsToRow_(
       if (!(typeof resp2 === "string" && resp2.indexOf("ERROR:") === 0)) {
         summaryJa = normalizeSummaryHeader_(String(resp2 || "").trim());
         // 圧縮後も円表記補正をかけ直す
+        summaryJa = normalizeRupeeCroreInText_(summaryJa);
         summaryJa = removeYenForNonKyat_(summaryJa);
         summaryJa = fixKyatYenInText_(summaryJa);
       }
