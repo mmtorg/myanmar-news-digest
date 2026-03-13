@@ -235,24 +235,94 @@ def _simple_fetch(url: str) -> str:
     return r.text
 
 def _resolve_news_google_redirect_global(u: str, timeout: int = 20) -> str:
-    """news.google.com/rss/articles/. を publisher の最終URLへ解決。除外URLは空を返す。"""
+    """
+    news.google.com/rss/articles/... を publisher の実URLへ解決する。
+    Irrawaddy は export_all_articles_to_csv.py の専用 resolver を優先再利用し、
+    それが使えない場合も同等の段階的解決（token decode / redirect / canonical）を試す。
+    失敗時は空文字を返す。
+    """
+    if not u:
+        return ""
+
+    try:
+        host = urlparse(u).netloc.lower()
+    except Exception:
+        host = ""
+
+    def _is_allowed_irrawaddy_url(candidate: str) -> bool:
+        try:
+            parsed = urlparse(candidate or "")
+            cand_host = (parsed.netloc or "").lower()
+        except Exception:
+            return False
+        if not cand_host.endswith("irrawaddy.com"):
+            return False
+        if _is_irrawaddy_excluded_url(candidate):
+            return False
+        return True
+
+    if "news.google.com" not in host:
+        return u if _is_allowed_irrawaddy_url(u) else ""
+
+    if _resolve_google_news_link_irrawaddy_shared is not None:
+        try:
+            resolved = (_resolve_google_news_link_irrawaddy_shared(u, timeout=timeout) or "").strip()
+            if resolved:
+                return resolved
+        except Exception:
+            pass
+
+    # fallback 1) /rss/articles/<token> の token から URL を直接復元
+    try:
+        import base64
+        parts = urlparse(u).path.split("/")
+        if "articles" in parts:
+            token = parts[parts.index("articles") + 1]
+            if token:
+                token += "=" * (-len(token) % 4)
+                raw = base64.urlsafe_b64decode(token)
+                m = re.search(rb"https?://[^\s\"'<>\x00]+", raw)
+                if m:
+                    decoded = m.group(0).decode("utf-8", errors="ignore").strip()
+                    if _is_allowed_irrawaddy_url(decoded):
+                        return decoded
+                    return ""
+    except Exception:
+        pass
+
+    # fallback 2) 通常のリダイレクト解決
     try:
         r = requests.get(
             u,
             headers={"User-Agent": "Mozilla/5.0"},
             timeout=timeout,
-            allow_redirects=True
+            allow_redirects=True,
         )
         final_url = (getattr(r, "url", "") or "").strip()
-        if not final_url:
-            return ""
-        if _is_irrawaddy_excluded_url(final_url):
-            return ""
-        if "irrawaddy.com" in final_url:
+        if _is_allowed_irrawaddy_url(final_url):
             return final_url
-        return ""
     except Exception:
-        return ""
+        pass
+
+    # fallback 3) HTML から canonical / og:url を拾う
+    try:
+        r = requests.get(u, headers={"User-Agent": "Mozilla/5.0"}, timeout=timeout)
+        html = (r.text or "").strip() if getattr(r, 'status_code', 0) == 200 else ""
+        if html:
+            m = re.search(r'<link[^>]+rel=["\']canonical["\'][^>]+href=["\']([^"\']+)["\']', html, re.I)
+            if m:
+                cand = m.group(1).strip()
+                if _is_allowed_irrawaddy_url(cand):
+                    return cand
+            m = re.search(r'<meta[^>]+property=["\']og:url["\'][^>]+content=["\']([^"\']+)["\']', html, re.I)
+            if m:
+                cand = m.group(1).strip()
+                if _is_allowed_irrawaddy_url(cand):
+                    return cand
+    except Exception:
+        pass
+
+    return ""
 
 def _fetch_once_dvb(url: str, session: Optional[requests.Session] = None) -> bytes:
     """
@@ -1013,10 +1083,12 @@ try:
         collect_popular_all_for_date,
         collect_frontier_all_for_date,
         collect_jetro_biznews_mm_all_for_date,
+        _resolve_google_news_link_irrawaddy as _resolve_google_news_link_irrawaddy_shared,
     )
     collectors_loaded = True
 except Exception as e:
     collectors_loaded = False
+    _resolve_google_news_link_irrawaddy_shared = None
     print(f"[error] collectors import failed: {e}", file=sys.stderr)
 
 # ===== レートリミッタ（export_all_articles_to_csv.py の実装を再利用） =====
