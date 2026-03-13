@@ -1490,50 +1490,14 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
             if debug:
                 print(f"[irrawaddy][article] url={url} meta_date={meta_date}")
             if meta_date != target_date_mmt:
-                # フィード補助があればフォールバック採用
-                hint = feed_hints.get(url)
-                if hint and (hint.get("date") == target_date_mmt.isoformat()):
-                    title_fb = (hint.get("title") or "").strip()
-                    if title_fb:
-                        if debug:
-                            print("  -> fallback: use feed title/date (meta_date mismatch)")
-                        results.append(
-                            {
-                                "source": "Irrawaddy",
-                                "title": unicodedata.normalize("NFC", title_fb),
-                                "url": url,
-                                "date": target_date_mmt.isoformat(),
-                                "body": "",
-                            }
-                        )
-                        continue
-                # カテゴリ/ホーム由来の場合は、一覧の当日判定を信頼して採用
-                if origins.get(url) in ("cat", "home"):
-                    title_fb = (feed_hints.get(url, {}).get("title") or "").strip()
-                    if not title_fb:
-                        # 最低限のタイトル補完（oEmbed/slug）
-                        # 再利用の簡易関数をここでも使用
-                        def _title_from_slug_local(u: str) -> str:
-                            try:
-                                from urllib.parse import urlparse, unquote
-                                seg = urlparse(u).path.rstrip("/").split("/")[-1]
-                                seg = unquote(seg).replace(".html", "").replace("-", " ")
-                                return unicodedata.normalize("NFC", seg.title())
-                            except Exception:
-                                return ""
-                        title_fb = _title_from_slug_local(url)
-                    results.append(
-                        {
-                            "source": "Irrawaddy",
-                            "title": unicodedata.normalize("NFC", title_fb),
-                            "url": url,
-                            "date": target_date_mmt.isoformat(),
-                            "body": "",
-                        }
-                    )
-                    continue
                 if debug:
-                    print("  -> skip: date mismatch")
+                    hint = feed_hints.get(url)
+                    origin = origins.get(url)
+                    hint_date = hint.get("date") if hint else None
+                    print(
+                        f"  -> skip: date mismatch (meta_date={meta_date}, "
+                        f"target_date={target_date_mmt}, hint_date={hint_date}, origin={origin})"
+                    )
                 continue
 
             if soup is not None:
