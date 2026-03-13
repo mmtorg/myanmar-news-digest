@@ -1083,8 +1083,13 @@ try:
         collect_popular_all_for_date,
         collect_frontier_all_for_date,
         collect_jetro_biznews_mm_all_for_date,
-        _resolve_google_news_link_irrawaddy as _resolve_google_news_link_irrawaddy_shared,
     )
+    try:
+        from tmp.export_all_articles_to_csv import (
+            _resolve_google_news_link_irrawaddy as _resolve_google_news_link_irrawaddy_shared,
+        )
+    except Exception:
+        _resolve_google_news_link_irrawaddy_shared = None
     collectors_loaded = True
 except Exception as e:
     collectors_loaded = False
