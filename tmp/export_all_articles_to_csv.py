@@ -1026,55 +1026,75 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
         low = (text or "").lower()
         return ("<rss" in low) or ("<feed" in low) or ("<rdf:rdf" in low)
 
-    def _debug_head(label: str, source: str, status_code, text: str) -> None:
-        head = re.sub(r"\s+", " ", (text or "")[:220]).strip()
-        print(f"[irrawaddy] {label} invalid payload source={source} status={status_code} head={head!r}")
-
     def _fetch_irrawaddy_meta_text(url: str, kind: str) -> tuple[str, str, Optional[int]]:
         """
         kind: 'json' or 'feed'
-        Browser API は使わない。
-        direct の中身が不正なら unlocker/jina に進む。
+        フェッチ順:
+        1) direct
+        2) Web Unlocker
+        3) Browser API
+        4) jina
+        「取れたか」ではなく「期待する payload か」で次へ進む。
         """
         def ok(txt: str) -> bool:
             return _looks_like_json(txt) if kind == "json" else _looks_like_feed(txt)
 
-        # 1) direct / unlocker（Browserなし）
-        text, source, status_code = "", "none", None
-        raw, status_code, source = _fetch_irrawaddy_html_cached(
-            url,
-            session=session,
-            allow_browser=False,
-        )
-        text = _to_text(raw)
-        if ok(text):
-            return text, source, status_code
+        def _try_payload(raw, source_name: str, status_code: Optional[int]):
+            text = _to_text(raw)
+            if ok(text):
+                return text, source_name, status_code
+            if text:
+                _debug_head(kind, source_name, status_code, text)
+            return "", source_name, status_code
 
-        if text:
-            _debug_head(kind, source, status_code, text)
+        last_source = "none"
+        last_status = None
 
-        # 2) unlocker を明示的に単独で再試行
+        # 1) direct
         try:
-            raw2 = fetch_html_via_brightdata_unlocker(url, timeout=BD_UNLOCKER_TIMEOUT) or ""
-            text2 = _to_text(raw2)
-            if ok(text2):
-                return text2, "unlocker", 200
+            raw, status_code, source = _fetch_irrawaddy_html_cached(
+                url,
+                session=session,
+                allow_browser=False,   # direct + unlocker cache は既存利用
+            )
+            text, last_source, last_status = _try_payload(raw, source, status_code)
+            if text:
+                return text, last_source, last_status
+        except Exception as e:
+            print(f"[irrawaddy] {kind} direct/unlocker cached fetch fail {url}: {e}")
+
+        # 2) unlocker を明示再試行
+        try:
+            raw2 = fetch_html_via_brightdata_unlocker(
+                url,
+                timeout=BD_UNLOCKER_TIMEOUT,
+            ) or ""
+            text2, last_source, last_status = _try_payload(raw2, "unlocker", 200)
             if text2:
-                _debug_head(kind, "unlocker", 200, text2)
+                return text2, last_source, last_status
         except Exception as e:
             print(f"[irrawaddy] {kind} unlocker fetch fail {url}: {e}")
 
-        # 3) jina
+        # 3) Browser API を試す
         try:
-            text3 = _fetch_text_via_jina(url) or ""
-            if ok(text3):
-                return text3, "jina", 200
+            raw3 = fetch_html_via_brightdata_browser(url) or ""
+            text3, last_source, last_status = _try_payload(raw3, "browser", 200)
             if text3:
-                _debug_head(kind, "jina", 200, text3)
+                print(f"[irrawaddy] {kind} browser ok url={url}")
+                return text3, last_source, last_status
+        except Exception as e:
+            print(f"[irrawaddy] {kind} browser fetch fail {url}: {e}")
+
+        # 4) jina
+        try:
+            raw4 = _fetch_text_via_jina(url) or ""
+            text4, last_source, last_status = _try_payload(raw4, "jina", 200)
+            if text4:
+                return text4, last_source, last_status
         except Exception as e:
             print(f"[irrawaddy] {kind} jina fetch fail {url}: {e}")
 
-        return "", source, status_code
+        return "", last_source, last_status
 
     def _fetch_json_text_irrawaddy(url: str) -> tuple[str, str, Optional[int]]:
         return _fetch_irrawaddy_meta_text(url, "json")
