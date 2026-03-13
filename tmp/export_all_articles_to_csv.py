@@ -1026,6 +1026,13 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
         low = (text or "").lower()
         return ("<rss" in low) or ("<feed" in low) or ("<rdf:rdf" in low)
 
+    def _debug_head(kind: str, source_name: str, status_code: Optional[int], text: str, n: int = 200) -> None:
+        head = (text or "")[:n].replace("\n", "\\n")
+        print(
+            f"[irrawaddy] {kind} invalid payload "
+            f"source={source_name} status={status_code} head={head!r}"
+        )
+
     def _fetch_irrawaddy_meta_text(url: str, kind: str) -> tuple[str, str, Optional[int]]:
         """
         kind: 'json' or 'feed'
