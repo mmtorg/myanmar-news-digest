@@ -1353,7 +1353,14 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
                 except Exception:
                     dt = None
 
-                if link and dt and _mmt_date(dt) == target_date_mmt and not _is_excluded_url(link):
+                wp_day = None
+                if dt:
+                    try:
+                        wp_day = dt.date() if dt.tzinfo is None else dt.astimezone(MMT).date()
+                    except Exception:
+                        wp_day = None
+
+                if link and wp_day == target_date_mmt and not _is_excluded_url(link):
                     if link not in seen_urls:
                         candidate_urls.append(link)
                         seen_urls.add(link)
@@ -1361,7 +1368,7 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
                     feed_hints[link] = {
                         "title": tt,
                         "summary": sx,
-                        "date": target_date_mmt.isoformat(),
+                        "date": wp_day.isoformat(),
                     }
         except Exception as e:
             print(f"[irrawaddy] wp-json parse failed: source={wp_source} status={wp_status} err={e} head={(wp_json or '')[:200]!r}")
@@ -1391,7 +1398,14 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
                     except Exception:
                         dt = None
 
-                    if link and dt and _mmt_date(dt) == target_date_mmt and not _is_excluded_url(link):
+                    feed_day = None
+                    if dt:
+                        try:
+                            feed_day = dt.date() if dt.tzinfo is None else dt.astimezone(MMT).date()
+                        except Exception:
+                            feed_day = None
+
+                    if link and feed_day == target_date_mmt and not _is_excluded_url(link):
                         if link not in seen_urls:
                             candidate_urls.append(link)
                             seen_urls.add(link)
@@ -1399,7 +1413,7 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
                         feed_hints[link] = {
                             "title": title,
                             "summary": _clean_summary_text(desc),
-                            "date": target_date_mmt.isoformat(),
+                            "date": feed_day.isoformat(),
                         }
 
             except Exception as e:
