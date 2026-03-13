@@ -1197,12 +1197,35 @@ def fetch_html_via_brightdata_browser(url: str, *, timeout_ms: int = 120_000) ->
                 await browser.close()
 
     try:
-        return asyncio.run(_run())
+        html = asyncio.run(_run())
+        try:
+            _logger.info(f"result len={len(html or '')} url={url}")
+        except Exception:
+            pass
+        return html
+
     except RuntimeError:
         # 既に event loop がある環境向け保険（通常GitHub Actionsは不要）
-        loop = asyncio.get_event_loop()
-        return loop.run_until_complete(_run())
-    except Exception:
+        try:
+            loop = asyncio.get_event_loop()
+            html = loop.run_until_complete(_run())
+            try:
+                _logger.info(f"result len={len(html or '')} url={url}")
+            except Exception:
+                pass
+            return html
+        except Exception as e:
+            try:
+                _logger.exception(f"event-loop fallback failed url={url}: {e}")
+            except Exception:
+                pass
+            return ""
+
+    except Exception as e:
+        try:
+            _logger.exception(f"fetch failed url={url}: {e}")
+        except Exception:
+            pass
         return ""
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
