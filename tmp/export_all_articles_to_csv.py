@@ -928,6 +928,41 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
                 cached.get("source", "none") or "none",
             )
 
+        def _looks_like_cloudflare_block(s: str) -> bool:
+            if not s:
+                return False
+            low = s.lower()
+            return (
+                "just a moment" in low
+                or "cf-browser-verification" in low
+                or "challenges.cloudflare.com" in low
+                or "attention required" in low
+                or "cloudflare" in low
+            )
+
+        def _is_article_url(u: str) -> bool:
+            try:
+                path = requests.utils.urlparse(u).path.lower()
+            except Exception:
+                path = (u or "").lower()
+            return path.endswith(".html") and "/news/" in path
+
+        def _is_usable_article_html(u: str, s: str) -> bool:
+            if not s:
+                return False
+            if _looks_like_cloudflare_block(s):
+                return False
+            if not _is_article_url(u):
+                return True
+            try:
+                soup = BeautifulSoup(s, "html.parser")
+                if _article_date_from_meta_mmt(soup) is not None:
+                    return True
+                body = extract_body_irrawaddy(soup) or ""
+                return bool(body.strip())
+            except Exception:
+                return False
+
         html = ""
         status = None
         source = "none"
@@ -942,10 +977,19 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
                 content_type = ""
 
             html = getattr(res, "content", None) or getattr(res, "text", "") or ""
-            if html:
+            usable = _is_usable_article_html(url, html)
+            blocked = _looks_like_cloudflare_block(html)
+            if html and usable and status != 403:
                 source = "direct"
                 if "/wp-json/" in url or url.rstrip("/").endswith("/feed"):
                     print(f"[irrawaddy] meta direct status={status} content_type={content_type} url={url}")
+            else:
+                if html and (_is_article_url(url) or blocked or status == 403):
+                    print(
+                        f"[irrawaddy-html] direct fallback status={status} usable={usable} "
+                        f"cf={blocked} url={url}"
+                    )
+                html = ""
         except Exception as e:
             print(f"[irrawaddy] direct fetch fail {url}: {e}")
             html = ""
@@ -954,8 +998,12 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
         if not html:
             try:
                 html = fetch_html_via_brightdata_unlocker(url, timeout=BD_UNLOCKER_TIMEOUT) or ""
-                if html:
+                if html and _is_usable_article_html(url, html):
                     source = "unlocker"
+                else:
+                    if html:
+                        print(f"[irrawaddy-html] unlocker unusable url={url}")
+                    html = ""
             except Exception as e:
                 print(f"[irrawaddy] unlocker fetch fail {url}: {e}")
                 html = ""
@@ -963,8 +1011,12 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
         if not html and allow_browser:
             try:
                 html = fetch_html_via_brightdata_browser(url) or ""
-                if html:
+                if html and _is_usable_article_html(url, html):
                     source = "browser"
+                else:
+                    if html:
+                        print(f"[irrawaddy-html] browser unusable url={url}")
+                    html = ""
             except Exception as e:
                 print(f"[irrawaddy] browser fetch fail {url}: {e}")
 
@@ -1528,16 +1580,28 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
                 meta_date = None
                 print(f"[irrawaddy][article] fetch fail url={url} err={e}")
 
-            if meta_date != target_date_mmt:
-                hint = feed_hints.get(url)
-                origin = origins.get(url)
-                hint_date = hint.get("date") if hint else None
+            hint = feed_hints.get(url)
+            origin = origins.get(url)
+            hint_date = hint.get("date") if hint else None
+            hint_matches_target = (
+                origin in ("wp-json", "feed")
+                and hint_date == target_date_mmt.isoformat()
+            )
+
+            if meta_date != target_date_mmt and not hint_matches_target:
                 print(
                     f"[irrawaddy][article] skip date mismatch "
                     f"url={url} meta_date={meta_date} target={target_date_mmt} "
                     f"hint_date={hint_date} origin={origin}"
                 )
                 continue
+
+            if meta_date != target_date_mmt and hint_matches_target:
+                print(
+                    f"[irrawaddy][article] accept by {origin} hint_date "
+                    f"url={url} meta_date={meta_date} target={target_date_mmt} "
+                    f"hint_date={hint_date}"
+                )
 
             if soup is not None:
                 title = _extract_title(soup) or ""

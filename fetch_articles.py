@@ -1590,7 +1590,8 @@ def _is_irrawaddy_excluded_url(url: str) -> bool:
 def fetch_once_irrawaddy_html(url, session=None, *, allow_brightdata_fallback: bool = True):
     """
     Irrawaddy の一覧ページ / feed / wp-json / 記事HTML を 1 回取得する軽量ラッパ。
-    本文抽出の成否ではなく、HTML/テキスト取得そのものを重視する。
+    ただし direct で 403 / Cloudflare challenge / 記事本文抽出不能 の場合は
+    Bright Data Web Unlocker → Browser API にフォールバックする。
     戻り値: (html_text, status_code, source)
     source: direct / unlocker / browser / none
     """
@@ -1598,7 +1599,54 @@ def fetch_once_irrawaddy_html(url, session=None, *, allow_brightdata_fallback: b
     # direct / Unlocker / Browser API を一切叩かない。
     if _is_irrawaddy_excluded_url(url):
         return "", None, "excluded"
-    
+
+    def _normalize_html(resp) -> str:
+        if getattr(resp, "content", None):
+            try:
+                return resp.content.decode("utf-8", "ignore")
+            except Exception:
+                return (getattr(resp, "text", "") or "")
+        return (getattr(resp, "text", "") or "")
+
+    def _looks_like_cloudflare_block(html: str) -> bool:
+        t = (html or "")
+        if not t:
+            return False
+        head = t[:4000].lower()
+        return (
+            "just a moment" in head
+            or "cf-browser-verification" in head
+            or "cloudflare" in head
+            or "attention required" in head
+            or "challenge-platform" in head
+            or "why_captcha" in head
+        )
+
+    def _looks_usable(html: str, page_url: str) -> bool:
+        if not (html or "").strip():
+            return False
+        if _looks_like_cloudflare_block(html):
+            return False
+        try:
+            host = urlparse(page_url or "").netloc.lower()
+        except Exception:
+            host = ""
+        # wp-json / feed は本文抽出できなくても payload が読めれば usable
+        if "/wp-json/" in (page_url or "") or page_url.rstrip("/").endswith("/feed"):
+            return True
+        # 記事HTMLは meta か本文の少なくともどちらかが欲しい
+        if "irrawaddy.com" in host:
+            try:
+                soup = BeautifulSoup(html, "html.parser")
+                if _article_date_from_meta_mmt(soup) is not None:
+                    return True
+                if (extract_body_irrawaddy(soup) or "").strip():
+                    return True
+            except Exception:
+                return False
+            return False
+        return True
+
     html_text = ""
     status = None
     source = "none"
@@ -1606,16 +1654,14 @@ def fetch_once_irrawaddy_html(url, session=None, *, allow_brightdata_fallback: b
     try:
         r = fetch_with_retry_irrawaddy(url, retries=1, wait_seconds=0, session=session)
         status = getattr(r, "status_code", None)
-        if getattr(r, "content", None):
-            try:
-                html_text = r.content.decode("utf-8", "ignore")
-            except Exception:
-                html_text = (getattr(r, "text", "") or "")
-        else:
-            html_text = (getattr(r, "text", "") or "")
-        if (html_text or "").strip():
+        html_text = _normalize_html(r)
+        if _looks_usable(html_text, url) and status != 403:
             source = "direct"
             return html_text, status, source
+        print(
+            f"[irrawaddy-html] direct fallback status={status} usable={_looks_usable(html_text, url)} "
+            f"cf={_looks_like_cloudflare_block(html_text)} len={len(html_text or '')} → {url}"
+        )
     except Exception as e:
         print(f"[irrawaddy-html] direct fail: {e} → {url}")
         html_text = ""
@@ -1628,17 +1674,23 @@ def fetch_once_irrawaddy_html(url, session=None, *, allow_brightdata_fallback: b
                 timeout=BD_UNLOCKER_TIMEOUT,
                 retry_once=False,
             ) or "").strip()
-            if html2:
+            if _looks_usable(html2, url):
                 print(f"[irrawaddy-html] unlocker ok len={len(html2)} → {url}")
                 return html2, 200, "unlocker"
+            print(
+                f"[irrawaddy-html] unlocker unusable cf={_looks_like_cloudflare_block(html2)} len={len(html2 or '')} → {url}"
+            )
         except Exception as e:
             print(f"[irrawaddy-html] unlocker fail: {e} → {url}")
 
         try:
             html3 = (fetch_html_via_brightdata_browser(url) or "").strip()
-            if html3:
+            if _looks_usable(html3, url):
                 print(f"[irrawaddy-html] browser ok len={len(html3)} → {url}")
                 return html3, 200, "browser"
+            print(
+                f"[irrawaddy-html] browser unusable cf={_looks_like_cloudflare_block(html3)} len={len(html3 or '')} → {url}"
+            )
         except Exception as e:
             print(f"[irrawaddy-html] browser fail: {e} → {url}")
 
@@ -2224,6 +2276,8 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
     seen_urls = set()
     candidate_urls = []
     fallback_titles: Dict[str, str] = {}
+    fallback_dates: Dict[str, date] = {}
+    fallback_origins: Dict[str, str] = {}
 
     # ==== 1) 各カテゴリURLを1回ずつ巡回 → 当日候補抽出 ====
     for rel_path in paths:
@@ -2474,7 +2528,9 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
                             "url": link,
                             "title": tt,
                             "summary": sx,
-                            "date": date_obj.isoformat(),
+                            "date": _mmt_date(dt).isoformat(),
+                            "hint_date": _mmt_date(dt),
+                            "origin": "wp-json",
                         })
             except Exception:
                 pass
@@ -2496,7 +2552,9 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
                                 "url": link,
                                 "title": title,
                                 "summary": _clean_summary_text(it.findtext("description") or ""),
-                                "date": date_obj.isoformat(),
+                                "date": _mmt_date(dt).isoformat(),
+                                "hint_date": _mmt_date(dt),
+                                "origin": "feed",
                             })
                 except Exception:
                     pass
@@ -2533,7 +2591,9 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
                     "url": real,
                     "title": title,
                     "summary": _clean_summary_text(it.get("summary") or ""),
-                    "date": date_obj.isoformat(),
+                    "date": _mmt_date(dt).isoformat(),
+                    "hint_date": _mmt_date(dt),
+                    "origin": "google-news",
                 })
 
         # ユニーク化
@@ -2560,6 +2620,10 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
                 seen_urls.add(u)
                 if o.get("title"):
                     fallback_titles[u] = o.get("title") or ""
+                if o.get("hint_date"):
+                    fallback_dates[u] = o.get("hint_date")
+                if o.get("origin"):
+                    fallback_origins[u] = o.get("origin") or ""
 
     # category/home でも拾えず、wp-json/feed も空なら最後に Google News
     if len(candidate_urls) == 0:
@@ -2573,6 +2637,10 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
                 seen_urls.add(u)
                 if o.get("title"):
                     fallback_titles[u] = o.get("title") or ""
+                if o.get("hint_date"):
+                    fallback_dates[u] = o.get("hint_date")
+                if o.get("origin"):
+                    fallback_origins[u] = o.get("origin") or ""
 
     # ==== 2) 候補記事で厳密確認（meta日付/本文/キーワード） ====
     for url in candidate_urls:
@@ -2594,8 +2662,24 @@ def get_irrawaddy_articles_for(date_obj, debug=True):
                     except Exception:
                         host = ""
                     if "irrawaddy.com" in host:
-                        if _article_date_from_meta_mmt(soup_article) != date_obj:
+                        meta_date = _article_date_from_meta_mmt(soup_article)
+                        hint_date = fallback_dates.get(url)
+                        origin = fallback_origins.get(url, "")
+                        if meta_date is not None:
+                            if meta_date != date_obj:
+                                dbg(
+                                    f"[irrawaddy][article] skip meta mismatch url={url} meta_date={meta_date} target={date_obj} hint_date={hint_date} origin={origin}"
+                                )
+                                continue
+                        elif not (origin in {"wp-json", "feed"} and hint_date == date_obj):
+                            dbg(
+                                f"[irrawaddy][article] skip no-meta url={url} target={date_obj} hint_date={hint_date} origin={origin}"
+                            )
                             continue
+                        else:
+                            dbg(
+                                f"[irrawaddy][article] accept by {origin} hint_date url={url} target={date_obj}"
+                            )
                     title = _extract_title(soup_article) or ""
                     body = extract_body_irrawaddy(soup_article) or ""
             except Exception:
