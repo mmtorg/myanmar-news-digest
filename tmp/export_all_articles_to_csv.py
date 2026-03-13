@@ -1085,6 +1085,8 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
         # 3) Browser API を試す
         try:
             raw3 = fetch_html_via_brightdata_browser(url) or ""
+            if not raw3:
+                print(f"[irrawaddy] {kind} browser empty url={url}")
             text3, last_source, last_status = _try_payload(raw3, "browser", 200)
             if text3:
                 print(f"[irrawaddy] {kind} browser ok url={url}")
@@ -1497,7 +1499,7 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
         if _is_excluded_url(url):
             continue
         try:
-            # 2.1) 直接HTML（1回）→ 失敗時は空のまま
+            # 2.1) 記事HTML取得 → meta日付確認
             title = ""
             body = ""
             try:
@@ -1507,29 +1509,40 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
                     allow_browser=True,
                 )
                 if not html:
+                    print(
+                        f"[irrawaddy][article] html empty "
+                        f"url={url} status={status_code} source={source}"
+                    )
                     raise Exception(f"html fetch failed (status={status_code}, source={source})")
+
                 soup = BeautifulSoup(html, "html.parser")
                 meta_date = _article_date_from_meta_mmt(soup)
-            except Exception:
+
+                print(
+                    f"[irrawaddy][article] fetched "
+                    f"url={url} meta_date={meta_date} target={target_date_mmt} "
+                    f"status={status_code} source={source}"
+                )
+            except Exception as e:
                 soup = None
                 meta_date = None
+                print(f"[irrawaddy][article] fetch fail url={url} err={e}")
 
-            if debug:
-                print(f"[irrawaddy][article] url={url} meta_date={meta_date}")
             if meta_date != target_date_mmt:
-                if debug:
-                    hint = feed_hints.get(url)
-                    origin = origins.get(url)
-                    hint_date = hint.get("date") if hint else None
-                    print(
-                        f"  -> skip: date mismatch (meta_date={meta_date}, "
-                        f"target_date={target_date_mmt}, hint_date={hint_date}, origin={origin})"
-                    )
+                hint = feed_hints.get(url)
+                origin = origins.get(url)
+                hint_date = hint.get("date") if hint else None
+                print(
+                    f"[irrawaddy][article] skip date mismatch "
+                    f"url={url} meta_date={meta_date} target={target_date_mmt} "
+                    f"hint_date={hint_date} origin={origin}"
+                )
                 continue
 
             if soup is not None:
                 title = _extract_title(soup) or ""
                 body = extract_body_irrawaddy(soup) or ""
+
             title = unicodedata.normalize("NFC", title).strip()
             body = unicodedata.normalize("NFC", body).strip()
 
@@ -1559,28 +1572,25 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
                 return ""
 
             if not title:
-                # フィード補助があればフォールバック採用
                 hint = feed_hints.get(url)
                 title_fb = (hint or {}).get("title") or ""
                 if title_fb:
-                    if debug:
-                        print("  -> fallback: use feed title (empty title)")
+                    print(f"[irrawaddy][article] fallback feed title url={url}")
                     results.append(
                         {
                             "source": "Irrawaddy",
                             "title": unicodedata.normalize("NFC", title_fb),
                             "url": url,
                             "date": target_date_mmt.isoformat(),
-                            "body": body,  # 取れていればそのまま、無ければ空
+                            "body": body,
                         }
                     )
                     continue
-                # oEmbed / slug
+
                 title = _oembed_title(url) or _title_from_slug(url)
                 title = (title or "").strip()
                 if not title:
-                    if debug:
-                        print("  -> skip: empty title")
+                    print(f"[irrawaddy][article] skip empty title url={url}")
                     continue
 
             # 2.3) 本文が空なら r.jina.ai の本文テキストにフォールバック
@@ -1594,8 +1604,10 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
                     txt = _fetch_text(alt2, timeout=25)
                 if txt:
                     body = unicodedata.normalize("NFC", txt).strip()
-            if not body and debug:
-                print("  -> note: empty body")
+                    print(f"[irrawaddy][article] fallback jina body url={url} body_len={len(body)}")
+
+            if not body:
+                print(f"[irrawaddy][article] note empty body url={url}")
 
             results.append(
                 {
