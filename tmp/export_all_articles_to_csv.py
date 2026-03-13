@@ -928,6 +928,41 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
                 cached.get("source", "none") or "none",
             )
 
+        def _looks_like_cloudflare_block(s: str) -> bool:
+            if not s:
+                return False
+            low = s.lower()
+            return (
+                "just a moment" in low
+                or "cf-browser-verification" in low
+                or "challenges.cloudflare.com" in low
+                or "attention required" in low
+                or "cloudflare" in low
+            )
+
+        def _is_article_url(u: str) -> bool:
+            try:
+                path = requests.utils.urlparse(u).path.lower()
+            except Exception:
+                path = (u or "").lower()
+            return path.endswith(".html") and "/news/" in path
+
+        def _is_usable_article_html(u: str, s: str) -> bool:
+            if not s:
+                return False
+            if _looks_like_cloudflare_block(s):
+                return False
+            if not _is_article_url(u):
+                return True
+            try:
+                soup = BeautifulSoup(s, "html.parser")
+                if _article_date_from_meta_mmt(soup) is not None:
+                    return True
+                body = extract_body_irrawaddy(soup) or ""
+                return bool(body.strip())
+            except Exception:
+                return False
+
         html = ""
         status = None
         source = "none"
@@ -942,10 +977,19 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
                 content_type = ""
 
             html = getattr(res, "content", None) or getattr(res, "text", "") or ""
-            if html:
+            usable = _is_usable_article_html(url, html)
+            blocked = _looks_like_cloudflare_block(html)
+            if html and usable and status != 403:
                 source = "direct"
                 if "/wp-json/" in url or url.rstrip("/").endswith("/feed"):
                     print(f"[irrawaddy] meta direct status={status} content_type={content_type} url={url}")
+            else:
+                if html and (_is_article_url(url) or blocked or status == 403):
+                    print(
+                        f"[irrawaddy-html] direct fallback status={status} usable={usable} "
+                        f"cf={blocked} url={url}"
+                    )
+                html = ""
         except Exception as e:
             print(f"[irrawaddy] direct fetch fail {url}: {e}")
             html = ""
@@ -954,8 +998,12 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
         if not html:
             try:
                 html = fetch_html_via_brightdata_unlocker(url, timeout=BD_UNLOCKER_TIMEOUT) or ""
-                if html:
+                if html and _is_usable_article_html(url, html):
                     source = "unlocker"
+                else:
+                    if html:
+                        print(f"[irrawaddy-html] unlocker unusable url={url}")
+                    html = ""
             except Exception as e:
                 print(f"[irrawaddy] unlocker fetch fail {url}: {e}")
                 html = ""
@@ -963,8 +1011,12 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
         if not html and allow_browser:
             try:
                 html = fetch_html_via_brightdata_browser(url) or ""
-                if html:
+                if html and _is_usable_article_html(url, html):
                     source = "browser"
+                else:
+                    if html:
+                        print(f"[irrawaddy-html] browser unusable url={url}")
+                    html = ""
             except Exception as e:
                 print(f"[irrawaddy] browser fetch fail {url}: {e}")
 
@@ -1026,55 +1078,84 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
         low = (text or "").lower()
         return ("<rss" in low) or ("<feed" in low) or ("<rdf:rdf" in low)
 
-    def _debug_head(label: str, source: str, status_code, text: str) -> None:
-        head = re.sub(r"\s+", " ", (text or "")[:220]).strip()
-        print(f"[irrawaddy] {label} invalid payload source={source} status={status_code} head={head!r}")
+    def _debug_head(kind: str, source_name: str, status_code: Optional[int], text: str, n: int = 200) -> None:
+        head = (text or "")[:n].replace("\n", "\\n")
+        print(
+            f"[irrawaddy] {kind} invalid payload "
+            f"source={source_name} status={status_code} head={head!r}"
+        )
 
     def _fetch_irrawaddy_meta_text(url: str, kind: str) -> tuple[str, str, Optional[int]]:
         """
         kind: 'json' or 'feed'
-        Browser API は使わない。
-        direct の中身が不正なら unlocker/jina に進む。
+        フェッチ順:
+        1) direct
+        2) Web Unlocker
+        3) Browser API
+        4) jina
+        「取れたか」ではなく「期待する payload か」で次へ進む。
         """
         def ok(txt: str) -> bool:
             return _looks_like_json(txt) if kind == "json" else _looks_like_feed(txt)
 
-        # 1) direct / unlocker（Browserなし）
-        text, source, status_code = "", "none", None
-        raw, status_code, source = _fetch_irrawaddy_html_cached(
-            url,
-            session=session,
-            allow_browser=False,
-        )
-        text = _to_text(raw)
-        if ok(text):
-            return text, source, status_code
+        def _try_payload(raw, source_name: str, status_code: Optional[int]):
+            text = _to_text(raw)
+            if ok(text):
+                return text, source_name, status_code
+            if text:
+                _debug_head(kind, source_name, status_code, text)
+            return "", source_name, status_code
 
-        if text:
-            _debug_head(kind, source, status_code, text)
+        last_source = "none"
+        last_status = None
 
-        # 2) unlocker を明示的に単独で再試行
+        # 1) direct
         try:
-            raw2 = fetch_html_via_brightdata_unlocker(url, timeout=BD_UNLOCKER_TIMEOUT) or ""
-            text2 = _to_text(raw2)
-            if ok(text2):
-                return text2, "unlocker", 200
+            raw, status_code, source = _fetch_irrawaddy_html_cached(
+                url,
+                session=session,
+                allow_browser=False,   # direct + unlocker cache は既存利用
+            )
+            text, last_source, last_status = _try_payload(raw, source, status_code)
+            if text:
+                return text, last_source, last_status
+        except Exception as e:
+            print(f"[irrawaddy] {kind} direct/unlocker cached fetch fail {url}: {e}")
+
+        # 2) unlocker を明示再試行
+        try:
+            raw2 = fetch_html_via_brightdata_unlocker(
+                url,
+                timeout=BD_UNLOCKER_TIMEOUT,
+            ) or ""
+            text2, last_source, last_status = _try_payload(raw2, "unlocker", 200)
             if text2:
-                _debug_head(kind, "unlocker", 200, text2)
+                return text2, last_source, last_status
         except Exception as e:
             print(f"[irrawaddy] {kind} unlocker fetch fail {url}: {e}")
 
-        # 3) jina
+        # 3) Browser API を試す
         try:
-            text3 = _fetch_text_via_jina(url) or ""
-            if ok(text3):
-                return text3, "jina", 200
+            raw3 = fetch_html_via_brightdata_browser(url) or ""
+            if not raw3:
+                print(f"[irrawaddy] {kind} browser empty url={url}")
+            text3, last_source, last_status = _try_payload(raw3, "browser", 200)
             if text3:
-                _debug_head(kind, "jina", 200, text3)
+                print(f"[irrawaddy] {kind} browser ok url={url}")
+                return text3, last_source, last_status
+        except Exception as e:
+            print(f"[irrawaddy] {kind} browser fetch fail {url}: {e}")
+
+        # 4) jina
+        try:
+            raw4 = _fetch_text_via_jina(url) or ""
+            text4, last_source, last_status = _try_payload(raw4, "jina", 200)
+            if text4:
+                return text4, last_source, last_status
         except Exception as e:
             print(f"[irrawaddy] {kind} jina fetch fail {url}: {e}")
 
-        return "", source, status_code
+        return "", last_source, last_status
 
     def _fetch_json_text_irrawaddy(url: str) -> tuple[str, str, Optional[int]]:
         return _fetch_irrawaddy_meta_text(url, "json")
@@ -1272,7 +1353,14 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
                 except Exception:
                     dt = None
 
-                if link and dt and _mmt_date(dt) == target_date_mmt and not _is_excluded_url(link):
+                wp_day = None
+                if dt:
+                    try:
+                        wp_day = dt.date() if dt.tzinfo is None else dt.astimezone(MMT).date()
+                    except Exception:
+                        wp_day = None
+
+                if link and wp_day == target_date_mmt and not _is_excluded_url(link):
                     if link not in seen_urls:
                         candidate_urls.append(link)
                         seen_urls.add(link)
@@ -1280,7 +1368,7 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
                     feed_hints[link] = {
                         "title": tt,
                         "summary": sx,
-                        "date": target_date_mmt.isoformat(),
+                        "date": wp_day.isoformat(),
                     }
         except Exception as e:
             print(f"[irrawaddy] wp-json parse failed: source={wp_source} status={wp_status} err={e} head={(wp_json or '')[:200]!r}")
@@ -1310,7 +1398,14 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
                     except Exception:
                         dt = None
 
-                    if link and dt and _mmt_date(dt) == target_date_mmt and not _is_excluded_url(link):
+                    feed_day = None
+                    if dt:
+                        try:
+                            feed_day = dt.date() if dt.tzinfo is None else dt.astimezone(MMT).date()
+                        except Exception:
+                            feed_day = None
+
+                    if link and feed_day == target_date_mmt and not _is_excluded_url(link):
                         if link not in seen_urls:
                             candidate_urls.append(link)
                             seen_urls.add(link)
@@ -1318,7 +1413,7 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
                         feed_hints[link] = {
                             "title": title,
                             "summary": _clean_summary_text(desc),
-                            "date": target_date_mmt.isoformat(),
+                            "date": feed_day.isoformat(),
                         }
 
             except Exception as e:
@@ -1470,7 +1565,7 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
         if _is_excluded_url(url):
             continue
         try:
-            # 2.1) 直接HTML（1回）→ 失敗時は空のまま
+            # 2.1) 記事HTML取得 → meta日付確認
             title = ""
             body = ""
             try:
@@ -1480,65 +1575,52 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
                     allow_browser=True,
                 )
                 if not html:
+                    print(
+                        f"[irrawaddy][article] html empty "
+                        f"url={url} status={status_code} source={source}"
+                    )
                     raise Exception(f"html fetch failed (status={status_code}, source={source})")
+
                 soup = BeautifulSoup(html, "html.parser")
                 meta_date = _article_date_from_meta_mmt(soup)
-            except Exception:
+
+                print(
+                    f"[irrawaddy][article] fetched "
+                    f"url={url} meta_date={meta_date} target={target_date_mmt} "
+                    f"status={status_code} source={source}"
+                )
+            except Exception as e:
                 soup = None
                 meta_date = None
+                print(f"[irrawaddy][article] fetch fail url={url} err={e}")
 
-            if debug:
-                print(f"[irrawaddy][article] url={url} meta_date={meta_date}")
-            if meta_date != target_date_mmt:
-                # フィード補助があればフォールバック採用
-                hint = feed_hints.get(url)
-                if hint and (hint.get("date") == target_date_mmt.isoformat()):
-                    title_fb = (hint.get("title") or "").strip()
-                    if title_fb:
-                        if debug:
-                            print("  -> fallback: use feed title/date (meta_date mismatch)")
-                        results.append(
-                            {
-                                "source": "Irrawaddy",
-                                "title": unicodedata.normalize("NFC", title_fb),
-                                "url": url,
-                                "date": target_date_mmt.isoformat(),
-                                "body": "",
-                            }
-                        )
-                        continue
-                # カテゴリ/ホーム由来の場合は、一覧の当日判定を信頼して採用
-                if origins.get(url) in ("cat", "home"):
-                    title_fb = (feed_hints.get(url, {}).get("title") or "").strip()
-                    if not title_fb:
-                        # 最低限のタイトル補完（oEmbed/slug）
-                        # 再利用の簡易関数をここでも使用
-                        def _title_from_slug_local(u: str) -> str:
-                            try:
-                                from urllib.parse import urlparse, unquote
-                                seg = urlparse(u).path.rstrip("/").split("/")[-1]
-                                seg = unquote(seg).replace(".html", "").replace("-", " ")
-                                return unicodedata.normalize("NFC", seg.title())
-                            except Exception:
-                                return ""
-                        title_fb = _title_from_slug_local(url)
-                    results.append(
-                        {
-                            "source": "Irrawaddy",
-                            "title": unicodedata.normalize("NFC", title_fb),
-                            "url": url,
-                            "date": target_date_mmt.isoformat(),
-                            "body": "",
-                        }
-                    )
-                    continue
-                if debug:
-                    print("  -> skip: date mismatch")
+            hint = feed_hints.get(url)
+            origin = origins.get(url)
+            hint_date = hint.get("date") if hint else None
+            hint_matches_target = (
+                origin in ("wp-json", "feed")
+                and hint_date == target_date_mmt.isoformat()
+            )
+
+            if meta_date != target_date_mmt and not hint_matches_target:
+                print(
+                    f"[irrawaddy][article] skip date mismatch "
+                    f"url={url} meta_date={meta_date} target={target_date_mmt} "
+                    f"hint_date={hint_date} origin={origin}"
+                )
                 continue
+
+            if meta_date != target_date_mmt and hint_matches_target:
+                print(
+                    f"[irrawaddy][article] accept by {origin} hint_date "
+                    f"url={url} meta_date={meta_date} target={target_date_mmt} "
+                    f"hint_date={hint_date}"
+                )
 
             if soup is not None:
                 title = _extract_title(soup) or ""
                 body = extract_body_irrawaddy(soup) or ""
+
             title = unicodedata.normalize("NFC", title).strip()
             body = unicodedata.normalize("NFC", body).strip()
 
@@ -1568,28 +1650,25 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
                 return ""
 
             if not title:
-                # フィード補助があればフォールバック採用
                 hint = feed_hints.get(url)
                 title_fb = (hint or {}).get("title") or ""
                 if title_fb:
-                    if debug:
-                        print("  -> fallback: use feed title (empty title)")
+                    print(f"[irrawaddy][article] fallback feed title url={url}")
                     results.append(
                         {
                             "source": "Irrawaddy",
                             "title": unicodedata.normalize("NFC", title_fb),
                             "url": url,
                             "date": target_date_mmt.isoformat(),
-                            "body": body,  # 取れていればそのまま、無ければ空
+                            "body": body,
                         }
                     )
                     continue
-                # oEmbed / slug
+
                 title = _oembed_title(url) or _title_from_slug(url)
                 title = (title or "").strip()
                 if not title:
-                    if debug:
-                        print("  -> skip: empty title")
+                    print(f"[irrawaddy][article] skip empty title url={url}")
                     continue
 
             # 2.3) 本文が空なら r.jina.ai の本文テキストにフォールバック
@@ -1603,8 +1682,10 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
                     txt = _fetch_text(alt2, timeout=25)
                 if txt:
                     body = unicodedata.normalize("NFC", txt).strip()
-            if not body and debug:
-                print("  -> note: empty body")
+                    print(f"[irrawaddy][article] fallback jina body url={url} body_len={len(body)}")
+
+            if not body:
+                print(f"[irrawaddy][article] note empty body url={url}")
 
             results.append(
                 {
