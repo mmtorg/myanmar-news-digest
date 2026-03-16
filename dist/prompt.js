@@ -172,17 +172,22 @@ const PROMPT_SELF_CHECK_RULE = `
 const TITLE_CORRECTION_SS_ID_PROP = "TITLE_CORRECTION_SS_ID";
 const TITLE_CORRECTION_SHEET_NAME = "title";
 const FEW_SHOT_SAMPLE_SIZE = 15; // プロンプトに挿入するサンプル数
+const TITLE_ARCHIVE_LOOKBACK_DAYS = 30;
+const TITLE_CORRECTION_EXCLUDE_TITLE = "最新マーケット情報";
 
 // 実行中キャッシュ（1バッチで1回だけスプレッドシートを読む）
 let _fewShotCache_ = null;
 
 /**
  * タイトル修正スプレッドシートから修正前→後ペアをロードしてランダムサンプリングする。
- * B列: AI生成タイトル、C列: 確定タイトル（2行目以降）
+ * A列: 日付、B列: AI生成タイトル、C列: 確定タイトル（2行目以降）
+ * - A列が過去30日以内の行のみ対象
+ * - C列が「最新マーケット情報」の行は除外
  * @returns {{before: string, after: string}[]}
  */
 function loadTitleCorrectionExamples_() {
   if (_fewShotCache_ !== null) return _fewShotCache_;
+
   try {
     const props = PropertiesService.getScriptProperties();
     const ssId = props.getProperty(TITLE_CORRECTION_SS_ID_PROP) || "";
@@ -205,21 +210,51 @@ function loadTitleCorrectionExamples_() {
       _fewShotCache_ = [];
       return _fewShotCache_;
     }
+
     const lastRow = sh.getLastRow();
     if (lastRow < 2) {
       _fewShotCache_ = [];
       return _fewShotCache_;
     }
-    const values = sh.getRange(2, 2, lastRow - 1, 2).getValues(); // B・C列
+
+    // A:C を読む
+    const values = sh.getRange(2, 1, lastRow - 1, 3).getValues();
+
+    const now = new Date();
+    const cutoff = new Date(
+      now.getTime() - TITLE_ARCHIVE_LOOKBACK_DAYS * 24 * 60 * 60 * 1000,
+    );
+
     const pairs = values
       .map(function (row) {
+        const archivedAt = row[0]; // A
+        const before = String(row[1] || "").trim(); // B
+        const after = String(row[2] || "").trim(); // C
         return {
-          before: String(row[0] || "").trim(),
-          after: String(row[1] || "").trim(),
+          archivedAt: archivedAt,
+          before: before,
+          after: after,
         };
       })
       .filter(function (p) {
-        return p.before && p.after && p.before !== p.after;
+        // B/C の基本条件
+        if (!p.before || !p.after || p.before === p.after) return false;
+
+        // C列が「最新マーケット情報」は除外
+        if (p.after === TITLE_CORRECTION_EXCLUDE_TITLE) return false;
+
+        // A列が有効な日付で、かつ過去30日以内のみ採用
+        if (!(p.archivedAt instanceof Date) || isNaN(p.archivedAt.getTime()))
+          return false;
+        if (p.archivedAt < cutoff) return false;
+
+        return true;
+      })
+      .map(function (p) {
+        return {
+          before: p.before,
+          after: p.after,
+        };
       });
 
     // Fisher-Yates でシャッフルして先頭N件を取る
@@ -229,6 +264,7 @@ function loadTitleCorrectionExamples_() {
       pairs[i] = pairs[j];
       pairs[j] = tmp;
     }
+
     _fewShotCache_ = pairs.slice(0, FEW_SHOT_SAMPLE_SIZE);
     Logger.log(
       "[loadTitleCorrectionExamples_] loaded %s examples",
@@ -238,6 +274,7 @@ function loadTitleCorrectionExamples_() {
     Logger.log("[loadTitleCorrectionExamples_] error: " + e);
     _fewShotCache_ = [];
   }
+
   return _fewShotCache_;
 }
 
