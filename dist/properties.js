@@ -20,3 +20,15 @@ function deleteOneScriptProperty() {
   const props = PropertiesService.getScriptProperties();
   props.deleteProperty("NEW_SCRIPT_PROPERTY");
 }
+
+// script propertiesを更新したい場合
+function updateMultipleScriptProperties() {
+  const props = PropertiesService.getScriptProperties();
+  props.setProperties(
+    {
+      NEW_SCRIPT_PROPERTY: "yyyy",
+      ANOTHER_PROPERTY: "zzzz",
+    },
+    false,
+  );
+}
