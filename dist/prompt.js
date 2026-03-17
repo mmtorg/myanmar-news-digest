@@ -181,11 +181,21 @@ const TITLE_ARCHIVE_BODY_SNIPPET_CHARS = 1400;
 let _fewShotCache_ = null;
 
 /**
- * タイトル修正スプレッドシートから修正前→後ペアをロードする。
- * A列: 日付、B列: AI生成タイトル、C列: 確定タイトル（2行目以降）
+ * タイトル修正スプレッドシートから few-shot 用事例をロードする。
+ * A列: 日付
+ * B列: 見出し案1
+ * C列: 見出し案2
+ * D列: 見出し案3
+ * E列: 確定見出し
+ *
  * - A列が過去30日以内の行のみ対象
- * - C列が「最新マーケット情報」の行は除外
- * @returns {{archivedAt: Date, before: string, after: string, features: Object}[]}
+ * - E列が「最新マーケット情報」の行は除外
+ * @returns {{
+ *   archivedAt: Date,
+ *   candidates: string[],
+ *   after: string,
+ *   features: Object
+ * }[]}
  */
 function loadTitleCorrectionExamples_() {
   if (_fewShotCache_ !== null) return _fewShotCache_;
@@ -219,7 +229,8 @@ function loadTitleCorrectionExamples_() {
       return _fewShotCache_;
     }
 
-    const values = sh.getRange(2, 1, lastRow - 1, 3).getValues();
+    // A:E を読む
+    const values = sh.getRange(2, 1, lastRow - 1, 5).getValues();
 
     const now = new Date();
     const cutoff = new Date(
@@ -229,22 +240,42 @@ function loadTitleCorrectionExamples_() {
     _fewShotCache_ = values
       .map(function (row) {
         const archivedAt = row[0];
-        const before = String(row[1] || "").trim();
-        const after = String(row[2] || "").trim();
-        const combined = (before + " " + after).trim();
+
+        const candidates = [
+          String(row[1] || "").trim(), // B
+          String(row[2] || "").trim(), // C
+          String(row[3] || "").trim(), // D
+        ].filter(Boolean);
+
+        const after = String(row[4] || "").trim(); // E
+
+        // 類似度計算用には候補群+確定見出しを全部使う
+        const combined = candidates.concat(after ? [after] : []).join(" ");
+
         return {
           archivedAt: archivedAt,
-          before: before,
+          candidates: candidates,
           after: after,
           features: buildTitleArchiveFeatures_(combined),
         };
       })
       .filter(function (p) {
-        if (!p.before || !p.after || p.before === p.after) return false;
+        if (!p.candidates || p.candidates.length === 0) return false;
+        if (!p.after) return false;
         if (p.after === TITLE_CORRECTION_EXCLUDE_TITLE) return false;
-        if (!(p.archivedAt instanceof Date) || isNaN(p.archivedAt.getTime()))
+        if (!(p.archivedAt instanceof Date) || isNaN(p.archivedAt.getTime())) {
           return false;
+        }
         if (p.archivedAt < cutoff) return false;
+
+        // 3案のどれかとEが同一でも全除外はしない
+        // ただし3案すべて identical なら学習価値が薄いので落とす
+        const uniq = {};
+        p.candidates.concat([p.after]).forEach(function (x) {
+          uniq[x] = true;
+        });
+        if (Object.keys(uniq).length <= 1) return false;
+
         return true;
       });
 
@@ -459,7 +490,9 @@ function selectRelevantTitleCorrectionExamples_(params, topKOpt) {
     for (let j = 0; j < shortlisted.length; j++) {
       const candidate2 = shortlisted[j].example;
       const exists = picked.some(function (p) {
-        return p.before === candidate2.before && p.after === candidate2.after;
+        const pCandidates = JSON.stringify(p.candidates || []);
+        const cCandidates = JSON.stringify(candidate2.candidates || []);
+        return pCandidates === cCandidates && p.after === candidate2.after;
       });
       if (exists) continue;
       picked.push(candidate2);
@@ -476,31 +509,42 @@ function selectRelevantTitleCorrectionExamples_(params, topKOpt) {
 }
 
 /**
- * 類似修正例リストから、編集ルール抽出つきのプロンプト挿入用テキストを生成する。
- * @param {{before: string, after: string}[]} examples
+ * 類似修正例リストから、3案→確定見出し の
+ * 編集ルール抽出つきプロンプト挿入用テキストを生成する。
+ * @param {{candidates: string[], after: string}[]} examples
  * @returns {string}
  */
 function buildFewShotExamplesSection_(examples) {
   if (!examples || examples.length === 0) return "";
+
   const lines = examples
     .map(function (ex, idx) {
-      return (
-        "事例" + (idx + 1) + "\n修正前: " + ex.before + "\n修正後: " + ex.after
-      );
+      const c1 = ex.candidates[0] || "(なし)";
+      const c2 = ex.candidates[1] || "(なし)";
+      const c3 = ex.candidates[2] || "(なし)";
+      return [
+        "事例" + (idx + 1),
+        "見出し案1: " + c1,
+        "見出し案2: " + c2,
+        "見出し案3: " + c3,
+        "確定見出し: " + ex.after,
+      ].join("\n");
     })
     .join("\n\n");
+
   return `【見出しアーカイブ（Task2' に適用・最優先で参照）】
 以下は、今回の記事に比較的近い編集済み見出し事例です。
-左（修正前）がAI初稿、右（修正後）が編集者の確定見出しです。
+各事例では、B・C・D列が見出し案、E列が編集者の確定見出しです。
 
 ${lines}
 
 【Task2' の進め方】
-1. まず上の事例だけを根拠に、「修正前→修正後」で一貫して行われている編集操作を3〜6個抽出する。
-   例: 何を前に出すか、何を削るか、地名・数値・主体をどう残すか、婉曲表現をどう圧縮するか。
-2. 抽出した編集操作を今回の記事本文に適用し、編集者が確定しそうな1行見出しへ再構成する。
-3. 単なる語彙の言い換えではなく、情報の優先順位と文の骨格を修正後側に寄せる。
-4. 出力は最終見出し1行のみとし、抽出したルール自体は出力しない。
+1. まず上の事例だけを根拠に、「見出し案1/2/3 → 確定見出し」で一貫して行われている編集操作を3〜6個抽出する。
+2. 抽出では、どの案の要素が採用されやすいか、どの案でも共通して削られる表現は何か、語順・主語・数値・地名・主体の残し方を重視する。
+3. 特に、複数案のうち確定見出しで採用される情報の優先順位と、確定見出しで落とされる冗長表現を見極める。
+4. 抽出した編集操作を今回の記事本文に適用し、編集者が確定しそうな1行見出しへ再構成する。
+5. 単なる語彙の言い換えではなく、情報の優先順位と文の骨格を確定見出し側に寄せる。
+6. 出力は最終見出し1行のみとし、抽出したルール自体は出力しない。
 
 `;
 }
