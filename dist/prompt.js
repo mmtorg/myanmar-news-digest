@@ -183,9 +183,9 @@ let _fewShotCache_ = null;
 /**
  * タイトル修正スプレッドシートから few-shot 用事例をロードする。
  * A列: 日付
- * B列: 見出し案1
- * C列: 見出し案2
- * D列: 見出し案3
+ * B列: AI見出し案1
+ * C列: AI見出し案2
+ * D列: AI見出し案3
  * E列: 確定見出し
  *
  * - A列が過去30日以内の行のみ対象
@@ -194,7 +194,8 @@ let _fewShotCache_ = null;
  *   archivedAt: Date,
  *   candidates: string[],
  *   after: string,
- *   features: Object
+ *   inputFeatures: Object,
+ *   exampleFeatures: Object
  * }[]}
  */
 function loadTitleCorrectionExamples_() {
@@ -249,14 +250,18 @@ function loadTitleCorrectionExamples_() {
 
         const after = String(row[4] || "").trim(); // E
 
-        // 類似度計算用には候補群+確定見出しを全部使う
-        const combined = candidates.concat(after ? [after] : []).join(" ");
+        // 類似検索用: 入力側（B〜D）を重視
+        const inputText = candidates.join(" ");
+
+        // 事例全体の表現特徴: B〜D + E をまとめて持つ
+        const exampleText = candidates.concat(after ? [after] : []).join(" ");
 
         return {
           archivedAt: archivedAt,
           candidates: candidates,
           after: after,
-          features: buildTitleArchiveFeatures_(combined),
+          inputFeatures: buildTitleArchiveFeatures_(inputText),
+          exampleFeatures: buildTitleArchiveFeatures_(exampleText),
         };
       })
       .filter(function (p) {
@@ -268,8 +273,7 @@ function loadTitleCorrectionExamples_() {
         }
         if (p.archivedAt < cutoff) return false;
 
-        // 3案のどれかとEが同一でも全除外はしない
-        // ただし3案すべて identical なら学習価値が薄いので落とす
+        // 候補3案も確定見出しも全部同じ、のような学習価値が薄い行だけ除外
         const uniq = {};
         p.candidates.concat([p.after]).forEach(function (x) {
           uniq[x] = true;
@@ -416,9 +420,9 @@ function buildTitleArchiveContext_(params) {
 }
 
 function scoreTitleArchiveExample_(ctx, example) {
-  if (!ctx || !ctx.features || !example || !example.features) return 0;
+  if (!ctx || !ctx.features || !example || !example.inputFeatures) return 0;
   const cf = ctx.features;
-  const ef = example.features;
+  const ef = example.inputFeatures; // B〜D だけで比較する
 
   const trigramScore = overlapRatio_(cf.trigrams, ef.trigrams);
   const tokenScore = overlapRatio_(cf.tokens, ef.tokens);
@@ -453,8 +457,10 @@ function scoreTitleArchiveExample_(ctx, example) {
 }
 
 function areArchiveExamplesTooClose_(a, b) {
-  if (!a || !b || !a.features || !b.features) return false;
-  return overlapRatio_(a.features.trigrams, b.features.trigrams) >= 0.82;
+  if (!a || !b || !a.inputFeatures || !b.inputFeatures) return false;
+  return (
+    overlapRatio_(a.inputFeatures.trigrams, b.inputFeatures.trigrams) >= 0.82
+  );
 }
 
 function selectRelevantTitleCorrectionExamples_(params, topKOpt) {
@@ -490,9 +496,11 @@ function selectRelevantTitleCorrectionExamples_(params, topKOpt) {
     for (let j = 0; j < shortlisted.length; j++) {
       const candidate2 = shortlisted[j].example;
       const exists = picked.some(function (p) {
-        const pCandidates = JSON.stringify(p.candidates || []);
-        const cCandidates = JSON.stringify(candidate2.candidates || []);
-        return pCandidates === cCandidates && p.after === candidate2.after;
+        return (
+          JSON.stringify(p.candidates) ===
+            JSON.stringify(candidate2.candidates) &&
+          p.after === candidate2.after
+        );
       });
       if (exists) continue;
       picked.push(candidate2);
@@ -534,17 +542,16 @@ function buildFewShotExamplesSection_(examples) {
 
   return `【見出しアーカイブ（Task2' に適用・最優先で参照）】
 以下は、今回の記事に比較的近い編集済み見出し事例です。
-各事例では、B・C・D列が見出し案、E列が編集者の確定見出しです。
+各事例では、B・C・D列がAI見出し案、E列が編集者の確定見出しです。
 
 ${lines}
 
 【Task2' の進め方】
 1. まず上の事例だけを根拠に、「見出し案1/2/3 → 確定見出し」で一貫して行われている編集操作を3〜6個抽出する。
-2. 抽出では、どの案の要素が採用されやすいか、どの案でも共通して削られる表現は何か、語順・主語・数値・地名・主体の残し方を重視する。
-3. 特に、複数案のうち確定見出しで採用される情報の優先順位と、確定見出しで落とされる冗長表現を見極める。
+2. 特に、どの案の要素が採用されやすいか、逆にどの表現が落とされやすいかを見極める。
+3. 数値・主体・地名・因果関係・対立軸のうち、確定見出しで優先される要素を重視する。
 4. 抽出した編集操作を今回の記事本文に適用し、編集者が確定しそうな1行見出しへ再構成する。
-5. 単なる語彙の言い換えではなく、情報の優先順位と文の骨格を確定見出し側に寄せる。
-6. 出力は最終見出し1行のみとし、抽出したルール自体は出力しない。
+5. 出力は最終見出し1行のみとし、抽出したルール自体は出力しない。
 
 `;
 }
@@ -2006,8 +2013,8 @@ function callGpt5MiniWithKey_(apiKey, promptText, usageTagOpt, formatTypeOpt) {
  *
  * 出力:
  *   - E列: HEADLINE_PROMPT_1(タイトル)         → 見出しA
- *   - F列: make_headline_prompt_2_from(E)       → 見出しA'
- *   - G列: HEADLINE_PROMPT_3(本文のみ)         → 見出しB'
+ *   - F列: HEADLINE_PROMPT_3 + few-shotあり     → 見出しB'（アーカイブ参照あり）
+ *   - G列: HEADLINE_PROMPT_3(本文のみ)         → 見出しB'（アーカイブ参照なし）
  *   - I列: 本文要約（STEP3_TASK）
  ************************************************************/
 
@@ -2807,17 +2814,20 @@ ${COMMON_TRANSLATION_RULES}
 ${PROMPT_SELF_CHECK_RULE}
 
 【最終出力フォーマット（必須）】
-入力順のまま、JSON 配列を 1つだけ出力してください（それ以外の文字は一切出力しない）。
+入力順のまま、JSON オブジェクトを 1つだけ出力してください（それ以外の文字は一切出力しない）。
+最上位キーは必ず "items" とし、その値に各記事の結果を配列で入れてください。
 
-[
-  {
-    "id": "入力の id をそのまま入れる",
-    "headlineA": "Task1 の見出しA",
-    "headlineBPrime": "Task2 の見出しB'",
-    "headlineBPrimeFewShot": "Task2' の見出しB'",
-    "summary": "Task3 の本文要約"
-  }
-]
+{
+  "items": [
+    {
+      "id": "入力の id をそのまま入れる",
+      "headlineA": "Task1 の見出しA",
+      "headlineBPrime": "Task2 の見出しB'",
+      "headlineBPrimeFewShot": "Task2' の見出しB'",
+      "summary": "Task3 の本文要約"
+    }
+  ]
+}
 
 制約:
 - 配列の要素数は入力記事数と一致させること
