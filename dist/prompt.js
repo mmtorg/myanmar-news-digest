@@ -171,19 +171,21 @@ const PROMPT_SELF_CHECK_RULE = `
 // 過去の修正前→後ペアを記録したスプレッドシート
 const TITLE_CORRECTION_SS_ID_PROP = "TITLE_CORRECTION_SS_ID";
 const TITLE_CORRECTION_SHEET_NAME = "title";
-const FEW_SHOT_SAMPLE_SIZE = 15; // プロンプトに挿入するサンプル数
+const TITLE_ARCHIVE_TOP_K = 4; // F列用に使う類似事例数（3〜5件の中間値）
+const TITLE_ARCHIVE_CANDIDATE_POOL = 12; // 類似度評価後に最終選抜する候補数
 const TITLE_ARCHIVE_LOOKBACK_DAYS = 30;
 const TITLE_CORRECTION_EXCLUDE_TITLE = "最新マーケット情報";
+const TITLE_ARCHIVE_BODY_SNIPPET_CHARS = 1400;
 
 // 実行中キャッシュ（1バッチで1回だけスプレッドシートを読む）
 let _fewShotCache_ = null;
 
 /**
- * タイトル修正スプレッドシートから修正前→後ペアをロードしてランダムサンプリングする。
+ * タイトル修正スプレッドシートから修正前→後ペアをロードする。
  * A列: 日付、B列: AI生成タイトル、C列: 確定タイトル（2行目以降）
  * - A列が過去30日以内の行のみ対象
  * - C列が「最新マーケット情報」の行は除外
- * @returns {{before: string, after: string}[]}
+ * @returns {{archivedAt: Date, before: string, after: string, features: Object}[]}
  */
 function loadTitleCorrectionExamples_() {
   if (_fewShotCache_ !== null) return _fewShotCache_;
@@ -217,7 +219,6 @@ function loadTitleCorrectionExamples_() {
       return _fewShotCache_;
     }
 
-    // A:C を読む
     const values = sh.getRange(2, 1, lastRow - 1, 3).getValues();
 
     const now = new Date();
@@ -225,47 +226,28 @@ function loadTitleCorrectionExamples_() {
       now.getTime() - TITLE_ARCHIVE_LOOKBACK_DAYS * 24 * 60 * 60 * 1000,
     );
 
-    const pairs = values
+    _fewShotCache_ = values
       .map(function (row) {
-        const archivedAt = row[0]; // A
-        const before = String(row[1] || "").trim(); // B
-        const after = String(row[2] || "").trim(); // C
+        const archivedAt = row[0];
+        const before = String(row[1] || "").trim();
+        const after = String(row[2] || "").trim();
+        const combined = (before + " " + after).trim();
         return {
           archivedAt: archivedAt,
           before: before,
           after: after,
+          features: buildTitleArchiveFeatures_(combined),
         };
       })
       .filter(function (p) {
-        // B/C の基本条件
         if (!p.before || !p.after || p.before === p.after) return false;
-
-        // C列が「最新マーケット情報」は除外
         if (p.after === TITLE_CORRECTION_EXCLUDE_TITLE) return false;
-
-        // A列が有効な日付で、かつ過去30日以内のみ採用
         if (!(p.archivedAt instanceof Date) || isNaN(p.archivedAt.getTime()))
           return false;
         if (p.archivedAt < cutoff) return false;
-
         return true;
-      })
-      .map(function (p) {
-        return {
-          before: p.before,
-          after: p.after,
-        };
       });
 
-    // Fisher-Yates でシャッフルして先頭N件を取る
-    for (let i = pairs.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      const tmp = pairs[i];
-      pairs[i] = pairs[j];
-      pairs[j] = tmp;
-    }
-
-    _fewShotCache_ = pairs.slice(0, FEW_SHOT_SAMPLE_SIZE);
     Logger.log(
       "[loadTitleCorrectionExamples_] loaded %s examples",
       _fewShotCache_.length,
@@ -278,23 +260,247 @@ function loadTitleCorrectionExamples_() {
   return _fewShotCache_;
 }
 
+function normalizeForArchiveSimilarity_(s) {
+  let out = String(s || "").toLowerCase();
+  try {
+    out = out.normalize("NFKC");
+  } catch (e) {}
+  out = out
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(/[“”"「」『』（）()【】\[\]〈〉<>]/g, " ")
+    .replace(/[.,/#!$%^&*;:{}=_`~?！？。、，・|\\+-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return out;
+}
+
+function toUniqueList_(arr) {
+  const out = [];
+  const seen = {};
+  (arr || []).forEach(function (v) {
+    const key = String(v || "");
+    if (!key || seen[key]) return;
+    seen[key] = true;
+    out.push(key);
+  });
+  return out;
+}
+
+function charNgrams_(text, n) {
+  const s = normalizeForArchiveSimilarity_(text || "").replace(/\s+/g, "");
+  const grams = [];
+  if (!s) return grams;
+  if (s.length <= n) return [s];
+  for (let i = 0; i <= s.length - n; i++) {
+    grams.push(s.substring(i, i + n));
+  }
+  return toUniqueList_(grams);
+}
+
+function extractNumberTokens_(text) {
+  const s = String(text || "");
+  const m = s.match(/\d+(?:[.,]\d+)?/g) || [];
+  return toUniqueList_(
+    m.map(function (x) {
+      return x.replace(/,/g, "");
+    }),
+  );
+}
+
+function extractAcronymTokens_(text) {
+  const s = String(text || "");
+  const m = s.match(/\b[A-Z]{2,}\b/g) || [];
+  return toUniqueList_(m);
+}
+
+function extractDateLikeTokens_(text) {
+  const s = String(text || "");
+  const m =
+    s.match(
+      /(?:\b\d{1,4}[/-]\d{1,2}(?:[/-]\d{1,4})?\b|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b|\b\d{1,2}\s*(?:day|days|month|months|year|years)\b)/gi,
+    ) || [];
+  return toUniqueList_(
+    m.map(function (x) {
+      return String(x || "").toLowerCase();
+    }),
+  );
+}
+
+function extractScriptTokens_(text) {
+  const s = String(text || "");
+  const latin = s.match(/\b[A-Za-z][A-Za-z'’.-]{2,}\b/g) || [];
+  const jp = s.match(/[\u3040-\u30ff\u3400-\u9fff]{2,}/g) || [];
+  const mm = s.match(/[\u1000-\u109f]{2,}/g) || [];
+  return toUniqueList_(
+    latin.concat(jp, mm).map(function (x) {
+      return normalizeForArchiveSimilarity_(x);
+    }),
+  );
+}
+
+function overlapRatio_(a, b) {
+  const aa = toUniqueList_(a || []);
+  const bb = toUniqueList_(b || []);
+  if (!aa.length || !bb.length) return 0;
+  const mapB = {};
+  bb.forEach(function (x) {
+    mapB[x] = true;
+  });
+  let inter = 0;
+  aa.forEach(function (x) {
+    if (mapB[x]) inter++;
+  });
+  return inter / Math.max(aa.length, bb.length);
+}
+
+function buildTitleArchiveFeatures_(text) {
+  return {
+    normalized: normalizeForArchiveSimilarity_(text || ""),
+    trigrams: charNgrams_(text || "", 3),
+    numbers: extractNumberTokens_(text || ""),
+    acronyms: extractAcronymTokens_(text || ""),
+    dates: extractDateLikeTokens_(text || ""),
+    tokens: extractScriptTokens_(text || ""),
+    hasQuote: /["“”「」『』]/.test(String(text || "")),
+    hasPercent: /%|％/.test(String(text || "")),
+    hasCurrency: /(kyat|usd|baht|円|チャット|ドル|บาท|ကျပ်)/i.test(
+      String(text || ""),
+    ),
+  };
+}
+
+function buildTitleArchiveContext_(params) {
+  const titleRaw = String((params && params.titleRaw) || "").trim();
+  const bodyRaw = String((params && params.bodyRaw) || "").trim();
+  const sourceVal = String((params && params.sourceVal) || "").trim();
+  const bodySnippet = bodyRaw.substring(0, TITLE_ARCHIVE_BODY_SNIPPET_CHARS);
+  const combined = [titleRaw, bodySnippet].filter(Boolean).join("\n");
+  return {
+    text: combined,
+    titleRaw: titleRaw,
+    bodySnippet: bodySnippet,
+    sourceVal: sourceVal,
+    features: buildTitleArchiveFeatures_(combined),
+  };
+}
+
+function scoreTitleArchiveExample_(ctx, example) {
+  if (!ctx || !ctx.features || !example || !example.features) return 0;
+  const cf = ctx.features;
+  const ef = example.features;
+
+  const trigramScore = overlapRatio_(cf.trigrams, ef.trigrams);
+  const tokenScore = overlapRatio_(cf.tokens, ef.tokens);
+  const numberScore = overlapRatio_(cf.numbers, ef.numbers);
+  const acronymScore = overlapRatio_(cf.acronyms, ef.acronyms);
+  const dateScore = overlapRatio_(cf.dates, ef.dates);
+
+  let structuralScore = 0;
+  if (cf.hasQuote === ef.hasQuote) structuralScore += 0.04;
+  if (cf.hasPercent === ef.hasPercent) structuralScore += 0.03;
+  if (cf.hasCurrency === ef.hasCurrency) structuralScore += 0.03;
+
+  const recencyScore =
+    example.archivedAt instanceof Date && !isNaN(example.archivedAt.getTime())
+      ? Math.max(
+          0,
+          1 -
+            (new Date().getTime() - example.archivedAt.getTime()) /
+              (TITLE_ARCHIVE_LOOKBACK_DAYS * 24 * 60 * 60 * 1000),
+        ) * 0.04
+      : 0;
+
+  return (
+    trigramScore * 0.38 +
+    tokenScore * 0.24 +
+    numberScore * 0.16 +
+    acronymScore * 0.08 +
+    dateScore * 0.07 +
+    structuralScore +
+    recencyScore
+  );
+}
+
+function areArchiveExamplesTooClose_(a, b) {
+  if (!a || !b || !a.features || !b.features) return false;
+  return overlapRatio_(a.features.trigrams, b.features.trigrams) >= 0.82;
+}
+
+function selectRelevantTitleCorrectionExamples_(params, topKOpt) {
+  const allExamples = loadTitleCorrectionExamples_();
+  const topK = topKOpt || TITLE_ARCHIVE_TOP_K;
+  if (!allExamples || !allExamples.length) return [];
+
+  const ctx = buildTitleArchiveContext_(params || {});
+  const scored = allExamples
+    .map(function (ex) {
+      return {
+        example: ex,
+        score: scoreTitleArchiveExample_(ctx, ex),
+      };
+    })
+    .sort(function (a, b) {
+      return b.score - a.score;
+    });
+
+  const shortlisted = scored.slice(0, TITLE_ARCHIVE_CANDIDATE_POOL);
+  const picked = [];
+  for (let i = 0; i < shortlisted.length; i++) {
+    const candidate = shortlisted[i].example;
+    const tooClose = picked.some(function (p) {
+      return areArchiveExamplesTooClose_(p, candidate);
+    });
+    if (tooClose) continue;
+    picked.push(candidate);
+    if (picked.length >= topK) break;
+  }
+
+  if (picked.length < topK) {
+    for (let j = 0; j < shortlisted.length; j++) {
+      const candidate2 = shortlisted[j].example;
+      const exists = picked.some(function (p) {
+        return p.before === candidate2.before && p.after === candidate2.after;
+      });
+      if (exists) continue;
+      picked.push(candidate2);
+      if (picked.length >= topK) break;
+    }
+  }
+
+  Logger.log(
+    "[selectRelevantTitleCorrectionExamples_] picked %s/%s examples",
+    picked.length,
+    allExamples.length,
+  );
+  return picked;
+}
+
 /**
- * 修正例リストからプロンプト挿入用テキストを生成する。
+ * 類似修正例リストから、編集ルール抽出つきのプロンプト挿入用テキストを生成する。
  * @param {{before: string, after: string}[]} examples
  * @returns {string}
  */
 function buildFewShotExamplesSection_(examples) {
   if (!examples || examples.length === 0) return "";
   const lines = examples
-    .map(function (ex) {
-      return "修正前: " + ex.before + "\n修正後: " + ex.after;
+    .map(function (ex, idx) {
+      return (
+        "事例" + (idx + 1) + "\n修正前: " + ex.before + "\n修正後: " + ex.after
+      );
     })
     .join("\n\n");
-  return `【見出しスタイル参考例（Task1・Task2に適用）】
-以下は過去の見出し修正例です。左（修正前）がAIの初期出力、右（修正後）が編集者が確定した見出しです。
-修正後のスタイル・傾向（情報の優先度、表現の簡潔さ、具体的な地名・数値の扱いなど）を参考にして、Task1・Task2の見出しを生成してください。
+  return `【見出しアーカイブ（Task2' に適用・最優先で参照）】
+以下は、今回の記事に比較的近い編集済み見出し事例です。
+左（修正前）がAI初稿、右（修正後）が編集者の確定見出しです。
 
 ${lines}
+
+【Task2' の進め方】
+1. まず上の事例だけを根拠に、「修正前→修正後」で一貫して行われている編集操作を3〜6個抽出する。
+   例: 何を前に出すか、何を削るか、地名・数値・主体をどう残すか、婉曲表現をどう圧縮するか。
+2. 抽出した編集操作を今回の記事本文に適用し、編集者が確定しそうな1行見出しへ再構成する。
+3. 単なる語彙の言い換えではなく、情報の優先順位と文の骨格を修正後側に寄せる。
+4. 出力は最終見出し1行のみとし、抽出したルール自体は出力しない。
 
 `;
 }
@@ -417,7 +623,10 @@ const SUMMARY_TASK = `
 // F列比較用: Task2（見出しB'）+ few-shot ありのシングルタスクプロンプト
 // 出力は見出し1行のみ（JSON不要）。G列（few-shotなし）と対比させる。
 function buildFewShotHeadlineBPrimePrompt_(params) {
-  const { bodyRaw, bodyGlossaryRules, fewShotSection } = params;
+  const { bodyRaw, bodyGlossaryRules } = params;
+  const fewShotSection = buildFewShotExamplesSection_(
+    selectRelevantTitleCorrectionExamples_(params, TITLE_ARCHIVE_TOP_K),
+  );
   return `【共通ルール（最優先）】
 ${COMMON_TRANSLATION_RULES}
 
@@ -444,7 +653,13 @@ function buildMultiTaskPromptForRow_(params) {
   } = params;
 
   const fewShotSection = buildFewShotExamplesSection_(
-    loadTitleCorrectionExamples_(),
+    selectRelevantTitleCorrectionExamples_(
+      {
+        titleRaw: titleRaw || "",
+        bodyRaw: bodyRaw || "",
+      },
+      TITLE_ARCHIVE_TOP_K,
+    ),
   );
 
   return `
@@ -2491,10 +2706,6 @@ function _propNameForSheetAndSource_(sheetName, sourceRaw) {
 // 2件まとめ用：配列(JSON)で返させるプロンプト
 function buildMultiTaskPromptForRows_(items) {
   // items: [{id,titleRaw,bodyRaw,titleGlossaryRules,bodyGlossaryRules}]
-  const fewShotSection = buildFewShotExamplesSection_(
-    loadTitleCorrectionExamples_(),
-  );
-
   const blocks = items
     .map(function (it, idx) {
       return `
@@ -2517,9 +2728,17 @@ ${HEADLINE_PROMPT_3}
 【本文用 用語固定ルール】
 ${it.bodyGlossaryRules || "(なし)"}
 
---- Task2' 見出しB'ルール（スタイル参考例あり）---
+--- Task2' 見出しB'ルール（見出しアーカイブから編集ルール抽出あり）---
 ${HEADLINE_PROMPT_3}
-${fewShotSection}【本文用 用語固定ルール】
+${buildFewShotExamplesSection_(
+  selectRelevantTitleCorrectionExamples_(
+    {
+      titleRaw: it.titleRaw || "",
+      bodyRaw: it.bodyRaw || "",
+    },
+    TITLE_ARCHIVE_TOP_K,
+  ),
+)}【本文用 用語固定ルール】
 ${it.bodyGlossaryRules || "(なし)"}
 
 --- Task3 本文要約ルール ---
