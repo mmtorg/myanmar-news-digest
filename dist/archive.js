@@ -147,13 +147,15 @@ function appendRowsToMonthlySpreadsheet_(monthKey, headerRow, rows) {
  * 固定IDのprodシートから、K列が "a" の行をtitleシートへ追記する。
  * マッピングは以下:
  * - A列 -> A列
- * - G列 -> B列
- * - H列 -> C列
- * - J列 -> D列
+ * - E列 -> B列
+ * - F列 -> C列
+ * - G列 -> D列
+ * - H列 -> E列
+ * - J列 -> F列
  *
  * 追加仕様:
  * - 追記先A列は日付形式にする
- * - 追記先C列が「最新マーケット情報」の行はアーカイブしない
+ * - 追記先E列が「最新マーケット情報」の行はアーカイブしない
  */
 function appendProdArchiveRowsToTitleSheet_() {
   const sourceSpreadsheet = SpreadsheetApp.getActiveSpreadsheet();
@@ -163,6 +165,7 @@ function appendProdArchiveRowsToTitleSheet_() {
     PropertiesService.getScriptProperties().getProperty(
       "TITLE_EXAMPLES_SPREADSHEET_ID",
     );
+
   if (!destinationSpreadsheetId) {
     throw new Error(
       "スクリプトプロパティ TITLE_EXAMPLES_SPREADSHEET_ID が未設定です",
@@ -194,6 +197,8 @@ function appendProdArchiveRowsToTitleSheet_() {
   for (let i = 0; i < dataRows.length; i++) {
     const row = dataRows[i];
     const status = row[10]; // K列
+    const eValue = row[4]; // E列
+    const fValue = row[5]; // F列
     const gValue = row[6]; // G列
     const hValue = row[7]; // H列
     const jValue = row[9]; // J列
@@ -201,7 +206,7 @@ function appendProdArchiveRowsToTitleSheet_() {
     const hasHValue =
       hValue !== null && hValue !== undefined && String(hValue).trim() !== "";
 
-    // C列に入る値(H列)が「最新マーケット情報」の行は除外
+    // titleシート E列に入る値(H列)が「最新マーケット情報」の行は除外
     const isLatestMarketInfo = String(hValue).trim() === "最新マーケット情報";
 
     if (status !== "a" || !hasHValue || isLatestMarketInfo) {
@@ -218,10 +223,12 @@ function appendProdArchiveRowsToTitleSheet_() {
     }
 
     rowsToAppend.push([
-      archiveDate, // A列 -> A列（日付型）
-      gValue, // G列 -> B列
-      hValue, // H列 -> C列
-      jValue, // J列 -> D列
+      archiveDate, // A列 -> A列
+      eValue, // E列 -> B列
+      fValue, // F列 -> C列
+      gValue, // G列 -> D列
+      hValue, // H列 -> E列
+      jValue, // J列 -> F列
     ]);
   }
 
@@ -231,7 +238,7 @@ function appendProdArchiveRowsToTitleSheet_() {
 
   const startRow = destinationSheet.getLastRow() + 1;
   destinationSheet
-    .getRange(startRow, 1, rowsToAppend.length, 4)
+    .getRange(startRow, 1, rowsToAppend.length, 6)
     .setValues(rowsToAppend);
 
   // A列を日付表示形式に設定
