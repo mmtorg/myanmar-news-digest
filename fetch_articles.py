@@ -1347,6 +1347,19 @@ def fetch_with_retry_dvb(url, retries=4, wait_seconds=2, session=None):
         q = "&" if "?" in u else "?"
         return [u.rstrip("/") + "/amp", u + f"{q}output=amp"]
 
+    def _resp_meta(r):
+        try:
+            final_url = getattr(r, "url", "") or "-"
+            status = getattr(r, "status_code", "?")
+            ctype = "-"
+            headers = getattr(r, "headers", None)
+            if headers:
+                ctype = headers.get("content-type", headers.get("Content-Type", "-"))
+            text = getattr(r, "text", "") or ""
+            return f"status={status} final={final_url} ctype={ctype} len={len(text)}"
+        except Exception as e:
+            return f"resp_meta_error={type(e).__name__}:{e}"
+
     # --- Try 1: curl_cffi ---
     try:
         from curl_cffi import requests as cfr  # type: ignore
@@ -1366,6 +1379,7 @@ def fetch_with_retry_dvb(url, retries=4, wait_seconds=2, session=None):
             )
             if r.status_code == 200 and (r.text or "").strip():
                 return r
+            print(f"[dvb-cffi] {attempt+1}/{retries} {_resp_meta(r)} → {url}")
             # 記事URLはAMP系も試す
             if r.status_code in (403, 503) and "/post/" in url:
                 for amp in _amp_candidates(url):
@@ -1379,12 +1393,13 @@ def fetch_with_retry_dvb(url, retries=4, wait_seconds=2, session=None):
                     )
                     if r2.status_code == 200 and (r2.text or "").strip():
                         return r2
+                    print(f"[dvb-cffi-amp] {attempt+1}/{retries} {_resp_meta(r2)} amp={amp} base={url}")
             if r.status_code in (403, 429, 503):
                 time.sleep(wait_seconds * (2**attempt) + random.uniform(0, 0.8))
                 continue
             break
     except Exception as e:
-        print(f"[dvb-cffi] EXC: {e} → {url}")
+        print(f"[dvb-cffi] EXC {type(e).__name__}: {e} → {url}")
 
     # --- Try 2: cloudscraper ---
     try:
@@ -1402,6 +1417,7 @@ def fetch_with_retry_dvb(url, retries=4, wait_seconds=2, session=None):
                 r = scraper.get(url, headers=HEADERS, timeout=30, allow_redirects=True)
                 if r.status_code == 200 and getattr(r, "text", "").strip():
                     return r
+                print(f"[dvb-cs] {attempt+1}/{retries} {_resp_meta(r)} → {url}")
                 if r.status_code in (403, 503) and "/post/" in url:
                     for amp in _amp_candidates(url):
                         r2 = scraper.get(
@@ -1409,15 +1425,16 @@ def fetch_with_retry_dvb(url, retries=4, wait_seconds=2, session=None):
                         )
                         if r2.status_code == 200 and getattr(r2, "text", "").strip():
                             return r2
+                        print(f"[dvb-cs-amp] {attempt+1}/{retries} {_resp_meta(r2)} amp={amp} base={url}")
                 if r.status_code in (403, 429, 503):
                     time.sleep(wait_seconds * (2**attempt) + random.uniform(0, 0.8))
                     continue
                 break
             except Exception as e:
-                print(f"[dvb-cs] {attempt+1}/{retries} EXC: {e} → {url}")
+                print(f"[dvb-cs] {attempt+1}/{retries} EXC {type(e).__name__}: {e} → {url}")
                 time.sleep(wait_seconds * (2**attempt) + random.uniform(0, 0.8))
     except Exception as e:
-        print(f"[dvb-cs] INIT EXC: {e} → {url}")
+        print(f"[dvb-cs] INIT EXC {type(e).__name__}: {e} → {url}")
 
     # --- Try 3: requests ---
     try:
@@ -1427,16 +1444,17 @@ def fetch_with_retry_dvb(url, retries=4, wait_seconds=2, session=None):
         r2 = sess.get(url, headers=HEADERS, timeout=30, allow_redirects=True)
         if r2.status_code == 200 and getattr(r2, "text", "").strip():
             return r2
+        print(f"[dvb-rq] {_resp_meta(r2)} → {url}")
         if r2.status_code in (403, 503) and "/post/" in url:
             for amp in _amp_candidates(url):
                 r3 = sess.get(amp, headers=HEADERS, timeout=30, allow_redirects=True)
                 if r3.status_code == 200 and getattr(r3, "text", "").strip():
                     return r3
+                print(f"[dvb-rq-amp] {_resp_meta(r3)} amp={amp} base={url}")
     except Exception as e:
-        print(f"[dvb-rq] EXC final: {e} → {url}")
+        print(f"[dvb-rq] EXC final {type(e).__name__}: {e} → {url}")
 
     raise Exception(f"Failed to fetch DVB {url} after {retries} attempts.")
-
 
 def _norm_text(text: str) -> str:
     return unicodedata.normalize("NFC", text)
