@@ -517,6 +517,34 @@ function selectRelevantTitleCorrectionExamples_(params, topKOpt) {
 }
 
 /**
+ * 実際に選ばれた類似Top4件を、シート出力用の文字列に整形する。
+ * 1件ごとに空行区切りで並べる。
+ * @param {{candidates?: string[], before?: string, after: string}[]} examples
+ * @returns {string}
+ */
+function formatSelectedTitleCorrectionExamplesForSheet_(examples) {
+  if (!examples || examples.length === 0) return "";
+
+  return examples
+    .map(function (ex, idx) {
+      const cands = ex.candidates || [];
+      const c1 = cands[0] || ex.before || "";
+      const c2 = cands[1] || "";
+      const c3 = cands[2] || "";
+      const after = ex.after || "";
+
+      return [
+        "Top" + (idx + 1),
+        "案1: " + c1,
+        "案2: " + c2,
+        "案3: " + c3,
+        "確定: " + after,
+      ].join("\n");
+    })
+    .join("\n\n");
+}
+
+/**
  * 類似修正例リストから、3案→確定見出し の
  * 編集ルール抽出つきプロンプト挿入用テキストを生成する。
  * @param {{candidates: string[], after: string}[]} examples
@@ -703,15 +731,17 @@ function buildMultiTaskPromptForRow_(params) {
     bodyGlossaryRules,
   } = params;
 
-  const fewShotSection = buildFewShotExamplesSection_(
+  const selectedExamples =
+    params.selectedTitleCorrectionExamples ||
     selectRelevantTitleCorrectionExamples_(
       {
         titleRaw: titleRaw || "",
         bodyRaw: bodyRaw || "",
       },
       TITLE_ARCHIVE_TOP_K,
-    ),
-  );
+    );
+
+  const fewShotSection = buildFewShotExamplesSection_(selectedExamples);
 
   return `
 【共通ルール（Task1/2/2'/3すべてに適用・最優先）】
@@ -2182,6 +2212,7 @@ function processRow_(sheet, row, prevStatus) {
   const colG = 7; // 見出しB'（本文のみ）
   const colI = 9; // 本文要約（STEP3_TASK）
   const colJ = 10; // URL（任意）
+  const colP = 16; // few-shotで実際に使った類似Top4
 
   const sourceVal = sheet.getRange(row, colC).getValue();
   const titleRaw = sheet.getRange(row, colM).getValue();
@@ -2214,8 +2245,25 @@ function processRow_(sheet, row, prevStatus) {
   let headlineB2 = "";
   let headlineBFewShot = "";
   let summaryJa = "";
+  let selectedTitleCorrectionExamples = [];
+  let selectedTitleCorrectionExamplesText = "";
 
   if (titleRaw || bodyRaw) {
+    selectedTitleCorrectionExamples = selectRelevantTitleCorrectionExamples_(
+      {
+        titleRaw: titleRaw || "",
+        bodyRaw: bodyRaw || "",
+        sourceVal: sourceVal || "",
+        urlVal: urlVal || "",
+      },
+      TITLE_ARCHIVE_TOP_K,
+    );
+
+    selectedTitleCorrectionExamplesText =
+      formatSelectedTitleCorrectionExamplesForSheet_(
+        selectedTitleCorrectionExamples,
+      );
+
     const multiParams = {
       titleRaw: titleRaw || "",
       bodyRaw: bodyRaw || "",
@@ -2223,6 +2271,7 @@ function processRow_(sheet, row, prevStatus) {
       urlVal: urlVal || "",
       titleGlossaryRules: titleGlossaryRules || "",
       bodyGlossaryRules: bodyGlossaryRules || "",
+      selectedTitleCorrectionExamples: selectedTitleCorrectionExamples,
     };
 
     const multiPrompt = buildMultiTaskPromptForRow_(multiParams);
@@ -2372,6 +2421,7 @@ function processRow_(sheet, row, prevStatus) {
   sheet.getRange(row, colF).setValue(headlineBFewShot); // 見出しB'（few-shotあり）
   sheet.getRange(row, colG).setValue(headlineB2); // 見出しB'（few-shotなし）
   sheet.getRange(row, colI).setValue(summaryJa); // 本文要約
+  sheet.getRange(row, colP).setValue(selectedTitleCorrectionExamplesText); // 類似Top4
 
   /********************************************
    * L列：ステータス判定（詳細エラー + 複数記録）
@@ -2782,13 +2832,7 @@ ${it.bodyGlossaryRules || "(なし)"}
 --- Task2' 見出しB'ルール（見出しアーカイブから編集ルール抽出あり）---
 ${HEADLINE_PROMPT_3}
 ${buildFewShotExamplesSection_(
-  selectRelevantTitleCorrectionExamples_(
-    {
-      titleRaw: it.titleRaw || "",
-      bodyRaw: it.bodyRaw || "",
-    },
-    TITLE_ARCHIVE_TOP_K,
-  ),
+  it.selectedTitleCorrectionExamples || [],
 )}【本文用 用語固定ルール】
 ${it.bodyGlossaryRules || "(なし)"}
 
@@ -2849,6 +2893,7 @@ function _applyOutputsToRow_(
   headlineB2,
   summaryJa,
   headlineBFewShot,
+  selectedTitleCorrectionExamplesText,
   retryKindOpt,
 ) {
   const colE = 5;
@@ -2856,6 +2901,7 @@ function _applyOutputsToRow_(
   const colG = 7;
   const colI = 9;
   const colL = 12;
+  const colP = 16;
 
   const titleRaw = ctx.titleRaw;
   const bodyRaw = ctx.bodyRaw;
@@ -2915,6 +2961,9 @@ function _applyOutputsToRow_(
   sheet.getRange(row, colF).setValue(headlineBFewShot || ""); // 見出しB'（few-shotあり）
   sheet.getRange(row, colG).setValue(headlineB2);
   sheet.getRange(row, colI).setValue(summaryJa);
+  sheet
+    .getRange(row, colP)
+    .setValue(String(selectedTitleCorrectionExamplesText || ""));
 
   function isError_(val) {
     return typeof val === "string" && val.indexOf("ERROR:") === 0;
@@ -3166,6 +3215,23 @@ function processRowsBatch() {
             const regionRulesBody = buildRegionRulesForBody_(it.bodyRaw || "");
             const titleGlossaryRules = regionRulesTitle;
             const bodyGlossaryRules = regionRulesTitle + regionRulesBody;
+
+            const selectedTitleCorrectionExamples =
+              selectRelevantTitleCorrectionExamples_(
+                {
+                  titleRaw: it.titleRaw || "",
+                  bodyRaw: it.bodyRaw || "",
+                  sourceVal: it.sourceVal || "",
+                  urlVal: it.urlVal || "",
+                },
+                TITLE_ARCHIVE_TOP_K,
+              );
+
+            const selectedTitleCorrectionExamplesText =
+              formatSelectedTitleCorrectionExamplesForSheet_(
+                selectedTitleCorrectionExamples,
+              );
+
             return {
               id: String(it.rowIndex),
               rowIndex: it.rowIndex,
@@ -3176,6 +3242,9 @@ function processRowsBatch() {
               bodyRaw: it.bodyRaw,
               titleGlossaryRules: titleGlossaryRules || "",
               bodyGlossaryRules: bodyGlossaryRules || "",
+              selectedTitleCorrectionExamples: selectedTitleCorrectionExamples,
+              selectedTitleCorrectionExamplesText:
+                selectedTitleCorrectionExamplesText,
             };
           });
 
@@ -3257,6 +3326,7 @@ function processRowsBatch() {
                 resp,
                 resp,
                 resp,
+                pi.selectedTitleCorrectionExamplesText || "",
                 groupKey === "__OPENAI__" ? "GPTNG" : "NG",
               );
             });
@@ -3338,6 +3408,7 @@ function processRowsBatch() {
                 hB || "",
                 sm2 || "",
                 hBF || "",
+                pi.selectedTitleCorrectionExamplesText || "",
                 groupKey === "__OPENAI__" ? "GPTNG" : "NG",
               );
             });
