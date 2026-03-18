@@ -344,7 +344,10 @@ def collect_dvb_all_for_date(target_date_mmt: date) -> List[Dict]:
     一覧（/category/8/news と ?page=2）→ 記事ページの順で取得。
     """
     BASE = "https://burmese.dvb.no"
-    CATEGORY_PATHS = ["/category/8/news"]
+    CATEGORY_PATHS = [
+        "/categories/news",
+        "/categories/features",
+    ]
 
     try:
         sess = _make_pooled_session()

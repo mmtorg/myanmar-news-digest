@@ -2793,7 +2793,8 @@ def get_dvb_articles_for(date_obj: date, debug: bool = True) -> List[Dict]:
     """
     BASE = "https://burmese.dvb.no"
     CATEGORY_PATHS = [
-        "/category/8/news",
+        "/categories/news",
+        "/categories/features",
         # "/category/17/news_politics-new",
         # "/category/16/news_economics-new",
         # "/category/15/news_health-news-news",
