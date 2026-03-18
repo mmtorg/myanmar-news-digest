@@ -171,18 +171,36 @@ const PROMPT_SELF_CHECK_RULE = `
 // 過去の修正前→後ペアを記録したスプレッドシート
 const TITLE_CORRECTION_SS_ID_PROP = "TITLE_CORRECTION_SS_ID";
 const TITLE_CORRECTION_SHEET_NAME = "title";
-const FEW_SHOT_SAMPLE_SIZE = 15; // プロンプトに挿入するサンプル数
+const TITLE_ARCHIVE_TOP_K = 4; // F列用に使う類似事例数（3〜5件の中間値）
+const TITLE_ARCHIVE_CANDIDATE_POOL = 12; // 類似度評価後に最終選抜する候補数
+const TITLE_ARCHIVE_LOOKBACK_DAYS = 30;
+const TITLE_CORRECTION_EXCLUDE_TITLE = "最新マーケット情報";
+const TITLE_ARCHIVE_BODY_SNIPPET_CHARS = 1400;
 
 // 実行中キャッシュ（1バッチで1回だけスプレッドシートを読む）
 let _fewShotCache_ = null;
 
 /**
- * タイトル修正スプレッドシートから修正前→後ペアをロードしてランダムサンプリングする。
- * B列: AI生成タイトル、C列: 確定タイトル（2行目以降）
- * @returns {{before: string, after: string}[]}
+ * タイトル修正スプレッドシートから few-shot 用事例をロードする。
+ * A列: 日付
+ * B列: AI見出し案1
+ * C列: AI見出し案2
+ * D列: AI見出し案3
+ * E列: 確定見出し
+ *
+ * - A列が過去30日以内の行のみ対象
+ * - E列が「最新マーケット情報」の行は除外
+ * @returns {{
+ *   archivedAt: Date,
+ *   candidates: string[],
+ *   after: string,
+ *   inputFeatures: Object,
+ *   exampleFeatures: Object
+ * }[]}
  */
 function loadTitleCorrectionExamples_() {
   if (_fewShotCache_ !== null) return _fewShotCache_;
+
   try {
     const props = PropertiesService.getScriptProperties();
     const ssId = props.getProperty(TITLE_CORRECTION_SS_ID_PROP) || "";
@@ -205,31 +223,66 @@ function loadTitleCorrectionExamples_() {
       _fewShotCache_ = [];
       return _fewShotCache_;
     }
+
     const lastRow = sh.getLastRow();
     if (lastRow < 2) {
       _fewShotCache_ = [];
       return _fewShotCache_;
     }
-    const values = sh.getRange(2, 2, lastRow - 1, 2).getValues(); // B・C列
-    const pairs = values
+
+    // A:E を読む
+    const values = sh.getRange(2, 1, lastRow - 1, 5).getValues();
+
+    const now = new Date();
+    const cutoff = new Date(
+      now.getTime() - TITLE_ARCHIVE_LOOKBACK_DAYS * 24 * 60 * 60 * 1000,
+    );
+
+    _fewShotCache_ = values
       .map(function (row) {
+        const archivedAt = row[0];
+
+        const candidates = [
+          String(row[1] || "").trim(), // B
+          String(row[2] || "").trim(), // C
+          String(row[3] || "").trim(), // D
+        ].filter(Boolean);
+
+        const after = String(row[4] || "").trim(); // E
+
+        // 類似検索用: 入力側（B〜D）を重視
+        const inputText = candidates.join(" ");
+
+        // 事例全体の表現特徴: B〜D + E をまとめて持つ
+        const exampleText = candidates.concat(after ? [after] : []).join(" ");
+
         return {
-          before: String(row[0] || "").trim(),
-          after: String(row[1] || "").trim(),
+          archivedAt: archivedAt,
+          candidates: candidates,
+          after: after,
+          inputFeatures: buildTitleArchiveFeatures_(inputText),
+          exampleFeatures: buildTitleArchiveFeatures_(exampleText),
         };
       })
       .filter(function (p) {
-        return p.before && p.after && p.before !== p.after;
+        if (!p.candidates || p.candidates.length === 0) return false;
+        if (!p.after) return false;
+        if (p.after === TITLE_CORRECTION_EXCLUDE_TITLE) return false;
+        if (!(p.archivedAt instanceof Date) || isNaN(p.archivedAt.getTime())) {
+          return false;
+        }
+        if (p.archivedAt < cutoff) return false;
+
+        // 候補3案も確定見出しも全部同じ、のような学習価値が薄い行だけ除外
+        const uniq = {};
+        p.candidates.concat([p.after]).forEach(function (x) {
+          uniq[x] = true;
+        });
+        if (Object.keys(uniq).length <= 1) return false;
+
+        return true;
       });
 
-    // Fisher-Yates でシャッフルして先頭N件を取る
-    for (let i = pairs.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      const tmp = pairs[i];
-      pairs[i] = pairs[j];
-      pairs[j] = tmp;
-    }
-    _fewShotCache_ = pairs.slice(0, FEW_SHOT_SAMPLE_SIZE);
     Logger.log(
       "[loadTitleCorrectionExamples_] loaded %s examples",
       _fewShotCache_.length,
@@ -238,26 +291,295 @@ function loadTitleCorrectionExamples_() {
     Logger.log("[loadTitleCorrectionExamples_] error: " + e);
     _fewShotCache_ = [];
   }
+
   return _fewShotCache_;
 }
 
+function normalizeForArchiveSimilarity_(s) {
+  let out = String(s || "").toLowerCase();
+  try {
+    out = out.normalize("NFKC");
+  } catch (e) {}
+  out = out
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(/[“”"「」『』（）()【】\[\]〈〉<>]/g, " ")
+    .replace(/[.,/#!$%^&*;:{}=_`~?！？。、，・|\\+-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return out;
+}
+
+function toUniqueList_(arr) {
+  const out = [];
+  const seen = {};
+  (arr || []).forEach(function (v) {
+    const key = String(v || "");
+    if (!key || seen[key]) return;
+    seen[key] = true;
+    out.push(key);
+  });
+  return out;
+}
+
+function charNgrams_(text, n) {
+  const s = normalizeForArchiveSimilarity_(text || "").replace(/\s+/g, "");
+  const grams = [];
+  if (!s) return grams;
+  if (s.length <= n) return [s];
+  for (let i = 0; i <= s.length - n; i++) {
+    grams.push(s.substring(i, i + n));
+  }
+  return toUniqueList_(grams);
+}
+
+function extractNumberTokens_(text) {
+  const s = String(text || "");
+  const m = s.match(/\d+(?:[.,]\d+)?/g) || [];
+  return toUniqueList_(
+    m.map(function (x) {
+      return x.replace(/,/g, "");
+    }),
+  );
+}
+
+function extractAcronymTokens_(text) {
+  const s = String(text || "");
+  const m = s.match(/\b[A-Z]{2,}\b/g) || [];
+  return toUniqueList_(m);
+}
+
+function extractDateLikeTokens_(text) {
+  const s = String(text || "");
+  const m =
+    s.match(
+      /(?:\b\d{1,4}[/-]\d{1,2}(?:[/-]\d{1,4})?\b|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b|\b\d{1,2}\s*(?:day|days|month|months|year|years)\b)/gi,
+    ) || [];
+  return toUniqueList_(
+    m.map(function (x) {
+      return String(x || "").toLowerCase();
+    }),
+  );
+}
+
+function extractScriptTokens_(text) {
+  const s = String(text || "");
+  const latin = s.match(/\b[A-Za-z][A-Za-z'’.-]{2,}\b/g) || [];
+  const jp = s.match(/[\u3040-\u30ff\u3400-\u9fff]{2,}/g) || [];
+  const mm = s.match(/[\u1000-\u109f]{2,}/g) || [];
+  return toUniqueList_(
+    latin.concat(jp, mm).map(function (x) {
+      return normalizeForArchiveSimilarity_(x);
+    }),
+  );
+}
+
+function overlapRatio_(a, b) {
+  const aa = toUniqueList_(a || []);
+  const bb = toUniqueList_(b || []);
+  if (!aa.length || !bb.length) return 0;
+  const mapB = {};
+  bb.forEach(function (x) {
+    mapB[x] = true;
+  });
+  let inter = 0;
+  aa.forEach(function (x) {
+    if (mapB[x]) inter++;
+  });
+  return inter / Math.max(aa.length, bb.length);
+}
+
+function buildTitleArchiveFeatures_(text) {
+  return {
+    normalized: normalizeForArchiveSimilarity_(text || ""),
+    trigrams: charNgrams_(text || "", 3),
+    numbers: extractNumberTokens_(text || ""),
+    acronyms: extractAcronymTokens_(text || ""),
+    dates: extractDateLikeTokens_(text || ""),
+    tokens: extractScriptTokens_(text || ""),
+    hasQuote: /["“”「」『』]/.test(String(text || "")),
+    hasPercent: /%|％/.test(String(text || "")),
+    hasCurrency: /(kyat|usd|baht|円|チャット|ドル|บาท|ကျပ်)/i.test(
+      String(text || ""),
+    ),
+  };
+}
+
+function buildTitleArchiveContext_(params) {
+  const titleRaw = String((params && params.titleRaw) || "").trim();
+  const bodyRaw = String((params && params.bodyRaw) || "").trim();
+  const sourceVal = String((params && params.sourceVal) || "").trim();
+  const bodySnippet = bodyRaw.substring(0, TITLE_ARCHIVE_BODY_SNIPPET_CHARS);
+  const combined = [titleRaw, bodySnippet].filter(Boolean).join("\n");
+  return {
+    text: combined,
+    titleRaw: titleRaw,
+    bodySnippet: bodySnippet,
+    sourceVal: sourceVal,
+    features: buildTitleArchiveFeatures_(combined),
+  };
+}
+
+function scoreTitleArchiveExample_(ctx, example) {
+  if (!ctx || !ctx.features || !example || !example.inputFeatures) return 0;
+  const cf = ctx.features;
+  const ef = example.inputFeatures; // B〜D だけで比較する
+
+  const trigramScore = overlapRatio_(cf.trigrams, ef.trigrams);
+  const tokenScore = overlapRatio_(cf.tokens, ef.tokens);
+  const numberScore = overlapRatio_(cf.numbers, ef.numbers);
+  const acronymScore = overlapRatio_(cf.acronyms, ef.acronyms);
+  const dateScore = overlapRatio_(cf.dates, ef.dates);
+
+  let structuralScore = 0;
+  if (cf.hasQuote === ef.hasQuote) structuralScore += 0.04;
+  if (cf.hasPercent === ef.hasPercent) structuralScore += 0.03;
+  if (cf.hasCurrency === ef.hasCurrency) structuralScore += 0.03;
+
+  const recencyScore =
+    example.archivedAt instanceof Date && !isNaN(example.archivedAt.getTime())
+      ? Math.max(
+          0,
+          1 -
+            (new Date().getTime() - example.archivedAt.getTime()) /
+              (TITLE_ARCHIVE_LOOKBACK_DAYS * 24 * 60 * 60 * 1000),
+        ) * 0.04
+      : 0;
+
+  return (
+    trigramScore * 0.38 +
+    tokenScore * 0.24 +
+    numberScore * 0.16 +
+    acronymScore * 0.08 +
+    dateScore * 0.07 +
+    structuralScore +
+    recencyScore
+  );
+}
+
+function areArchiveExamplesTooClose_(a, b) {
+  if (!a || !b || !a.inputFeatures || !b.inputFeatures) return false;
+  return (
+    overlapRatio_(a.inputFeatures.trigrams, b.inputFeatures.trigrams) >= 0.82
+  );
+}
+
+function selectRelevantTitleCorrectionExamples_(params, topKOpt) {
+  const allExamples = loadTitleCorrectionExamples_();
+  const topK = topKOpt || TITLE_ARCHIVE_TOP_K;
+  if (!allExamples || !allExamples.length) return [];
+
+  const ctx = buildTitleArchiveContext_(params || {});
+  const scored = allExamples
+    .map(function (ex) {
+      return {
+        example: ex,
+        score: scoreTitleArchiveExample_(ctx, ex),
+      };
+    })
+    .sort(function (a, b) {
+      return b.score - a.score;
+    });
+
+  const shortlisted = scored.slice(0, TITLE_ARCHIVE_CANDIDATE_POOL);
+  const picked = [];
+  for (let i = 0; i < shortlisted.length; i++) {
+    const candidate = shortlisted[i].example;
+    const tooClose = picked.some(function (p) {
+      return areArchiveExamplesTooClose_(p, candidate);
+    });
+    if (tooClose) continue;
+    picked.push(candidate);
+    if (picked.length >= topK) break;
+  }
+
+  if (picked.length < topK) {
+    for (let j = 0; j < shortlisted.length; j++) {
+      const candidate2 = shortlisted[j].example;
+      const exists = picked.some(function (p) {
+        return (
+          JSON.stringify(p.candidates) ===
+            JSON.stringify(candidate2.candidates) &&
+          p.after === candidate2.after
+        );
+      });
+      if (exists) continue;
+      picked.push(candidate2);
+      if (picked.length >= topK) break;
+    }
+  }
+
+  Logger.log(
+    "[selectRelevantTitleCorrectionExamples_] picked %s/%s examples",
+    picked.length,
+    allExamples.length,
+  );
+  return picked;
+}
+
 /**
- * 修正例リストからプロンプト挿入用テキストを生成する。
- * @param {{before: string, after: string}[]} examples
+ * 実際に選ばれた類似Top4件を、シート出力用の文字列に整形する。
+ * 1件ごとに空行区切りで並べる。
+ * @param {{candidates?: string[], before?: string, after: string}[]} examples
+ * @returns {string}
+ */
+function formatSelectedTitleCorrectionExamplesForSheet_(examples) {
+  if (!examples || examples.length === 0) return "";
+
+  return examples
+    .map(function (ex, idx) {
+      const cands = ex.candidates || [];
+      const c1 = cands[0] || ex.before || "";
+      const c2 = cands[1] || "";
+      const c3 = cands[2] || "";
+      const after = ex.after || "";
+
+      return [
+        "Top" + (idx + 1),
+        "案1: " + c1,
+        "案2: " + c2,
+        "案3: " + c3,
+        "確定: " + after,
+      ].join("\n");
+    })
+    .join("\n\n");
+}
+
+/**
+ * 類似修正例リストから、3案→確定見出し の
+ * 編集ルール抽出つきプロンプト挿入用テキストを生成する。
+ * @param {{candidates: string[], after: string}[]} examples
  * @returns {string}
  */
 function buildFewShotExamplesSection_(examples) {
   if (!examples || examples.length === 0) return "";
+
   const lines = examples
-    .map(function (ex) {
-      return "修正前: " + ex.before + "\n修正後: " + ex.after;
+    .map(function (ex, idx) {
+      const c1 = ex.candidates[0] || "(なし)";
+      const c2 = ex.candidates[1] || "(なし)";
+      const c3 = ex.candidates[2] || "(なし)";
+      return [
+        "事例" + (idx + 1),
+        "見出し案1: " + c1,
+        "見出し案2: " + c2,
+        "見出し案3: " + c3,
+        "確定見出し: " + ex.after,
+      ].join("\n");
     })
     .join("\n\n");
-  return `【見出しスタイル参考例（Task1・Task2に適用）】
-以下は過去の見出し修正例です。左（修正前）がAIの初期出力、右（修正後）が編集者が確定した見出しです。
-修正後のスタイル・傾向（情報の優先度、表現の簡潔さ、具体的な地名・数値の扱いなど）を参考にして、Task1・Task2の見出しを生成してください。
+
+  return `【見出しアーカイブ（Task2' に適用・最優先で参照）】
+以下は、今回の記事に比較的近い編集済み見出し事例です。
+各事例では、B・C・D列がAI見出し案、E列が編集者の確定見出しです。
 
 ${lines}
+
+【Task2' の進め方】
+1. まず上の事例だけを根拠に、「見出し案1/2/3 → 確定見出し」で一貫して行われている編集操作を3〜6個抽出する。
+2. 特に、どの案の要素が採用されやすいか、逆にどの表現が落とされやすいかを見極める。
+3. 数値・主体・地名・因果関係・対立軸のうち、確定見出しで優先される要素を重視する。
+4. 抽出した編集操作を今回の記事本文に適用し、編集者が確定しそうな1行見出しへ再構成する。
+5. 出力は最終見出し1行のみとし、抽出したルール自体は出力しない。
 
 `;
 }
@@ -380,7 +702,10 @@ const SUMMARY_TASK = `
 // F列比較用: Task2（見出しB'）+ few-shot ありのシングルタスクプロンプト
 // 出力は見出し1行のみ（JSON不要）。G列（few-shotなし）と対比させる。
 function buildFewShotHeadlineBPrimePrompt_(params) {
-  const { bodyRaw, bodyGlossaryRules, fewShotSection } = params;
+  const { bodyRaw, bodyGlossaryRules } = params;
+  const fewShotSection = buildFewShotExamplesSection_(
+    selectRelevantTitleCorrectionExamples_(params, TITLE_ARCHIVE_TOP_K),
+  );
   return `【共通ルール（最優先）】
 ${COMMON_TRANSLATION_RULES}
 
@@ -406,9 +731,17 @@ function buildMultiTaskPromptForRow_(params) {
     bodyGlossaryRules,
   } = params;
 
-  const fewShotSection = buildFewShotExamplesSection_(
-    loadTitleCorrectionExamples_(),
-  );
+  const selectedExamples =
+    params.selectedTitleCorrectionExamples ||
+    selectRelevantTitleCorrectionExamples_(
+      {
+        titleRaw: titleRaw || "",
+        bodyRaw: bodyRaw || "",
+      },
+      TITLE_ARCHIVE_TOP_K,
+    );
+
+  const fewShotSection = buildFewShotExamplesSection_(selectedExamples);
 
   return `
 【共通ルール（Task1/2/2'/3すべてに適用・最優先）】
@@ -1710,8 +2043,8 @@ function callGpt5MiniWithKey_(apiKey, promptText, usageTagOpt, formatTypeOpt) {
  *
  * 出力:
  *   - E列: HEADLINE_PROMPT_1(タイトル)         → 見出しA
- *   - F列: make_headline_prompt_2_from(E)       → 見出しA'
- *   - G列: HEADLINE_PROMPT_3(本文のみ)         → 見出しB'
+ *   - F列: HEADLINE_PROMPT_3 + few-shotあり     → 見出しB'（アーカイブ参照あり）
+ *   - G列: HEADLINE_PROMPT_3(本文のみ)         → 見出しB'（アーカイブ参照なし）
  *   - I列: 本文要約（STEP3_TASK）
  ************************************************************/
 
@@ -1879,6 +2212,7 @@ function processRow_(sheet, row, prevStatus) {
   const colG = 7; // 見出しB'（本文のみ）
   const colI = 9; // 本文要約（STEP3_TASK）
   const colJ = 10; // URL（任意）
+  const colP = 16; // few-shotで実際に使った類似Top4
 
   const sourceVal = sheet.getRange(row, colC).getValue();
   const titleRaw = sheet.getRange(row, colM).getValue();
@@ -1911,8 +2245,25 @@ function processRow_(sheet, row, prevStatus) {
   let headlineB2 = "";
   let headlineBFewShot = "";
   let summaryJa = "";
+  let selectedTitleCorrectionExamples = [];
+  let selectedTitleCorrectionExamplesText = "";
 
   if (titleRaw || bodyRaw) {
+    selectedTitleCorrectionExamples = selectRelevantTitleCorrectionExamples_(
+      {
+        titleRaw: titleRaw || "",
+        bodyRaw: bodyRaw || "",
+        sourceVal: sourceVal || "",
+        urlVal: urlVal || "",
+      },
+      TITLE_ARCHIVE_TOP_K,
+    );
+
+    selectedTitleCorrectionExamplesText =
+      formatSelectedTitleCorrectionExamplesForSheet_(
+        selectedTitleCorrectionExamples,
+      );
+
     const multiParams = {
       titleRaw: titleRaw || "",
       bodyRaw: bodyRaw || "",
@@ -1920,6 +2271,7 @@ function processRow_(sheet, row, prevStatus) {
       urlVal: urlVal || "",
       titleGlossaryRules: titleGlossaryRules || "",
       bodyGlossaryRules: bodyGlossaryRules || "",
+      selectedTitleCorrectionExamples: selectedTitleCorrectionExamples,
     };
 
     const multiPrompt = buildMultiTaskPromptForRow_(multiParams);
@@ -2069,6 +2421,7 @@ function processRow_(sheet, row, prevStatus) {
   sheet.getRange(row, colF).setValue(headlineBFewShot); // 見出しB'（few-shotあり）
   sheet.getRange(row, colG).setValue(headlineB2); // 見出しB'（few-shotなし）
   sheet.getRange(row, colI).setValue(summaryJa); // 本文要約
+  sheet.getRange(row, colP).setValue(selectedTitleCorrectionExamplesText); // 類似Top4
 
   /********************************************
    * L列：ステータス判定（詳細エラー + 複数記録）
@@ -2454,10 +2807,6 @@ function _propNameForSheetAndSource_(sheetName, sourceRaw) {
 // 2件まとめ用：配列(JSON)で返させるプロンプト
 function buildMultiTaskPromptForRows_(items) {
   // items: [{id,titleRaw,bodyRaw,titleGlossaryRules,bodyGlossaryRules}]
-  const fewShotSection = buildFewShotExamplesSection_(
-    loadTitleCorrectionExamples_(),
-  );
-
   const blocks = items
     .map(function (it, idx) {
       return `
@@ -2480,9 +2829,11 @@ ${HEADLINE_PROMPT_3}
 【本文用 用語固定ルール】
 ${it.bodyGlossaryRules || "(なし)"}
 
---- Task2' 見出しB'ルール（スタイル参考例あり）---
+--- Task2' 見出しB'ルール（見出しアーカイブから編集ルール抽出あり）---
 ${HEADLINE_PROMPT_3}
-${fewShotSection}【本文用 用語固定ルール】
+${buildFewShotExamplesSection_(
+  it.selectedTitleCorrectionExamples || [],
+)}【本文用 用語固定ルール】
 ${it.bodyGlossaryRules || "(なし)"}
 
 --- Task3 本文要約ルール ---
@@ -2507,17 +2858,20 @@ ${COMMON_TRANSLATION_RULES}
 ${PROMPT_SELF_CHECK_RULE}
 
 【最終出力フォーマット（必須）】
-入力順のまま、JSON 配列を 1つだけ出力してください（それ以外の文字は一切出力しない）。
+入力順のまま、JSON オブジェクトを 1つだけ出力してください（それ以外の文字は一切出力しない）。
+最上位キーは必ず "items" とし、その値に各記事の結果を配列で入れてください。
 
-[
-  {
-    "id": "入力の id をそのまま入れる",
-    "headlineA": "Task1 の見出しA",
-    "headlineBPrime": "Task2 の見出しB'",
-    "headlineBPrimeFewShot": "Task2' の見出しB'",
-    "summary": "Task3 の本文要約"
-  }
-]
+{
+  "items": [
+    {
+      "id": "入力の id をそのまま入れる",
+      "headlineA": "Task1 の見出しA",
+      "headlineBPrime": "Task2 の見出しB'",
+      "headlineBPrimeFewShot": "Task2' の見出しB'",
+      "summary": "Task3 の本文要約"
+    }
+  ]
+}
 
 制約:
 - 配列の要素数は入力記事数と一致させること
@@ -2539,6 +2893,7 @@ function _applyOutputsToRow_(
   headlineB2,
   summaryJa,
   headlineBFewShot,
+  selectedTitleCorrectionExamplesText,
   retryKindOpt,
 ) {
   const colE = 5;
@@ -2546,6 +2901,7 @@ function _applyOutputsToRow_(
   const colG = 7;
   const colI = 9;
   const colL = 12;
+  const colP = 16;
 
   const titleRaw = ctx.titleRaw;
   const bodyRaw = ctx.bodyRaw;
@@ -2605,6 +2961,9 @@ function _applyOutputsToRow_(
   sheet.getRange(row, colF).setValue(headlineBFewShot || ""); // 見出しB'（few-shotあり）
   sheet.getRange(row, colG).setValue(headlineB2);
   sheet.getRange(row, colI).setValue(summaryJa);
+  sheet
+    .getRange(row, colP)
+    .setValue(String(selectedTitleCorrectionExamplesText || ""));
 
   function isError_(val) {
     return typeof val === "string" && val.indexOf("ERROR:") === 0;
@@ -2856,6 +3215,23 @@ function processRowsBatch() {
             const regionRulesBody = buildRegionRulesForBody_(it.bodyRaw || "");
             const titleGlossaryRules = regionRulesTitle;
             const bodyGlossaryRules = regionRulesTitle + regionRulesBody;
+
+            const selectedTitleCorrectionExamples =
+              selectRelevantTitleCorrectionExamples_(
+                {
+                  titleRaw: it.titleRaw || "",
+                  bodyRaw: it.bodyRaw || "",
+                  sourceVal: it.sourceVal || "",
+                  urlVal: it.urlVal || "",
+                },
+                TITLE_ARCHIVE_TOP_K,
+              );
+
+            const selectedTitleCorrectionExamplesText =
+              formatSelectedTitleCorrectionExamplesForSheet_(
+                selectedTitleCorrectionExamples,
+              );
+
             return {
               id: String(it.rowIndex),
               rowIndex: it.rowIndex,
@@ -2866,6 +3242,9 @@ function processRowsBatch() {
               bodyRaw: it.bodyRaw,
               titleGlossaryRules: titleGlossaryRules || "",
               bodyGlossaryRules: bodyGlossaryRules || "",
+              selectedTitleCorrectionExamples: selectedTitleCorrectionExamples,
+              selectedTitleCorrectionExamplesText:
+                selectedTitleCorrectionExamplesText,
             };
           });
 
@@ -2947,6 +3326,7 @@ function processRowsBatch() {
                 resp,
                 resp,
                 resp,
+                pi.selectedTitleCorrectionExamplesText || "",
                 groupKey === "__OPENAI__" ? "GPTNG" : "NG",
               );
             });
@@ -3028,6 +3408,7 @@ function processRowsBatch() {
                 hB || "",
                 sm2 || "",
                 hBF || "",
+                pi.selectedTitleCorrectionExamplesText || "",
                 groupKey === "__OPENAI__" ? "GPTNG" : "NG",
               );
             });

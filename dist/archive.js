@@ -147,17 +147,25 @@ function appendRowsToMonthlySpreadsheet_(monthKey, headerRow, rows) {
  * 固定IDのprodシートから、K列が "a" の行をtitleシートへ追記する。
  * マッピングは以下:
  * - A列 -> A列
- * - G列 -> B列
- * - H列 -> C列
- * - J列 -> D列
+ * - E列 -> B列
+ * - F列 -> C列
+ * - G列 -> D列
+ * - H列 -> E列
+ * - J列 -> F列
+ *
+ * 追加仕様:
+ * - 追記先A列は日付形式にする
+ * - 追記先E列が「最新マーケット情報」の行はアーカイブしない
  */
 function appendProdArchiveRowsToTitleSheet_() {
   const sourceSpreadsheet = SpreadsheetApp.getActiveSpreadsheet();
   const sourceSheetName = "prod";
   const destinationSheetName = "title";
-  const destinationSpreadsheetId = PropertiesService.getScriptProperties().getProperty(
-    "TITLE_EXAMPLES_SPREADSHEET_ID",
-  );
+  const destinationSpreadsheetId =
+    PropertiesService.getScriptProperties().getProperty(
+      "TITLE_EXAMPLES_SPREADSHEET_ID",
+    );
+
   if (!destinationSpreadsheetId) {
     throw new Error(
       "スクリプトプロパティ TITLE_EXAMPLES_SPREADSHEET_ID が未設定です",
@@ -169,7 +177,9 @@ function appendProdArchiveRowsToTitleSheet_() {
     throw new Error('シート "prod" が見つかりません。');
   }
 
-  const destinationSpreadsheet = SpreadsheetApp.openById(destinationSpreadsheetId);
+  const destinationSpreadsheet = SpreadsheetApp.openById(
+    destinationSpreadsheetId,
+  );
   const destinationSheet =
     destinationSpreadsheet.getSheetByName(destinationSheetName);
   if (!destinationSheet) {
@@ -187,20 +197,38 @@ function appendProdArchiveRowsToTitleSheet_() {
   for (let i = 0; i < dataRows.length; i++) {
     const row = dataRows[i];
     const status = row[10]; // K列
+    const eValue = row[4]; // E列
+    const fValue = row[5]; // F列
+    const gValue = row[6]; // G列
     const hValue = row[7]; // H列
+    const jValue = row[9]; // J列
+
     const hasHValue =
-      hValue !== null &&
-      hValue !== undefined &&
-      String(hValue).trim() !== "";
-    if (status !== "a" || !hasHValue) {
+      hValue !== null && hValue !== undefined && String(hValue).trim() !== "";
+
+    // titleシート E列に入る値(H列)が「最新マーケット情報」の行は除外
+    const isLatestMarketInfo = String(hValue).trim() === "最新マーケット情報";
+
+    if (status !== "a" || !hasHValue || isLatestMarketInfo) {
+      continue;
+    }
+
+    // A列はDate型として保持
+    const aValue = row[0];
+    const archiveDate = aValue instanceof Date ? aValue : new Date(aValue);
+
+    // 不正な日付はスキップ
+    if (isNaN(archiveDate.getTime())) {
       continue;
     }
 
     rowsToAppend.push([
-      row[0], // A列 -> A列
-      row[6], // G列 -> B列
-      row[7], // H列 -> C列
-      row[9], // J列 -> D列
+      archiveDate, // A列 -> A列
+      eValue, // E列 -> B列
+      fValue, // F列 -> C列
+      gValue, // G列 -> D列
+      hValue, // H列 -> E列
+      jValue, // J列 -> F列
     ]);
   }
 
@@ -208,7 +236,13 @@ function appendProdArchiveRowsToTitleSheet_() {
     return;
   }
 
+  const startRow = destinationSheet.getLastRow() + 1;
   destinationSheet
-    .getRange(destinationSheet.getLastRow() + 1, 1, rowsToAppend.length, 4)
+    .getRange(startRow, 1, rowsToAppend.length, 6)
     .setValues(rowsToAppend);
+
+  // A列を日付表示形式に設定
+  destinationSheet
+    .getRange(startRow, 1, rowsToAppend.length, 1)
+    .setNumberFormat("yyyy/mm/dd");
 }
