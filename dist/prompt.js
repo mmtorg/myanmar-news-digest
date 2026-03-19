@@ -171,10 +171,14 @@ const PROMPT_SELF_CHECK_RULE = `
 // 過去の修正前→後ペアを記録したスプレッドシート
 const TITLE_CORRECTION_SS_ID_PROP = "TITLE_CORRECTION_SS_ID";
 const TITLE_CORRECTION_SHEET_NAME = "title";
-const TITLE_ARCHIVE_MAX_EXAMPLES = 30; // 教師データとして使う最新N件
+const TITLE_ARCHIVE_MAX_EXAMPLES = 30;
 const TITLE_CORRECTION_EXCLUDE_TITLE = "最新マーケット情報";
 
-// 実行中キャッシュ（1バッチで1回だけスプレッドシートを読む）
+// 元シートの要約列。
+// 本番の TITLE_CORRECTION_SS_ID_PROP 側で I列に要約があるなら 9。
+// 添付Excelは G列だったが、元SSは I列とのことなので 9 を採用。
+const TITLE_CORRECTION_SUMMARY_COL = 9;
+
 let _fewShotCache_ = null;
 
 /**
@@ -184,10 +188,9 @@ let _fewShotCache_ = null;
  * C列: AI見出し案2
  * D列: AI見出し案3
  * E列: 確定見出し
+ * I列: 本文要約
  *
- * - E列が「最新マーケット情報」の行は除外
- * - 日付降順で最新 TITLE_ARCHIVE_MAX_EXAMPLES 件のみ取得し、古い→新しい順で返す
- * @returns {{ archivedAt: Date, candidates: string[], after: string }[]}
+ * @returns {{ archivedAt: Date, candidates: string[], after: string, summary: string }[]}
  */
 function loadTitleCorrectionExamples_() {
   if (_fewShotCache_ !== null) return _fewShotCache_;
@@ -221,31 +224,37 @@ function loadTitleCorrectionExamples_() {
       return _fewShotCache_;
     }
 
-    // A:E を読む
-    const values = sh.getRange(2, 1, lastRow - 1, 5).getValues();
+    // A:I まで読む（少なくとも要約列まで）
+    const maxCol = Math.max(9, TITLE_CORRECTION_SUMMARY_COL);
+    const values = sh.getRange(2, 1, lastRow - 1, maxCol).getValues();
 
     const all = values
       .map(function (row) {
-        const archivedAt = row[0];
+        const archivedAt = row[0]; // A
         const candidates = [
           String(row[1] || "").trim(), // B
           String(row[2] || "").trim(), // C
           String(row[3] || "").trim(), // D
         ].filter(Boolean);
         const after = String(row[4] || "").trim(); // E
+        const summary = String(
+          row[TITLE_CORRECTION_SUMMARY_COL - 1] || "",
+        ).trim(); // I想定
+
         return {
           archivedAt: archivedAt,
           candidates: candidates,
           after: after,
+          summary: summary,
         };
       })
       .filter(function (p) {
         if (!p.after) return false;
         if (p.after === TITLE_CORRECTION_EXCLUDE_TITLE) return false;
+        if (!p.summary) return false; // 今回要件では要約を教師データとして必須化
         return true;
       });
 
-    // 日付降順（新しい順）でソートして最新N件を取得し、古い→新しい順に並べ直す
     all.sort(function (a, b) {
       const da =
         a.archivedAt instanceof Date && !isNaN(a.archivedAt.getTime())
@@ -257,8 +266,9 @@ function loadTitleCorrectionExamples_() {
           : 0;
       return db - da;
     });
+
     const recent = all.slice(0, TITLE_ARCHIVE_MAX_EXAMPLES);
-    recent.reverse(); // 古い→新しい順（プロンプト内で自然な時系列順）
+    recent.reverse();
 
     _fewShotCache_ = recent;
     Logger.log(
@@ -276,8 +286,16 @@ function loadTitleCorrectionExamples_() {
 /**
  * 見出しアーカイブ全件（最新 TITLE_ARCHIVE_MAX_EXAMPLES 件）を教師データとして
  * プロンプトに挿入するテキストを生成する。
- * Task2' では Task1（E列）・Task2（G列）の見出し候補を参考にしてF列を生成する。
- * @returns {string}
+ *
+ * 教師データ:
+ * - B/C/D: 確定前見出し案
+ * - E: 確定見出し
+ * - I: 本文要約
+ *
+ * 今回入力:
+ * - E列: 見出しA
+ * - G列: 見出しB'
+ * - I列: 本文要約
  */
 function buildArchiveTeacherSection_() {
   const examples = loadTitleCorrectionExamples_();
@@ -287,25 +305,34 @@ function buildArchiveTeacherSection_() {
     .map(function (ex, idx) {
       const parts = ["事例" + (idx + 1)];
       ex.candidates.forEach(function (c, ci) {
-        parts.push("案" + (ci + 1) + ": " + c);
+        parts.push("見出し案" + (ci + 1) + ": " + c);
       });
-      parts.push("確定: " + ex.after);
+      parts.push("本文要約: " + ex.summary);
+      parts.push("確定見出し: " + ex.after);
       return parts.join("\n");
     })
     .join("\n\n");
 
   return `【見出しアーカイブ（教師データ・Task2' に適用）】
-以下は、過去にAI生成された見出し案（案1〜案3、B〜D列）を編集者が確定見出し（E列）に修正した事例です。
-このパターンを参考に、今回のTask1（見出しA）・Task2（見出しB'）の結果を候補として、編集者が確定しそうな見出しを生成してください。
+以下は、過去にAI生成された見出し案（B〜D列）と本文要約（I列）をもとに、
+編集者が確定見出し（E列）を決めた事例です。
+今回も同じ発想で、入力された見出し候補と本文要約から、
+TITLE_CORRECTION_SS_ID_PROP の E列に近い傾向の確定見出しを生成してください。
 
 ${lines}
 
 【Task2' の進め方】
-1. 上の事例から「見出し案→確定見出し」で一貫して行われている編集操作を3〜6個読み取る。
-2. 特に、どの要素（主体・数値・地名・因果関係・対立軸）が採用・削除されやすいかを把握する。
-3. 今回のTask1（見出しA）とTask2（見出しB'）を候補として、そのパターンを適用する。
-4. 編集者が確定しそうな1行見出しを生成する。
-5. 出力は最終見出し1行のみとし、ルール抽出結果は出力しない。
+1. 各事例で、見出し案群と本文要約から、編集者が最終的に何を採用したかを学習する。
+2. 特に、主体・地名・数値・因果・対立軸・ニュース価値のうち、
+   どれを残し、どれを削り、どの語順・表現に整えているかを重視する。
+3. 今回入力される E列見出しA、G列見出しB'、I列本文要約 を合わせて読み、
+   もっとも編集者の確定見出しらしい1行を作る。
+   【アーカイブ分析から得られた選択傾向】
+   - G列見出しB'（本文ベース）が確定見出しの主ベースになるケースが69%
+   - E列見出しAが主ベースになるケースは27%
+   - 残り54%はB'とAの両方の要素を組み合わせた形
+   - 典型パターン：B'の具体性・情報量を活かしつつ、文字数超過部分をAの簡潔さで整える
+4. 出力は最終見出し1行のみとし、分析過程は出力しない。
 
 `;
 }
@@ -337,15 +364,41 @@ ${TITLE_OUTPUT_RULES}
 - 「〜と述べた」「〜が行われた」などの曖昧・婉曲表現は避ける
 `;
 
-// HEADLINE_PROMPT_3：本文を読んで作る見出し（B/B’）
+// 確定見出しの形式・用語ルール（HEADLINE_PROMPT_3 / Task2' の両方に適用）
+// ※ 1854件の確定見出しアーカイブ分析から導出
+const HEADLINE_STRUCTURE_RULES = `
+【文字数】
+- 目標：20〜30文字
+- 上限：40文字（絶対に超えない）
+
+【構造】
+- 基本形：[主題（約10文字）]、[内容（約15文字）]
+- 読点（、）で主題と内容を1か所だけ区切る（読点は原則1つ）
+- 2つの情報を並列する場合は、読点の後に全角スペース1つで区切る（例：「総司令官、工場を視察　農業発展を指示」）
+- 句点（。）は絶対に使わない
+- 体言止め（名詞・名詞句で終わる）を原則とする
+
+【用語の優先ルール】
+- 「軍事政権」より「国軍」を使う
+- 人名フルネームより役職名を使う（例：「ミン・アウン・フライン」→「総司令官」）
+- 「会談」より「協議」を優先する
+- 略語（NUG、SAC、PDF、ASEAN、KIA など）はそのまま使い、日本語訳しない
+- 数字は半角アラビア数字で記載する
+
+【記号ルール】
+- 鉤括弧「」は直接引用・公式名称のみに使う（多用しない）
+- ダッシュ（―）・コロン（：）は使わない
+`;
+
+// HEADLINE_PROMPT_3：本文を読んで作る見出し（B/B'）
 const HEADLINE_PROMPT_3 = `
 ${TITLE_OUTPUT_RULES}
 あなたは新聞社の見出しデスクです。
 以下の本文（原文／機械翻訳含む可能性あり）を読み、
 記事の要点（誰／どこ／何が起きた／規模・数値／結果／時点）を抽出し、
 自然で簡潔な日本語の報道見出しを1行で作成してください。
-
-ルール：
+${HEADLINE_STRUCTURE_RULES}
+【その他ルール】
 - 主語と動作を明確に（曖昧表現や冗長な修飾は削る）
 - 重要な固有名詞・数値は優先して残す
 - 「〜と述べた」「〜が行われた」等の婉曲表現は避ける
@@ -425,19 +478,25 @@ const SUMMARY_TASK = `
 - 思考手順（Step1/2、Q1/Q2、→ など）は出力に含めないでください。
 `;
 
-// F列用: 教師データ参考・編集者確定見出し生成プロンプト（単独呼び出し用）
-// インプット: headlineA（E列相当）と headlineB2（G列相当）の見出し候補
+// F列用: 教師データ参考・編集者確定見出し生成プロンプト
+// インプット: E列 headlineA / G列 headlineB2 / I列 summaryJa
 function buildFewShotHeadlineBPrimePrompt_(params) {
-  const { headlineA, headlineB2, bodyGlossaryRules } = params;
+  const { headlineA, headlineB2, summaryJa, bodyGlossaryRules } = params;
   const archiveSection = buildArchiveTeacherSection_();
+
   return `【共通ルール（最優先）】
 ${COMMON_TRANSLATION_RULES}
 
-${archiveSection || ""}以下は今回の記事の見出し候補（AI生成）です。
-見出しA（タイトルベース翻訳）: ${headlineA || ""}
-見出しB'（本文ベース）: ${headlineB2 || ""}
+${archiveSection || ""}以下は今回の記事のインプットです。
+E列 見出しA（タイトルベース翻訳）: ${headlineA || ""}
+G列 見出しB'（本文ベース）: ${headlineB2 || ""}
+I列 本文要約: ${summaryJa || ""}
 
-上の教師データのパターンを参考に、この2つの候補から編集者が確定しそうな日本語見出しを1行で生成してください。
+上の教師データを踏まえ、
+「今回のE列・G列・I列から、編集者が最終的に確定しそうな見出し」
+を1行で生成してください。
+目標は、TITLE_CORRECTION_SS_ID_PROP の E列に近い傾向の見出しにすることです。
+
 ${TITLE_OUTPUT_RULES}
 【本文用 用語固定ルール】
 ${bodyGlossaryRules || "(なし)"}`.trim();
@@ -492,9 +551,14 @@ ${bodyGlossaryRules || "(なし)"}
 
 ====================
 [Task2': 見出しF（教師データ参考・編集者確定見出し生成）]
-- Task1（見出しA）とTask2（見出しB'）で生成した2つの見出しを候補として使ってください。
-- 以下の教師データ（見出しアーカイブ）を参考に、編集者が確定しそうな日本語見出しを1行で生成してください。
-${archiveTeacherSection}${TITLE_OUTPUT_RULES}
+- 目的は、F列に出力する見出しを、見出しアーカイブの確定見出し（TITLE_CORRECTION_SS_ID_PROP の E列）に近い傾向へ寄せることです。
+- 教師データとして、見出しアーカイブの B〜D列の見出し案、I列の本文要約、E列の確定見出しを参考にしてください。
+- 今回の入力データとして、Task1で生成した見出しA、Task2で生成した見出しB'、Task3で生成する本文要約の内容を使ってください。
+- G列見出しB'（本文ベース）を主ベースとし、E列見出しAの要素も参考に取り込んで整えてください。
+- 単なる E/G の折衷ではなく、本文要約から重要度の高い要素を補正して、
+  アーカイブの確定見出しに近い決め方で整えてください。
+${archiveTeacherSection}${HEADLINE_STRUCTURE_RULES}
+${TITLE_OUTPUT_RULES}
 【本文用 用語固定ルール】
 ${bodyGlossaryRules || "(なし)"}
 
@@ -2525,8 +2589,13 @@ ${HEADLINE_PROMPT_3}
 ${it.bodyGlossaryRules || "(なし)"}
 
 --- Task2' 見出しFルール（教師データ参考・編集者確定見出し生成）---
-Task1（見出しA）とTask2（見出しB'）の結果を候補として使い、以下の教師データを参考に編集者が確定しそうな見出しを生成してください。
-${archiveTeacherSection}${TITLE_OUTPUT_RULES}
+目的は、F列の見出しを見出しアーカイブの確定見出し（E列）に近い傾向へ寄せること。
+教師データとして、見出しアーカイブの B〜D列の見出し案、I列の本文要約、E列の確定見出しを参考にすること。
+今回の記事では、Task1の見出しA、Task2の見出しB'、Task3で把握した本文要約の内容を合わせて使い、
+G列見出しB'（本文ベース）を主ベースとし、E列見出しAの要素も参考に取り込んで、
+編集者が最終的に確定しそうな1行見出しを生成すること。
+${archiveTeacherSection}${HEADLINE_STRUCTURE_RULES}
+${TITLE_OUTPUT_RULES}
 【本文用 用語固定ルール】
 ${it.bodyGlossaryRules || "(なし)"}
 
