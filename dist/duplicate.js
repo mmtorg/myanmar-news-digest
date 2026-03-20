@@ -179,6 +179,8 @@ function _appendRowsToArchive_(srcSheet, archiveSheet) {
     return { appended: 0, skipped: 0 };
   }
 
+  const tz = Session.getScriptTimeZone();
+
   const header = srcValues[0];
   const srcRows = srcValues.slice(1);
 
@@ -187,6 +189,12 @@ function _appendRowsToArchive_(srcSheet, archiveSheet) {
 
   srcRows.forEach(function (row) {
     if (!_isArchivableRow_(row)) {
+      skipped += 1;
+      return;
+    }
+
+    // A列が今日の日付の行は archive に残さない
+    if (_isToday_(row[_DIDX_A], tz)) {
       skipped += 1;
       return;
     }
@@ -245,6 +253,7 @@ function _pruneArchiveSheet_(archiveSheet, tz) {
   const dataRows = values.slice(1);
 
   const now = new Date();
+  const todayStr = Utilities.formatDate(now, tz, "yyyyMMdd");
   const cutoffMs = now.getTime() - ARCHIVE_DAYS * 24 * 60 * 60 * 1000;
   const cutoffStr = Utilities.formatDate(new Date(cutoffMs), tz, "yyyyMMdd");
 
@@ -253,7 +262,11 @@ function _pruneArchiveSheet_(archiveSheet, tz) {
     if (!(dateVal instanceof Date)) return false;
 
     const dateStr = Utilities.formatDate(dateVal, tz, "yyyyMMdd");
-    return dateStr >= cutoffStr;
+
+    // 残す条件:
+    // - cutoffStr 以上
+    // - 今日ではない
+    return dateStr >= cutoffStr && dateStr < todayStr;
   });
 
   const deleted = dataRows.length - keptRows.length;
@@ -271,6 +284,21 @@ function _pruneArchiveSheet_(archiveSheet, tz) {
     deleted: deleted,
     remaining: keptRows.length,
   };
+}
+
+/**
+ * A列の日付が「今日」かどうか
+ *
+ * @param {any} dateVal
+ * @param {string} tz
+ * @returns {boolean}
+ */
+function _isToday_(dateVal, tz) {
+  if (!(dateVal instanceof Date)) return false;
+
+  const todayStr = Utilities.formatDate(new Date(), tz, "yyyyMMdd");
+  const dateStr = Utilities.formatDate(dateVal, tz, "yyyyMMdd");
+  return dateStr === todayStr;
 }
 
 /**
