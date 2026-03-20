@@ -7,8 +7,9 @@
  *      archive_* を「今日を含む過去 ARCHIVE_DAYS 日分」に整理する（日次トリガー）
  *
  * 2. checkDuplicateTopicsProd() / checkDuplicateTopicsDev()
- *    - K列が "a"、O列が空、かつ必要列が埋まっている行だけを対象に、
- *      Gemini で同一トピック数を書き込む（定期トリガー）
+ *    - O列が空、かつ必要列が埋まっている行だけを対象に、
+ *      Gemini で同一トピック数を O列へ、
+ *      一致した archive 記事一覧を P列へ書き込む（定期トリガー）
  *
  * 3. 必要なら updateArchive() / checkDuplicateTopics() で prod/dev をまとめて実行可能
  */
@@ -23,6 +24,9 @@ const ARCHIVE_SHEET_PREFIX = "archive_";
 /** O列の列番号（1始まり） */
 const COL_O_DUPLICATE_COUNT = 15;
 
+/** P列の列番号（1始まり） */
+const COL_P_DUPLICATE_MATCHES = 16;
+
 /** アーカイブに保持する日数（今日を除く過去N日） */
 const ARCHIVE_DAYS = 2;
 
@@ -34,7 +38,7 @@ const PREFILTER_CANDIDATES_PER_TARGET = 24;
 
 /**
  * 1回のGemini呼び出しで比較するアーカイブ記事の最大件数。
- * アーカイブ側は F/I 列のみを渡すため、やや大きめに設定する。
+ * アーカイブ側は E/F/G 列のみを渡すため、やや大きめに設定する。
  */
 const TOPIC_CHECK_BATCH_SIZE = 24;
 
@@ -276,7 +280,7 @@ function _pruneArchiveSheet_(archiveSheet, tz) {
  * - A列に日付がある
  * - C列にメディアがある
  * - C列が "(Businessプラン限定)" ではない
- * - F列 または I列 のどちらかに値がある
+ * - E/F/G のいずれかに値がある
  *
  * @param {any[]} row
  * @returns {boolean}
@@ -289,9 +293,10 @@ function _isArchivableRow_(row) {
   if (!media) return false;
   if (media === "(Businessプラン限定)") return false;
 
+  const e = String(row[_DIDX_E] || "").trim();
   const f = String(row[_DIDX_F] || "").trim();
-  const i = String(row[_DIDX_I] || "").trim();
-  if (!f && !i) return false;
+  const g = String(row[_DIDX_G] || "").trim();
+  if (!e && !f && !g) return false;
 
   return true;
 }
@@ -301,14 +306,14 @@ function _isArchivableRow_(row) {
 // ====================================================
 
 /**
- * prod シートの判定対象行に同一トピック数をO列へ書き込む。
+ * prod シートの判定対象行に同一トピック数を O列へ書き込む。
  */
 function checkDuplicateTopicsProd() {
   _checkDuplicateTopicsBySheetName_("prod");
 }
 
 /**
- * dev シートの判定対象行に同一トピック数をO列へ書き込む。
+ * dev シートの判定対象行に同一トピック数を O列へ書き込む。
  */
 function checkDuplicateTopicsDev() {
   _checkDuplicateTopicsBySheetName_("dev");
@@ -355,13 +360,13 @@ function _checkDuplicateTopicsBySheetName_(sheetName) {
  * archive 側の同一トピック判定候補行を選別する。
  *
  * ルール:
- * - F列またはI列が空でない行だけを対象にする
+ * - E/F/G のいずれかに値がある行だけを対象にする
  * - J列(URL)が空の行はそのまま残す
  * - J列(URL)が重複していない行はそのまま残す
  * - J列(URL)が重複している場合は、K列(採用フラグ)='a' の行だけ残す
  *
  * @param {any[][]} rows archive シートのデータ行（ヘッダー除く）
- * @returns {any[][]}
+ * @returns {{row:any[], sheetRowIndex:number}[]}
  */
 function _selectArchiveRowsForDuplicateCheck_(rows) {
   if (!rows || rows.length === 0) return [];
@@ -369,19 +374,25 @@ function _selectArchiveRowsForDuplicateCheck_(rows) {
   const rowsByUrl = {};
   const rowsWithoutUrl = [];
 
-  rows.forEach(function (row) {
+  rows.forEach(function (row, idx) {
+    const e = String(row[_DIDX_E] || "").trim();
     const f = String(row[_DIDX_F] || "").trim();
-    const i = String(row[_DIDX_I] || "").trim();
-    if (!f && !i) return;
+    const g = String(row[_DIDX_G] || "").trim();
+    if (!e && !f && !g) return;
+
+    const item = {
+      row: row,
+      sheetRowIndex: idx + 2,
+    };
 
     const url = String(row[_DIDX_J] || "").trim();
     if (!url) {
-      rowsWithoutUrl.push(row);
+      rowsWithoutUrl.push(item);
       return;
     }
 
     if (!rowsByUrl[url]) rowsByUrl[url] = [];
-    rowsByUrl[url].push(row);
+    rowsByUrl[url].push(item);
   });
 
   const selected = rowsWithoutUrl.slice();
@@ -394,17 +405,16 @@ function _selectArchiveRowsForDuplicateCheck_(rows) {
       return;
     }
 
-    const adopted = group.filter(function (row) {
+    const adopted = group.filter(function (item) {
       return (
-        String(row[_DIDX_K] || "")
+        String(item.row[_DIDX_K] || "")
           .trim()
           .toLowerCase() === "a"
       );
     });
 
-    // URL重複時は K='a' の行だけを同一トピック判定候補にする
-    adopted.forEach(function (row) {
-      selected.push(row);
+    adopted.forEach(function (item) {
+      selected.push(item);
     });
   });
 
@@ -431,15 +441,25 @@ function _processTopicCheckForSheet_(sheet, archiveSheet, sheetName) {
       ? _selectArchiveRowsForDuplicateCheck_(archiveValues.slice(1))
       : [];
 
-  const archiveArticles = archiveRows.map(function (row, idx) {
+  const archiveArticles = archiveRows.map(function (item, idx) {
+    const row = item.row;
+    const e = String(row[_DIDX_E] || "").trim();
     const f = String(row[_DIDX_F] || "").trim();
-    const i = String(row[_DIDX_I] || "").trim();
+    const g = String(row[_DIDX_G] || "").trim();
+
     return {
       archiveIndex: idx + 1,
+      sheetRowIndex: item.sheetRowIndex,
+      e: e,
       f: f,
-      i: i,
-      prefilter: _buildTopicPrefilterFeatures_(f + "\n" + i),
+      g: g,
+      prefilter: _buildTopicPrefilterFeatures_([e, f, g].join("\n")),
     };
+  });
+
+  const archiveArticleMapById = {};
+  archiveArticles.forEach(function (article) {
+    archiveArticleMapById[String(article.archiveIndex)] = article;
   });
 
   const targets = [];
@@ -447,21 +467,17 @@ function _processTopicCheckForSheet_(sheet, archiveSheet, sheetName) {
     const row = dataRows[idx];
     if (_isDuplicateCheckTarget_(row)) {
       const media = String(row[_DIDX_C] || "").trim();
+      const e = String(row[_DIDX_E] || "").trim();
       const f = String(row[_DIDX_F] || "").trim();
-      const i = String(row[_DIDX_I] || "").trim();
-      const m = String(row[_DIDX_M] || "").trim();
-      const n = String(row[_DIDX_N] || "")
-        .trim()
-        .substring(0, 400);
+      const g = String(row[_DIDX_G] || "").trim();
 
       targets.push({
         rowIndex: idx + 2,
         media: media,
+        e: e,
         f: f,
-        i: i,
-        m: m,
-        n: n,
-        prefilter: _buildTopicPrefilterFeatures_([f, i].join("\n")),
+        g: g,
+        prefilter: _buildTopicPrefilterFeatures_([e, f, g].join("\n")),
       });
     }
   }
@@ -481,9 +497,10 @@ function _processTopicCheckForSheet_(sheet, archiveSheet, sheetName) {
   if (archiveArticles.length === 0) {
     for (const t of targets) {
       sheet.getRange(t.rowIndex, COL_O_DUPLICATE_COUNT).setValue(0);
+      sheet.getRange(t.rowIndex, COL_P_DUPLICATE_MATCHES).setValue("");
     }
     Logger.log(
-      "[checkDuplicateTopics] archive is empty, wrote 0 for all targets.",
+      "[checkDuplicateTopics] archive is empty, wrote 0 / blank for all targets.",
     );
     return;
   }
@@ -520,8 +537,9 @@ function _processTopicCheckForSheet_(sheet, archiveSheet, sheetName) {
         .map(function (a) {
           return {
             id: String(a.archiveIndex),
+            e: a.e,
             f: a.f,
-            i: a.i,
+            g: a.g,
           };
         });
 
@@ -532,7 +550,7 @@ function _processTopicCheckForSheet_(sheet, archiveSheet, sheetName) {
     }
   }
 
-  const countsByRowTotal = {};
+  const resultsByRowTotal = {};
 
   Object.keys(pendingByMedia).forEach(function (media) {
     const apiKey = _getDuplicateGeminiApiKeyByMedia_(
@@ -569,7 +587,7 @@ function _processTopicCheckForSheet_(sheet, archiveSheet, sheetName) {
           })
           .join("-");
 
-      const counts = _countSameTopicArticlesBatch_(
+      const batchResults = _countSameTopicArticlesBatch_(
         batchItems,
         apiKey,
         usageTag,
@@ -577,22 +595,56 @@ function _processTopicCheckForSheet_(sheet, archiveSheet, sheetName) {
 
       for (const item of batchItems) {
         const rowIndex = item.target.rowIndex;
-        const count = counts[rowIndex] || 0;
-        countsByRowTotal[rowIndex] = (countsByRowTotal[rowIndex] || 0) + count;
+        const r = batchResults[rowIndex] || { count: 0, matched: [] };
+
+        if (!resultsByRowTotal[rowIndex]) {
+          resultsByRowTotal[rowIndex] = { count: 0, matched: [] };
+        }
+
+        resultsByRowTotal[rowIndex].count += r.count;
+        resultsByRowTotal[rowIndex].matched = resultsByRowTotal[
+          rowIndex
+        ].matched.concat(r.matched || []);
       }
     }
   });
 
-  const writeValues = targets.map(function (target) {
+  const countWriteValues = targets.map(function (target) {
     const rowIndex = target.rowIndex;
-    const count = countsByRowTotal[rowIndex] || 0;
+    const result = resultsByRowTotal[rowIndex] || { count: 0, matched: [] };
+
     Logger.log(
       "[checkDuplicateTopics] row=%s media=%s → O列=%s",
       rowIndex,
       target.media,
-      count,
+      result.count,
     );
-    return [count];
+
+    return [result.count];
+  });
+
+  const matchWriteValues = targets.map(function (target) {
+    const rowIndex = target.rowIndex;
+    const result = resultsByRowTotal[rowIndex] || { count: 0, matched: [] };
+
+    const uniqueMatched = Array.from(
+      new Set((result.matched || []).map(String)),
+    );
+
+    const labels = uniqueMatched.map(function (id) {
+      const article = archiveArticleMapById[String(id)];
+      if (!article) return "候補ID:" + id;
+
+      const title = String(article.f || article.e || article.g || "")
+        .replace(/\s+/g, " ")
+        .trim();
+      const shortTitle =
+        title.length > 60 ? title.substring(0, 60) + "…" : title;
+
+      return "archive行" + article.sheetRowIndex + ": " + shortTitle;
+    });
+
+    return [labels.join("\n")];
   });
 
   const rowIndexes = targets.map(function (target) {
@@ -605,13 +657,31 @@ function _processTopicCheckForSheet_(sheet, archiveSheet, sheetName) {
 
   if (isContiguous) {
     sheet
-      .getRange(rowIndexes[0], COL_O_DUPLICATE_COUNT, writeValues.length, 1)
-      .setValues(writeValues);
+      .getRange(
+        rowIndexes[0],
+        COL_O_DUPLICATE_COUNT,
+        countWriteValues.length,
+        1,
+      )
+      .setValues(countWriteValues);
+
+    sheet
+      .getRange(
+        rowIndexes[0],
+        COL_P_DUPLICATE_MATCHES,
+        matchWriteValues.length,
+        1,
+      )
+      .setValues(matchWriteValues);
   } else {
     for (let i = 0; i < targets.length; i++) {
       sheet
         .getRange(targets[i].rowIndex, COL_O_DUPLICATE_COUNT)
-        .setValue(writeValues[i][0]);
+        .setValue(countWriteValues[i][0]);
+
+      sheet
+        .getRange(targets[i].rowIndex, COL_P_DUPLICATE_MATCHES)
+        .setValue(matchWriteValues[i][0]);
     }
   }
 }
@@ -909,9 +979,9 @@ function _isLooseTokenMatch_(a, b) {
  * スコア0でも最低限の件数は返し、取りこぼしを抑える。
  *
  * @param {{prefilter:any}} target
- * @param {{archiveIndex:number,f:string,i:string,prefilter:any}[]} archiveArticles
+ * @param {{archiveIndex:number,sheetRowIndex:number,e:string,f:string,g:string,prefilter:any}[]} archiveArticles
  * @param {number} limit
- * @returns {{archiveIndex:number,f:string,i:string,prefilter:any}[]}
+ * @returns {{archiveIndex:number,sheetRowIndex:number,e:string,f:string,g:string,prefilter:any}[]}
  */
 function _selectArchiveCandidatesForTarget_(target, archiveArticles, limit) {
   const scored = archiveArticles.map(function (article) {
@@ -1041,7 +1111,7 @@ function _getDuplicateGeminiApiKeyByMedia_(media, usageTag) {
  *   1. A列が空でない（日付あり）
  *   2. C列が空でない（メディアあり）
  *   3. O列が空（未判定）
- *   4. F列・I列がともに空でない
+ *   4. E列・F列・G列がすべて空でない
  *
  * @param {any[]} row 0始まりの行データ配列
  * @returns {boolean}
@@ -1052,17 +1122,18 @@ function _isDuplicateCheckTarget_(row) {
   const valC = String(row[_DIDX_C] || "").trim();
   if (!valC) return false;
 
+  const valE = String(row[_DIDX_E] || "").trim();
   const valF = String(row[_DIDX_F] || "").trim();
-  const valI = String(row[_DIDX_I] || "").trim();
+  const valG = String(row[_DIDX_G] || "").trim();
+
   const valO = row[_DIDX_O];
   const isOEmpty =
     valO === null || valO === undefined || String(valO).trim() === "";
 
-  // すでに O 列に値が入っている行は再判定しない
   if (!isOEmpty) return false;
 
-  // 判定材料の F / I がそろっている行だけを対象にする
-  if (!valF || !valI) return false;
+  // E/F/G だけを判定材料にする
+  if (!valE || !valF || !valG) return false;
 
   return true;
 }
@@ -1070,34 +1141,34 @@ function _isDuplicateCheckTarget_(row) {
 /**
  * 複数ターゲットを1回のGemini呼び出しで判定する。
  *
-@param {{ target:{rowIndex:number,f:string,i:string}, candidates:{id:string,f:string,i:string}[] }[]} batchItems
+ * @param {{ target:{rowIndex:number,e:string,f:string,g:string}, candidates:{id:string,e:string,f:string,g:string}[] }[]} batchItems
  * @param {string} apiKey Gemini APIキー
  * @param {string} usageTag ログ用タグ
- * @returns {Object<number, number>} rowIndex -> 同一トピック数
+ * @returns {Object<number, {count:number, matched:string[]}>} rowIndex -> 判定結果
  */
 function _countSameTopicArticlesBatch_(batchItems, apiKey, usageTag) {
-  const countsByRow = {};
-  if (!batchItems || batchItems.length === 0) return countsByRow;
+  const resultsByRow = {};
+  if (!batchItems || batchItems.length === 0) return resultsByRow;
 
   const prompt = _buildTopicCheckPromptForBatch_(batchItems);
   const result = callGeminiWithKey_(apiKey, prompt, usageTag);
 
   if (!result || String(result).indexOf("ERROR:") === 0) {
     Logger.log("[_countSameTopicArticlesBatch_] Gemini error: " + result);
-    return countsByRow;
+    return resultsByRow;
   }
 
   return _parseTopicCheckBatchResult_(result, batchItems);
 }
 
 /**
- * Geminiレスポンス（JSON文字列）から rowIndex ごとの count を取り出す。
+ * Geminiレスポンス（JSON文字列）から rowIndex ごとの count / matched を取り出す。
  * 期待するレスポンス形式:
  * {"results":[{"rowIndex":12,"count":1,"matched":["3"]}, ...]}
  *
  * @param {string} result Gemini レスポンステキスト
  * @param {any[]} batchItems 判定対象バッチ
- * @returns {Object<number, number>}
+ * @returns {Object<number, {count:number, matched:string[]}>}
  */
 function _parseTopicCheckBatchResult_(result, batchItems) {
   const out = {};
@@ -1121,15 +1192,23 @@ function _parseTopicCheckBatchResult_(result, batchItems) {
     for (const r of results) {
       const rowIndex = parseInt(r && r.rowIndex, 10);
       const count = parseInt(r && r.count, 10);
+      const matched = Array.isArray(r && r.matched)
+        ? r.matched.map(String)
+        : [];
 
       if (!isNaN(rowIndex)) {
-        out[rowIndex] = isNaN(count) ? 0 : Math.max(0, count);
+        out[rowIndex] = {
+          count: isNaN(count) ? 0 : Math.max(0, count),
+          matched: matched,
+        };
       }
     }
 
     for (const item of batchItems || []) {
       const rowIndex = item.target.rowIndex;
-      if (!(rowIndex in out)) out[rowIndex] = 0;
+      if (!(rowIndex in out)) {
+        out[rowIndex] = { count: 0, matched: [] };
+      }
     }
 
     return out;
@@ -1155,15 +1234,17 @@ function _buildTopicCheckPromptForBatch_(batchItems) {
     .map(function (item) {
       const t = item.target;
       const targetLines = [];
-      if (t.f) targetLines.push("日本語見出し: " + t.f);
-      if (t.i) targetLines.push("本文要約: " + t.i);
+      if (t.e) targetLines.push("見出しE: " + t.e);
+      if (t.f) targetLines.push("見出しF: " + t.f);
+      if (t.g) targetLines.push("見出しG: " + t.g);
 
       const archiveSection = item.candidates
         .slice(0, TOPIC_CHECK_BATCH_SIZE)
         .map(function (a) {
           const lines = [];
-          if (a.f) lines.push("日本語見出し: " + a.f);
-          if (a.i) lines.push("本文要約: " + a.i);
+          if (a.e) lines.push("見出しE: " + a.e);
+          if (a.f) lines.push("見出しF: " + a.f);
+          if (a.g) lines.push("見出しG: " + a.g);
           return "【候補ID:" + a.id + "】\n" + lines.join("\n");
         })
         .join("\n\n");
@@ -1183,10 +1264,13 @@ function _buildTopicCheckPromptForBatch_(batchItems) {
 
   return `以下の複数「判定対象記事」ごとに、対応する「アーカイブ候補リスト」と比較し、同一トピックの記事件数を算出してください。
 
+比較に使用してよい情報は、判定対象記事・アーカイブ候補の両方とも E列, F列, G列の内容のみです。
+本文要約、原文タイトル、原文本文、その他の列の情報は判定に使用しないでください。
+
 【同一トピックの判定基準】
 
 ◆ 必須条件（以下のうち少なくとも1つが成立すること）
-1. 同一事象: 同じ具体的な事件・攻撃・逮捕・会議・法案・声明・裁判・交渉を扱っている
+1. 同一事象: E/F/G の見出し情報から見て、同じ具体的な事件・攻撃・逮捕・会議・法案・声明・裁判・交渉を扱っている
    ※ 同じ出来事の「続報」「別メディアの報道」も同一トピックとする
 
 ◆ 補強条件（事象が一致する前提で以下が一致するほど確度が高い）
@@ -1194,7 +1278,7 @@ function _buildTopicCheckPromptForBatch_(batchItems) {
 3. 同一主体: 同じ組織・人物（国軍・PDF・KNUなど）が主語・関与者として共通する
 4. 同一時点: 同じ日付・時期（「3月12日」「先週」等）を指している
 5. 同一数値: 死者数・被害額・人数などの具体的数値が共通して登場する
-6. 同一発言: 同じ人物・組織による同じ声明・発言が引用されている
+6. 同一発言: 同じ人物・組織による同じ声明・発言が示されている
 
 ◆ 同一トピックではない例
 - 同じ地域で起きた別の事件
@@ -1204,10 +1288,12 @@ function _buildTopicCheckPromptForBatch_(batchItems) {
 
 ◆ 判定上の注意
 - メディアが異なっても同一事象なら同一トピックとする
-- 原文言語（ビルマ語・英語）が違っても構わない
+- 原文言語が違っても構わない
 - 微妙に異なる数値（報道機関による差異）は同一トピックとして扱う
-- 判定対象記事は日本語見出し・本文要約・原文タイトル・本文抜粋を参照する
-- アーカイブ候補は日本語見出し・本文要約のみを参照して判定する
+- 判定対象記事は E列, F列, G列のみを参照する
+- アーカイブ候補も E列, F列, G列のみを参照して判定する
+- E/F/G に明示されていない本文情報を推測して補わないこと
+- 単なるテーマの近さではなく、具体的に同じ出来事かどうかを優先して判定すること
 
 ${sections}
 
