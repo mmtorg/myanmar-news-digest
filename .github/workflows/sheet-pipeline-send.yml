@@ -6,16 +6,16 @@ on:
     # 15:50 MMT ≒ 09:20 UTC → 09:17 UTC（= 15:47 MMT, 3分前倒し）
     - cron: "17 9 * * *" # 15:47 MMT（実運用目標: 15:50）
 
-    # 17:50 / 20:50 / 21:50 / 22:50 / 23:30 MMT（= 11:20 / 14:20 / 15:20 / 16:20 / 17:00 UTC）: 追記のみ
+    # 17:50 / 20:40 / 21:40 / 22:40 / 23:20 MMT（= 11:20 / 14:10 / 15:10 / 16:10 / 16:50 UTC）: 追記のみ
     # 17:50 MMT ≒ 11:20 UTC → 11:17 UTC（= 17:47 MMT, 3分前倒し）
     - cron: "17 11 * * *" # 17:47 MMT（実運用目標: 17:50）
-    # 20:50 MMT ≒ 14:20 UTC → 14:17 UTC（= 20:47 MMT, 3分前倒し）
-    - cron: "17 14 * * *" # 20:47 MMT（実運用目標: 20:50）
-    # 21:50 MMT ≒ 15:20 UTC → 15:17 UTC（= 21:47 MMT, 3分前倒し）
-    - cron: "17 15 * * *" # 21:47 MMT（実運用目標: 21:50）
-    # 22:50 MMT ≒ 16:20 UTC → 16:17 UTC（= 22:47 MMT, 3分前倒し）
-    - cron: "17 16 * * *" # 22:47 MMT（実運用目標: 22:50）
-    - cron: "57 16 * * *" # 23:27 MMT（実運用目標: 23:30）
+    # 20:40 MMT ≒ 14:10 UTC → 14:07 UTC（= 20:37 MMT, 3分前倒し）
+    - cron: "7 14 * * *" # 20:37 MMT（実運用目標: 20:40）
+    # 21:40 MMT ≒ 15:10 UTC → 15:07 UTC（= 21:37 MMT, 3分前倒し）
+    - cron: "7 15 * * *" # 21:37 MMT（実運用目標: 21:40）
+    # 22:40 MMT ≒ 16:10 UTC → 16:07 UTC（= 22:37 MMT, 3分前倒し）
+    - cron: "7 16 * * *" # 22:37 MMT（実運用目標: 22:40）
+    - cron: "47 16 * * *" # 23:17 MMT（実運用目標: 23:20）
 
     # 02:00 MMT（= 19:30 UTC 前日）: bundle生成
     # → 19:27 UTC（= 02:00 MMT, 3分前倒し）
@@ -158,8 +158,8 @@ jobs:
       #     CSV_EMAIL_RECIPIENTS: ${{ secrets.CSV_EMAIL_RECIPIENTS }}
 
   schedule-collect:
-    # 17:50 / 20:50 / 21:50 / 22:50 / 23:30 枠
-    if: github.event_name == 'schedule' && contains(fromJson('["17 11 * * *","17 14 * * *","17 15 * * *","17 16 * * *","57 16 * * *"]'), github.event.schedule)
+    # 17:50 / 20:40 / 21:40 / 22:40 / 23:20 枠
+    if: github.event_name == 'schedule' && contains(fromJson('["17 11 * * *","7 14 * * *","7 15 * * *","7 16 * * *","47 16 * * *"]'), github.event.schedule)
     runs-on: ubuntu-latest
     environment: production
     concurrency:
@@ -232,12 +232,12 @@ jobs:
           printf '%s' "$GOOGLE_SERVICE_ACCOUNT_JSON" > "$SA_FILE"
           echo "GOOGLE_APPLICATION_CREDENTIALS=$SA_FILE" >> "$GITHUB_ENV"
 
-      - name: Collect → append to sheet (17:50/20:50/21:50/22:50 runs)
+      - name: Collect → append to sheet (17:50/20:40/21:40/22:40/23:20 runs)
         run: |
           python sheet_pipeline.py collect-to-sheet --schedule-cron "${{ github.event.schedule }}"
 
-      # ★ 17:50 / 20:50 / 21:50 / 22:50 枠ごとに、collect 完了後にメール通知（※一時的に無効化）
-      # - name: Notify by email via Python (cron 17:50/20:50/21:50/22:50 MMT)
+      # ★ 17:50 / 20:40 / 21:40 / 22:40 / 23:20 枠ごとに、collect 完了後にメール通知（※一時的に無効化）
+      # - name: Notify by email via Python (cron 17:50/20:40/21:40/22:40/23:20 MMT)
       #   if: ${{ github.event_name == 'schedule' && success() }}
       #   run: |
       #     set -euo pipefail
@@ -248,9 +248,10 @@ jobs:
       #     # github.event.schedule から MMT 時刻ラベルを決定
       #     case "${{ github.event.schedule }}" in
       #       "17 11 * * *") SLOT_LABEL="17:50" ;;
-      #       "17 14 * * *") SLOT_LABEL="20:50" ;;
-      #       "17 15 * * *") SLOT_LABEL="21:50" ;;
-      #       "17 16 * * *") SLOT_LABEL="22:50" ;;
+      #       "7 14 * * *") SLOT_LABEL="20:40" ;;
+      #       "7 15 * * *") SLOT_LABEL="21:40" ;;
+      #       "7 16 * * *") SLOT_LABEL="22:40" ;;
+      #       "47 16 * * *") SLOT_LABEL="23:20" ;;
       #       *)             SLOT_LABEL="定期収集" ;;
       #     esac
       #     BODY="$(printf '%s\n%s\n%s\n' \
