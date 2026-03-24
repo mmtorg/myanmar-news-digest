@@ -152,6 +152,7 @@ function appendRowsToMonthlySpreadsheet_(monthKey, headerRow, rows) {
  * - G列 -> D列
  * - H列 -> E列
  * - J列 -> F列
+ * - I列 -> G列
  *
  * 追加仕様:
  * - 追記先A列は日付形式にする
@@ -201,6 +202,7 @@ function appendProdArchiveRowsToTitleSheet_() {
     const fValue = row[5]; // F列
     const gValue = row[6]; // G列
     const hValue = row[7]; // H列
+    const iValue = row[8]; // I列（本文要約）
     const jValue = row[9]; // J列
 
     const hasHValue =
@@ -229,6 +231,7 @@ function appendProdArchiveRowsToTitleSheet_() {
       gValue, // G列 -> D列
       hValue, // H列 -> E列
       jValue, // J列 -> F列
+      iValue, // I列 -> G列
     ]);
   }
 
@@ -238,7 +241,7 @@ function appendProdArchiveRowsToTitleSheet_() {
 
   const startRow = destinationSheet.getLastRow() + 1;
   destinationSheet
-    .getRange(startRow, 1, rowsToAppend.length, 6)
+    .getRange(startRow, 1, rowsToAppend.length, 7)
     .setValues(rowsToAppend);
 
   // A列を日付表示形式に設定

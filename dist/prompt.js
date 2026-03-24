@@ -101,7 +101,7 @@ const COMMON_TRANSLATION_RULES = `
 
 【通貨換算ルール】
 ミャンマー通貨「チャット（Kyat、ကျပ်）」が出た場合は日本円に換算して併記する。
-- 換算レート：1チャット = 0.0385円（他レート禁止）
+- 換算レート：1チャット = 0.0360円（他レート禁止）
 - 形式：「◯チャット（約◯円）」、日本円は小数点以下四捨五入、兆・億・万に機械的に分解。
 - チャット以外（バーツ・米ドル等）には換算しない。
 - 見出しでは換算しない（TITLE_OUTPUT_RULESの見出し専用ルールを優先）。
@@ -171,32 +171,26 @@ const PROMPT_SELF_CHECK_RULE = `
 // 過去の修正前→後ペアを記録したスプレッドシート
 const TITLE_CORRECTION_SS_ID_PROP = "TITLE_CORRECTION_SS_ID";
 const TITLE_CORRECTION_SHEET_NAME = "title";
-const TITLE_ARCHIVE_TOP_K = 4; // F列用に使う類似事例数（3〜5件の中間値）
-const TITLE_ARCHIVE_CANDIDATE_POOL = 12; // 類似度評価後に最終選抜する候補数
-const TITLE_ARCHIVE_LOOKBACK_DAYS = 30;
+const TITLE_ARCHIVE_MAX_EXAMPLES = 30;
 const TITLE_CORRECTION_EXCLUDE_TITLE = "最新マーケット情報";
-const TITLE_ARCHIVE_BODY_SNIPPET_CHARS = 1400;
 
-// 実行中キャッシュ（1バッチで1回だけスプレッドシートを読む）
+// 元シートの要約列。
+// 本番の TITLE_CORRECTION_SS_ID_PROP 側で I列に要約があるなら 9。
+// 添付Excelは G列だったが、元SSは I列とのことなので 9 を採用。
+const TITLE_CORRECTION_SUMMARY_COL = 9;
+
 let _fewShotCache_ = null;
 
 /**
- * タイトル修正スプレッドシートから few-shot 用事例をロードする。
+ * タイトル修正スプレッドシートから教師データをロードする。
  * A列: 日付
  * B列: AI見出し案1
  * C列: AI見出し案2
  * D列: AI見出し案3
  * E列: 確定見出し
+ * I列: 本文要約
  *
- * - A列が過去30日以内の行のみ対象
- * - E列が「最新マーケット情報」の行は除外
- * @returns {{
- *   archivedAt: Date,
- *   candidates: string[],
- *   after: string,
- *   inputFeatures: Object,
- *   exampleFeatures: Object
- * }[]}
+ * @returns {{ archivedAt: Date, candidates: string[], after: string, summary: string }[]}
  */
 function loadTitleCorrectionExamples_() {
   if (_fewShotCache_ !== null) return _fewShotCache_;
@@ -230,59 +224,53 @@ function loadTitleCorrectionExamples_() {
       return _fewShotCache_;
     }
 
-    // A:E を読む
-    const values = sh.getRange(2, 1, lastRow - 1, 5).getValues();
+    // A:I まで読む（少なくとも要約列まで）
+    const maxCol = Math.max(9, TITLE_CORRECTION_SUMMARY_COL);
+    const values = sh.getRange(2, 1, lastRow - 1, maxCol).getValues();
 
-    const now = new Date();
-    const cutoff = new Date(
-      now.getTime() - TITLE_ARCHIVE_LOOKBACK_DAYS * 24 * 60 * 60 * 1000,
-    );
-
-    _fewShotCache_ = values
+    const all = values
       .map(function (row) {
-        const archivedAt = row[0];
-
+        const archivedAt = row[0]; // A
         const candidates = [
           String(row[1] || "").trim(), // B
           String(row[2] || "").trim(), // C
           String(row[3] || "").trim(), // D
         ].filter(Boolean);
-
         const after = String(row[4] || "").trim(); // E
-
-        // 類似検索用: 入力側（B〜D）を重視
-        const inputText = candidates.join(" ");
-
-        // 事例全体の表現特徴: B〜D + E をまとめて持つ
-        const exampleText = candidates.concat(after ? [after] : []).join(" ");
+        const summary = String(
+          row[TITLE_CORRECTION_SUMMARY_COL - 1] || "",
+        ).trim(); // I想定
 
         return {
           archivedAt: archivedAt,
           candidates: candidates,
           after: after,
-          inputFeatures: buildTitleArchiveFeatures_(inputText),
-          exampleFeatures: buildTitleArchiveFeatures_(exampleText),
+          summary: summary,
         };
       })
       .filter(function (p) {
-        if (!p.candidates || p.candidates.length === 0) return false;
         if (!p.after) return false;
         if (p.after === TITLE_CORRECTION_EXCLUDE_TITLE) return false;
-        if (!(p.archivedAt instanceof Date) || isNaN(p.archivedAt.getTime())) {
-          return false;
-        }
-        if (p.archivedAt < cutoff) return false;
-
-        // 候補3案も確定見出しも全部同じ、のような学習価値が薄い行だけ除外
-        const uniq = {};
-        p.candidates.concat([p.after]).forEach(function (x) {
-          uniq[x] = true;
-        });
-        if (Object.keys(uniq).length <= 1) return false;
-
+        if (!p.summary) return false; // 今回要件では要約を教師データとして必須化
         return true;
       });
 
+    all.sort(function (a, b) {
+      const da =
+        a.archivedAt instanceof Date && !isNaN(a.archivedAt.getTime())
+          ? a.archivedAt.getTime()
+          : 0;
+      const db =
+        b.archivedAt instanceof Date && !isNaN(b.archivedAt.getTime())
+          ? b.archivedAt.getTime()
+          : 0;
+      return db - da;
+    });
+
+    const recent = all.slice(0, TITLE_ARCHIVE_MAX_EXAMPLES);
+    recent.reverse();
+
+    _fewShotCache_ = recent;
     Logger.log(
       "[loadTitleCorrectionExamples_] loaded %s examples",
       _fewShotCache_.length,
@@ -295,291 +283,56 @@ function loadTitleCorrectionExamples_() {
   return _fewShotCache_;
 }
 
-function normalizeForArchiveSimilarity_(s) {
-  let out = String(s || "").toLowerCase();
-  try {
-    out = out.normalize("NFKC");
-  } catch (e) {}
-  out = out
-    .replace(/[\r\n\t]+/g, " ")
-    .replace(/[“”"「」『』（）()【】\[\]〈〉<>]/g, " ")
-    .replace(/[.,/#!$%^&*;:{}=_`~?！？。、，・|\\+-]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  return out;
-}
-
-function toUniqueList_(arr) {
-  const out = [];
-  const seen = {};
-  (arr || []).forEach(function (v) {
-    const key = String(v || "");
-    if (!key || seen[key]) return;
-    seen[key] = true;
-    out.push(key);
-  });
-  return out;
-}
-
-function charNgrams_(text, n) {
-  const s = normalizeForArchiveSimilarity_(text || "").replace(/\s+/g, "");
-  const grams = [];
-  if (!s) return grams;
-  if (s.length <= n) return [s];
-  for (let i = 0; i <= s.length - n; i++) {
-    grams.push(s.substring(i, i + n));
-  }
-  return toUniqueList_(grams);
-}
-
-function extractNumberTokens_(text) {
-  const s = String(text || "");
-  const m = s.match(/\d+(?:[.,]\d+)?/g) || [];
-  return toUniqueList_(
-    m.map(function (x) {
-      return x.replace(/,/g, "");
-    }),
-  );
-}
-
-function extractAcronymTokens_(text) {
-  const s = String(text || "");
-  const m = s.match(/\b[A-Z]{2,}\b/g) || [];
-  return toUniqueList_(m);
-}
-
-function extractDateLikeTokens_(text) {
-  const s = String(text || "");
-  const m =
-    s.match(
-      /(?:\b\d{1,4}[/-]\d{1,2}(?:[/-]\d{1,4})?\b|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b|\b\d{1,2}\s*(?:day|days|month|months|year|years)\b)/gi,
-    ) || [];
-  return toUniqueList_(
-    m.map(function (x) {
-      return String(x || "").toLowerCase();
-    }),
-  );
-}
-
-function extractScriptTokens_(text) {
-  const s = String(text || "");
-  const latin = s.match(/\b[A-Za-z][A-Za-z'’.-]{2,}\b/g) || [];
-  const jp = s.match(/[\u3040-\u30ff\u3400-\u9fff]{2,}/g) || [];
-  const mm = s.match(/[\u1000-\u109f]{2,}/g) || [];
-  return toUniqueList_(
-    latin.concat(jp, mm).map(function (x) {
-      return normalizeForArchiveSimilarity_(x);
-    }),
-  );
-}
-
-function overlapRatio_(a, b) {
-  const aa = toUniqueList_(a || []);
-  const bb = toUniqueList_(b || []);
-  if (!aa.length || !bb.length) return 0;
-  const mapB = {};
-  bb.forEach(function (x) {
-    mapB[x] = true;
-  });
-  let inter = 0;
-  aa.forEach(function (x) {
-    if (mapB[x]) inter++;
-  });
-  return inter / Math.max(aa.length, bb.length);
-}
-
-function buildTitleArchiveFeatures_(text) {
-  return {
-    normalized: normalizeForArchiveSimilarity_(text || ""),
-    trigrams: charNgrams_(text || "", 3),
-    numbers: extractNumberTokens_(text || ""),
-    acronyms: extractAcronymTokens_(text || ""),
-    dates: extractDateLikeTokens_(text || ""),
-    tokens: extractScriptTokens_(text || ""),
-    hasQuote: /["“”「」『』]/.test(String(text || "")),
-    hasPercent: /%|％/.test(String(text || "")),
-    hasCurrency: /(kyat|usd|baht|円|チャット|ドル|บาท|ကျပ်)/i.test(
-      String(text || ""),
-    ),
-  };
-}
-
-function buildTitleArchiveContext_(params) {
-  const titleRaw = String((params && params.titleRaw) || "").trim();
-  const bodyRaw = String((params && params.bodyRaw) || "").trim();
-  const sourceVal = String((params && params.sourceVal) || "").trim();
-  const bodySnippet = bodyRaw.substring(0, TITLE_ARCHIVE_BODY_SNIPPET_CHARS);
-  const combined = [titleRaw, bodySnippet].filter(Boolean).join("\n");
-  return {
-    text: combined,
-    titleRaw: titleRaw,
-    bodySnippet: bodySnippet,
-    sourceVal: sourceVal,
-    features: buildTitleArchiveFeatures_(combined),
-  };
-}
-
-function scoreTitleArchiveExample_(ctx, example) {
-  if (!ctx || !ctx.features || !example || !example.inputFeatures) return 0;
-  const cf = ctx.features;
-  const ef = example.inputFeatures; // B〜D だけで比較する
-
-  const trigramScore = overlapRatio_(cf.trigrams, ef.trigrams);
-  const tokenScore = overlapRatio_(cf.tokens, ef.tokens);
-  const numberScore = overlapRatio_(cf.numbers, ef.numbers);
-  const acronymScore = overlapRatio_(cf.acronyms, ef.acronyms);
-  const dateScore = overlapRatio_(cf.dates, ef.dates);
-
-  let structuralScore = 0;
-  if (cf.hasQuote === ef.hasQuote) structuralScore += 0.04;
-  if (cf.hasPercent === ef.hasPercent) structuralScore += 0.03;
-  if (cf.hasCurrency === ef.hasCurrency) structuralScore += 0.03;
-
-  const recencyScore =
-    example.archivedAt instanceof Date && !isNaN(example.archivedAt.getTime())
-      ? Math.max(
-          0,
-          1 -
-            (new Date().getTime() - example.archivedAt.getTime()) /
-              (TITLE_ARCHIVE_LOOKBACK_DAYS * 24 * 60 * 60 * 1000),
-        ) * 0.04
-      : 0;
-
-  return (
-    trigramScore * 0.38 +
-    tokenScore * 0.24 +
-    numberScore * 0.16 +
-    acronymScore * 0.08 +
-    dateScore * 0.07 +
-    structuralScore +
-    recencyScore
-  );
-}
-
-function areArchiveExamplesTooClose_(a, b) {
-  if (!a || !b || !a.inputFeatures || !b.inputFeatures) return false;
-  return (
-    overlapRatio_(a.inputFeatures.trigrams, b.inputFeatures.trigrams) >= 0.82
-  );
-}
-
-function selectRelevantTitleCorrectionExamples_(params, topKOpt) {
-  const allExamples = loadTitleCorrectionExamples_();
-  const topK = topKOpt || TITLE_ARCHIVE_TOP_K;
-  if (!allExamples || !allExamples.length) return [];
-
-  const ctx = buildTitleArchiveContext_(params || {});
-  const scored = allExamples
-    .map(function (ex) {
-      return {
-        example: ex,
-        score: scoreTitleArchiveExample_(ctx, ex),
-      };
-    })
-    .sort(function (a, b) {
-      return b.score - a.score;
-    });
-
-  const shortlisted = scored.slice(0, TITLE_ARCHIVE_CANDIDATE_POOL);
-  const picked = [];
-  for (let i = 0; i < shortlisted.length; i++) {
-    const candidate = shortlisted[i].example;
-    const tooClose = picked.some(function (p) {
-      return areArchiveExamplesTooClose_(p, candidate);
-    });
-    if (tooClose) continue;
-    picked.push(candidate);
-    if (picked.length >= topK) break;
-  }
-
-  if (picked.length < topK) {
-    for (let j = 0; j < shortlisted.length; j++) {
-      const candidate2 = shortlisted[j].example;
-      const exists = picked.some(function (p) {
-        return (
-          JSON.stringify(p.candidates) ===
-            JSON.stringify(candidate2.candidates) &&
-          p.after === candidate2.after
-        );
-      });
-      if (exists) continue;
-      picked.push(candidate2);
-      if (picked.length >= topK) break;
-    }
-  }
-
-  Logger.log(
-    "[selectRelevantTitleCorrectionExamples_] picked %s/%s examples",
-    picked.length,
-    allExamples.length,
-  );
-  return picked;
-}
-
 /**
- * 実際に選ばれた類似Top4件を、シート出力用の文字列に整形する。
- * 1件ごとに空行区切りで並べる。
- * @param {{candidates?: string[], before?: string, after: string}[]} examples
- * @returns {string}
+ * 見出しアーカイブ全件（最新 TITLE_ARCHIVE_MAX_EXAMPLES 件）を教師データとして
+ * プロンプトに挿入するテキストを生成する。
+ *
+ * 教師データ:
+ * - B/C/D: 確定前見出し案
+ * - E: 確定見出し
+ * - I: 本文要約
+ *
+ * 今回入力:
+ * - E列: 見出しA
+ * - G列: 見出しB'
+ * - I列: 本文要約
  */
-function formatSelectedTitleCorrectionExamplesForSheet_(examples) {
-  if (!examples || examples.length === 0) return "";
-
-  return examples
-    .map(function (ex, idx) {
-      const cands = ex.candidates || [];
-      const c1 = cands[0] || ex.before || "";
-      const c2 = cands[1] || "";
-      const c3 = cands[2] || "";
-      const after = ex.after || "";
-
-      return [
-        "Top" + (idx + 1),
-        "案1: " + c1,
-        "案2: " + c2,
-        "案3: " + c3,
-        "確定: " + after,
-      ].join("\n");
-    })
-    .join("\n\n");
-}
-
-/**
- * 類似修正例リストから、3案→確定見出し の
- * 編集ルール抽出つきプロンプト挿入用テキストを生成する。
- * @param {{candidates: string[], after: string}[]} examples
- * @returns {string}
- */
-function buildFewShotExamplesSection_(examples) {
+function buildArchiveTeacherSection_() {
+  const examples = loadTitleCorrectionExamples_();
   if (!examples || examples.length === 0) return "";
 
   const lines = examples
     .map(function (ex, idx) {
-      const c1 = ex.candidates[0] || "(なし)";
-      const c2 = ex.candidates[1] || "(なし)";
-      const c3 = ex.candidates[2] || "(なし)";
-      return [
-        "事例" + (idx + 1),
-        "見出し案1: " + c1,
-        "見出し案2: " + c2,
-        "見出し案3: " + c3,
-        "確定見出し: " + ex.after,
-      ].join("\n");
+      const parts = ["事例" + (idx + 1)];
+      ex.candidates.forEach(function (c, ci) {
+        parts.push("見出し案" + (ci + 1) + ": " + c);
+      });
+      parts.push("本文要約: " + ex.summary);
+      parts.push("確定見出し: " + ex.after);
+      return parts.join("\n");
     })
     .join("\n\n");
 
-  return `【見出しアーカイブ（Task2' に適用・最優先で参照）】
-以下は、今回の記事に比較的近い編集済み見出し事例です。
-各事例では、B・C・D列がAI見出し案、E列が編集者の確定見出しです。
+  return `【見出しアーカイブ（教師データ・Task2' に適用）】
+以下は、過去にAI生成された見出し案（B〜D列）と本文要約（I列）をもとに、
+編集者が確定見出し（E列）を決めた事例です。
+今回も同じ発想で、入力された見出し候補と本文要約から、
+TITLE_CORRECTION_SS_ID_PROP の E列に近い傾向の確定見出しを生成してください。
 
 ${lines}
 
 【Task2' の進め方】
-1. まず上の事例だけを根拠に、「見出し案1/2/3 → 確定見出し」で一貫して行われている編集操作を3〜6個抽出する。
-2. 特に、どの案の要素が採用されやすいか、逆にどの表現が落とされやすいかを見極める。
-3. 数値・主体・地名・因果関係・対立軸のうち、確定見出しで優先される要素を重視する。
-4. 抽出した編集操作を今回の記事本文に適用し、編集者が確定しそうな1行見出しへ再構成する。
-5. 出力は最終見出し1行のみとし、抽出したルール自体は出力しない。
+1. 各事例で、見出し案群と本文要約から、編集者が最終的に何を採用したかを学習する。
+2. 特に、主体・地名・数値・因果・対立軸・ニュース価値のうち、
+   どれを残し、どれを削り、どの語順・表現に整えているかを重視する。
+3. 今回入力される E列見出しA、G列見出しB'、I列本文要約 を合わせて読み、
+   もっとも編集者の確定見出しらしい1行を作る。
+   【アーカイブ分析から得られた選択傾向】
+   - G列見出しB'（本文ベース）が確定見出しの主ベースになるケースが69%
+   - E列見出しAが主ベースになるケースは27%
+   - 残り54%はB'とAの両方の要素を組み合わせた形
+   - 典型パターン：B'の具体性・情報量を活かしつつ、文字数超過部分をAの簡潔さで整える
+4. 出力は最終見出し1行のみとし、分析過程は出力しない。
 
 `;
 }
@@ -611,15 +364,41 @@ ${TITLE_OUTPUT_RULES}
 - 「〜と述べた」「〜が行われた」などの曖昧・婉曲表現は避ける
 `;
 
-// HEADLINE_PROMPT_3：本文を読んで作る見出し（B/B’）
+// 確定見出しの形式・用語ルール（HEADLINE_PROMPT_3 / Task2' の両方に適用）
+// ※ 1854件の確定見出しアーカイブ分析から導出
+const HEADLINE_STRUCTURE_RULES = `
+【文字数】
+- 目標：20〜30文字
+- 上限：40文字（絶対に超えない）
+
+【構造】
+- 基本形：[主題（約10文字）]、[内容（約15文字）]
+- 読点（、）で主題と内容を1か所だけ区切る（読点は原則1つ）
+- 2つの情報を並列する場合は、読点の後に全角スペース1つで区切る（例：「総司令官、工場を視察　農業発展を指示」）
+- 句点（。）は絶対に使わない
+- 体言止め（名詞・名詞句で終わる）を原則とする
+
+【用語の優先ルール】
+- 「軍事政権」より「国軍」を使う
+- 人名フルネームより役職名を使う（例：「ミン・アウン・フライン」→「総司令官」）
+- 「会談」より「協議」を優先する
+- 略語（NUG、SAC、PDF、ASEAN、KIA など）はそのまま使い、日本語訳しない
+- 数字は半角アラビア数字で記載する
+
+【記号ルール】
+- 鉤括弧「」は直接引用・公式名称のみに使う（多用しない）
+- ダッシュ（―）・コロン（：）は使わない
+`;
+
+// HEADLINE_PROMPT_3：本文を読んで作る見出し（B/B'）
 const HEADLINE_PROMPT_3 = `
 ${TITLE_OUTPUT_RULES}
 あなたは新聞社の見出しデスクです。
 以下の本文（原文／機械翻訳含む可能性あり）を読み、
 記事の要点（誰／どこ／何が起きた／規模・数値／結果／時点）を抽出し、
 自然で簡潔な日本語の報道見出しを1行で作成してください。
-
-ルール：
+${HEADLINE_STRUCTURE_RULES}
+【その他ルール】
 - 主語と動作を明確に（曖昧表現や冗長な修飾は削る）
 - 重要な固有名詞・数値は優先して残す
 - 「〜と述べた」「〜が行われた」等の婉曲表現は避ける
@@ -699,25 +478,28 @@ const SUMMARY_TASK = `
 - 思考手順（Step1/2、Q1/Q2、→ など）は出力に含めないでください。
 `;
 
-// F列比較用: Task2（見出しB'）+ few-shot ありのシングルタスクプロンプト
-// 出力は見出し1行のみ（JSON不要）。G列（few-shotなし）と対比させる。
+// F列用: 教師データ参考・編集者確定見出し生成プロンプト
+// インプット: E列 headlineA / G列 headlineB2 / I列 summaryJa
 function buildFewShotHeadlineBPrimePrompt_(params) {
-  const { bodyRaw, bodyGlossaryRules } = params;
-  const fewShotSection = buildFewShotExamplesSection_(
-    selectRelevantTitleCorrectionExamples_(params, TITLE_ARCHIVE_TOP_K),
-  );
+  const { headlineA, headlineB2, summaryJa, bodyGlossaryRules } = params;
+  const archiveSection = buildArchiveTeacherSection_();
+
   return `【共通ルール（最優先）】
 ${COMMON_TRANSLATION_RULES}
 
-${fewShotSection || ""}以下の記事本文を読み、日本語の報道見出しを1行で作成してください。
---- HEADLINE_PROMPT_3 ---
-${HEADLINE_PROMPT_3}
--------------------------
-【本文用 用語固定ルール】
-${bodyGlossaryRules || "(なし)"}
+${archiveSection || ""}以下は今回の記事のインプットです。
+E列 見出しA（タイトルベース翻訳）: ${headlineA || ""}
+G列 見出しB'（本文ベース）: ${headlineB2 || ""}
+I列 本文要約: ${summaryJa || ""}
 
-[記事本文]
-${bodyRaw || ""}`.trim();
+上の教師データを踏まえ、
+「今回のE列・G列・I列から、編集者が最終的に確定しそうな見出し」
+を1行で生成してください。
+目標は、TITLE_CORRECTION_SS_ID_PROP の E列に近い傾向の見出しにすることです。
+
+${TITLE_OUTPUT_RULES}
+【本文用 用語固定ルール】
+${bodyGlossaryRules || "(なし)"}`.trim();
 }
 
 // 4タスク（見出しA / 見出しB' / 見出しB'few-shot / 本文要約）を1回で投げるまとめプロンプト
@@ -731,17 +513,7 @@ function buildMultiTaskPromptForRow_(params) {
     bodyGlossaryRules,
   } = params;
 
-  const selectedExamples =
-    params.selectedTitleCorrectionExamples ||
-    selectRelevantTitleCorrectionExamples_(
-      {
-        titleRaw: titleRaw || "",
-        bodyRaw: bodyRaw || "",
-      },
-      TITLE_ARCHIVE_TOP_K,
-    );
-
-  const fewShotSection = buildFewShotExamplesSection_(selectedExamples);
+  const archiveTeacherSection = buildArchiveTeacherSection_();
 
   return `
 【共通ルール（Task1/2/2'/3すべてに適用・最優先）】
@@ -778,12 +550,17 @@ ${bodyGlossaryRules || "(なし)"}
 本文を主な根拠としつつ、必要であればタイトルも補助情報として用いて構いません。
 
 ====================
-[Task2': 見出しB'（本文を読んで作る見出し・スタイル参考例あり）]
-- 記事本文をインプットとしてください。
-- Task2と同じプロンプト・ルールに従いつつ、以下のスタイル参考例も反映して、日本語見出しB'を1行で作成してください。
-${fewShotSection}【本文用 用語固定ルール】
+[Task2': 見出しF（教師データ参考・編集者確定見出し生成）]
+- 目的は、F列に出力する見出しを、見出しアーカイブの確定見出し（TITLE_CORRECTION_SS_ID_PROP の E列）に近い傾向へ寄せることです。
+- 教師データとして、見出しアーカイブの B〜D列の見出し案、I列の本文要約、E列の確定見出しを参考にしてください。
+- 今回の入力データとして、Task1で生成した見出しA、Task2で生成した見出しB'、Task3で生成する本文要約の内容を使ってください。
+- G列見出しB'（本文ベース）を主ベースとし、E列見出しAの要素も参考に取り込んで整えてください。
+- 単なる E/G の折衷ではなく、本文要約から重要度の高い要素を補正して、
+  アーカイブの確定見出しに近い決め方で整えてください。
+${archiveTeacherSection}${HEADLINE_STRUCTURE_RULES}
+${TITLE_OUTPUT_RULES}
+【本文用 用語固定ルール】
 ${bodyGlossaryRules || "(なし)"}
-本文を主な根拠としつつ、必要であればタイトルも補助情報として用いて構いません。
 
 ====================
 [Task3: 本文要約]
@@ -2208,11 +1985,10 @@ function processRow_(sheet, row, prevStatus) {
   }
 
   const colE = 5; // 見出しA
-  const colF = 6; // 見出しA'
+  const colF = 6; // 見出しF（教師データ参考）
   const colG = 7; // 見出しB'（本文のみ）
   const colI = 9; // 本文要約（STEP3_TASK）
   const colJ = 10; // URL（任意）
-  const colP = 16; // few-shotで実際に使った類似Top4
 
   const sourceVal = sheet.getRange(row, colC).getValue();
   const titleRaw = sheet.getRange(row, colM).getValue();
@@ -2245,25 +2021,8 @@ function processRow_(sheet, row, prevStatus) {
   let headlineB2 = "";
   let headlineBFewShot = "";
   let summaryJa = "";
-  let selectedTitleCorrectionExamples = [];
-  let selectedTitleCorrectionExamplesText = "";
 
   if (titleRaw || bodyRaw) {
-    selectedTitleCorrectionExamples = selectRelevantTitleCorrectionExamples_(
-      {
-        titleRaw: titleRaw || "",
-        bodyRaw: bodyRaw || "",
-        sourceVal: sourceVal || "",
-        urlVal: urlVal || "",
-      },
-      TITLE_ARCHIVE_TOP_K,
-    );
-
-    selectedTitleCorrectionExamplesText =
-      formatSelectedTitleCorrectionExamplesForSheet_(
-        selectedTitleCorrectionExamples,
-      );
-
     const multiParams = {
       titleRaw: titleRaw || "",
       bodyRaw: bodyRaw || "",
@@ -2271,7 +2030,6 @@ function processRow_(sheet, row, prevStatus) {
       urlVal: urlVal || "",
       titleGlossaryRules: titleGlossaryRules || "",
       bodyGlossaryRules: bodyGlossaryRules || "",
-      selectedTitleCorrectionExamples: selectedTitleCorrectionExamples,
     };
 
     const multiPrompt = buildMultiTaskPromptForRow_(multiParams);
@@ -2418,10 +2176,9 @@ function processRow_(sheet, row, prevStatus) {
 
   // シートに書き込み
   sheet.getRange(row, colE).setValue(headlineA); // 見出しA
-  sheet.getRange(row, colF).setValue(headlineBFewShot); // 見出しB'（few-shotあり）
-  sheet.getRange(row, colG).setValue(headlineB2); // 見出しB'（few-shotなし）
+  sheet.getRange(row, colF).setValue(headlineBFewShot); // 見出しF（教師データ参考）
+  sheet.getRange(row, colG).setValue(headlineB2); // 見出しB'（本文のみ）
   sheet.getRange(row, colI).setValue(summaryJa); // 本文要約
-  sheet.getRange(row, colP).setValue(selectedTitleCorrectionExamplesText); // 類似Top4
 
   /********************************************
    * L列：ステータス判定（詳細エラー + 複数記録）
@@ -2611,9 +2368,9 @@ function estimateTokensFromChars_(nChars) {
 // 通貨換算・金額分解を機械側で固定（円表記の再発防止）
 // ============================================================
 
-// 1チャット=0.0385円、四捨五入
+// 1チャット=0.0360円、四捨五入
 function kyatToYenInt_(kyatInt) {
-  return Math.round(Number(kyatInt) * 0.0385);
+  return Math.round(Number(kyatInt) * 0.036);
 }
 
 // 例: 21060000000 -> "210億6000万円" / 987654321 -> "9億8765万4321円"
@@ -2807,6 +2564,8 @@ function _propNameForSheetAndSource_(sheetName, sourceRaw) {
 // 2件まとめ用：配列(JSON)で返させるプロンプト
 function buildMultiTaskPromptForRows_(items) {
   // items: [{id,titleRaw,bodyRaw,titleGlossaryRules,bodyGlossaryRules}]
+  const archiveTeacherSection = buildArchiveTeacherSection_();
+
   const blocks = items
     .map(function (it, idx) {
       return `
@@ -2829,11 +2588,15 @@ ${HEADLINE_PROMPT_3}
 【本文用 用語固定ルール】
 ${it.bodyGlossaryRules || "(なし)"}
 
---- Task2' 見出しB'ルール（見出しアーカイブから編集ルール抽出あり）---
-${HEADLINE_PROMPT_3}
-${buildFewShotExamplesSection_(
-  it.selectedTitleCorrectionExamples || [],
-)}【本文用 用語固定ルール】
+--- Task2' 見出しFルール（教師データ参考・編集者確定見出し生成）---
+目的は、F列の見出しを見出しアーカイブの確定見出し（E列）に近い傾向へ寄せること。
+教師データとして、見出しアーカイブの B〜D列の見出し案、I列の本文要約、E列の確定見出しを参考にすること。
+今回の記事では、Task1の見出しA、Task2の見出しB'、Task3で把握した本文要約の内容を合わせて使い、
+G列見出しB'（本文ベース）を主ベースとし、E列見出しAの要素も参考に取り込んで、
+編集者が最終的に確定しそうな1行見出しを生成すること。
+${archiveTeacherSection}${HEADLINE_STRUCTURE_RULES}
+${TITLE_OUTPUT_RULES}
+【本文用 用語固定ルール】
 ${it.bodyGlossaryRules || "(なし)"}
 
 --- Task3 本文要約ルール ---
@@ -2852,7 +2615,7 @@ ${COMMON_TRANSLATION_RULES}
 各記事ごとに、次の4つの結果を同時に生成してください：
 1) 見出しA（タイトル翻訳ベース）
 2) 見出しB'（本文を読んで作る見出し・スタイル参考例なし）
-3) 見出しB'（本文を読んで作る見出し・スタイル参考例あり）
+3) 見出しF（教師データ参考・編集者確定見出し）
 4) 本文要約
 
 ${PROMPT_SELF_CHECK_RULE}
@@ -2867,7 +2630,7 @@ ${PROMPT_SELF_CHECK_RULE}
       "id": "入力の id をそのまま入れる",
       "headlineA": "Task1 の見出しA",
       "headlineBPrime": "Task2 の見出しB'",
-      "headlineBPrimeFewShot": "Task2' の見出しB'",
+      "headlineBPrimeFewShot": "Task2' の見出しF",
       "summary": "Task3 の本文要約"
     }
   ]
@@ -2893,7 +2656,6 @@ function _applyOutputsToRow_(
   headlineB2,
   summaryJa,
   headlineBFewShot,
-  selectedTitleCorrectionExamplesText,
   retryKindOpt,
 ) {
   const colE = 5;
@@ -2901,7 +2663,6 @@ function _applyOutputsToRow_(
   const colG = 7;
   const colI = 9;
   const colL = 12;
-  const colP = 16;
 
   const titleRaw = ctx.titleRaw;
   const bodyRaw = ctx.bodyRaw;
@@ -2958,12 +2719,9 @@ function _applyOutputsToRow_(
 
   // 書き込み
   sheet.getRange(row, colE).setValue(headlineA);
-  sheet.getRange(row, colF).setValue(headlineBFewShot || ""); // 見出しB'（few-shotあり）
+  sheet.getRange(row, colF).setValue(headlineBFewShot || ""); // 見出しF（教師データ参考）
   sheet.getRange(row, colG).setValue(headlineB2);
   sheet.getRange(row, colI).setValue(summaryJa);
-  sheet
-    .getRange(row, colP)
-    .setValue(String(selectedTitleCorrectionExamplesText || ""));
 
   function isError_(val) {
     return typeof val === "string" && val.indexOf("ERROR:") === 0;
@@ -3216,22 +2974,6 @@ function processRowsBatch() {
             const titleGlossaryRules = regionRulesTitle;
             const bodyGlossaryRules = regionRulesTitle + regionRulesBody;
 
-            const selectedTitleCorrectionExamples =
-              selectRelevantTitleCorrectionExamples_(
-                {
-                  titleRaw: it.titleRaw || "",
-                  bodyRaw: it.bodyRaw || "",
-                  sourceVal: it.sourceVal || "",
-                  urlVal: it.urlVal || "",
-                },
-                TITLE_ARCHIVE_TOP_K,
-              );
-
-            const selectedTitleCorrectionExamplesText =
-              formatSelectedTitleCorrectionExamplesForSheet_(
-                selectedTitleCorrectionExamples,
-              );
-
             return {
               id: String(it.rowIndex),
               rowIndex: it.rowIndex,
@@ -3242,9 +2984,6 @@ function processRowsBatch() {
               bodyRaw: it.bodyRaw,
               titleGlossaryRules: titleGlossaryRules || "",
               bodyGlossaryRules: bodyGlossaryRules || "",
-              selectedTitleCorrectionExamples: selectedTitleCorrectionExamples,
-              selectedTitleCorrectionExamplesText:
-                selectedTitleCorrectionExamplesText,
             };
           });
 
@@ -3326,7 +3065,6 @@ function processRowsBatch() {
                 resp,
                 resp,
                 resp,
-                pi.selectedTitleCorrectionExamplesText || "",
                 groupKey === "__OPENAI__" ? "GPTNG" : "NG",
               );
             });
@@ -3408,7 +3146,6 @@ function processRowsBatch() {
                 hB || "",
                 sm2 || "",
                 hBF || "",
-                pi.selectedTitleCorrectionExamplesText || "",
                 groupKey === "__OPENAI__" ? "GPTNG" : "NG",
               );
             });
