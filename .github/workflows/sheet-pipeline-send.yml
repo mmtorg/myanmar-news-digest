@@ -40,13 +40,6 @@ on:
         type: string
         required: false
         default: ""
-# どのイベントでも 1 workflow につき環境ごとに直列化
-concurrency:
-  # 手動実行: main→production / develop→development / その他→production（元の式を踏襲）
-  group: mna-sheet-pipeline-${{ github.event_name == 'workflow_dispatch'
-    && (github.ref_name == 'develop' && 'development' || 'production')
-    || 'production' }}
-  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -64,6 +57,9 @@ jobs:
     runs-on: ubuntu-latest
     # 環境別シークレット（Environments）の切替：本番固定
     environment: production
+    concurrency:
+      group: mna-sheet-pipeline-production-collect16
+      cancel-in-progress: false
     # ▼ 環境変数（prod用）のみ追加（ここでのmulti-lineはOK：$GITHUB_ENV経由ではない）
     env:
       # ===== Gemini（production）=====
@@ -166,6 +162,9 @@ jobs:
     if: github.event_name == 'schedule' && contains(fromJson('["17 11 * * *","17 14 * * *","17 15 * * *","17 16 * * *","57 16 * * *"]'), github.event.schedule)
     runs-on: ubuntu-latest
     environment: production
+    concurrency:
+      group: mna-sheet-pipeline-production-collect-${{ github.event.schedule }}
+      cancel-in-progress: false
     env:
       # ===== Gemini（production）=====
       GEMINI_API_KEY_MIZZIMA: ${{ secrets.GEMINI_API_KEY_MIZZIMA }}
@@ -277,6 +276,9 @@ jobs:
     if: github.event_name == 'schedule' && github.event.schedule == '35 19 * * *'
     runs-on: ubuntu-latest
     environment: production
+    concurrency:
+      group: mna-sheet-pipeline-production-watch-build-send
+      cancel-in-progress: false
     env:
       # ===== Gemini（production）=====
       GEMINI_API_KEY_MIZZIMA: ${{ secrets.GEMINI_API_KEY_MIZZIMA }}
@@ -546,6 +548,9 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     environment: ${{ github.ref_name == 'develop' && 'development' || 'production' }}
+    concurrency:
+      group: mna-sheet-pipeline-${{ github.ref_name == 'develop' && 'development' || 'production' }}-manual
+      cancel-in-progress: false
     env:
       GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
       EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
