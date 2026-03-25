@@ -6,16 +6,16 @@ on:
     # 15:50 MMT ≒ 09:20 UTC → 09:17 UTC（= 15:47 MMT, 3分前倒し）
     - cron: "17 9 * * *" # 15:47 MMT（実運用目標: 15:50）
 
-    # 17:50 / 20:40 / 21:40 / 22:40 / 23:20 MMT（= 11:20 / 14:10 / 15:10 / 16:10 / 16:50 UTC）: 追記のみ
+    # 17:50 / 20:50 / 21:50 / 22:50 / 23:30 MMT（= 11:20 / 14:20 / 15:20 / 16:20 / 17:00 UTC）: 追記のみ
     # 17:50 MMT ≒ 11:20 UTC → 11:17 UTC（= 17:47 MMT, 3分前倒し）
     - cron: "17 11 * * *" # 17:47 MMT（実運用目標: 17:50）
-    # 20:40 MMT ≒ 14:10 UTC → 14:07 UTC（= 20:37 MMT, 3分前倒し）
-    - cron: "7 14 * * *" # 20:37 MMT（実運用目標: 20:40）
-    # 21:40 MMT ≒ 15:10 UTC → 15:07 UTC（= 21:37 MMT, 3分前倒し）
-    - cron: "7 15 * * *" # 21:37 MMT（実運用目標: 21:40）
-    # 22:40 MMT ≒ 16:10 UTC → 16:07 UTC（= 22:37 MMT, 3分前倒し）
-    - cron: "7 16 * * *" # 22:37 MMT（実運用目標: 22:40）
-    - cron: "47 16 * * *" # 23:17 MMT（実運用目標: 23:20）
+    # 20:50 MMT ≒ 14:20 UTC → 14:17 UTC（= 20:47 MMT, 3分前倒し）
+    - cron: "17 14 * * *" # 20:47 MMT（実運用目標: 20:50）
+    # 21:50 MMT ≒ 15:20 UTC → 15:17 UTC（= 21:47 MMT, 3分前倒し）
+    - cron: "17 15 * * *" # 21:47 MMT（実運用目標: 21:50）
+    # 22:50 MMT ≒ 16:20 UTC → 16:17 UTC（= 22:47 MMT, 3分前倒し）
+    - cron: "17 16 * * *" # 22:47 MMT（実運用目標: 22:50）
+    - cron: "57 16 * * *" # 23:27 MMT（実運用目標: 23:30）
 
     # 02:00 MMT（= 19:30 UTC 前日）: bundle生成
     # → 19:27 UTC（= 02:00 MMT, 3分前倒し）
@@ -50,75 +50,17 @@ defaults:
     shell: bash
 
 jobs:
-  collect-selector:
-    if: github.event_name == 'schedule' && github.event.schedule != '35 19 * * *'
-    runs-on: ubuntu-latest
-    outputs:
-      run_collect16: ${{ steps.pick.outputs.run_collect16 }}
-      run_collect: ${{ steps.pick.outputs.run_collect }}
-      selected_schedule_cron: ${{ steps.pick.outputs.selected_schedule_cron }}
-      slot_key: ${{ steps.pick.outputs.slot_key }}
-      slot_date_mmt: ${{ steps.pick.outputs.slot_date_mmt }}
-    steps:
-      - id: pick
-        run: |
-          python - <<'PY' >> "$GITHUB_OUTPUT"
-          from datetime import datetime, timedelta, timezone
-
-          MMT = timezone(timedelta(hours=6, minutes=30))
-          now = datetime.now(MMT)
-          hhmm = now.strftime("%H:%M")
-          slot_date = now.strftime("%Y-%m-%d")
-
-          run_collect16 = "false"
-          run_collect = "false"
-          selected_schedule_cron = ""
-          slot_key = "noop"
-
-          # 既存挙動を壊しにくくするため、従来 github.event.schedule で使っていた値を復元する
-          # 10分おき起動なので、対象時刻に一致したときだけ本処理を有効化
-          if hhmm == "15:50":
-              run_collect16 = "true"
-              selected_schedule_cron = "17 9 * * *"
-              slot_key = "collect16-1550"
-          elif hhmm == "17:50":
-              run_collect = "true"
-              selected_schedule_cron = "17 11 * * *"
-              slot_key = "collect-1750"
-          elif hhmm == "20:50":
-              run_collect = "true"
-              selected_schedule_cron = "17 14 * * *"
-              slot_key = "collect-2050"
-          elif hhmm == "21:50":
-              run_collect = "true"
-              selected_schedule_cron = "17 15 * * *"
-              slot_key = "collect-2150"
-          elif hhmm == "22:50":
-              run_collect = "true"
-              selected_schedule_cron = "17 16 * * *"
-              slot_key = "collect-2250"
-          elif hhmm == "23:30":
-              run_collect = "true"
-              selected_schedule_cron = "57 16 * * *"
-              slot_key = "collect-2330"
-
-          print(f"run_collect16={run_collect16}")
-          print(f"run_collect={run_collect}")
-          print(f"selected_schedule_cron={selected_schedule_cron}")
-          print(f"slot_key={slot_key}")
-          print(f"slot_date_mmt={slot_date}")
-          PY
-
   # === スケジュール（本番のみ / mainブランチ運用前提） ===
   schedule-collect16:
-    # 15:50 MMT 枠
-    if: github.event_name == 'schedule' && needs.collect-selector.outputs.run_collect16 == 'true'
-    needs: [collect-selector]
+    # 15:50 枠（09:17 UTC 起動）
+    if: github.event_name == 'schedule' && github.event.schedule == '17 9 * * *'
     runs-on: ubuntu-latest
+    # 環境別シークレット（Environments）の切替：本番固定
     environment: production
     concurrency:
-      group: mna-sheet-pipeline-production-collect16-${{ needs.collect-selector.outputs.slot_date_mmt }}
+      group: mna-sheet-pipeline-production-collect16
       cancel-in-progress: false
+    # ▼ 環境変数（prod用）のみ追加（ここでのmulti-lineはOK：$GITHUB_ENV経由ではない）
     env:
       # ===== Gemini（production）=====
       GEMINI_API_KEY_MIZZIMA: ${{ secrets.GEMINI_API_KEY_MIZZIMA }}
@@ -188,7 +130,7 @@ jobs:
 
       - name: Collect → write to sheet (15:50 run, clear yesterday once)
         run: |
-          python sheet_pipeline.py collect-to-sheet --clear-yesterday --schedule-cron "${{ needs.collect-selector.outputs.selected_schedule_cron }}"
+          python sheet_pipeline.py collect-to-sheet --clear-yesterday --schedule-cron "${{ github.event.schedule }}"
 
       # ★ 15:50 枠の収集完了時にメール通知（※一時的に無効化）
       # - name: Notify by email via Python (cron 15:50 MMT)
@@ -216,12 +158,12 @@ jobs:
       #     CSV_EMAIL_RECIPIENTS: ${{ secrets.CSV_EMAIL_RECIPIENTS }}
 
   schedule-collect:
-    # 17:50 / 20:40 / 21:40 / 22:40 / 23:20 枠
-    if: github.event_name == 'schedule' && contains(fromJson('["17 11 * * *","7 14 * * *","7 15 * * *","7 16 * * *","47 16 * * *"]'), github.event.schedule)
+    # 17:50 / 20:50 / 21:50 / 22:50 / 23:30 枠
+    if: github.event_name == 'schedule' && contains(fromJson('["17 11 * * *","17 14 * * *","17 15 * * *","17 16 * * *","57 16 * * *"]'), github.event.schedule)
     runs-on: ubuntu-latest
     environment: production
     concurrency:
-      group: mna-sheet-pipeline-production-${{ needs.collect-selector.outputs.slot_key }}
+      group: mna-sheet-pipeline-production-collect-${{ github.event.schedule }}
       cancel-in-progress: false
     env:
       # ===== Gemini（production）=====
@@ -290,12 +232,12 @@ jobs:
           printf '%s' "$GOOGLE_SERVICE_ACCOUNT_JSON" > "$SA_FILE"
           echo "GOOGLE_APPLICATION_CREDENTIALS=$SA_FILE" >> "$GITHUB_ENV"
 
-      - name: Collect → append to sheet (17:50/20:40/21:40/22:40/23:20 runs)
+      - name: Collect → append to sheet (17:50/20:50/21:50/22:50 runs)
         run: |
-          python sheet_pipeline.py collect-to-sheet --schedule-cron "${{ needs.collect-selector.outputs.selected_schedule_cron }}"
+          python sheet_pipeline.py collect-to-sheet --schedule-cron "${{ github.event.schedule }}"
 
-      # ★ 17:50 / 20:40 / 21:40 / 22:40 / 23:20 枠ごとに、collect 完了後にメール通知（※一時的に無効化）
-      # - name: Notify by email via Python (cron 17:50/20:40/21:40/22:40/23:20 MMT)
+      # ★ 17:50 / 20:50 / 21:50 / 22:50 枠ごとに、collect 完了後にメール通知（※一時的に無効化）
+      # - name: Notify by email via Python (cron 17:50/20:50/21:50/22:50 MMT)
       #   if: ${{ github.event_name == 'schedule' && success() }}
       #   run: |
       #     set -euo pipefail
@@ -303,13 +245,12 @@ jobs:
       #     echo "Prev step finished. Sleep 40 minutes before sending email..."
       #     sleep 2400 # 40分
       #
-      #     # selected_schedule_cron から MMT 時刻ラベルを決定
-      #     case "${{ needs.collect-selector.outputs.selected_schedule_cron }}" in
+      #     # github.event.schedule から MMT 時刻ラベルを決定
+      #     case "${{ github.event.schedule }}" in
       #       "17 11 * * *") SLOT_LABEL="17:50" ;;
-      #       "7 14 * * *") SLOT_LABEL="20:40" ;;
-      #       "7 15 * * *") SLOT_LABEL="21:40" ;;
-      #       "7 16 * * *") SLOT_LABEL="22:40" ;;
-      #       "47 16 * * *") SLOT_LABEL="23:20" ;;
+      #       "17 14 * * *") SLOT_LABEL="20:50" ;;
+      #       "17 15 * * *") SLOT_LABEL="21:50" ;;
+      #       "17 16 * * *") SLOT_LABEL="22:50" ;;
       #       *)             SLOT_LABEL="定期収集" ;;
       #     esac
       #     BODY="$(printf '%s\n%s\n%s\n' \
@@ -331,7 +272,7 @@ jobs:
       #     CSV_EMAIL_RECIPIENTS: ${{ secrets.CSV_EMAIL_RECIPIENTS }}
 
   schedule-watch-build-send:
-    # 02:05 MMT 以降に監視ループ開始
+    # 02:05 MMT（= 19:35 UTC 前日）以降に監視ループ開始
     if: github.event_name == 'schedule' && github.event.schedule == '35 19 * * *'
     runs-on: ubuntu-latest
     environment: production
@@ -607,6 +548,9 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     environment: ${{ github.ref_name == 'develop' && 'development' || 'production' }}
+    concurrency:
+      group: mna-sheet-pipeline-${{ github.ref_name == 'develop' && 'development' || 'production' }}-manual
+      cancel-in-progress: false
     env:
       GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
       EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
@@ -622,8 +566,6 @@ jobs:
       BRIGHTDATA_BROWSER_AUTH: ${{ secrets.BRIGHTDATA_BROWSER_AUTH }}
       BRIGHTDATA_WEB_UNLOCKER_ZONE: ${{ secrets.BRIGHTDATA_WEB_UNLOCKER_ZONE }}
       BRIGHTDATA_WEB_UNLOCKER_PASSWORD: ${{ secrets.BRIGHTDATA_WEB_UNLOCKER_PASSWORD }}
-      MAIL_RETRY_LIMIT: "2"
-      MAIL_RETRY_WAIT_SEC: "600"
     steps:
       - name: Checkout (手動で選んだブランチ)
         uses: actions/checkout@v5
