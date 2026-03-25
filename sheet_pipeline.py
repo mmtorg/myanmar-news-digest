@@ -1520,10 +1520,13 @@ def _keep_only_rows_of_date(date_str: str) -> int:
 def cmd_collect_to_sheet(args):
     now_mmt = datetime.now(MMT)
     target = now_mmt.date()
+    if getattr(args, "target_offset_days", 0):
+        target = target + timedelta(days=int(args.target_offset_days))
     
     logging.info(
         f"[collect] start target_date_mmt={target.isoformat()} "
-        f"clear_yesterday={getattr(args,'clear_yesterday',False)}"
+        f"clear_yesterday={getattr(args,'clear_yesterday',False)} "
+        f"target_offset_days={getattr(args,'target_offset_days',0)}"
     )
 
     # 前日クリアオプション
@@ -1872,6 +1875,7 @@ def main():
     p1.add_argument("--clear-yesterday", action="store_true", help="前日分だけA2:Jから除去（16:00用）")
     p1.add_argument("--bundle-dir", default="bundle", help="本文キャッシュ/成果物の保存先（既定: bundle）")
     p1.add_argument("--schedule-cron", default=None, help="(GitHub Actions) github.event.schedule の cron 文字列。Irrawaddy の実行枠判定に使用")
+    p1.add_argument("--target-offset-days", type=int, default=0, help="収集対象日をMMT基準で相対シフトする。-1で昨日")
     # === Gemini free tier を想定したレート設定（CLI指定 > 環境変数 > 既定）===
     p1.add_argument("--rpm", type=int, default=int(os.getenv("GEMINI_REQS_PER_MIN", "9")))
     p1.add_argument("--min-interval", type=float, default=float(os.getenv("GEMINI_MIN_INTERVAL_SEC", "2.0")))
