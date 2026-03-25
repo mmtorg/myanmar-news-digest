@@ -17,6 +17,10 @@ on:
     - cron: "17 16 * * *" # 22:47 MMT（実運用目標: 22:50）
     - cron: "57 16 * * *" # 23:27 MMT（実運用目標: 23:30）
 
+    # 00:10 MMT（= 17:40 UTC 前日）: 昨日記事を取得して重複なしのみ追記
+    # 3分前倒しで 17:37 UTC（= 00:07 MMT）
+    - cron: "37 17 * * *" # 00:07 MMT（実運用目標: 00:10）
+
     # 02:00 MMT（= 19:30 UTC 前日）: bundle生成
     # → 19:27 UTC（= 02:00 MMT, 3分前倒し）
     - cron: "35 19 * * *" # 02:05 MMT（監視ループ開始）
@@ -158,8 +162,8 @@ jobs:
       #     CSV_EMAIL_RECIPIENTS: ${{ secrets.CSV_EMAIL_RECIPIENTS }}
 
   schedule-collect:
-    # 17:50 / 20:50 / 21:50 / 22:50 / 23:30 枠
-    if: github.event_name == 'schedule' && contains(fromJson('["17 11 * * *","17 14 * * *","17 15 * * *","17 16 * * *","57 16 * * *"]'), github.event.schedule)
+    # 00:10 / 17:50 / 20:50 / 21:50 / 22:50 / 23:30 枠
+    if: github.event_name == 'schedule' && contains(fromJson('["37 17 * * *","17 11 * * *","17 14 * * *","17 15 * * *","17 16 * * *","57 16 * * *"]'), github.event.schedule)
     runs-on: ubuntu-latest
     environment: production
     concurrency:
@@ -232,9 +236,13 @@ jobs:
           printf '%s' "$GOOGLE_SERVICE_ACCOUNT_JSON" > "$SA_FILE"
           echo "GOOGLE_APPLICATION_CREDENTIALS=$SA_FILE" >> "$GITHUB_ENV"
 
-      - name: Collect → append to sheet (17:50/20:50/21:50/22:50 runs)
+      - name: Collect → append to sheet (includes 00:10 yesterday-backfill run)
         run: |
-          python sheet_pipeline.py collect-to-sheet --schedule-cron "${{ github.event.schedule }}"
+          if [ "${{ github.event.schedule }}" = "37 17 * * *" ]; then
+            python sheet_pipeline.py collect-to-sheet --schedule-cron "${{ github.event.schedule }}" --target-offset-days -1
+          else
+            python sheet_pipeline.py collect-to-sheet --schedule-cron "${{ github.event.schedule }}"
+          fi
 
       # ★ 17:50 / 20:50 / 21:50 / 22:50 枠ごとに、collect 完了後にメール通知（※一時的に無効化）
       # - name: Notify by email via Python (cron 17:50/20:50/21:50/22:50 MMT)
