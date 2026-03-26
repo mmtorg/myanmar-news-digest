@@ -93,6 +93,12 @@ jobs:
       BRIGHTDATA_BROWSER_AUTH: ${{ secrets.BRIGHTDATA_BROWSER_AUTH }}
       BRIGHTDATA_WEB_UNLOCKER_ZONE: ${{ secrets.BRIGHTDATA_WEB_UNLOCKER_ZONE }}
       BRIGHTDATA_WEB_UNLOCKER_PASSWORD: ${{ secrets.BRIGHTDATA_WEB_UNLOCKER_PASSWORD }}
+      # ===== Email =====
+      EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
+      GMAIL_CLIENT_ID: ${{ secrets.GMAIL_CLIENT_ID }}
+      GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
+      GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
+      CSV_EMAIL_RECIPIENTS: ${{ secrets.CSV_EMAIL_RECIPIENTS }}
     steps:
       - name: Checkout (main)
         uses: actions/checkout@v5
@@ -131,6 +137,20 @@ jobs:
           SA_FILE="$RUNNER_TEMP/sa.json"
           printf '%s' "$GOOGLE_SERVICE_ACCOUNT_JSON" > "$SA_FILE"
           echo "GOOGLE_APPLICATION_CREDENTIALS=$SA_FILE" >> "$GITHUB_ENV"
+
+      - name: Notify start by email (cron 15:50 MMT)
+        run: |
+          set -euo pipefail
+          BODY="$(printf '%s\n%s\n%s\n%s\n' \
+            '▶ MNA 記事収集を開始しました（15:50枠 / 本番）' \
+            '・job: schedule-collect16' \
+            "・cron: ${{ github.event.schedule }}" \
+            '・このメールは開始通知です。' )"
+          python notify_done.py \
+            --to "${CSV_EMAIL_RECIPIENTS}" \
+            --subject "【MNA 記事収集】15:50枠 開始（本番）" \
+            --body "$BODY" \
+            --sheet-url "https://docs.google.com/spreadsheets/d/${{ secrets.MNA_SHEET_ID }}/edit"
 
       - name: Collect → write to sheet (15:50 run, clear yesterday once)
         run: |
@@ -197,6 +217,12 @@ jobs:
       BRIGHTDATA_BROWSER_AUTH: ${{ secrets.BRIGHTDATA_BROWSER_AUTH }}
       BRIGHTDATA_WEB_UNLOCKER_ZONE: ${{ secrets.BRIGHTDATA_WEB_UNLOCKER_ZONE }}
       BRIGHTDATA_WEB_UNLOCKER_PASSWORD: ${{ secrets.BRIGHTDATA_WEB_UNLOCKER_PASSWORD }}
+      # ===== Email =====
+      EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
+      GMAIL_CLIENT_ID: ${{ secrets.GMAIL_CLIENT_ID }}
+      GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
+      GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
+      CSV_EMAIL_RECIPIENTS: ${{ secrets.CSV_EMAIL_RECIPIENTS }}
     steps:
       - name: Checkout (main)
         uses: actions/checkout@v5
@@ -235,6 +261,32 @@ jobs:
           SA_FILE="$RUNNER_TEMP/sa.json"
           printf '%s' "$GOOGLE_SERVICE_ACCOUNT_JSON" > "$SA_FILE"
           echo "GOOGLE_APPLICATION_CREDENTIALS=$SA_FILE" >> "$GITHUB_ENV"
+
+      - name: Notify start by email (cron collect runs)
+        run: |
+          set -euo pipefail
+
+          case "${{ github.event.schedule }}" in
+            "37 17 * * *") SLOT_LABEL="00:10（前日分追記）" ;;
+            "17 11 * * *") SLOT_LABEL="17:50" ;;
+            "17 14 * * *") SLOT_LABEL="20:50" ;;
+            "17 15 * * *") SLOT_LABEL="21:50" ;;
+            "17 16 * * *") SLOT_LABEL="22:50" ;;
+            "57 16 * * *") SLOT_LABEL="23:30" ;;
+            *) SLOT_LABEL="定期収集" ;;
+          esac
+
+          BODY="$(printf '%s\n%s\n%s\n%s\n' \
+            "▶ MNA 記事収集を開始しました（${SLOT_LABEL}枠 / 本番）" \
+            '・job: schedule-collect' \
+            "・cron: ${{ github.event.schedule }}" \
+            '・このメールは開始通知です。' )"
+
+          python notify_done.py \
+            --to "${CSV_EMAIL_RECIPIENTS}" \
+            --subject "【MNA 記事収集】${SLOT_LABEL}枠 開始（本番）" \
+            --body "$BODY" \
+            --sheet-url "https://docs.google.com/spreadsheets/d/${{ secrets.MNA_SHEET_ID }}/edit"
 
       - name: Collect → append to sheet (includes 00:10 yesterday-backfill run)
         run: |
@@ -709,6 +761,47 @@ jobs:
           echo "PDF_FONT_BOLD_PATH=$GITHUB_WORKSPACE/fonts/NotoSansJP-Bold.ttf" >> "$GITHUB_ENV"
           echo "PDF_FONT_PATH=${PDF_FONT_PATH:-<not-set>}"
 
+      - name: Notify start by email (manual collect)
+        if: ${{ inputs.mode == 'collect16' || inputs.mode == 'collect' }}
+        run: |
+          set -euo pipefail
+
+          if [ "${GITHUB_REF_NAME}" = "develop" ]; then
+            ENV_LABEL="development"
+            SHEET_LABEL="dev"
+          else
+            ENV_LABEL="production"
+            SHEET_LABEL="prod"
+          fi
+
+          case "${{ inputs.mode }}" in
+            collect16)
+              SLOT_LABEL="15:50相当"
+              JOB_LABEL="manual-run / collect16"
+              ;;
+            collect)
+              SLOT_LABEL="collect"
+              JOB_LABEL="manual-run / collect"
+              ;;
+            *)
+              SLOT_LABEL="manual"
+              JOB_LABEL="manual-run"
+              ;;
+          esac
+
+          BODY="$(printf '%s\n%s\n%s\n%s\n%s\n' \
+            "▶ MNA 記事収集を開始しました（手動実行 / ${SLOT_LABEL}）" \
+            "・job: ${JOB_LABEL}" \
+            "・branch: ${GITHUB_REF_NAME}" \
+            "・environment: ${ENV_LABEL}" \
+            "・sheet: ${SHEET_LABEL}" )"
+
+          python notify_done.py \
+            --to "${CSV_EMAIL_RECIPIENTS}" \
+            --subject "【MNA 記事収集】手動実行 開始 (${SLOT_LABEL})" \
+            --body "$BODY" \
+            --sheet-url "https://docs.google.com/spreadsheets/d/${{ secrets.MNA_SHEET_ID }}/edit"
+
       - name: Run selected mode
         if: ${{ inputs.mode == 'collect16' || inputs.mode == 'collect' }}
         run: |
@@ -716,10 +809,10 @@ jobs:
           echo "Run case \"${{ inputs.mode }}\" in"
           case "${{ inputs.mode }}" in
             collect16)
-              python sheet_pipeline.py collect-to-sheet --clear-yesterday
+              python sheet_pipeline.py collect-to-sheet --clear-yesterday --schedule-cron "17 9 * * *"
               ;;
             collect)
-              python sheet_pipeline.py collect-to-sheet
+              python sheet_pipeline.py collect-to-sheet --schedule-cron "17 16 * * *"
               ;;
             build-bundle)
               echo "build-bundle is handled in a dedicated later step."
