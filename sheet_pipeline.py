@@ -458,11 +458,11 @@ def _get_body_once(url: str, source: str, out_dir: str, title: str = "", summary
                 extractor    = lambda soup, _u=url: _extract_body_dvb_first_then_scoped(_u, soup)
 
             elif "gnlm.com.mm" in url_l or "global new light of myanmar" in src_l or "gnlm" in src_l:
-                # ★ GNLM: 素の requests だと Cloudflare / 403 を踏みやすいので専用フェッチャを使う
+                # ★ GNLM: Cloudflare / 403 を踏みやすいので専用フェッチャ＋専用抽出器を使う
                 def _gnlm_fetch(u: str) -> str:
                     u = _normalize_article_url(u)
 
-                    # 1) curl_cffi (ブラウザ impersonation)
+                    # 1) curl_cffi
                     try:
                         from curl_cffi import requests as cfr
                         r = cfr.get(
@@ -529,8 +529,65 @@ def _get_body_once(url: str, source: str, out_dir: str, title: str = "", summary
 
                     return ""
 
+                def _extract_gnlm_body(soup):
+                    import re
+
+                    content = soup.select_one("div.entry-content")
+                    if not content:
+                        logging.warning("[gnlm] entry-content not found")
+                        return ""
+
+                    for br in content.find_all("br"):
+                        br.replace_with("\n")
+
+                    body_parts = []
+
+                    # リード文が h3 に入ることがある
+                    lead = content.find("h3", recursive=False)
+                    if lead:
+                        txt = lead.get_text("\n", strip=True)
+                        txt = "\n".join(
+                            re.sub(r"\s+", " ", seg).strip()
+                            for seg in txt.split("\n")
+                            if seg.strip()
+                        )
+                        if txt:
+                            body_parts.append(txt)
+
+                    for child in content.children:
+                        if not getattr(child, "name", None):
+                            continue
+
+                        # share / related 系に入ったら本文終了
+                        if child.name == "div":
+                            classes = " ".join(child.get("class", [])) if child.get("class") else ""
+                            if any(k in classes.lower() for k in ["sharing", "share", "crp_related", "related"]):
+                                break
+
+                        if child.name in ("h2", "h3"):
+                            label = child.get_text(" ", strip=True)
+                            if re.match(r"related\s+posts?:?", label, re.I):
+                                break
+
+                        if child.name == "p":
+                            txt = child.get_text("\n", strip=True)
+                            txt = "\n".join(
+                                re.sub(r"\s+", " ", seg).strip()
+                                for seg in txt.split("\n")
+                                if seg.strip()
+                            )
+                            if txt:
+                                body_parts.append(txt)
+
+                    body = "\n".join(body_parts).strip()
+
+                    if not body:
+                        logging.warning("[gnlm] entry-content found but extracted body is empty")
+
+                    return body
+
                 html_fetcher = _gnlm_fetch
-                extractor    = lambda soup, _u=url: extract_body_mail_pdf_scoped(_u, soup)
+                extractor = _extract_gnlm_body
 
             else:
                 # ★ その他: fetch_articles.py 側の“実在する”共通フェッチャ＆抽出器を使う
