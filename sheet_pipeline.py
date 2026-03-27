@@ -371,6 +371,25 @@ def _get_body_once(url: str, source: str, out_dir: str, title: str = "", summary
     import requests
     from bs4 import BeautifulSoup
 
+    def _looks_like_gnlm_blocked(html: str) -> bool:
+        """GNLM 取得時に Cloudflare / ブロックページを掴んだかをざっくり判定"""
+        h = (html or "").lower()
+        return any(x in h for x in (
+            "just a moment",
+            "cf-chl",
+            "cloudflare",
+            "attention required",
+            "<title>just a moment",
+        ))
+
+    def _normalize_article_url(u: str) -> str:
+        """記事URLの末尾フラグメントを除去"""
+        try:
+            return (u or "").split("#", 1)[0]
+        except Exception:
+            return u or ""
+    url = _normalize_article_url(url)
+
     def _fetch_text_via_jina(u: str, timeout: int = 25) -> str:
         """r.jina.ai 経由でプレーンテキストを取得（本文がHTMLで取れなかった時の救済）"""
         try:
@@ -435,6 +454,74 @@ def _get_body_once(url: str, source: str, out_dir: str, title: str = "", summary
                 # ★ DVB: 専用フェッチャ + DVB向け抽出（失敗時は強化抽出器にフォールバック）
                 html_fetcher = lambda u: _fetch_once_dvb(u, session=requests.Session())
                 extractor    = lambda soup, _u=url: _extract_body_dvb_first_then_scoped(_u, soup)
+
+            elif "gnlm.com.mm" in url_l or "global new light of myanmar" in src_l or "gnlm" in src_l:
+                # ★ GNLM: 素の requests だと Cloudflare / 403 を踏みやすいので専用フェッチャを使う
+                #   Bright Data は費用が掛かるため、まずは未使用で試す
+                def _gnlm_fetch(u: str) -> str:
+                    u = _normalize_article_url(u)
+                    # 1) curl_cffi (ブラウザ impersonation)
+                    try:
+                        from curl_cffi import requests as cfr
+                        r = cfr.get(
+                            u,
+                            impersonate="chrome124",
+                            timeout=30,
+                            headers={
+                                "User-Agent": "Mozilla/5.0",
+                                "Accept-Language": "en-US,en;q=0.9",
+                            },
+                        )
+                        html = r.text if getattr(r, "status_code", None) == 200 else ""
+                        if html and not _looks_like_gnlm_blocked(html):
+                            return html
+                    except Exception:
+                        pass
+
+                    # 2) cloudscraper
+                    try:
+                        import cloudscraper
+                        scraper = cloudscraper.create_scraper(
+                            browser={"browser": "chrome", "platform": "windows", "desktop": True}
+                        )
+                        r = scraper.get(u, timeout=30)
+                        html = r.text if getattr(r, "status_code", None) == 200 else ""
+                        if html and not _looks_like_gnlm_blocked(html):
+                            return html
+                    except Exception:
+                        pass
+                    # 3) Bright Data Browser
+                    # try:
+                    #     html = fetch_html_via_brightdata_browser(u, timeout_ms=120_000)
+                    #     if html and not _looks_like_gnlm_blocked(html):
+                    #         return html
+                    # except Exception:
+                    #     pass
+
+                    # 4) Bright Data Unlocker
+                    # try:
+                    #     html = fetch_html_via_brightdata_unlocker(u)
+                    #     if html and not _looks_like_gnlm_blocked(html):
+                    #         return html
+                    # except Exception:
+                    #     pass
+
+                    # 5) 最後に素の requests
+                    try:
+                        from fetch_articles import fetch_once_requests
+                        b = fetch_once_requests(u, timeout=20)
+                        if isinstance(b, (bytes, bytearray)):
+                            html = b.decode("utf-8", "ignore")
+                        else:
+                            html = b or ""
+                        if html and not _looks_like_gnlm_blocked(html):
+                            return html
+                    except Exception:
+                        pass
+                    return ""
+
+                html_fetcher = _gnlm_fetch
+                extractor    = lambda soup, _u=url: extract_body_mail_pdf_scoped(_u, soup)
 
             else:
                 # ★ その他: fetch_articles.py 側の“実在する”共通フェッチャ＆抽出器を使う
