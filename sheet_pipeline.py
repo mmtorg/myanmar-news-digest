@@ -218,6 +218,8 @@ try:
         build_combined_pdf_for_business,
         _jp_date,
         _is_irrawaddy_excluded_url,
+        fetch_html_via_brightdata_unlocker,
+        fetch_html_via_brightdata_browser,
     )
     from fetch_articles import fetch_with_retry_dvb  # ★DVB専用フェッチャ（既存を呼ぶだけ）
 except Exception:
@@ -457,9 +459,9 @@ def _get_body_once(url: str, source: str, out_dir: str, title: str = "", summary
 
             elif "gnlm.com.mm" in url_l or "global new light of myanmar" in src_l or "gnlm" in src_l:
                 # ★ GNLM: 素の requests だと Cloudflare / 403 を踏みやすいので専用フェッチャを使う
-                #   Bright Data は費用が掛かるため、まずは未使用で試す
                 def _gnlm_fetch(u: str) -> str:
                     u = _normalize_article_url(u)
+
                     # 1) curl_cffi (ブラウザ impersonation)
                     try:
                         from curl_cffi import requests as cfr
@@ -474,6 +476,7 @@ def _get_body_once(url: str, source: str, out_dir: str, title: str = "", summary
                         )
                         html = r.text if getattr(r, "status_code", None) == 200 else ""
                         if html and not _looks_like_gnlm_blocked(html):
+                            logging.info("[gnlm] fetch success via curl_cffi url=%s", u)
                             return html
                     except Exception:
                         pass
@@ -487,24 +490,28 @@ def _get_body_once(url: str, source: str, out_dir: str, title: str = "", summary
                         r = scraper.get(u, timeout=30)
                         html = r.text if getattr(r, "status_code", None) == 200 else ""
                         if html and not _looks_like_gnlm_blocked(html):
+                            logging.info("[gnlm] fetch success via cloudscraper url=%s", u)
                             return html
                     except Exception:
                         pass
-                    # 3) Bright Data Browser
-                    # try:
-                    #     html = fetch_html_via_brightdata_browser(u, timeout_ms=120_000)
-                    #     if html and not _looks_like_gnlm_blocked(html):
-                    #         return html
-                    # except Exception:
-                    #     pass
 
-                    # 4) Bright Data Unlocker
-                    # try:
-                    #     html = fetch_html_via_brightdata_unlocker(u)
-                    #     if html and not _looks_like_gnlm_blocked(html):
-                    #         return html
-                    # except Exception:
-                    #     pass
+                    # 3) Bright Data Unlocker
+                    try:
+                        html = fetch_html_via_brightdata_unlocker(u)
+                        if html and not _looks_like_gnlm_blocked(html):
+                            logging.info("[gnlm] fetch success via brightdata_unlocker url=%s", u)
+                            return html
+                    except Exception:
+                        pass
+
+                    # 4) Bright Data Browser
+                    try:
+                        html = fetch_html_via_brightdata_browser(u, timeout_ms=120_000)
+                        if html and not _looks_like_gnlm_blocked(html):
+                            logging.info("[gnlm] fetch success via brightdata_browser url=%s", u)
+                            return html
+                    except Exception:
+                        pass
 
                     # 5) 最後に素の requests
                     try:
@@ -515,9 +522,11 @@ def _get_body_once(url: str, source: str, out_dir: str, title: str = "", summary
                         else:
                             html = b or ""
                         if html and not _looks_like_gnlm_blocked(html):
+                            logging.info("[gnlm] fetch success via requests url=%s", u)
                             return html
                     except Exception:
                         pass
+
                     return ""
 
                 html_fetcher = _gnlm_fetch
