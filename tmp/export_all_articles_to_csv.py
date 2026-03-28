@@ -1770,18 +1770,22 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
 
     # --- fetch helpers（先に定義：RSS/GoogleNewsが使う） ---
     def _fetch_text(url: str, timeout: int = 20) -> str:
-        try:
-            r = sess.get(
-                url,
-                headers={
-                    "User-Agent": (
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/128.0.0.0 Safari/537.36"
-                    )
-                },
-                timeout=timeout,
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/128.0.0.0 Safari/537.36"
             )
+        }
+        try:
+            r = sess.get(url, headers=headers, timeout=timeout)
+            if r.status_code == 200 and (r.text or "").strip():
+                return r.text
+        except Exception:
+            pass
+        try:
+            import requests
+            r = requests.get(url, headers=headers, timeout=timeout)
             if r.status_code == 200 and (r.text or "").strip():
                 return r.text
         except Exception:
@@ -2049,10 +2053,12 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
     out: list[Dict] = []
 
     for url in sorted(collected_urls):
+        html = ""
         try:
             res = sess.get(url, timeout=20)
             if res.status_code != 200 or not res.text.strip():
                 raise Exception(f"status={res.status_code}")
+            html = res.text
         except Exception as e:
             print(f"[gnlm] curl_cffi article fetch failed: {e} url={url}")
             try:
@@ -2063,22 +2069,31 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
                 res = scraper.get(url, timeout=20)
                 if res.status_code != 200 or not res.text.strip():
                     raise Exception(f"status={res.status_code}")
+                html = res.text
             except Exception as e2:
                 print(f"[gnlm] cloudscraper article fetch failed: {e2} url={url}")
+                html = _fetch_text(url, timeout=20)
+                if html:
+                    print(f"[gnlm] requests article fetch success url={url}")
+                if not html:
+                    html = _fetch_text_via_jina(url, timeout=25)
+                    if html:
+                        print(f"[gnlm] r.jina.ai article fetch success url={url}")
 
-                # 本文は取れないが、タイトル+URLだけでも残す
-                t = (fallback_titles.get(url) or "").strip() or _title_from_slug(url)
-                if t:
-                    out.append({
-                        "source": "Global New Light Of Myanmar (国営紙)",
-                        "title": unicodedata.normalize("NFC", t).strip(),
-                        "url": url,
-                        "date": target_date_mmt.isoformat(),
-                        "body": "",
-                    })
-                continue
+                if not html:
+                    # 本文は取れないが、タイトル+URLだけでも残す
+                    t = (fallback_titles.get(url) or "").strip() or _title_from_slug(url)
+                    if t:
+                        out.append({
+                            "source": "Global New Light Of Myanmar (国営紙)",
+                            "title": unicodedata.normalize("NFC", t).strip(),
+                            "url": url,
+                            "date": target_date_mmt.isoformat(),
+                            "body": "",
+                        })
+                    continue
 
-        soup = BeautifulSoup(res.text, "html.parser")
+        soup = BeautifulSoup(html, "html.parser")
 
         art_date = _article_date_from_meta_mmt(soup) or target_date_mmt
 

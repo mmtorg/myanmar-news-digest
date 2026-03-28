@@ -513,7 +513,16 @@ def _get_body_once(url: str, source: str, out_dir: str, title: str = "", summary
                     except Exception:
                         pass
 
-                    # 5) 最後に素の requests
+                    # 5) r.jina.ai でテキスト救済
+                    try:
+                        html = _fetch_text_via_jina(u, timeout=25)
+                        if html:
+                            logging.info("[gnlm] fetch success via r.jina.ai url=%s", u)
+                            return html
+                    except Exception:
+                        pass
+
+                    # 6) 最後に素の requests
                     try:
                         from fetch_articles import fetch_once_requests
                         b = fetch_once_requests(u, timeout=20)
@@ -531,6 +540,25 @@ def _get_body_once(url: str, source: str, out_dir: str, title: str = "", summary
 
                 def _extract_gnlm_body(soup):
                     import re
+                    from bs4.element import Tag
+
+                    def _clean_lines(txt: str) -> str:
+                        return "\n".join(
+                            re.sub(r"\s+", " ", seg).strip()
+                            for seg in (txt or "").split("\n")
+                            if seg.strip()
+                        ).strip()
+
+                    def _div_looks_like_paragraph(node: Tag) -> bool:
+                        if not isinstance(node, Tag) or node.name != "div":
+                            return False
+                        classes = " ".join(node.get("class", [])) if node.get("class") else ""
+                        if any(k in classes.lower() for k in ["sharing", "share", "crp_related", "related", "jp-relatedposts"]):
+                            return False
+                        if node.find(["h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "table", "figure", "section", "article", "nav", "aside"]):
+                            return False
+                        txt = _clean_lines(node.get_text("\n", strip=True))
+                        return len(txt) >= 40 and " " in txt
 
                     content = soup.select_one("div.entry-content")
                     if not content:
@@ -545,12 +573,7 @@ def _get_body_once(url: str, source: str, out_dir: str, title: str = "", summary
                     # リード文が h3 に入ることがある
                     lead = content.find("h3", recursive=False)
                     if lead:
-                        txt = lead.get_text("\n", strip=True)
-                        txt = "\n".join(
-                            re.sub(r"\s+", " ", seg).strip()
-                            for seg in txt.split("\n")
-                            if seg.strip()
-                        )
+                        txt = _clean_lines(lead.get_text("\n", strip=True))
                         if txt:
                             body_parts.append(txt)
 
@@ -561,7 +584,7 @@ def _get_body_once(url: str, source: str, out_dir: str, title: str = "", summary
                         # share / related 系に入ったら本文終了
                         if child.name == "div":
                             classes = " ".join(child.get("class", [])) if child.get("class") else ""
-                            if any(k in classes.lower() for k in ["sharing", "share", "crp_related", "related"]):
+                            if any(k in classes.lower() for k in ["sharing", "share", "crp_related", "related", "jp-relatedposts"]):
                                 break
 
                         if child.name in ("h2", "h3"):
@@ -570,14 +593,26 @@ def _get_body_once(url: str, source: str, out_dir: str, title: str = "", summary
                                 break
 
                         if child.name == "p":
-                            txt = child.get_text("\n", strip=True)
-                            txt = "\n".join(
-                                re.sub(r"\s+", " ", seg).strip()
-                                for seg in txt.split("\n")
-                                if seg.strip()
-                            )
+                            txt = _clean_lines(child.get_text("\n", strip=True))
                             if txt:
                                 body_parts.append(txt)
+
+                    if not body_parts:
+                        for p in content.find_all("p"):
+                            txt = _clean_lines(p.get_text("\n", strip=True))
+                            if txt:
+                                body_parts.append(txt)
+
+                    extra_div_parts = []
+                    for child in content.children:
+                        if _div_looks_like_paragraph(child):
+                            txt = _clean_lines(child.get_text("\n", strip=True))
+                            if txt:
+                                extra_div_parts.append(txt)
+
+                    for txt in extra_div_parts:
+                        if txt not in body_parts:
+                            body_parts.append(txt)
 
                     body = "\n".join(body_parts).strip()
 
