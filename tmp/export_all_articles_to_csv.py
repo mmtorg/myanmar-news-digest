@@ -1787,6 +1787,7 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
             import requests
             r = requests.get(url, headers=headers, timeout=timeout)
             if r.status_code == 200 and (r.text or "").strip():
+                print(f"[gnlm] requests fetch success url={url}")
                 return r.text
         except Exception:
             pass
@@ -2053,6 +2054,8 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
     out: list[Dict] = []
 
     for url in sorted(collected_urls):
+        title = ""
+        body = ""
         html = ""
         try:
             res = sess.get(url, timeout=20)
@@ -2072,44 +2075,47 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
                 html = res.text
             except Exception as e2:
                 print(f"[gnlm] cloudscraper article fetch failed: {e2} url={url}")
-                html = _fetch_text(url, timeout=20)
-                if html:
-                    print(f"[gnlm] requests article fetch success url={url}")
-                if not html:
-                    html = _fetch_text_via_jina(url, timeout=25)
-                    if html:
-                        print(f"[gnlm] r.jina.ai article fetch success url={url}")
+                try:
+                    import requests
 
-                if not html:
-                    # 本文は取れないが、タイトル+URLだけでも残す
-                    t = (fallback_titles.get(url) or "").strip() or _title_from_slug(url)
-                    if t:
-                        out.append({
-                            "source": "Global New Light Of Myanmar (国営紙)",
-                            "title": unicodedata.normalize("NFC", t).strip(),
-                            "url": url,
-                            "date": target_date_mmt.isoformat(),
-                            "body": "",
-                        })
-                    continue
+                    res = requests.get(
+                        url,
+                        headers={"User-Agent": "Mozilla/5.0"},
+                        timeout=20,
+                    )
+                    if res.status_code == 200 and (res.text or "").strip():
+                        html = res.text
+                        print(f"[gnlm] requests article fetch success url={url}")
+                except Exception as e3:
+                    print(f"[gnlm] requests article fetch failed: {e3} url={url}")
 
-        soup = BeautifulSoup(html, "html.parser")
+        soup = BeautifulSoup(html, "html.parser") if html else None
 
-        art_date = _article_date_from_meta_mmt(soup) or target_date_mmt
+        art_date = _article_date_from_meta_mmt(soup) or target_date_mmt if soup else target_date_mmt
 
-        title = _extract_title(soup)
-        if not title:
-            h1 = soup.select_one("header#article-title h1.entry-title")
-            if h1:
-                title = h1.get_text(strip=True)
+        if soup is not None:
+            title = _extract_title(soup)
+            if not title:
+                h1 = soup.select_one("header#article-title h1.entry-title")
+                if h1:
+                    title = h1.get_text(strip=True)
+
         if not title:
             title = fallback_titles.get(url, "") or _title_from_slug(url)
         if not title:
             continue
 
         body_parts: list[str] = []
-        content = soup.select_one("div.entry-content")
+        content = soup.select_one("div.entry-content") if soup is not None else None
         if content:
+            for bad in content.select(
+                ".the_champ_sharing_container, .the_champ_horizontal_sharing, .crp_related"
+            ):
+                bad.decompose()
+
+            for bad in content.find_all(["img", "figure", "figcaption"]):
+                bad.decompose()
+
             for br in content.find_all("br"):
                 br.replace_with("\n")
 
@@ -2163,14 +2169,24 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
                 if txt not in body_parts:
                     body_parts.append(txt)
 
-        body = "\n".join(body_parts)
+        body = unicodedata.normalize("NFC", "\n".join(body_parts)).strip()
+
+        # 2) HTML未取得 or HTML抽出で本文が空なら r.jina.ai の本文テキストで救済
+        if not body:
+            txt = _fetch_text_via_jina(url, timeout=25)
+            if txt:
+                body = unicodedata.normalize("NFC", txt).strip()
+                print(f"[gnlm][article] fallback jina body url={url} body_len={len(body)}")
+
+        if not body:
+            print(f"[gnlm][article] note empty body url={url}")
 
         out.append({
             "source": "Global New Light Of Myanmar (国営紙)",
             "title": unicodedata.normalize("NFC", title).strip(),
             "url": url,
             "date": (art_date or target_date_mmt).isoformat(),
-            "body": unicodedata.normalize("NFC", body).strip(),
+            "body": body,
         })
 
     return deduplicate_by_url(out)

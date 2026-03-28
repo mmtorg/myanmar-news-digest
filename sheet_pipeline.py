@@ -405,6 +405,44 @@ def _get_body_once(url: str, source: str, out_dir: str, title: str = "", summary
             pass
         return ""
 
+    def _gnlm_div_looks_like_paragraph(node):
+        from bs4 import Tag
+
+        if not isinstance(node, Tag) or node.name != "div":
+            return False
+
+        classes = " ".join(node.get("class", [])) if node.get("class") else ""
+        noise_keywords = ["sharing", "share", "related", "gallery", "crp_related"]
+        if any(k in classes.lower() for k in noise_keywords):
+            return False
+
+        if node.find(
+            [
+                "h1",
+                "h2",
+                "h3",
+                "h4",
+                "h5",
+                "h6",
+                "ul",
+                "ol",
+                "table",
+                "figure",
+                "section",
+                "article",
+                "nav",
+                "aside",
+            ]
+        ):
+            return False
+
+        txt = node.get_text(" ", strip=True)
+        if len(txt) < 40:
+            return False
+        if " " not in txt:
+            return False
+        return True
+
     # --- 1) キャッシュ命中なら即返す ---
     cache = _load_bodies_cache(out_dir)
     cached = cache.get(url)
@@ -513,16 +551,7 @@ def _get_body_once(url: str, source: str, out_dir: str, title: str = "", summary
                     except Exception:
                         pass
 
-                    # 5) r.jina.ai でテキスト救済
-                    try:
-                        html = _fetch_text_via_jina(u, timeout=25)
-                        if html:
-                            logging.info("[gnlm] fetch success via r.jina.ai url=%s", u)
-                            return html
-                    except Exception:
-                        pass
-
-                    # 6) 最後に素の requests
+                    # 5) 最後に素の requests
                     try:
                         from fetch_articles import fetch_once_requests
                         b = fetch_once_requests(u, timeout=20)
@@ -540,7 +569,6 @@ def _get_body_once(url: str, source: str, out_dir: str, title: str = "", summary
 
                 def _extract_gnlm_body(soup):
                     import re
-                    from bs4.element import Tag
 
                     def _clean_lines(txt: str) -> str:
                         return "\n".join(
@@ -549,21 +577,20 @@ def _get_body_once(url: str, source: str, out_dir: str, title: str = "", summary
                             if seg.strip()
                         ).strip()
 
-                    def _div_looks_like_paragraph(node: Tag) -> bool:
-                        if not isinstance(node, Tag) or node.name != "div":
-                            return False
-                        classes = " ".join(node.get("class", [])) if node.get("class") else ""
-                        if any(k in classes.lower() for k in ["sharing", "share", "crp_related", "related", "jp-relatedposts"]):
-                            return False
-                        if node.find(["h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "table", "figure", "section", "article", "nav", "aside"]):
-                            return False
-                        txt = _clean_lines(node.get_text("\n", strip=True))
-                        return len(txt) >= 40 and " " in txt
-
                     content = soup.select_one("div.entry-content")
                     if not content:
                         logging.warning("[gnlm] entry-content not found")
                         return ""
+
+                    # 共有UI・関連記事・画像系は本文から除去
+                    for bad in content.select(
+                        ".the_champ_sharing_container, .the_champ_horizontal_sharing, "
+                        ".crp_related, .jp-relatedposts, .yarpp-related"
+                    ):
+                        bad.decompose()
+
+                    for bad in content.find_all(["img", "figure", "figcaption"]):
+                        bad.decompose()
 
                     for br in content.find_all("br"):
                         br.replace_with("\n")
@@ -603,16 +630,13 @@ def _get_body_once(url: str, source: str, out_dir: str, title: str = "", summary
                             if txt:
                                 body_parts.append(txt)
 
-                    extra_div_parts = []
-                    for child in content.children:
-                        if _div_looks_like_paragraph(child):
-                            txt = _clean_lines(child.get_text("\n", strip=True))
-                            if txt:
-                                extra_div_parts.append(txt)
-
-                    for txt in extra_div_parts:
-                        if txt not in body_parts:
-                            body_parts.append(txt)
+                    # p が弱いページ用の div fallback
+                    if not body_parts:
+                        for child in content.children:
+                            if _gnlm_div_looks_like_paragraph(child):
+                                txt = _clean_lines(child.get_text("\n", strip=True))
+                                if txt:
+                                    body_parts.append(txt)
 
                     body = "\n".join(body_parts).strip()
 
@@ -647,6 +671,16 @@ def _get_body_once(url: str, source: str, out_dir: str, title: str = "", summary
             ) or ""
         except Exception:
             body = ""
+
+    # --- 3) GNLM に限り：本文が空なら Jina のプレーンテキストで救済 ---
+    if not (body or "").strip():
+        src_l = (source or "").lower()
+        url_l = (url or "").lower()
+        if "gnlm.com.mm" in url_l or "global new light of myanmar" in src_l or "gnlm" in src_l:
+            txt = _fetch_text_via_jina(url, timeout=25)
+            body = (txt or "").strip()
+            if body:
+                logging.info(f"[body] gnlm rescued via jina-text url={url} body_len={len(body)}")
 
     # --- 3) Irrawaddy に限り：本文が空なら Jina → AMP で救済（CSVパイプライン相当のBを移植）---
     if not (body or "").strip():
