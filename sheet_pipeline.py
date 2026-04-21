@@ -1382,31 +1382,49 @@ def _is_ayeyarwady(title_raw: str, body_raw: str) -> bool:
         hay = f"{t} {b}"
         return any(kw in hay for kw in kws)
 
-def _collect_all_for(target_date_mmt: date, schedule_cron: str | None = None) -> List[Dict]:
+def _collect_all_for(
+    target_date_mmt: date,
+    schedule_cron: str | None = None,
+    only_source: str | None = None,
+) -> List[Dict]:
     if not collectors_loaded:
         raise SystemExit("収集関数の読み込み失敗。export_all_articles_to_csv.py を配置してください。")
     items: List[Dict] = []
     plan: List[tuple] = [
-        (collect_mizzima_all_for_date, {"max_pages": 3}),
-        (collect_bbc_all_for_date, {}),
+        ("Mizzima (Burmese)", collect_mizzima_all_for_date, {"max_pages": 3}),
+        ("BBC Burmese", collect_bbc_all_for_date, {}),
         # Irrawaddy は cron 枠で制御（schedule_cron が渡されたときのみ）
         # allowed list は collect_rules.json の irrawaddy_allowed_crons で変更可能
-        (collect_khitthit_all_for_date, {"max_pages": 5}),
-        (collect_dvb_all_for_date, {}),
-        (collect_myanmar_now_mm_all_for_date, {"max_pages": 3}),
-        (collect_gnlm_all_for_date, {"max_pages": 3}),
-        (collect_popular_all_for_date, {}),
-        (collect_frontier_all_for_date, {}),
-        (collect_jetro_biznews_mm_all_for_date, {}),
+        ("Khit Thit Media", collect_khitthit_all_for_date, {"max_pages": 5}),
+        ("DVB", collect_dvb_all_for_date, {}),
+        ("Myanmar Now", collect_myanmar_now_mm_all_for_date, {"max_pages": 3}),
+        ("GNLM", collect_gnlm_all_for_date, {"max_pages": 3}),
+        ("Popular Myanmar", collect_popular_all_for_date, {}),
+        ("Frontier Myanmar", collect_frontier_all_for_date, {}),
+        ("JETRO", collect_jetro_biznews_mm_all_for_date, {}),
     ]
     if _should_collect_irrawaddy(schedule_cron):
-        plan.insert(0, (collect_irrawaddy_all_for_date, {}))
+        plan.insert(0, ("Irrawaddy", collect_irrawaddy_all_for_date, {}))
         logging.info(f"[rules] Irrawaddy enabled (schedule_cron={schedule_cron})")
     else:
         logging.info(f"[rules] Irrawaddy disabled (schedule_cron={schedule_cron})")
 
-    for fn, kwargs in plan:
-        name = fn.__name__.replace("_all_for_date", "")
+    if only_source:
+        wanted = unicodedata.normalize("NFC", only_source).strip().casefold()
+        before_count = len(plan)
+        plan = [
+            (label, fn, kwargs)
+            for label, fn, kwargs in plan
+            if unicodedata.normalize("NFC", label).strip().casefold() == wanted
+        ]
+        logging.info(
+            f"[collect] only_source={only_source!r} matched_collectors={len(plan)}/{before_count}"
+        )
+        if not plan:
+            logging.warning(f"[collect] no collector matched only_source={only_source!r}")
+
+    for label, fn, kwargs in plan:
+        name = label
         try:
             with _timeit(f"collector:{name}", date=target_date_mmt.isoformat(), kwargs=kwargs or None):
                 before = len(items)
@@ -1526,7 +1544,8 @@ def cmd_collect_to_sheet(args):
     logging.info(
         f"[collect] start target_date_mmt={target.isoformat()} "
         f"clear_yesterday={getattr(args,'clear_yesterday',False)} "
-        f"target_offset_days={getattr(args,'target_offset_days',0)}"
+        f"target_offset_days={getattr(args,'target_offset_days',0)} "
+        f"only_source={getattr(args,'only_source',None)!r}"
     )
 
     # 前日クリアオプション
@@ -1537,7 +1556,11 @@ def cmd_collect_to_sheet(args):
         logging.info(f"[clean] kept only {today} (removed {removed} rows)")
 
     # ① 各メディアから記事収集（export_all_articles_to_csv と同じ collectors）
-    items = _collect_all_for(target, getattr(args, 'schedule_cron', None))
+    items = _collect_all_for(
+        target,
+        getattr(args, "schedule_cron", None),
+        getattr(args, "only_source", None),
+    )
     if not items:
         logging.warning("[collect] no items to write")
         print("no items to write")
@@ -1876,6 +1899,7 @@ def main():
     p1.add_argument("--bundle-dir", default="bundle", help="本文キャッシュ/成果物の保存先（既定: bundle）")
     p1.add_argument("--schedule-cron", default=None, help="(GitHub Actions) github.event.schedule の cron 文字列。Irrawaddy の実行枠判定に使用")
     p1.add_argument("--target-offset-days", type=int, default=0, help="収集対象日をMMT基準で相対シフトする。-1で昨日")
+    p1.add_argument("--only-source", default=None, help="指定した媒体のみ収集する（例: 'Khit Thit Media'）")
     # === Gemini free tier を想定したレート設定（CLI指定 > 環境変数 > 既定）===
     p1.add_argument("--rpm", type=int, default=int(os.getenv("GEMINI_REQS_PER_MIN", "9")))
     p1.add_argument("--min-interval", type=float, default=float(os.getenv("GEMINI_MIN_INTERVAL_SEC", "2.0")))
