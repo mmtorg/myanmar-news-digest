@@ -4793,12 +4793,20 @@ def process_translation_batches(batch_size=TRANSLATION_BATCH_SIZE, wait_seconds=
 
 # 既存の COMMON_TRANSLATION_RULES / call_gemini_with_retries / _safe_json_loads_maybe_extract /
 # client_fulltext / _FREE_TIER_MON / TRANSLATION_BATCH_SIZE を使用
-def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
+def translate_fulltexts_for_business(urls_in_order_or_items, url_to_source_title_body=None):
     """
-    Business向けPDFで使う全文翻訳。順序は urls_in_order に従って返します。
-    既存のラッパー（call_gemini_with_retries）とモニタ（_FREE_TIER_MON）をそのまま利用しつつ、
-    この関数専用のクレンジング／事前チェック／2件まとめ翻訳 を関数内に閉じ込めています。
-    戻り値: [{"url","title_ja","body_ja"}, ...]
+    Business向けPDFで使う全文翻訳。
+
+    - 新インターフェース:
+        items_in_order = [
+            {"item_id": str, "url": str, "title": str, "body": str}, ...
+        ]
+    - 旧インターフェース（後方互換）:
+        urls_in_order, url_to_source_title_body
+
+    返り値の順序は入力順に従います。
+    同一URLが複数回現れても、item_id 単位で別記事として扱います。
+    戻り値: [{"item_id","url","body_ja"}, ...]
     """
     # --- ローカル定数（環境変数は増やさず定数化） ---
     # Business 向け全文翻訳では本文を途中で切らずにほぼ全量翻訳したい。
@@ -4814,6 +4822,40 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
     # --- ローカル import（この関数だけが使うもの） ---
     import re, json, time, unicodedata
     from datetime import datetime, timezone
+
+    def _normalize_item_id(v) -> str:
+        return str(v or "").strip()
+
+    # 旧インターフェース（urls + meta map）/ 新インターフェース（item dict list）の両対応
+    items_in_order = []
+    is_new_interface = (
+        isinstance(urls_in_order_or_items, list)
+        and urls_in_order_or_items
+        and isinstance(urls_in_order_or_items[0], dict)
+    )
+
+    if is_new_interface:
+        for idx, raw in enumerate(urls_in_order_or_items):
+            item_id = _normalize_item_id(raw.get("item_id")) or f"item-{idx:04d}"
+            items_in_order.append({
+                "item_id": item_id,
+                "url": (raw.get("url") or "").strip(),
+                "title": (raw.get("title") or "").strip(),
+                "body": (raw.get("body") or "").strip(),
+            })
+    else:
+        urls_in_order = list(urls_in_order_or_items or [])
+        url_to_source_title_body = url_to_source_title_body or {}
+        for idx, u in enumerate(urls_in_order):
+            meta = (url_to_source_title_body.get(u) or {})
+            items_in_order.append({
+                "item_id": f"url-{idx:04d}",
+                "url": (u or "").strip(),
+                "title": (meta.get("title") or "").strip(),
+                "body": (meta.get("body") or "").strip(),
+            })
+
+    item_to_source_title_body = {it["item_id"]: it for it in items_in_order}
 
     def _normalize_url_key(u: str) -> str:
         u = (u or "").strip()
@@ -5035,16 +5077,16 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
             "2) 連続する空行は1つに圧縮し、本文段落のみ残す。\n"
             "3) 残った本文のみを翻訳対象とする（キャプション・媒体名・注記・Datelineは訳さない）。\n\n"
             "【出力仕様】出力はJSONのみ：\n"
-            '[{"url":str, "body_ja":str}, …]\n'
+            '[{"item_id":str, "url":str, "body_ja":str}, …]\n'
             "input = ",
             json.dumps(input_array, ensure_ascii=False),
         )
         return "".join(prompt_parts)
     
     # === 未翻訳検知時の“単発リトライ”（同じプロンプトを単一要素配列で再利用） ===
-    def _single_fulltext_retry(url: str, raw_body: str, max_chars: int = 6000) -> str:
+    def _single_fulltext_retry(item_id: str, url: str, raw_body: str, max_chars: int = 6000) -> str:
         body_trim = trim_by_chars(raw_body or "", max_chars)
-        prompt = _build_fulltext_prompt([{"url": url, "body": body_trim}])
+        prompt = _build_fulltext_prompt([{"item_id": item_id, "url": url, "body": body_trim}])
 
         precheck_sleep(rough_token_estimate(prompt), tag="fulltext-retry")
         try:
@@ -5066,19 +5108,17 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
                         "JSON extraction failed from Gemini response, and OPENAI_API_KEY is not set (or openai SDK not available)."
                     ) from e_json
 
-                last_err = None
                 arr = None
-                # GPT側: OpenAI API例外リトライ（max_tries）に寄せ、外側の二重ループはやめる
                 try:
                     gpt_text = openai_call_with_retry_(
                         _OPENAI_CLIENT,
-                        model="gpt-5-mini",      # ここを固定（必要なら環境変数化）
+                        model="gpt-5-mini",
                         input_text=prompt,
                         usage_tag="fulltext-retry",
-                        max_tries=2,              # OpenAI API自体の例外リトライ
+                        max_tries=2,
                         sleep_sec=10.0,
                     )
-                    arr = _safe_json_loads_extract(gpt_text)   # JSON抽出できたら成功
+                    arr = _safe_json_loads_extract(gpt_text)
                 except Exception as e_gpt:
                     logging.warning(
                         f"[warn] fulltext retry failed on BOTH Gemini(JSON-extract) and GPT retry. "
@@ -5089,7 +5129,8 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
             if isinstance(arr, dict):
                 arr = [arr]
             if isinstance(arr, list):
-                target = _normalize_url_key(url)
+                target_item_id = _normalize_item_id(item_id)
+                target_url = _normalize_url_key(url)
                 candidate_body = ""
                 for x in arr:
                     if not isinstance(x, dict):
@@ -5097,11 +5138,14 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
                     bj = (x.get("body_ja") or "").strip()
                     if not bj:
                         continue
-                    if _normalize_url_key(str(x.get("url") or "")) == target:
+                    if _normalize_item_id(x.get("item_id")) == target_item_id:
                         bj = remove_yen_for_non_kyat(bj)
                         bj = fix_kyat_yen_in_text(bj)
                         return bj
-                    # 単一記事リトライでは URL 欠落/差異があっても本文があれば救済する
+                    if _normalize_url_key(str(x.get("url") or "")) == target_url:
+                        bj = remove_yen_for_non_kyat(bj)
+                        bj = fix_kyat_yen_in_text(bj)
+                        return bj
                     if not candidate_body:
                         candidate_body = bj
                 if candidate_body:
@@ -5112,12 +5156,14 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
             logging.warning(f"[warn] fulltext single retry failed. url={url} err={e}")
         return ""
 
-    # --- 1) 前処理（クレンジング＋6000字上限） ---
+    # --- 1) 前処理（クレンジング＋100,000字上限） ---
     prepared = []
-    for u in urls_in_order:
-        meta = (url_to_source_title_body.get(u) or {})
-        title_src = (meta.get("title") or "").strip()
-        body_src  = (meta.get("body")  or "").strip()
+    for it in items_in_order:
+        item_id = _normalize_item_id(it.get("item_id"))
+        u = (it.get("url") or "").strip()
+        title_src = (it.get("title") or "").strip()
+        body_src = (it.get("body") or "").strip()
+
         # Prefer cached full body from first pass
         _cached = _get_cached_body(u)
         if _cached:
@@ -5125,9 +5171,14 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
         if not body_src:
             continue
 
-        # PDFの全文要約では 100,000 字までは翻訳対象に含める。
+        # PDFの全文翻訳では 100,000 字までは翻訳対象に含める。
         body_compact = trim_by_chars(compact_body(body_src), FULLTEXT_MAX_CHARS)
-        prepared.append({"url": u, "title": title_src, "body": body_compact})
+        prepared.append({
+            "item_id": item_id,
+            "url": u,
+            "title": title_src,
+            "body": body_compact,
+        })
 
     # --- 2) まとめ翻訳（長文だけ単独バッチ） ---
     results = []
@@ -5153,7 +5204,7 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
                 batch = [current]
                 effective_batch_size = 1
 
-        input_array = [{"url": b["url"], "body": b["body"]} for b in batch]
+        input_array = [{"item_id": b["item_id"], "url": b["url"], "body": b["body"]} for b in batch]
         prompt = _build_fulltext_prompt(input_array)
 
         precheck_sleep(rough_token_estimate(prompt), tag="fulltext-batch")
@@ -5169,15 +5220,25 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
             arr = _safe_json_loads_extract(text)
             if isinstance(arr, dict):
                 arr = [arr]
+            item_to_res = {}
             url_to_res = {}
             for x in (arr or []):
-                if isinstance(x, dict) and x.get("url"):
+                if not isinstance(x, dict):
+                    continue
+                item_key = _normalize_item_id(x.get("item_id"))
+                if item_key:
+                    item_to_res[item_key] = x
+                if x.get("url"):
                     key = _normalize_url_key(str(x["url"]))
                     if key:
                         url_to_res[key] = x
 
             for b in batch:
-                x = url_to_res.get(_normalize_url_key(b["url"])) or {}
+                x = (
+                    item_to_res.get(_normalize_item_id(b["item_id"]))
+                    or url_to_res.get(_normalize_url_key(b["url"]))
+                    or {}
+                )
                 body_src = b["body"]
 
                 # Gemini がこの URL の body_ja を返してくれたかどうか
@@ -5200,6 +5261,7 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
 
                 # ★ fallback だったかどうかを結果に乗せておく
                 results.append({
+                    "item_id":   b["item_id"],
                     "url":       b["url"],
                     "body_ja":   body_ja,
                     "_fallback": used_fallback,
@@ -5212,6 +5274,7 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
                 bj = fix_kyat_yen_in_text(bj)
                 # ★ バッチそのものが失敗したので、各URLは確実に単体再翻訳に回す
                 results.append({
+                    "item_id":   b["item_id"],
                     "url":       b["url"],
                     "body_ja":   bj,
                     "_fallback": True,
@@ -5226,7 +5289,7 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
             body = item.get("body_ja") or ""
 
             # 元の本文（ビルマ語）を取り出す
-            raw_body = (url_to_source_title_body.get(url, {}) or {}).get("body") or body
+            raw_body = (item_to_source_title_body.get(item.get("item_id"), {}) or {}).get("body") or body
 
             # 条件A：日本語が全く無い（既存ロジック）
             need_retry_untranslated = _needs_retry_untranslated(body)
@@ -5240,7 +5303,12 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
                 else:
                     print(f"[warn] fulltext seems untranslated (no Japanese detected): {url}")
 
-                fixed = _single_fulltext_retry(url, raw_body, max_chars=FULLTEXT_MAX_CHARS)
+                fixed = _single_fulltext_retry(
+                    item.get("item_id", ""),
+                    url,
+                    raw_body,
+                    max_chars=FULLTEXT_MAX_CHARS,
+                )
                 if fixed and _contains_cjk(fixed):
                     repaired = _apply_term_glossary_to_output(fixed, src=raw_body, prefer="body_ja")
                     repaired = remove_yen_for_non_kyat(repaired)
@@ -5256,9 +5324,17 @@ def translate_fulltexts_for_business(urls_in_order, url_to_source_title_body):
             print(f"🕒 Waiting {WAIT} seconds before next fulltext batch …")
             time.sleep(WAIT)
 
-    # --- 3) 入力順で並べ直し ---
-    url_to_item = {x["url"]: x for x in results}
-    return [url_to_item[u] for u in urls_in_order if u in url_to_item]
+    # --- 3) 入力順で並べ直し（同一URLでも item_id ごとに維持） ---
+    item_to_item = {
+        _normalize_item_id(x.get("item_id")): x
+        for x in results
+        if _normalize_item_id(x.get("item_id"))
+    }
+    return [
+        item_to_item[it["item_id"]]
+        for it in prepared
+        if it["item_id"] in item_to_item
+    ]
 
 
 # 日本語日付を作る（0埋めなし）
