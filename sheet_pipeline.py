@@ -189,20 +189,123 @@ _BODIES_LOCK = threading.Lock()
 def _bodies_cache_path(out_dir: str) -> str:
     return os.path.join(out_dir, "bodies.json")
 
-def _load_bodies_cache(out_dir: str) -> dict[str, dict]:
+def _load_bodies_cache(out_dir: str) -> list[dict]:
+    """
+    bodies.json を「item_id ベースの配列」として読み込む。
+    旧形式（{url: {...}} の辞書）も後方互換で配列へ変換して受け付ける。
+    """
     p = _bodies_cache_path(out_dir)
     if not os.path.exists(p):
-        return {}
+        return []
     try:
         with open(p, "r", encoding="utf-8") as f:
-            return json.load(f)
+            raw = json.load(f)
     except Exception:
-        return {}
+        return []
 
-def _save_bodies_cache(out_dir: str, cache: dict[str, dict]) -> None:
+    if isinstance(raw, list):
+        return [x for x in raw if isinstance(x, dict)]
+
+    # 旧形式: {url: {...}} を、順序を保った配列へ変換
+    if isinstance(raw, dict):
+        items: list[dict] = []
+        for url, payload in raw.items():
+            if not isinstance(payload, dict):
+                continue
+            item = {"url": url}
+            item.update(payload)
+            items.append(item)
+        return items
+
+    return []
+
+def _save_bodies_cache(out_dir: str, cache: list[dict]) -> None:
     os.makedirs(out_dir, exist_ok=True)
     with open(_bodies_cache_path(out_dir), "w", encoding="utf-8") as f:
         json.dump(cache, f, ensure_ascii=False, indent=2)
+
+def _find_body_cache_entry(cache: list[dict], *, url: str = "", item_id: str = "") -> dict | None:
+    """
+    item_id を優先して検索し、無ければ URL で後ろから検索する。
+    URL 検索を後ろから行うことで、同一URLの複数行がある場合は最後の行を優先できる。
+    """
+    key_item = (item_id or "").strip()
+    key_url = (url or "").strip().rstrip("/")
+
+    if key_item:
+        for entry in cache:
+            if not isinstance(entry, dict):
+                continue
+            if (entry.get("item_id") or "").strip() == key_item:
+                return entry
+
+    if key_url:
+        for entry in reversed(cache):
+            if not isinstance(entry, dict):
+                continue
+            if (entry.get("url") or "").strip().rstrip("/") == key_url:
+                return entry
+
+    return None
+
+def _upsert_body_cache_entry(
+    cache: list[dict],
+    *,
+    url: str = "",
+    item_id: str = "",
+    source: str = "",
+    title: str = "",
+    body: str = "",
+    body_ja: str = "",
+) -> list[dict]:
+    """
+    配列形式の bodies キャッシュへ追加/更新する。
+    - item_id があれば item_id 優先
+    - item_id が無ければ URL 単位で更新
+    - ヒットしなければ末尾へ追加（配列順を維持）
+    """
+    idx = None
+    key_item = (item_id or "").strip()
+    key_url = (url or "").strip().rstrip("/")
+
+    if key_item:
+        for i, entry in enumerate(cache):
+            if not isinstance(entry, dict):
+                continue
+            if (entry.get("item_id") or "").strip() == key_item:
+                idx = i
+                break
+    elif key_url:
+        for i, entry in enumerate(cache):
+            if not isinstance(entry, dict):
+                continue
+            if (entry.get("url") or "").strip().rstrip("/") == key_url:
+                idx = i
+                break
+
+    if idx is not None:
+        existing = dict(cache[idx])
+        entry = dict(existing)
+    else:
+        entry = {}
+        cache.append(entry)
+        idx = len(cache) - 1
+
+    if key_item:
+        entry["item_id"] = key_item
+    if key_url:
+        entry["url"] = key_url
+    if source:
+        entry["source"] = source
+    if title:
+        entry["title"] = title
+    if body:
+        entry["body"] = body
+    if body_ja:
+        entry["body_ja"] = body_ja
+
+    cache[idx] = entry
+    return cache
 
 import requests
 from bs4 import BeautifulSoup
@@ -386,7 +489,7 @@ def _get_body_once(url: str, source: str, out_dir: str, title: str = "", summary
 
     # --- 1) キャッシュ命中なら即返す ---
     cache = _load_bodies_cache(out_dir)
-    cached = cache.get(url)
+    cached = _find_body_cache_entry(cache, url=url)
     if cached and isinstance(cached, dict) and (cached.get("body") or "").strip():
         return cached["body"]
 
@@ -492,17 +595,15 @@ def _get_body_once(url: str, source: str, out_dir: str, title: str = "", summary
     if body.strip():
         with _BODIES_LOCK:
             cache = _load_bodies_cache(out_dir)  # 競合対策で再読込
-            # 既存のキャッシュエントリがあれば、body_jaを維持（翻訳済みを上書きしない）
-            existing = cache.get(url, {})
-            entry = {
-                "source": source,
-                "title": title,
-                "body": body
-            }
-            # 既にbody_jaがあればそれを保持
-            if "body_ja" in existing:
-                entry["body_ja"] = existing["body_ja"]
-            cache[url] = entry
+            existing = _find_body_cache_entry(cache, url=url) or {}
+            cache = _upsert_body_cache_entry(
+                cache,
+                url=url,
+                source=source,
+                title=title,
+                body=body,
+                body_ja=(existing.get("body_ja") or ""),
+            )
             _save_bodies_cache(out_dir, cache)
 
     return body
@@ -1617,7 +1718,13 @@ def cmd_collect_to_sheet(args):
         if body:
             with _BODIES_LOCK:
                 cache = _load_bodies_cache(bundle_dir)
-                cache[normalized_url] = {"source": source, "title": title, "body": body}
+                cache = _upsert_body_cache_entry(
+                    cache,
+                    url=normalized_url,
+                    source=source,
+                    title=title,
+                    body=body,
+                )
                 _save_bodies_cache(bundle_dir, cache)
         else:
             # なければ堅牢抽出器で1回だけ取得→キャッシュ
@@ -1683,16 +1790,20 @@ def cmd_build_bundle_from_sheet(args):
     # ③ summaries 構築 + bodies.json 構築
     with _timeit("build-bundle:construct", selected=len(selected_rows)):
         summaries = []
-        bodies: dict[str, dict] = {}  # ← 追加
+        bodies: list[dict] = []       # bodies.json 用。item_id ベースの配列で行順を維持
+        pdf_items: list[dict] = []    # PDF生成用。item_id 単位で同一URL重複を保持
 
-        for r in selected_rows:
+        for seq, r in enumerate(selected_rows, start=1):
             delivery    = get(r, "A") # 日付(A)
             media       = get(r, "C") # メディア(C)
             title_final = get(r, "H") # 確定見出し日本語訳(H)
             body_sum    = get(r, "I") # 本文要約(I)
             url         = get(r, "J") # URL(J)
             is_ay       = (get(r, "D").upper() == "TRUE") # エーヤワディー(D)
+            item_id     = f"sheet-{seq:04d}"
+
             summaries.append({
+                "item_id": item_id,
                 "source": media,
                 "url": url,
                 "title": unicodedata.normalize("NFC", title_final),
@@ -1701,19 +1812,28 @@ def cmd_build_bundle_from_sheet(args):
                 "is_ayeyar": is_ay,
                 "date_mmt": delivery,
             })
-            
-            # ★ ここから bodies.json 用のデータをシートから構築 ★
-            body_raw   = get(r, "N")            # N列: 本文原文
-            if not (url and body_raw):
-                continue
 
-            # タイトル: H が空なら M（タイトル原文）をフォールバック
+            # PDF用の原文データは URL ではなく item_id 単位で保持する
+            body_raw   = get(r, "N")            # N列: 本文原文
             title_body = get(r, "H") or get(r, "M")
-            bodies[url] = {
+            pdf_items.append({
+                "item_id": item_id,
                 "source": media,
+                "url": url,
                 "title": unicodedata.normalize("NFC", title_body),
-                "body":  body_raw,
-            }
+                "body": body_raw,
+                "date_mmt": delivery,
+            })
+
+            # bodies.json も item_id 単位の配列として保持し、同一URLでも潰さない
+            if url and body_raw:
+                bodies.append({
+                    "item_id": item_id,
+                    "source": media,
+                    "url": url,
+                    "title": unicodedata.normalize("NFC", title_body),
+                    "body": body_raw,
+                })
 
     out_dir = os.path.abspath(args.bundle_dir)
 
@@ -1767,98 +1887,75 @@ def cmd_build_bundle_from_sheet(args):
     print(f"bundle rebuilt: {out_dir} (items={len(summaries)})")
 
     # キャッシュ済み本文を使って全文翻訳PDFを生成（BUSINESS/TRIAL 添付用）
-    def _make_business_pdf_from_summaries(summaries: list[dict], date_iso: str, out_dir: str):
+    def _make_business_pdf_from_items(pdf_items: list[dict], date_iso: str, out_dir: str):
         if not (translate_fulltexts_for_business and build_combined_pdf_for_business):
             logging.warning("[bundle] PDF helpers unavailable; skip business PDF")
             return
-        cache = _load_bodies_cache(out_dir)
-        urls_in_order: list[str] = []
-        url_to_source_title_body: dict[str, dict] = {}
-        for s in summaries:
-            url = (s.get("url") or "").strip()
-            if not url:
-                continue
-            source = s.get("source") or ""
-            title  = s.get("title") or ""
-            urls_in_order.append(url)
-            body = (cache.get(url) or {}).get("body", "")
-            if not body:
+
+        items_for_translation: list[dict] = []
+        for it in pdf_items:
+            item_id = (it.get("item_id") or "").strip()
+            url = (it.get("url") or "").strip()
+            source = it.get("source") or ""
+            title = it.get("title") or ""
+            body = (it.get("body") or "").strip()
+
+            if not body and url:
                 body = _get_body_once(url, source, out_dir=out_dir, title=title)
-            url_to_source_title_body[url] = {"source": source, "title": title, "body": body}
-        if not urls_in_order:
-            logging.info("[bundle] no urls for PDF")
+
+            if not body:
+                logging.warning(f"[bundle] empty body for PDF item_id={item_id} url={url}")
+                continue
+
+            items_for_translation.append({
+                "item_id": item_id,
+                "url": url,
+                "source": source,
+                "title": title,
+                "body": body,
+                "date_mmt": it.get("date_mmt") or date_iso,
+            })
+
+        if not items_for_translation:
+            logging.info("[bundle] no items for PDF")
             return
-        translated = translate_fulltexts_for_business(urls_in_order, url_to_source_title_body)
+
+        translated = translate_fulltexts_for_business(items_for_translation)
         if not translated:
             logging.warning("[bundle] translation returned empty; skip PDF")
             return
 
-        # 翻訳成功分を bodies.json に永続化（次回buildで再利用できるようにする）
-        norm_to_original_url = {((u or "").strip().rstrip("/")): u for u in urls_in_order if (u or "").strip()}
-        with _BODIES_LOCK:
-            cache_latest = _load_bodies_cache(out_dir)
-            updated = 0
-            for it in translated:
-                nu = (it.get("url", "") or "").strip().rstrip("/")
-                if not nu:
-                    continue
-                body_ja = (it.get("body_ja", "") or "").strip()
-                if not body_ja:
-                    continue
-                original_url = norm_to_original_url.get(nu, (it.get("url", "") or "").strip())
-                if not original_url:
-                    continue
-                existing = cache_latest.get(original_url, {})
-                src_meta = url_to_source_title_body.get(original_url, {})
-                cache_latest[original_url] = {
-                    "source": existing.get("source") or src_meta.get("source", ""),
-                    "title":  existing.get("title")  or src_meta.get("title", ""),
-                    "body":   existing.get("body")   or src_meta.get("body", ""),
-                    "body_ja": body_ja,
-                }
-                updated += 1
-            if updated:
-                _save_bodies_cache(out_dir, cache_latest)
-                logging.info(f"[bundle] persisted translated body_ja entries to bodies.json: {updated}")
-
-        # ---- PDFビルダーが期待するメタ（title_ja / source / date / url）を付与する ----
-        # sheet_pipeline の summaries には、すでに確定見出しやメディア、配信日が入っている
-        #   - s["title"]      : 確定見出し（日本語）
-        #   - s["source"]     : メディア名
-        #   - s["date_mmt"]   : 日付（YYYY-MM-DD）
-        #   - s["url"]        : 記事URL
-        def _norm(u: str) -> str:
-            return (u or "").rstrip("/")
-        url_to_meta = {}
-        for s in summaries:
-            u = _norm(s.get("url", ""))
-            if not u:
+        # item_id 単位で PDF メタを引き当てる（同一URL重複を保持）
+        item_to_meta = {}
+        for it in items_for_translation:
+            item_id = (it.get("item_id") or "").strip()
+            if not item_id:
                 continue
-            # PDFビルダーは “文字列” を想定。シートは既に YYYY-MM-DD なのでそのまま使う
-            date_raw = s.get("date_mmt", "") or (date_iso or "")
-            # 念のため正規化（YYYY-MM-DD 以外が来たら date に直してから isoformat）
+            date_raw = it.get("date_mmt", "") or (date_iso or "")
             d_obj = _coerce_date(date_raw)
             date_str = (d_obj.isoformat() if d_obj else (date_iso or ""))
-            url_to_meta[u] = {
-                "title_ja": s.get("title", "") or "",
-                "source":   s.get("source", "") or "",
-                "date":     date_str,   # ← 文字列で保持
-                "url":      u,
+            item_to_meta[item_id] = {
+                "title_ja": it.get("title", "") or "",
+                "source": it.get("source", "") or "",
+                "date": date_str,
+                "url": (it.get("url") or "").rstrip("/"),
             }
 
         translated_items = []
         for it in translated:
-            u = _norm(it.get("url", ""))
-            meta = url_to_meta.get(u, {})
-            # ★ Business全文PDF用：title_ja / body_ja も最終置換
+            item_id = (it.get("item_id") or "").strip()
+            meta = item_to_meta.get(item_id, {})
+            if not meta:
+                continue
             title_ja = _apply_region_glossary_to_text(meta.get("title_ja", ""))
             body_ja  = _apply_region_glossary_to_text(it.get("body_ja", "") or "")
             translated_items.append({
-                "url":      u,
+                "item_id": item_id,
+                "url": meta.get("url", ""),
                 "title_ja": title_ja,
-                "body_ja":  body_ja,
-                "source":   meta.get("source", ""),
-                "date":     meta.get("date", ""),
+                "body_ja": body_ja,
+                "source": meta.get("source", ""),
+                "date": meta.get("date", ""),
             })
 
         pdf_bytes = build_combined_pdf_for_business(translated_items)
@@ -1876,15 +1973,12 @@ def cmd_build_bundle_from_sheet(args):
             f.write(attachment_name)
         logging.info(f"[bundle] wrote business PDF: {attachment_name} ({len(pdf_bytes)} bytes)")
 
-    # ⑤ bodies.json の書き出し（既存キャッシュとマージ）
+    # ⑤ bodies.json の書き出し（item_id ベースの配列、シート行順のまま）
     if bodies:
-        existing = _load_bodies_cache(out_dir)
-        # マージ：既存キャッシュに本文があればそれを優先（翻訳済みを上書きしない）
-        merged = {**existing, **bodies}
-        _save_bodies_cache(out_dir, merged)
+        _save_bodies_cache(out_dir, bodies)
 
     try:
-        _make_business_pdf_from_summaries(summaries, meta["date_mmt"], out_dir)
+        _make_business_pdf_from_items(pdf_items, meta["date_mmt"], out_dir)
     except Exception as e:
         logging.warning(f"[bundle] failed to build business pdf: {e}")
 

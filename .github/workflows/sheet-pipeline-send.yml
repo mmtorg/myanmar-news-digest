@@ -34,7 +34,8 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "collect16（15:50回） / collect（17:50/20:50/21:50/22:50/23:30回） / build-bundle（02:00） / send-only（artifactから再送）"
+        description: "collect16（15:50回） / collect（17:50/20:50/21:50/22:50/23:30回） /
+          build-bundle（02:00） / send-only（artifactから再送）"
         type: choice
         required: true
         default: collect16
@@ -161,7 +162,6 @@ jobs:
       - name: Collect → write to sheet (15:50 run, clear yesterday once)
         run: |
           python sheet_pipeline.py collect-to-sheet --clear-yesterday --schedule-cron "${{ github.event.schedule }}"
-
       # ★ 15:50 枠の収集完了時にメール通知（※一時的に無効化）
       # - name: Notify by email via Python (cron 15:50 MMT)
       #   if: ${{ github.event_name == 'schedule' && success() }}
@@ -189,7 +189,9 @@ jobs:
 
   schedule-collect:
     # 00:05 / 00:35 / 01:05 / 01:35 / 17:50 / 20:50 / 21:50 / 22:50 / 23:30 枠
-    if: github.event_name == 'schedule' && contains(fromJson('["35 17 * * *","5 18 * * *","35 18 * * *","5 19 * * *","17 11 * * *","17 14 * * *","17 15 * * *","17 16 * * *","57 16 * * *"]'), github.event.schedule)
+    if: github.event_name == 'schedule' && contains(fromJson('["35 17 * * *","5 18 *
+      * *","35 18 * * *","5 19 * * *","17 11 * * *","17 14 * * *","17 15 * *
+      *","17 16 * * *","57 16 * * *"]'), github.event.schedule)
     runs-on: ubuntu-latest
     environment: production
     concurrency:
@@ -313,7 +315,6 @@ jobs:
           else
             python sheet_pipeline.py collect-to-sheet --schedule-cron "${{ github.event.schedule }}"
           fi
-
       # ★ 17:50 / 20:50 / 21:50 / 22:50 枠ごとに、collect 完了後にメール通知（※一時的に無効化）
       # - name: Notify by email via Python (cron 17:50/20:50/21:50/22:50 MMT)
       #   if: ${{ github.event_name == 'schedule' && success() }}
@@ -627,7 +628,8 @@ jobs:
     runs-on: ubuntu-latest
     environment: ${{ github.ref_name == 'develop' && 'development' || 'production' }}
     concurrency:
-      group: mna-sheet-pipeline-${{ github.ref_name == 'develop' && 'development' || 'production' }}-manual
+      group: mna-sheet-pipeline-${{ github.ref_name == 'develop' && 'development' ||
+        'production' }}-manual
       cancel-in-progress: false
     env:
       GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
@@ -937,25 +939,54 @@ jobs:
           s = os.path.join(b, "summaries.json")
           if not os.path.exists(s):
               print("[!] bundle/summaries.json not found (skipping coverage)"); sys.exit(0)
+
           summaries = json.load(open(s, encoding="utf-8"))
           print("selected_count:", len(summaries))
+
           bp = os.path.join(b, "bodies.json")
-          cache = {}
+          raw_cache = []
           if os.path.exists(bp):
-              cache = json.load(open(bp, encoding="utf-8"))
+              raw = json.load(open(bp, encoding="utf-8"))
+              if isinstance(raw, list):
+                  raw_cache = [x for x in raw if isinstance(x, dict)]
+              elif isinstance(raw, dict):
+                  # 旧形式 {url: {...}} にも対応
+                  raw_cache = []
+                  for u, payload in raw.items():
+                      if isinstance(payload, dict):
+                          item = {"url": u}
+                          item.update(payload)
+                          raw_cache.append(item)
+
+          def find_body_entry(item_id: str, url: str):
+              item_id = (item_id or "").strip()
+              url = (url or "").strip().rstrip("/")
+              if item_id:
+                  for entry in raw_cache:
+                      if (entry.get("item_id") or "").strip() == item_id:
+                          return entry
+              if url:
+                  for entry in reversed(raw_cache):
+                      if (entry.get("url") or "").strip().rstrip("/") == url:
+                          return entry
+              return {}
+
           missing = []
           short = []
           for it in summaries:
-            u = it.get("url","")
-            if not u: continue
-            body = (cache.get(u) or {}).get("body","")
-            if not body:
-              missing.append(u)
-            elif len(body.strip()) < 80:
-              short.append(u)
-          print("in_cache:", len(cache), "missing_bodies:", len(missing), "short_bodies:", len(short))
+              item_id = it.get("item_id", "")
+              u = it.get("url", "")
+              if not u and not item_id:
+                  continue
+              body = (find_body_entry(item_id, u) or {}).get("body", "")
+              if not body:
+                  missing.append(item_id or u)
+              elif len(body.strip()) < 80:
+                  short.append(item_id or u)
+
+          print("in_cache:", len(raw_cache), "missing_bodies:", len(missing), "short_bodies:", len(short))
           if missing[:5]:
-            print("first_missing_examples:", missing[:5])
+              print("first_missing_examples:", missing[:5])
           PY
 
       - name: Upload bundle (only when built) (sheet)
