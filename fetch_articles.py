@@ -4828,11 +4828,13 @@ def translate_fulltexts_for_business(urls_in_order_or_items, url_to_source_title
 
     # 旧インターフェース（urls + meta map）/ 新インターフェース（item dict list）の両対応
     items_in_order = []
-    if (
+    is_new_interface = (
         isinstance(urls_in_order_or_items, list)
         and urls_in_order_or_items
         and isinstance(urls_in_order_or_items[0], dict)
-    ):
+    )
+
+    if is_new_interface:
         for idx, raw in enumerate(urls_in_order_or_items):
             item_id = _normalize_item_id(raw.get("item_id")) or f"item-{idx:04d}"
             items_in_order.append({
@@ -4847,7 +4849,7 @@ def translate_fulltexts_for_business(urls_in_order_or_items, url_to_source_title
         for idx, u in enumerate(urls_in_order):
             meta = (url_to_source_title_body.get(u) or {})
             items_in_order.append({
-                "item_id": f"item-{idx:04d}",
+                "item_id": f"url-{idx:04d}",
                 "url": (u or "").strip(),
                 "title": (meta.get("title") or "").strip(),
                 "body": (meta.get("body") or "").strip(),
@@ -5156,10 +5158,12 @@ def translate_fulltexts_for_business(urls_in_order_or_items, url_to_source_title
 
     # --- 1) 前処理（クレンジング＋100,000字上限） ---
     prepared = []
-    for u in urls_in_order:
-        meta = (url_to_source_title_body.get(u) or {})
-        title_src = (meta.get("title") or "").strip()
-        body_src  = (meta.get("body")  or "").strip()
+    for it in items_in_order:
+        item_id = _normalize_item_id(it.get("item_id"))
+        u = (it.get("url") or "").strip()
+        title_src = (it.get("title") or "").strip()
+        body_src = (it.get("body") or "").strip()
+
         # Prefer cached full body from first pass
         _cached = _get_cached_body(u)
         if _cached:
@@ -5167,9 +5171,14 @@ def translate_fulltexts_for_business(urls_in_order_or_items, url_to_source_title
         if not body_src:
             continue
 
-        # PDFの全文要約では 100,000 字までは翻訳対象に含める。
+        # PDFの全文翻訳では 100,000 字までは翻訳対象に含める。
         body_compact = trim_by_chars(compact_body(body_src), FULLTEXT_MAX_CHARS)
-        prepared.append({"url": u, "title": title_src, "body": body_compact})
+        prepared.append({
+            "item_id": item_id,
+            "url": u,
+            "title": title_src,
+            "body": body_compact,
+        })
 
     # --- 2) まとめ翻訳（長文だけ単独バッチ） ---
     results = []
