@@ -1483,6 +1483,29 @@ def _is_ayeyarwady(title_raw: str, body_raw: str) -> bool:
         hay = f"{t} {b}"
         return any(kw in hay for kw in kws)
 
+def _item_dedupe_key(it: Dict) -> str:
+    """
+    同一URLの複数記事を区別するため、collector が持つ _row_key を優先する。
+    なければ従来どおり URL を使う。
+    """
+    return (
+        (it.get("_row_key") or "").strip()
+        or (it.get("url") or "").strip()
+    )
+
+def _deduplicate_items(items: List[Dict]) -> List[Dict]:
+    """
+    _row_key 優先で順序保持 dedupe。
+    BBC の /burmese/articles/... のような同一URL複数記事を落とさない。
+    """
+    seen = set()
+    out: List[Dict] = []
+    for it in items:
+        key = _item_dedupe_key(it)
+        if key and key not in seen:
+            out.append(it); seen.add(key)
+    return out
+
 def _collect_all_for(
     target_date_mmt: date,
     schedule_cron: str | None = None,
@@ -1535,7 +1558,7 @@ def _collect_all_for(
         except Exception as e:
             logging.exception(f"[warn] collector failed: {fn.__name__}: {e}")
     dedup_before = len(items)
-    items = deduplicate_by_url(items)
+    items = _deduplicate_items(items)
     if dedup_before != len(items):
         logging.info(f"[collect] dedup {dedup_before} -> {len(items)} (-{dedup_before - len(items)})")
     else:
@@ -1576,17 +1599,26 @@ def _read_all_rows():
     rows = vals[1:] if len(vals) > 1 else []
     return header, rows, ws
 
-def _existing_urls_set() -> set:
+def _existing_row_keys_set() -> set:
     header, rows, _ = _read_all_rows()
-    name_to_idx = {n:i for i,n in enumerate(header)}
-    idx_K = name_to_idx.get("URL", 10)
-    urls = set()
+    name_to_idx = {n: i for i, n in enumerate(header)}
+    idx_J = name_to_idx.get("URL", 9)   # J列
+    idx_S = 18                          # S列: 内部 row key 用
+    keys = set()
     for r in rows:
         try:
-            u = (r[idx_K] or "").strip()
-            if u: urls.add(u)
-        except Exception: pass
-    return urls
+            row_key = ""
+            if len(r) > idx_S:
+                row_key = (r[idx_S] or "").strip()
+            url = ""
+            if len(r) > idx_J:
+                url = (r[idx_J] or "").strip()
+            key = row_key or url
+            if key:
+                keys.add(key)
+        except Exception:
+            pass
+    return keys
 
 def _append_rows(rows_to_append: List[List[str]]):
     if not rows_to_append:
@@ -1667,7 +1699,7 @@ def cmd_collect_to_sheet(args):
         print("no items to write")
         return
 
-    existing = _existing_urls_set()
+    existing = _existing_row_keys_set()
     logging.info(f"[sheet] existing_urls={len(existing)}")
 
     ts = datetime.now(MMT).strftime("%Y-%m-%d %H:%M:%S")
@@ -1678,6 +1710,7 @@ def cmd_collect_to_sheet(args):
         source = it.get("source") or ""
         title  = it.get("title") or ""
         url    = (it.get("url") or "").strip()
+        row_key = _item_dedupe_key(it)
         
         # Google News URL は可能なら実記事URLへ正規化してから、
         # 重複判定 / 本文取得 / シート出力のすべてに使う
@@ -1708,8 +1741,10 @@ def cmd_collect_to_sheet(args):
             logging.info(f"[skip] excluded irrawaddy url={normalized_url}")
             continue
 
-        if normalized_url in existing:
-            logging.debug(f"[skip] duplicated url={normalized_url!r}")
+        effective_row_key = (row_key or normalized_url).strip()
+
+        if effective_row_key in existing:
+            logging.debug(f"[skip] duplicated row_key={effective_row_key!r}")
             continue
 
         # collector が本文を持っていればそれを最優先（再取得しない）
@@ -1737,7 +1772,7 @@ def cmd_collect_to_sheet(args):
             f"ayeyarwady={is_ay} url={normalized_url}"
         )
 
-        # ★ E/F/G はブランク, M にタイトル原文, N に本文原文（ただしセル上限対策でクリップ）
+        # ★ E/F/G はブランク, S に内部 row key, M にタイトル原文, N に本文原文
         rows_to_append.append([
             target.isoformat(),                  # A 日付(配信日)
             ts,                                  # B timestamp
@@ -1748,11 +1783,16 @@ def cmd_collect_to_sheet(args):
             "",                                  # I 本文要約（空）
             normalized_url,                      # J URL
             "",                                  # K 採用フラグ（初期値空）
-            "",                                  # L（将来用など、現状不使用なら空）
+            "",                                  # L
             title,                               # M 記事タイトル原文
-            _clip_for_sheet_cell(body),          # N 記事本文原文（セル上限に合わせてクリップ）
+            _clip_for_sheet_cell(body),          # N 記事本文原文
+            "",                                  # O
+            "",                                  # P
+            "",                                  # Q
+            "",                                  # R
+            effective_row_key,                   # S 内部 row key（重複判定用）
         ])
-        existing.add(normalized_url)
+        existing.add(effective_row_key)
 
     _append_rows(rows_to_append)
     print(f"appended {len(rows_to_append)} rows")
