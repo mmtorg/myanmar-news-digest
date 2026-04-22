@@ -191,8 +191,9 @@ def _bbc_get_text_from_block(block: object) -> str:
 def _bbc_extract_split_articles_from_html(html: str) -> List[Dict]:
     """
     BBC Burmese の /burmese/articles/... にある「1ページ複数記事」形式を分割する。
-    先頭 headline はページ全体のタイトルとして扱い、
-    以降の subheadline ごとに 1 記事とみなして、その後続の text を本文として束ねる。
+    先頭 headline も 1 記事として扱い、
+    最初の subheadline が出る前の text はその先頭記事の本文に含める。
+    以降は subheadline ごとに 1 記事とみなして、その後続の text を本文として束ねる。
     """
     soup = BeautifulSoup(html, "html.parser")
     next_data_tag = soup.find("script", id="__NEXT_DATA__")
@@ -227,19 +228,28 @@ def _bbc_extract_split_articles_from_html(html: str) -> List[Dict]:
         model = block.get("model") or {}
 
         if btype == "headline":
-            # 先頭 headline はページ全体見出しなので分割記事には使わない
+            # 先頭 headline は「捨てる」のではなく、最初の記事タイトルとして採用する
             if not seen_page_headline:
                 seen_page_headline = True
+                headline = _bbc_get_text_from_block(model)
+                if headline:
+                    current_title = headline
+                    current_body_parts = []
                 continue
 
         if btype == "subheadline":
+            # ここで、それまで溜めた
+            # - 先頭 headline 記事
+            # - または直前の subheadline 記事
+            # を確定する
             _flush()
             current_title = _bbc_get_text_from_block(model)
+            current_body_parts = []
             continue
 
-        if btype == "text" and current_title:
+        if btype == "text":
             txt = _bbc_get_text_from_block(model)
-            if txt:
+            if txt and current_title:
                 current_body_parts.append(txt)
     _flush()
     return out
