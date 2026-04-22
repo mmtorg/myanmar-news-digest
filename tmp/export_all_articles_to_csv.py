@@ -165,6 +165,95 @@ def _bbc_extract_body(html: str) -> str:
     body_text = unicodedata.normalize("NFC", body_text or "").strip()
     return body_text
 
+def _bbc_get_text_from_block(block: object) -> str:
+    """
+    BBC Simorgh の block/model 配下から text を再帰的に集めて 1 つの文字列にする。
+    """
+    texts: List[str] = []
+    def _walk(x: object) -> None:
+        if isinstance(x, dict):
+            t = x.get("text")
+            if isinstance(t, str):
+                t = unicodedata.normalize("NFC", t).strip()
+                if t:
+                    texts.append(t)
+            for v in x.values():
+                _walk(v)
+        elif isinstance(x, list):
+            for v in x:
+                _walk(v)
+
+    _walk(block)
+    s = " ".join(texts)
+    s = re.sub(r"\s+", " ", s).strip()
+    return unicodedata.normalize("NFC", s)
+
+def _bbc_extract_split_articles_from_html(html: str) -> List[Dict]:
+    """
+    BBC Burmese の /burmese/articles/... にある「1ページ複数記事」形式を分割する。
+    先頭 headline も 1 記事として扱い、
+    最初の subheadline が出る前の text はその先頭記事の本文に含める。
+    以降は subheadline ごとに 1 記事とみなして、その後続の text を本文として束ねる。
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    next_data_tag = soup.find("script", id="__NEXT_DATA__")
+    if not next_data_tag or not next_data_tag.string:
+        return []
+
+    try:
+        data = json.loads(next_data_tag.string)
+        blocks = data["props"]["pageProps"]["pageData"]["content"]["model"]["blocks"]
+    except Exception:
+        return []
+
+    out: List[Dict] = []
+    current_title = ""
+    current_body_parts: List[str] = []
+    seen_page_headline = False
+
+    def _flush() -> None:
+        nonlocal current_title, current_body_parts, out
+        title = unicodedata.normalize("NFC", (current_title or "").strip())
+        body = "\n".join(x for x in current_body_parts if x).strip()
+        if title and body:
+            out.append({
+                "title": title,
+                "body": unicodedata.normalize("NFC", body),
+            })
+        current_title = ""
+        current_body_parts = []
+
+    for block in blocks:
+        btype = block.get("type")
+        model = block.get("model") or {}
+
+        if btype == "headline":
+            # 先頭 headline は「捨てる」のではなく、最初の記事タイトルとして採用する
+            if not seen_page_headline:
+                seen_page_headline = True
+                headline = _bbc_get_text_from_block(model)
+                if headline:
+                    current_title = headline
+                    current_body_parts = []
+                continue
+
+        if btype == "subheadline":
+            # ここで、それまで溜めた
+            # - 先頭 headline 記事
+            # - または直前の subheadline 記事
+            # を確定する
+            _flush()
+            current_title = _bbc_get_text_from_block(model)
+            current_body_parts = []
+            continue
+
+        if btype == "text":
+            txt = _bbc_get_text_from_block(model)
+            if txt and current_title:
+                current_body_parts.append(txt)
+    _flush()
+    return out
+
 def collect_bbc_all_for_date(target_date_mmt: date) -> List[Dict]:
     """
     BBC Burmese:
@@ -203,23 +292,50 @@ def collect_bbc_all_for_date(target_date_mmt: date) -> List[Dict]:
                 continue
 
             # ---- ここから本文取得（bot 対策付き） ----
-            body = ""
+            html = ""
             try:
-                html = _bbc_fetch_html_with_bot_bypass(
-                    url,
-                    session=session,
-                )
-                body = _bbc_extract_body(html)
+                html = _bbc_fetch_html_with_bot_bypass(url, session=session)
             except Exception as e:
                 # 本文取得失敗時はログを出しつつ空文字のまま
                 print(f"[bbc] 本文取得失敗: {e}")
-                body = ""
+                html = ""
+
+            split_items: List[Dict] = []
+            if html and url.startswith("https://www.bbc.com/burmese/articles/"):
+                split_items = _bbc_extract_split_articles_from_html(html)
+
+            # BBC の「1ページ複数記事」形式なら分割して別レコード化
+            if split_items:
+                for idx, part in enumerate(split_items, start=1):
+                    part_title = unicodedata.normalize(
+                        "NFC", (part.get("title") or "").strip()
+                    )
+                    part_body = unicodedata.normalize(
+                        "NFC", (part.get("body") or "").strip()
+                    )
+                    if not part_title or not part_body:
+                        continue
+                    out.append(
+                        {
+                            "source": "BBC Burmese",
+                            "title": part_title,
+                            "url": url,
+                            "date": target_date_mmt.isoformat(),
+                            "body": part_body,
+                            "_row_key": f"{url}#bbc-{idx}",
+                        }
+                    )
+                continue
+
+            # 従来の通常記事はそのまま 1 レコード
+            body = _bbc_extract_body(html) if html else ""
 
             out.append(
                 {
                     "source": "BBC Burmese",
                     "title": title,
                     "url": url,
+                    "_row_key": url,
                     "date": target_date_mmt.isoformat(),
                     "body": body,
                 }
