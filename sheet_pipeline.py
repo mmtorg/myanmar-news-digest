@@ -1184,6 +1184,7 @@ try:
         collect_popular_all_for_date,
         collect_frontier_all_for_date,
         collect_jetro_biznews_mm_all_for_date,
+        collect_news_eleven_all_for_date,
     )
     try:
         from tmp.export_all_articles_to_csv import (
@@ -1526,6 +1527,7 @@ def _collect_all_for(
         ("Popular Myanmar", collect_popular_all_for_date, {}),
         ("Frontier Myanmar", collect_frontier_all_for_date, {}),
         ("JETRO", collect_jetro_biznews_mm_all_for_date, {}),
+        ("News Eleven", collect_news_eleven_all_for_date, {}),
     ]
     if _should_collect_irrawaddy(schedule_cron):
         plan.insert(0, ("Irrawaddy", collect_irrawaddy_all_for_date, {}))

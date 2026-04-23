@@ -2853,6 +2853,133 @@ def collect_jetro_biznews_mm_all_for_date(
 
     return deduplicate_by_url(results)
 
+# ===== News Eleven =====
+def _extract_news_eleven_title(soup: BeautifulSoup) -> str:
+    og = soup.find("meta", attrs={"property": "og:title"})
+    if og and og.get("content"):
+        return unicodedata.normalize("NFC", og["content"].strip())
+    h1 = soup.select_one("h1#page-title") or soup.find("h1")
+    if h1:
+        return unicodedata.normalize("NFC", h1.get_text(" ", strip=True))
+
+    title_text = soup.title.get_text(" ", strip=True) if soup.title else ""
+    title_text = re.sub(r"\s*\|\s*Eleven Media Group Co\., Ltd\s*$", "", title_text)
+    return unicodedata.normalize("NFC", title_text.strip())
+
+def _extract_news_eleven_date_mmt(soup: BeautifulSoup) -> Optional[date]:
+    node = soup.select_one(
+        "div.news-detail-date-author-info-date span.date-display-single"
+    )
+    if not node:
+        return None
+    raw = (node.get("content") or node.get_text(" ", strip=True) or "").strip()
+    if not raw:
+        return None
+    try:
+        dt = parse_date(raw)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=MMT)
+        else:
+            dt = dt.astimezone(MMT)
+        return dt.date()
+    except Exception:
+        return None
+
+def _extract_news_eleven_body(soup: BeautifulSoup) -> str:
+    root = (
+        soup.select_one("div.node-content div.field-item")
+        or soup.select_one("div.node-content")
+    )
+    if not root:
+        return ""
+    parts: List[str] = []
+    seen = set()
+    # このサイトは本文が <span> に入っていることが多いので span 優先
+    for span in root.select("span"):
+        txt = re.sub(r"\s+", " ", span.get_text(" ", strip=True)).strip()
+        txt = unicodedata.normalize("NFC", txt)
+        if txt and txt not in seen:
+            parts.append(txt)
+            seen.add(txt)
+    # フォールバック
+    if not parts:
+        for p in root.select("p"):
+            txt = re.sub(r"\s+", " ", p.get_text(" ", strip=True)).strip()
+            txt = unicodedata.normalize("NFC", txt)
+            if txt and txt not in seen:
+                parts.append(txt)
+                seen.add(txt)
+
+    return "\n".join(parts).strip()
+
+def collect_news_eleven_all_for_date(target_date_mmt: date) -> List[Dict]:
+    from urllib.parse import urljoin
+
+    list_url = "https://news-eleven.com/news"
+    session = _make_pooled_session()
+
+    try:
+        res = session.get(list_url, timeout=10)
+        res.raise_for_status()
+    except Exception as e:
+        print(f"[news-eleven] list fail {list_url}: {e}")
+        return []
+
+    soup = BeautifulSoup(res.content, "html.parser")
+
+    # 「Most Recent」セクションのみ対象
+    recent_scope = soup.select_one("section.pane-recent-news")
+    if recent_scope is None:
+        print("[news-eleven] Most Recent section not found")
+        return []
+
+    article_urls: List[str] = []
+    seen_urls = set()
+
+    for a in recent_scope.select(".recent-news-title a[href]"):
+        href = (a.get("href") or "").strip()
+        if not href:
+            continue
+        url = href if href.startswith("http") else urljoin(list_url, href)
+        if "/article/" not in url:
+            continue
+
+        if url in seen_urls:
+            continue
+        seen_urls.add(url)
+        article_urls.append(url)
+
+    results: List[Dict] = []
+
+    for url in article_urls:
+        try:
+            res = session.get(url, timeout=10)
+            res.raise_for_status()
+            article_soup = BeautifulSoup(res.content, "html.parser")
+
+            article_date = _extract_news_eleven_date_mmt(article_soup)
+            if article_date != target_date_mmt:
+                continue
+
+            title = _extract_news_eleven_title(article_soup)
+            body = _extract_news_eleven_body(article_soup)
+            if not title or not body:
+                continue
+            results.append(
+                {
+                    "source": "News Eleven",
+                    "title": title,
+                    "url": url,
+                    "date": article_date.isoformat(),
+                    "body": body,
+                }
+            )
+        except Exception as e:
+            print(f"[news-eleven] article fail {url}: {e}")
+            continue
+
+    return deduplicate_by_url(results)
+
 # ===== 単体翻訳（既存プロンプト流用） =====
 def translate_title_only(item: Dict, *, model: str = "gemini-2.5-flash") -> str:
     """
