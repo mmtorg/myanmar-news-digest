@@ -2912,25 +2912,105 @@ def _extract_news_eleven_body(soup: BeautifulSoup) -> str:
 
     return "\n".join(parts).strip()
 
+def _fetch_news_eleven_html(
+    url: str,
+    *,
+    session: requests.Session | None = None,
+    timeout: int = 20,
+) -> tuple[str, str]:
+    """
+    News Eleven 用の段階的フェッチャ。
+    戻り値: (html, source)
+      source = "direct" | "unlocker" | "browser" | "none"
+    """
+    last_err: Exception | None = None
+
+    # 1) curl_cffi（Chrome 指紋）
+    try:
+        from curl_cffi import requests as curl_requests  # type: ignore
+
+        r = curl_requests.get(
+            url,
+            timeout=timeout,
+            impersonate="chrome",
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/128.0.0.0 Safari/537.36"
+                ),
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+        )
+        if r.status_code == 200 and (r.text or "").strip():
+            return r.text, "direct"
+        if r.status_code not in (403, 429, 503):
+            last_err = RuntimeError(f"HTTP {r.status_code}")
+    except Exception as e:
+        last_err = e
+
+    # 2) requests.Session
+    sess = session or _make_pooled_session()
+    try:
+        r2 = sess.get(
+            url,
+            timeout=timeout,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/128.0.0.0 Safari/537.36"
+                ),
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+        )
+        if r2.status_code == 200 and (r2.text or "").strip():
+            return r2.text, "direct"
+        if r2.status_code not in (403, 429, 503):
+            last_err = RuntimeError(f"HTTP {r2.status_code}")
+    except Exception as e:
+        last_err = e
+
+    # 3) Bright Data Web Unlocker
+    try:
+        html = fetch_html_via_brightdata_unlocker(
+            url,
+            timeout=BD_UNLOCKER_TIMEOUT,
+            retry_once=True,
+        )
+        if html and html.strip():
+            return html, "unlocker"
+    except Exception as e:
+        last_err = e
+
+    # 4) Bright Data Browser
+    try:
+        html = fetch_html_via_brightdata_browser(url)
+        if html and html.strip():
+            return html, "browser"
+    except Exception as e:
+        last_err = e
+
+    print(f"[news-eleven] fetch failed: {last_err} | {url}")
+    return "", "none"
+
 def collect_news_eleven_all_for_date(target_date_mmt: date) -> List[Dict]:
     from urllib.parse import urljoin
 
     list_url = "https://news-eleven.com/news"
     session = _make_pooled_session()
 
-    try:
-        res = session.get(list_url, timeout=10)
-        res.raise_for_status()
-    except Exception as e:
-        print(f"[news-eleven] list fail {list_url}: {e}")
+    html, list_source = _fetch_news_eleven_html(list_url, session=session)
+    if not html:
+        print(f"[news-eleven] list fail {list_url} source={list_source}")
         return []
 
-    soup = BeautifulSoup(res.content, "html.parser")
+    soup = BeautifulSoup(html, "html.parser")
 
     # 「Most Recent」セクションのみ対象
     recent_scope = soup.select_one("section.pane-recent-news")
     if recent_scope is None:
-        print("[news-eleven] Most Recent section not found")
+        print(f"[news-eleven] Most Recent section not found source={list_source}")
         return []
 
     article_urls: List[str] = []
@@ -2948,14 +3028,22 @@ def collect_news_eleven_all_for_date(target_date_mmt: date) -> List[Dict]:
             continue
         seen_urls.add(url)
         article_urls.append(url)
+        
+    print(f"[news-eleven] list source={list_source} candidates={len(article_urls)}")
 
     results: List[Dict] = []
 
     for url in article_urls:
         try:
-            res = session.get(url, timeout=10)
-            res.raise_for_status()
-            article_soup = BeautifulSoup(res.content, "html.parser")
+            article_html, article_source = _fetch_news_eleven_html(
+                url,
+                session=session,
+            )
+            if not article_html:
+                print(f"[news-eleven] article fail {url} source={article_source}")
+                continue
+
+            article_soup = BeautifulSoup(article_html, "html.parser")
 
             article_date = _extract_news_eleven_date_mmt(article_soup)
             if article_date != target_date_mmt:
@@ -2964,6 +3052,9 @@ def collect_news_eleven_all_for_date(target_date_mmt: date) -> List[Dict]:
             title = _extract_news_eleven_title(article_soup)
             body = _extract_news_eleven_body(article_soup)
             if not title or not body:
+                print(
+                    f"[news-eleven] empty title/body source={article_source} url={url}"
+                )
                 continue
             results.append(
                 {
