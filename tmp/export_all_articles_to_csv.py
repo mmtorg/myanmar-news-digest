@@ -2940,6 +2940,12 @@ def collect_news_eleven_all_for_date(target_date_mmt: date) -> List[Dict]:
                     f"[news-eleven] empty title/body source={article_source} url={url}"
                 )
                 continue
+            
+            print(
+                f"[news-eleven] article source={article_source} "
+                f"date={article_date.isoformat()} body_len={len(body)} url={url}"
+            )
+
             results.append(
                 {
                     "source": "News Eleven",
