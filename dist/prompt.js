@@ -857,6 +857,8 @@ const API_KEY_ROTATION_RULES = {
   "bbc burmese": { baseKeys: ["BBC", "BBC2"] },
   irrawaddy: { baseKeys: ["IRRAWADDY", "IRRAWADDY2"] },
   "myanmar now": { baseKeys: ["MYANMARNOW", "MYANMARNOW2"] },
+
+  "news eleven": { baseKeys: ["NEWSELEVEN", "NEWSELEVEN2"] },
 };
 
 function _pickApiKeyPropNameWithRotation_(sheetName, sourceRaw) {

@@ -165,95 +165,6 @@ def _bbc_extract_body(html: str) -> str:
     body_text = unicodedata.normalize("NFC", body_text or "").strip()
     return body_text
 
-def _bbc_get_text_from_block(block: object) -> str:
-    """
-    BBC Simorgh の block/model 配下から text を再帰的に集めて 1 つの文字列にする。
-    """
-    texts: List[str] = []
-    def _walk(x: object) -> None:
-        if isinstance(x, dict):
-            t = x.get("text")
-            if isinstance(t, str):
-                t = unicodedata.normalize("NFC", t).strip()
-                if t:
-                    texts.append(t)
-            for v in x.values():
-                _walk(v)
-        elif isinstance(x, list):
-            for v in x:
-                _walk(v)
-
-    _walk(block)
-    s = " ".join(texts)
-    s = re.sub(r"\s+", " ", s).strip()
-    return unicodedata.normalize("NFC", s)
-
-def _bbc_extract_split_articles_from_html(html: str) -> List[Dict]:
-    """
-    BBC Burmese の /burmese/articles/... にある「1ページ複数記事」形式を分割する。
-    先頭 headline も 1 記事として扱い、
-    最初の subheadline が出る前の text はその先頭記事の本文に含める。
-    以降は subheadline ごとに 1 記事とみなして、その後続の text を本文として束ねる。
-    """
-    soup = BeautifulSoup(html, "html.parser")
-    next_data_tag = soup.find("script", id="__NEXT_DATA__")
-    if not next_data_tag or not next_data_tag.string:
-        return []
-
-    try:
-        data = json.loads(next_data_tag.string)
-        blocks = data["props"]["pageProps"]["pageData"]["content"]["model"]["blocks"]
-    except Exception:
-        return []
-
-    out: List[Dict] = []
-    current_title = ""
-    current_body_parts: List[str] = []
-    seen_page_headline = False
-
-    def _flush() -> None:
-        nonlocal current_title, current_body_parts, out
-        title = unicodedata.normalize("NFC", (current_title or "").strip())
-        body = "\n".join(x for x in current_body_parts if x).strip()
-        if title and body:
-            out.append({
-                "title": title,
-                "body": unicodedata.normalize("NFC", body),
-            })
-        current_title = ""
-        current_body_parts = []
-
-    for block in blocks:
-        btype = block.get("type")
-        model = block.get("model") or {}
-
-        if btype == "headline":
-            # 先頭 headline は「捨てる」のではなく、最初の記事タイトルとして採用する
-            if not seen_page_headline:
-                seen_page_headline = True
-                headline = _bbc_get_text_from_block(model)
-                if headline:
-                    current_title = headline
-                    current_body_parts = []
-                continue
-
-        if btype == "subheadline":
-            # ここで、それまで溜めた
-            # - 先頭 headline 記事
-            # - または直前の subheadline 記事
-            # を確定する
-            _flush()
-            current_title = _bbc_get_text_from_block(model)
-            current_body_parts = []
-            continue
-
-        if btype == "text":
-            txt = _bbc_get_text_from_block(model)
-            if txt and current_title:
-                current_body_parts.append(txt)
-    _flush()
-    return out
-
 def collect_bbc_all_for_date(target_date_mmt: date) -> List[Dict]:
     """
     BBC Burmese:
@@ -292,50 +203,23 @@ def collect_bbc_all_for_date(target_date_mmt: date) -> List[Dict]:
                 continue
 
             # ---- ここから本文取得（bot 対策付き） ----
-            html = ""
+            body = ""
             try:
-                html = _bbc_fetch_html_with_bot_bypass(url, session=session)
+                html = _bbc_fetch_html_with_bot_bypass(
+                    url,
+                    session=session,
+                )
+                body = _bbc_extract_body(html)
             except Exception as e:
                 # 本文取得失敗時はログを出しつつ空文字のまま
                 print(f"[bbc] 本文取得失敗: {e}")
-                html = ""
-
-            split_items: List[Dict] = []
-            if html and url.startswith("https://www.bbc.com/burmese/articles/"):
-                split_items = _bbc_extract_split_articles_from_html(html)
-
-            # BBC の「1ページ複数記事」形式なら分割して別レコード化
-            if split_items:
-                for idx, part in enumerate(split_items, start=1):
-                    part_title = unicodedata.normalize(
-                        "NFC", (part.get("title") or "").strip()
-                    )
-                    part_body = unicodedata.normalize(
-                        "NFC", (part.get("body") or "").strip()
-                    )
-                    if not part_title or not part_body:
-                        continue
-                    out.append(
-                        {
-                            "source": "BBC Burmese",
-                            "title": part_title,
-                            "url": url,
-                            "date": target_date_mmt.isoformat(),
-                            "body": part_body,
-                            "_row_key": f"{url}#bbc-{idx}",
-                        }
-                    )
-                continue
-
-            # 従来の通常記事はそのまま 1 レコード
-            body = _bbc_extract_body(html) if html else ""
+                body = ""
 
             out.append(
                 {
                     "source": "BBC Burmese",
                     "title": title,
                     "url": url,
-                    "_row_key": url,
                     "date": target_date_mmt.isoformat(),
                     "body": body,
                 }
@@ -2849,6 +2733,230 @@ def collect_jetro_biznews_mm_all_for_date(
             )
         except Exception as e:
             print(f"[jetro] article fail {url}: {e}")
+            continue
+
+    return deduplicate_by_url(results)
+
+# ===== News Eleven =====
+def _extract_news_eleven_title(soup: BeautifulSoup) -> str:
+    og = soup.find("meta", attrs={"property": "og:title"})
+    if og and og.get("content"):
+        return unicodedata.normalize("NFC", og["content"].strip())
+    h1 = soup.select_one("h1#page-title") or soup.find("h1")
+    if h1:
+        return unicodedata.normalize("NFC", h1.get_text(" ", strip=True))
+
+    title_text = soup.title.get_text(" ", strip=True) if soup.title else ""
+    title_text = re.sub(r"\s*\|\s*Eleven Media Group Co\., Ltd\s*$", "", title_text)
+    return unicodedata.normalize("NFC", title_text.strip())
+
+def _extract_news_eleven_date_mmt(soup: BeautifulSoup) -> Optional[date]:
+    node = soup.select_one(
+        "div.news-detail-date-author-info-date span.date-display-single"
+    )
+    if not node:
+        return None
+    raw = (node.get("content") or node.get_text(" ", strip=True) or "").strip()
+    if not raw:
+        return None
+    try:
+        dt = parse_date(raw)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=MMT)
+        else:
+            dt = dt.astimezone(MMT)
+        return dt.date()
+    except Exception:
+        return None
+
+def _extract_news_eleven_body(soup: BeautifulSoup) -> str:
+    root = (
+        soup.select_one("div.node-content div.field-item")
+        or soup.select_one("div.node-content")
+    )
+    if not root:
+        return ""
+    parts: List[str] = []
+    seen = set()
+    # このサイトは本文が <span> に入っていることが多いので span 優先
+    for span in root.select("span"):
+        txt = re.sub(r"\s+", " ", span.get_text(" ", strip=True)).strip()
+        txt = unicodedata.normalize("NFC", txt)
+        if txt and txt not in seen:
+            parts.append(txt)
+            seen.add(txt)
+    # フォールバック
+    if not parts:
+        for p in root.select("p"):
+            txt = re.sub(r"\s+", " ", p.get_text(" ", strip=True)).strip()
+            txt = unicodedata.normalize("NFC", txt)
+            if txt and txt not in seen:
+                parts.append(txt)
+                seen.add(txt)
+
+    return "\n".join(parts).strip()
+
+def _fetch_news_eleven_html(
+    url: str,
+    *,
+    session: requests.Session | None = None,
+    timeout: int = 20,
+) -> tuple[str, str]:
+    """
+    News Eleven 用の段階的フェッチャ。
+    戻り値: (html, source)
+      source = "direct" | "unlocker" | "browser" | "none"
+    """
+    last_err: Exception | None = None
+
+    # 1) curl_cffi（Chrome 指紋）
+    try:
+        from curl_cffi import requests as curl_requests  # type: ignore
+
+        r = curl_requests.get(
+            url,
+            timeout=timeout,
+            impersonate="chrome",
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/128.0.0.0 Safari/537.36"
+                ),
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+        )
+        if r.status_code == 200 and (r.text or "").strip():
+            return r.text, "direct"
+        if r.status_code not in (403, 429, 503):
+            last_err = RuntimeError(f"HTTP {r.status_code}")
+    except Exception as e:
+        last_err = e
+
+    # 2) requests.Session
+    sess = session or _make_pooled_session()
+    try:
+        r2 = sess.get(
+            url,
+            timeout=timeout,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/128.0.0.0 Safari/537.36"
+                ),
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+        )
+        if r2.status_code == 200 and (r2.text or "").strip():
+            return r2.text, "direct"
+        if r2.status_code not in (403, 429, 503):
+            last_err = RuntimeError(f"HTTP {r2.status_code}")
+    except Exception as e:
+        last_err = e
+
+    # 3) Bright Data Web Unlocker
+    try:
+        html = fetch_html_via_brightdata_unlocker(
+            url,
+            timeout=BD_UNLOCKER_TIMEOUT,
+            retry_once=True,
+        )
+        if html and html.strip():
+            return html, "unlocker"
+    except Exception as e:
+        last_err = e
+
+    # 4) Bright Data Browser
+    try:
+        html = fetch_html_via_brightdata_browser(url)
+        if html and html.strip():
+            return html, "browser"
+    except Exception as e:
+        last_err = e
+
+    print(f"[news-eleven] fetch failed: {last_err} | {url}")
+    return "", "none"
+
+def collect_news_eleven_all_for_date(target_date_mmt: date) -> List[Dict]:
+    from urllib.parse import urljoin
+
+    list_url = "https://news-eleven.com/news"
+    session = _make_pooled_session()
+
+    html, list_source = _fetch_news_eleven_html(list_url, session=session)
+    if not html:
+        print(f"[news-eleven] list fail {list_url} source={list_source}")
+        return []
+
+    soup = BeautifulSoup(html, "html.parser")
+
+    # 「Most Recent」セクションのみ対象
+    recent_scope = soup.select_one("section.pane-recent-news")
+    if recent_scope is None:
+        print(f"[news-eleven] Most Recent section not found source={list_source}")
+        return []
+
+    article_urls: List[str] = []
+    seen_urls = set()
+
+    for a in recent_scope.select(".recent-news-title a[href]"):
+        href = (a.get("href") or "").strip()
+        if not href:
+            continue
+        url = href if href.startswith("http") else urljoin(list_url, href)
+        if "/article/" not in url:
+            continue
+
+        if url in seen_urls:
+            continue
+        seen_urls.add(url)
+        article_urls.append(url)
+        
+    print(f"[news-eleven] list source={list_source} candidates={len(article_urls)}")
+
+    results: List[Dict] = []
+
+    for url in article_urls:
+        try:
+            article_html, article_source = _fetch_news_eleven_html(
+                url,
+                session=session,
+            )
+            if not article_html:
+                print(f"[news-eleven] article fail {url} source={article_source}")
+                continue
+
+            article_soup = BeautifulSoup(article_html, "html.parser")
+
+            article_date = _extract_news_eleven_date_mmt(article_soup)
+            if article_date != target_date_mmt:
+                continue
+
+            title = _extract_news_eleven_title(article_soup)
+            body = _extract_news_eleven_body(article_soup)
+            if not title or not body:
+                print(
+                    f"[news-eleven] empty title/body source={article_source} url={url}"
+                )
+                continue
+            
+            print(
+                f"[news-eleven] article source={article_source} "
+                f"date={article_date.isoformat()} body_len={len(body)} url={url}"
+            )
+
+            results.append(
+                {
+                    "source": "News Eleven",
+                    "title": title,
+                    "url": url,
+                    "date": article_date.isoformat(),
+                    "body": body,
+                }
+            )
+        except Exception as e:
+            print(f"[news-eleven] article fail {url}: {e}")
             continue
 
     return deduplicate_by_url(results)
