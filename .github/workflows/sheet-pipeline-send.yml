@@ -2,40 +2,30 @@ name: Daily Myanmar News Alert Sheet Pipeline Send Integrated
 
 on:
   schedule:
-    # 15:50 MMT（= 09:20 UTC）: 前日クリア → 追記
-    # 15:50 MMT ≒ 09:20 UTC → 09:17 UTC（= 15:47 MMT, 3分前倒し）
-    - cron: "17 9 * * *" # 15:47 MMT（実運用目標: 15:50）
-
-    # 17:50 / 20:50 / 21:50 / 22:50 / 23:30 MMT（= 11:20 / 14:20 / 15:20 / 16:20 / 17:00 UTC）: 追記のみ
-    # 17:50 MMT ≒ 11:20 UTC → 11:17 UTC（= 17:47 MMT, 3分前倒し）
-    - cron: "17 11 * * *" # 17:47 MMT（実運用目標: 17:50）
-    # 20:50 MMT ≒ 14:20 UTC → 14:17 UTC（= 20:47 MMT, 3分前倒し）
-    - cron: "17 14 * * *" # 20:47 MMT（実運用目標: 20:50）
-    # 21:50 MMT ≒ 15:20 UTC → 15:17 UTC（= 21:47 MMT, 3分前倒し）
-    - cron: "17 15 * * *" # 21:47 MMT（実運用目標: 21:50）
-    # 22:50 MMT ≒ 16:20 UTC → 16:17 UTC（= 22:47 MMT, 3分前倒し）
-    - cron: "17 16 * * *" # 22:47 MMT（実運用目標: 22:50）
-    - cron: "57 16 * * *" # 23:27 MMT（実運用目標: 23:30）
-
+    # collect系は Google Apps Script から workflow_dispatch で起動する運用に変更
+    # （必要なら保険用途で戻せるよう、cron定義はコメントとして残す）
+    #
+    # - cron: "17 9 * * *"   # 15:50相当
+    # - cron: "17 11 * * *"  # 17:50相当
+    # - cron: "17 14 * * *"  # 20:50相当
+    # - cron: "17 15 * * *"  # 21:50相当
+    # - cron: "17 16 * * *"  # 22:50相当
+    # - cron: "57 16 * * *"  # 23:30相当
     # 前日分取得（00:05 は全メディア、以降は Khit Thit Media のみ）
-    # 00:05 MMT（= 17:35 UTC 前日）
-    - cron: "35 17 * * *" # 00:05 MMT
-    # 00:35 MMT（= 18:05 UTC 前日）
-    - cron: "5 18 * * *" # 00:35 MMT
-    # 01:05 MMT（= 18:35 UTC 前日）
-    - cron: "35 18 * * *" # 01:05 MMT
-    # 01:35 MMT（= 19:05 UTC 前日）
-    - cron: "5 19 * * *" # 01:35 MMT
+    # - cron: "35 17 * * *" # 00:05 MMT
+    # - cron: "5 18 * * *" # 00:35 MMT
+    # - cron: "35 18 * * *" # 01:05 MMT
+    # - cron: "5 19 * * *" # 01:35 MMT
 
     # 02:00 MMT（= 19:30 UTC 前日）: bundle生成
-    # → 19:27 UTC（= 02:00 MMT, 3分前倒し）
     - cron: "35 19 * * *" # 02:05 MMT（監視ループ開始）
 
   workflow_dispatch:
     inputs:
       mode:
-        description: "collect16（15:50回） / collect（17:50/20:50/21:50/22:50/23:30回） /
-          build-bundle（02:00） / send-only（artifactから再送）"
+        description: "collect16（15:50回） /
+          collect（00:05/00:35/01:05/01:35/17:50/20:50/21:50/22:50/23:30/00:10回）
+          / build-bundle（02:00） / send-only（artifactから再送）"
         type: choice
         required: true
         default: collect16
@@ -45,6 +35,12 @@ on:
           - build-bundle
           - notify-email
           - send-only
+
+      schedule_cron:
+        description: "collect系で使う cron 文字列（例: 35 17 * * * / 17 11 * * * / 37 17 * * *）"
+        type: string
+        required: false
+        default: ""
 
       bundle_run_id:
         description: "send-onlyで使用するbundle artifactのrun_id（例: 1234567890）"
@@ -188,7 +184,12 @@ jobs:
       #     CSV_EMAIL_RECIPIENTS: ${{ secrets.CSV_EMAIL_RECIPIENTS }}
 
   schedule-collect:
-    # 00:05 / 00:35 / 01:05 / 01:35 / 17:50 / 20:50 / 21:50 / 22:50 / 23:30 枠
+    # 前日分取得（00:05 は全メディア、以降は Khit Thit Media のみ）
+    # 00:05 MMT（= 17:35 UTC 前日）
+    # 00:35 MMT（= 18:05 UTC 前日）
+    # 01:05 MMT（= 18:35 UTC 前日）
+    # 01:35 MMT（= 19:05 UTC 前日）
+    # 通常分: 17:50 / 20:50 / 21:50 / 22:50 / 23:30 枠
     if: github.event_name == 'schedule' && contains(fromJson('["35 17 * * *","5 18 *
       * *","35 18 * * *","5 19 * * *","17 11 * * *","17 14 * * *","17 15 * *
       *","17 16 * * *","57 16 * * *"]'), github.event.schedule)
@@ -629,7 +630,8 @@ jobs:
     environment: ${{ github.ref_name == 'develop' && 'development' || 'production' }}
     concurrency:
       group: mna-sheet-pipeline-${{ github.ref_name == 'develop' && 'development' ||
-        'production' }}-manual
+        'production' }}-${{ inputs.mode }}-${{ inputs.schedule_cron || 'manual'
+        }}
       cancel-in-progress: false
     env:
       GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
@@ -794,27 +796,36 @@ jobs:
             SHEET_LABEL="prod"
           fi
 
-          case "${{ inputs.mode }}" in
-            collect16)
-              SLOT_LABEL="15:50相当"
-              JOB_LABEL="manual-run / collect16"
-              ;;
-            collect)
-              SLOT_LABEL="collect"
-              JOB_LABEL="manual-run / collect"
-              ;;
+          case "${{ inputs.schedule_cron }}" in
+            "17 9 * * *")  SLOT_LABEL="15:50" ;;
+            "35 17 * * *") SLOT_LABEL="00:05（前日分追記・全メディア）" ;;
+            "5 18 * * *") SLOT_LABEL="00:35（前日分追記・Khit Thit Mediaのみ）" ;;
+            "35 18 * * *") SLOT_LABEL="01:05（前日分追記・Khit Thit Mediaのみ）" ;;
+            "5 19 * * *") SLOT_LABEL="01:35（前日分追記・Khit Thit Mediaのみ）" ;;
+            "37 17 * * *") SLOT_LABEL="00:10（前日分追記）" ;;
+            "17 11 * * *") SLOT_LABEL="17:50" ;;
+            "17 14 * * *") SLOT_LABEL="20:50" ;;
+            "17 15 * * *") SLOT_LABEL="21:50" ;;
+            "17 16 * * *") SLOT_LABEL="22:50" ;;
+            "57 16 * * *") SLOT_LABEL="23:30" ;;
             *)
-              SLOT_LABEL="manual"
-              JOB_LABEL="manual-run"
+              case "${{ inputs.mode }}" in
+                collect16) SLOT_LABEL="15:50相当" ;;
+                collect)   SLOT_LABEL="collect" ;;
+                *)         SLOT_LABEL="manual" ;;
+              esac
               ;;
           esac
 
-          BODY="$(printf '%s\n%s\n%s\n%s\n%s\n' \
+          JOB_LABEL="manual-run / ${{ inputs.mode }}"
+
+          BODY="$(printf '%s\n%s\n%s\n%s\n%s\n%s\n' \
             "▶ MNA 記事収集を開始しました（手動実行 / ${SLOT_LABEL}）" \
             "・job: ${JOB_LABEL}" \
             "・branch: ${GITHUB_REF_NAME}" \
             "・environment: ${ENV_LABEL}" \
-            "・sheet: ${SHEET_LABEL}" )"
+            "・sheet: ${SHEET_LABEL}" \
+            "・schedule_cron: ${{ inputs.schedule_cron }}" )"
 
           python notify_done.py \
             --to "${CSV_EMAIL_RECIPIENTS}" \
@@ -826,19 +837,41 @@ jobs:
         if: ${{ inputs.mode == 'collect16' || inputs.mode == 'collect' }}
         run: |
           set -euo pipefail
-          echo "Run case \"${{ inputs.mode }}\" in"
+
           case "${{ inputs.mode }}" in
             collect16)
-              python sheet_pipeline.py collect-to-sheet --clear-yesterday --schedule-cron "17 9 * * *"
+              CRON="${{ inputs.schedule_cron }}"
+              [ -n "$CRON" ] || CRON="17 9 * * *"
+
+              python sheet_pipeline.py collect-to-sheet \
+                --clear-yesterday \
+                --schedule-cron "$CRON"
               ;;
+
             collect)
-              python sheet_pipeline.py collect-to-sheet --schedule-cron "17 16 * * *"
+              CRON="${{ inputs.schedule_cron }}"
+              [ -n "$CRON" ] || { echo "schedule_cron is required for mode=collect"; exit 1; }
+
+              if [ "$CRON" = "35 17 * * *" ] || [ "$CRON" = "37 17 * * *" ]; then
+                python sheet_pipeline.py collect-to-sheet \
+                  --schedule-cron "$CRON" \
+                  --target-offset-days -1
+              elif [ "$CRON" = "5 18 * * *" ] || \
+                   [ "$CRON" = "35 18 * * *" ] || \
+                   [ "$CRON" = "5 19 * * *" ]; then
+                python sheet_pipeline.py collect-to-sheet \
+                  --schedule-cron "$CRON" \
+                  --target-offset-days -1 \
+                  --only-source "Khit Thit Media"
+              else
+                python sheet_pipeline.py collect-to-sheet \
+                  --schedule-cron "$CRON"
+              fi
               ;;
-            build-bundle)
-              echo "build-bundle is handled in a dedicated later step."
-              ;;
+
             *)
-              echo "unknown mode: ${{ inputs.mode }}" ; exit 1
+              echo "unknown mode: ${{ inputs.mode }}"
+              exit 1
               ;;
           esac
 
