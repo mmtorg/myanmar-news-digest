@@ -989,10 +989,10 @@ const GEMINI_JS_MAX_RETRIES = 1; // 2 → 1
 const GEMINI_JS_BASE_DELAY_SEC = 8; // 5 → 8
 const GEMINI_JS_MAX_DELAY_SEC = 90; // 60 → 90
 
-// OpenAI(gpt-5-mini) 用リトライ設定
+// OpenAI(gpt-5.4-nano) 用リトライ設定
 // - 「リトライの条件」は Gemini と同じ判定ロジックに近い判定を使う
 // - 「回数」は最大2回（= 初回 + 2リトライの合計3回まで）
-const GPT5_MINI_MODEL = "gpt-5-mini";
+const GPT5_MINI_MODEL = "gpt-5.4-nano";
 const OPENAI_API_KEY_PROP = "OPENAI_API_KEY";
 const GPT_JS_MAX_RETRIES = 2; // 追加リトライ回数（最大2回）
 
@@ -1634,7 +1634,7 @@ function compressSummaryWithFallback_(sheetName, promptText, usageTagOpt) {
 }
 
 // ============================================================
-// OpenAI Responses API (gpt-5-mini)
+// OpenAI Responses API (gpt-5.4-nano)
 // ============================================================
 function _extractOutputTextFromResponses_(data) {
   if (!data) return "";
@@ -1967,7 +1967,7 @@ function processRow_(sheet, row, prevStatus) {
   const colM = 13; // タイトル原文
   const colN = 14; // 本文原文
 
-  // gpt-5-mini 側のリトライ上限（GPTNG(2) 以上は打ち切り）
+  // gpt-5.4-nano 側のリトライ上限（GPTNG(2) 以上は打ち切り）
   const useGpt = shouldUseGpt5Mini_(prevStatus || "");
   const gptRetryCount = parseGptRetryCount_(prevStatus || "");
   if (useGpt && gptRetryCount >= GPT_JS_MAX_RETRIES) {
@@ -2291,7 +2291,7 @@ function shouldUseGpt5Mini_(status) {
   if (s.startsWith("GPTNG(")) return true;
   const m = s.match(/^NG\((\d+)\)/);
   if (!m) return false;
-  return Number(m[1]) >= MAX_RETRY_COUNT; // NG(3) 以上なら gpt-5-mini に切替
+  return Number(m[1]) >= MAX_RETRY_COUNT; // NG(3) 以上なら gpt-5.4-nano に切替
 }
 
 // ★ 古い RUNNING ステータスを NG(1): timeout に置き換える
@@ -2852,7 +2852,7 @@ function processRowsBatch() {
         const gptRetryCount = parseGptRetryCount_(status);
         const useGpt = shouldUseGpt5Mini_(status);
 
-        // gpt-5-mini 側のリトライ上限（GPTNG(2) になったら打ち切り）
+        // gpt-5.4-nano 側のリトライ上限（GPTNG(2) になったら打ち切り）
         if (useGpt && gptRetryCount >= GPT_JS_MAX_RETRIES) {
           Logger.log(
             "[processRowsBatch] skip row %s (gptRetryCount=%s >= %s)",
@@ -2863,7 +2863,7 @@ function processRowsBatch() {
           continue;
         }
 
-        // Gemini 側は MAX_RETRY_COUNT 未満のみ再試行（NG(3) 以上は gpt-5-mini に回す）
+        // Gemini 側は MAX_RETRY_COUNT 未満のみ再試行（NG(3) 以上は gpt-5.4-nano に回す）
         if (!useGpt && gemRetryCount >= MAX_RETRY_COUNT) {
           Logger.log(
             "[processRowsBatch] skip row %s (gemRetryCount=%s >= %s)",
