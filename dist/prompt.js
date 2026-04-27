@@ -1068,7 +1068,7 @@ function _logGeminiUsage_(data, usageTag, model) {
   const u = _usageFromData_(data);
   if (!u) return;
   const tag = usageTag || "gen";
-  const m = model || "gemini-2.5-flash-lite";
+  const m = model || "gemini-2.5-flash";
   Logger.log(
     "📊 TOKENS[%s] in=%s out=%s total=%s (cache create/read=%s/%s) model=%s",
     tag,
@@ -1219,7 +1219,7 @@ function callGeminiWithKey_(apiKey, prompt, usageTagOpt, apiKeyPropNameOpt) {
   }
 
   const usageTag = usageTagOpt || "generic";
-  const model = "gemini-2.5-flash-lite";
+  const model = "gemini-2.5-flash";
   const url =
     "https://generativelanguage.googleapis.com/v1beta/models/" +
     model +
@@ -1507,7 +1507,7 @@ function callGeminiTextWithKey_(
   }
 
   const usageTag = usageTagOpt || "generic";
-  const model = "gemini-2.5-flash-lite";
+  const model = "gemini-2.5-flash";
   const url =
     "https://generativelanguage.googleapis.com/v1beta/models/" +
     model +
