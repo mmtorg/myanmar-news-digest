@@ -2,20 +2,8 @@ name: Daily Myanmar News Alert Sheet Pipeline Send Integrated
 
 on:
   schedule:
-    # collect系は Google Apps Script から workflow_dispatch で起動する運用に変更
-    # （必要なら保険用途で戻せるよう、cron定義はコメントとして残す）
-    #
-    # - cron: "17 9 * * *"   # 15:50相当
-    # - cron: "17 11 * * *"  # 17:50相当
-    # - cron: "17 14 * * *"  # 20:50相当
-    # - cron: "17 15 * * *"  # 21:50相当
-    # - cron: "17 16 * * *"  # 22:50相当
-    # - cron: "57 16 * * *"  # 23:30相当
-    # 前日分取得（00:05 は全メディア、以降は Khit Thit Media のみ）
-    # - cron: "35 17 * * *" # 00:05 MMT
-    # - cron: "5 18 * * *" # 00:35 MMT
-    # - cron: "35 18 * * *" # 01:05 MMT
-    # - cron: "5 19 * * *" # 01:35 MMT
+    # collect系は Google Apps Script から workflow_dispatch で起動する。
+    # GitHub Actions 側の cron 自動起動として残すのは bundle 生成のみ。
 
     # 02:00 MMT（= 19:30 UTC 前日）: bundle生成
     - cron: "35 19 * * *" # 02:05 MMT（監視ループ開始）
@@ -23,12 +11,11 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "collect16（15:50回） /
-          collect（00:05/00:35/01:05/01:35/17:50/20:50/21:50/22:50/23:30/00:10回）
-          / build-bundle（02:00） / send-only（artifactから再送）"
+        description: "collect16（15:30初回・シート整理あり） / collect（18:30〜00:10収集） /
+          build-bundle（02:00） / send-only（artifactから再送）"
         type: choice
         required: true
-        default: collect16
+        default: collect
         options:
           - collect16
           - collect
@@ -37,7 +24,7 @@ on:
           - send-only
 
       schedule_cron:
-        description: "collect系で使う cron 文字列（例: 35 17 * * * / 17 11 * * * / 37 17 * * *）"
+        description: "collect系で使う cron 文字列（例: 0 9 * * * / 40 17 * * *）。00:10相当は前日分。"
         type: string
         required: false
         default: ""
@@ -184,12 +171,7 @@ jobs:
       #     CSV_EMAIL_RECIPIENTS: ${{ secrets.CSV_EMAIL_RECIPIENTS }}
 
   schedule-collect:
-    # 前日分取得（00:05 は全メディア、以降は Khit Thit Media のみ）
-    # 00:05 MMT（= 17:35 UTC 前日）
-    # 00:35 MMT（= 18:05 UTC 前日）
-    # 01:05 MMT（= 18:35 UTC 前日）
-    # 01:35 MMT（= 19:05 UTC 前日）
-    # 通常分: 17:50 / 20:50 / 21:50 / 22:50 / 23:30 枠
+    # 00:05 / 00:35 / 01:05 / 01:35 / 17:50 / 20:50 / 21:50 / 22:50 / 23:30 枠
     if: github.event_name == 'schedule' && contains(fromJson('["35 17 * * *","5 18 *
       * *","35 18 * * *","5 19 * * *","17 11 * * *","17 14 * * *","17 15 * *
       *","17 16 * * *","57 16 * * *"]'), github.event.schedule)
@@ -797,20 +779,15 @@ jobs:
           fi
 
           case "${{ inputs.schedule_cron }}" in
-            "17 9 * * *")  SLOT_LABEL="15:50" ;;
-            "35 17 * * *") SLOT_LABEL="00:05（前日分追記・全メディア）" ;;
-            "5 18 * * *") SLOT_LABEL="00:35（前日分追記・Khit Thit Mediaのみ）" ;;
-            "35 18 * * *") SLOT_LABEL="01:05（前日分追記・Khit Thit Mediaのみ）" ;;
-            "5 19 * * *") SLOT_LABEL="01:35（前日分追記・Khit Thit Mediaのみ）" ;;
-            "37 17 * * *") SLOT_LABEL="00:10（前日分追記）" ;;
-            "17 11 * * *") SLOT_LABEL="17:50" ;;
-            "17 14 * * *") SLOT_LABEL="20:50" ;;
-            "17 15 * * *") SLOT_LABEL="21:50" ;;
-            "17 16 * * *") SLOT_LABEL="22:50" ;;
-            "57 16 * * *") SLOT_LABEL="23:30" ;;
+            "0 9 * * *")   SLOT_LABEL="15:30（当日分・初回整理）" ;;
+            "0 12 * * *")  SLOT_LABEL="18:30（当日分）" ;;
+            "0 14 * * *")  SLOT_LABEL="20:30（当日分）" ;;
+            "0 15 * * *")  SLOT_LABEL="21:30（当日分・Irrawaddyあり）" ;;
+            "0 16 * * *")  SLOT_LABEL="22:30（当日分・Irrawaddyあり）" ;;
+            "50 16 * * *") SLOT_LABEL="23:20（当日分・Irrawaddyあり）" ;;
+            "40 17 * * *") SLOT_LABEL="00:10（前日分）" ;;
             *)
               case "${{ inputs.mode }}" in
-                collect16) SLOT_LABEL="15:50相当" ;;
                 collect)   SLOT_LABEL="collect" ;;
                 *)         SLOT_LABEL="manual" ;;
               esac
@@ -841,7 +818,7 @@ jobs:
           case "${{ inputs.mode }}" in
             collect16)
               CRON="${{ inputs.schedule_cron }}"
-              [ -n "$CRON" ] || CRON="17 9 * * *"
+              [ -n "$CRON" ] || CRON="0 9 * * *"
 
               python sheet_pipeline.py collect-to-sheet \
                 --clear-yesterday \
@@ -852,21 +829,17 @@ jobs:
               CRON="${{ inputs.schedule_cron }}"
               [ -n "$CRON" ] || { echo "schedule_cron is required for mode=collect"; exit 1; }
 
-              if [ "$CRON" = "35 17 * * *" ] || [ "$CRON" = "37 17 * * *" ]; then
-                python sheet_pipeline.py collect-to-sheet \
-                  --schedule-cron "$CRON" \
-                  --target-offset-days -1
-              elif [ "$CRON" = "5 18 * * *" ] || \
-                   [ "$CRON" = "35 18 * * *" ] || \
-                   [ "$CRON" = "5 19 * * *" ]; then
-                python sheet_pipeline.py collect-to-sheet \
-                  --schedule-cron "$CRON" \
-                  --target-offset-days -1 \
-                  --only-source "Khit Thit Media"
-              else
-                python sheet_pipeline.py collect-to-sheet \
-                  --schedule-cron "$CRON"
-              fi
+              case "$CRON" in
+                "40 17 * * *")
+                  python sheet_pipeline.py collect-to-sheet \
+                    --schedule-cron "$CRON" \
+                    --target-offset-days -1
+                  ;;
+                *)
+                  python sheet_pipeline.py collect-to-sheet \
+                    --schedule-cron "$CRON"
+                  ;;
+              esac
               ;;
 
             *)

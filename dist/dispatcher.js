@@ -12,30 +12,38 @@
  *
  * - 本番: main ブランチ → production 環境 → prod シート
  * - テスト: develop ブランチ → development 環境 → dev シート
+ *
+ * 運用:
+ * - Apps Script の時間主導型トリガーは prodScheduleTick を「1分おき」に1つだけ設定する。
+ * - 指定時刻のみ記事収集を workflow_dispatch する。
+ * - 15:30 は collect16 と同じく、既存シートを整理してから当日分を収集する。
+ * - 18:30〜23:20 は当日分、00:10 は前日分を GitHub Actions 側で判定する。
+ * - Irrawaddy は sheet_pipeline.py 側で 21:30 / 22:30 / 23:20 のみ収集する。
  */
 
 const TZ = "Asia/Yangon";
 
-/** 実行枠の定義 */
-const SLOT_CRONS = {
-  collect1550: "17 9 * * *",
-  collect1750: "17 11 * * *",
-  collect2050: "17 14 * * *",
-  collect2150: "17 15 * * *",
-  collect2250: "17 16 * * *",
-  collect2330: "57 16 * * *",
-  collect0010: "37 17 * * *",
+/**
+ * 収集枠の定義。
+ * cron は GitHub Actions の schedule_cron 入力として渡す識別子。
+ * 実際の時刻制御は Apps Script 側の prodScheduleTick / devScheduleTick で行う。
+ */
+const COLLECT_SLOTS = [
+  // 初回は既存 collect16 と同じ処理（シート整理あり）
+  { hhmm: "15:30", cron: "0 9 * * *", mode: "collect16" },
 
-  // 前日分取得（00:05 は全メディア、以降は Khit Thit Media のみ）
-  // 00:05 MMT（= 17:35 UTC 前日）
-  collect0005: "35 17 * * *",
-  // 00:35 MMT（= 18:05 UTC 前日）
-  collect0035: "5 18 * * *",
-  // 01:05 MMT（= 18:35 UTC 前日）
-  collect0105: "35 18 * * *",
-  // 01:35 MMT（= 19:05 UTC 前日）
-  collect0135: "5 19 * * *",
-};
+  // 当日分取得
+  { hhmm: "18:30", cron: "0 12 * * *", mode: "collect" },
+  { hhmm: "20:30", cron: "0 14 * * *", mode: "collect" },
+  { hhmm: "21:30", cron: "0 15 * * *", mode: "collect" },
+  { hhmm: "22:30", cron: "0 16 * * *", mode: "collect" },
+  { hhmm: "23:20", cron: "50 16 * * *", mode: "collect" },
+
+  // 前日分取得
+  { hhmm: "00:10", cron: "40 17 * * *", mode: "collect" },
+];
+
+const SLOT_WINDOW_MINUTES = 5;
 
 /** GitHub リクエスト共通 */
 function callGithubWorkflowDispatch_(ref, mode, scheduleCron) {
@@ -90,10 +98,8 @@ function mustGetProp_(props, key) {
   return value;
 }
 
-/** 重複実行防止つき dispatch
- * slotKey 例: prod_collect1750 / dev_collect1750
- */
-function dispatchOncePerDay_(ref, mode, scheduleCron, slotKey) {
+/** 重複実行防止つき dispatch */
+function dispatchOncePerDay_(ref, slot, slotKey) {
   const lock = LockService.getScriptLock();
   lock.waitLock(30000);
 
@@ -108,123 +114,78 @@ function dispatchOncePerDay_(ref, mode, scheduleCron, slotKey) {
       return;
     }
 
-    callGithubWorkflowDispatch_(ref, mode, scheduleCron);
+    callGithubWorkflowDispatch_(ref, slot.mode, slot.cron);
     props.setProperty(propKey, today);
     Logger.log(
-      `dispatched: ${slotKey} ${today} ref=${ref} mode=${mode} cron=${scheduleCron}`,
+      `dispatched: ${slotKey} ${today} ref=${ref} mode=${slot.mode} cron=${slot.cron}`,
     );
   } finally {
     lock.releaseLock();
   }
 }
 
-/** 本番 dispatch 共通 */
-function dispatchProdCollect_(scheduleCron) {
-  const mode =
-    scheduleCron === SLOT_CRONS.collect1550 ? "collect16" : "collect";
-  const slotKey = `prod_${scheduleCron.replace(/\s+/g, "_")}`;
-  dispatchOncePerDay_("main", mode, scheduleCron, slotKey);
+function dispatchProdCollect_(slot) {
+  dispatchOncePerDay_(
+    "main",
+    slot,
+    `prod_${slot.mode}_${slot.hhmm.replace(":", "")}`,
+  );
 }
 
-/** テスト dispatch 共通 */
-function dispatchDevCollect_(scheduleCron) {
-  const mode =
-    scheduleCron === SLOT_CRONS.collect1550 ? "collect16" : "collect";
-  const slotKey = `dev_${scheduleCron.replace(/\s+/g, "_")}`;
-  dispatchOncePerDay_("develop", mode, scheduleCron, slotKey);
+function dispatchDevCollect_(slot) {
+  dispatchOncePerDay_(
+    "develop",
+    slot,
+    `dev_${slot.mode}_${slot.hhmm.replace(":", "")}`,
+  );
 }
 
-/**
- * 本番用スケジュール関数
- */
-function prodCollect1550() {
-  dispatchProdCollect_(SLOT_CRONS.collect1550);
-}
-function prodCollect1750() {
-  dispatchProdCollect_(SLOT_CRONS.collect1750);
-}
-function prodCollect2050() {
-  dispatchProdCollect_(SLOT_CRONS.collect2050);
-}
-function prodCollect2150() {
-  dispatchProdCollect_(SLOT_CRONS.collect2150);
-}
-function prodCollect2250() {
-  dispatchProdCollect_(SLOT_CRONS.collect2250);
-}
-function prodCollect2330() {
-  dispatchProdCollect_(SLOT_CRONS.collect2330);
-}
-function prodCollect0005() {
-  dispatchProdCollect_(SLOT_CRONS.collect0005);
-}
-function prodCollect0035() {
-  dispatchProdCollect_(SLOT_CRONS.collect0035);
-}
-function prodCollect0105() {
-  dispatchProdCollect_(SLOT_CRONS.collect0105);
-}
-function prodCollect0135() {
-  dispatchProdCollect_(SLOT_CRONS.collect0135);
+/** 現在時刻が収集枠の許容範囲内なら、その slot を返す */
+function findCurrentSlot_() {
+  const now = new Date();
+  const currentMinutes =
+    Number(Utilities.formatDate(now, TZ, "H")) * 60 +
+    Number(Utilities.formatDate(now, TZ, "m"));
+
+  return COLLECT_SLOTS.find((slot) => {
+    const parts = slot.hhmm.split(":");
+    const slotMinutes = Number(parts[0]) * 60 + Number(parts[1]);
+    return (
+      currentMinutes >= slotMinutes &&
+      currentMinutes < slotMinutes + SLOT_WINDOW_MINUTES
+    );
+  });
 }
 
-/**
- * 開発用スケジュール関数
- */
-function devCollect1550() {
-  dispatchDevCollect_(SLOT_CRONS.collect1550);
-}
-function devCollect1750() {
-  dispatchDevCollect_(SLOT_CRONS.collect1750);
-}
-function devCollect2050() {
-  dispatchDevCollect_(SLOT_CRONS.collect2050);
-}
-function devCollect2150() {
-  dispatchDevCollect_(SLOT_CRONS.collect2150);
-}
-function devCollect2250() {
-  dispatchDevCollect_(SLOT_CRONS.collect2250);
-}
-function devCollect2330() {
-  dispatchDevCollect_(SLOT_CRONS.collect2330);
-}
-function devCollect0005() {
-  dispatchDevCollect_(SLOT_CRONS.collect0005);
-}
-function devCollect0035() {
-  dispatchDevCollect_(SLOT_CRONS.collect0035);
-}
-function devCollect0105() {
-  dispatchDevCollect_(SLOT_CRONS.collect0105);
-}
-function devCollect0135() {
-  dispatchDevCollect_(SLOT_CRONS.collect0135);
+/** 本番用: 1分おきトリガーから呼ぶ */
+function prodScheduleTick() {
+  const slot = findCurrentSlot_();
+  if (!slot) return;
+  dispatchProdCollect_(slot);
 }
 
-/**
- * 手動関数
- */
-function testProd1750Now() {
-  prodCollect1750();
+/** 開発用: 必要な場合だけ1分おきトリガーから呼ぶ */
+function devScheduleTick() {
+  const slot = findCurrentSlot_();
+  if (!slot) return;
+  dispatchDevCollect_(slot);
 }
 
-function testDev1750Now() {
-  devCollect1750();
+/** 手動テスト: 現在時刻の slot を本番 dispatch する */
+function testProdCurrentSlotNow() {
+  const slot = findCurrentSlot_();
+  if (!slot) {
+    throw new Error("現在時刻は収集枠ではありません。");
+  }
+  dispatchProdCollect_(slot);
 }
 
-function testProd1550Now() {
-  prodCollect1550();
+/** 手動テスト: 15:30枠（collect16）を本番 dispatch する */
+function testProd1530Now() {
+  dispatchProdCollect_(COLLECT_SLOTS[0]);
 }
 
-function testDev1550Now() {
-  devCollect1550();
-}
-
-function testProd0005Now() {
-  prodCollect0005();
-}
-
-function testDev0005Now() {
-  devCollect0005();
+/** 手動テスト: 00:10枠（前日分）を本番 dispatch する */
+function testProd0010Now() {
+  dispatchProdCollect_(COLLECT_SLOTS[COLLECT_SLOTS.length - 1]);
 }
