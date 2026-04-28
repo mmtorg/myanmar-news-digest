@@ -18,6 +18,7 @@
  * - 指定時刻のみ記事収集を workflow_dispatch する。
  * - 15:30 は collect16 と同じく、既存シートを整理してから当日分を収集する。
  * - 18:30〜23:20 は当日分、00:10 は前日分を GitHub Actions 側で判定する。
+ * - 00:45 / 01:15 / 01:45 は前日分の Khit Thit Media のみ収集する。
  * - Irrawaddy は sheet_pipeline.py 側で 21:30 / 22:30 / 23:20 のみ収集する。
  */
 
@@ -41,6 +42,11 @@ const COLLECT_SLOTS = [
 
   // 前日分取得
   { hhmm: "00:10", cron: "40 17 * * *", mode: "collect" },
+
+  // 前日分取得（Khit Thit Media のみ）
+  { hhmm: "00:45", cron: "15 18 * * *", mode: "collect" },
+  { hhmm: "01:15", cron: "45 18 * * *", mode: "collect" },
+  { hhmm: "01:45", cron: "15 19 * * *", mode: "collect" },
 ];
 
 const SLOT_WINDOW_MINUTES = 5;
@@ -187,5 +193,9 @@ function testProd1530Now() {
 
 /** 手動テスト: 00:10枠（前日分）を本番 dispatch する */
 function testProd0010Now() {
-  dispatchProdCollect_(COLLECT_SLOTS[COLLECT_SLOTS.length - 1]);
+  const slot = COLLECT_SLOTS.find((slot) => slot.hhmm === "00:10");
+  if (!slot) {
+    throw new Error("00:10枠が見つかりません。");
+  }
+  dispatchProdCollect_(slot);
 }

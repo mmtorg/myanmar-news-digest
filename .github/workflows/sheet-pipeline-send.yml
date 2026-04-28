@@ -786,6 +786,9 @@ jobs:
             "0 16 * * *")  SLOT_LABEL="22:30（当日分・Irrawaddyあり）" ;;
             "50 16 * * *") SLOT_LABEL="23:20（当日分・Irrawaddyあり）" ;;
             "40 17 * * *") SLOT_LABEL="00:10（前日分）" ;;
+            "15 18 * * *") SLOT_LABEL="00:45（前日分・Khit Thit Mediaのみ）" ;;
+            "45 18 * * *") SLOT_LABEL="01:15（前日分・Khit Thit Mediaのみ）" ;;
+            "15 19 * * *") SLOT_LABEL="01:45（前日分・Khit Thit Mediaのみ）" ;;
             *)
               case "${{ inputs.mode }}" in
                 collect)   SLOT_LABEL="collect" ;;
@@ -834,6 +837,12 @@ jobs:
                   python sheet_pipeline.py collect-to-sheet \
                     --schedule-cron "$CRON" \
                     --target-offset-days -1
+                  ;;
+                "15 18 * * *"|"45 18 * * *"|"15 19 * * *")
+                  python sheet_pipeline.py collect-to-sheet \
+                    --schedule-cron "$CRON" \
+                    --target-offset-days -1 \
+                    --only-source "Khit Thit Media"
                   ;;
                 *)
                   python sheet_pipeline.py collect-to-sheet \
