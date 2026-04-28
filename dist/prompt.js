@@ -777,6 +777,13 @@ const SHEET_KEY_PREFIX_MAP = {
 
 const DEFAULT_PREFIX = "GEMINI_API_KEY_"; // prod/dev以外のシート用
 
+// 特定のGemini APIキーを最優先で使いたい場合のScript Properties名
+// - prod: GEMINI_API_KEY_PRIORITY
+// - dev : GEMINI_API_TEST_KEY_PRIORITY
+// ここに値が入っていれば優先使用し、空なら従来のメディア別キー/ローテーションにフォールバックする。
+const PRIORITY_GEMINI_API_KEY_PROP_PROD = "GEMINI_API_KEY_PRIORITY";
+const PRIORITY_GEMINI_API_KEY_PROP_DEV = "GEMINI_API_TEST_KEY_PRIORITY";
+
 function normalizeSourceName_(s) {
   if (!s) return "";
   let out = s.toString().trim();
@@ -785,6 +792,38 @@ function normalizeSourceName_(s) {
   } catch (e) {}
   out = out.replace(/\s+/g, " ");
   return out.toLowerCase();
+}
+
+function _priorityGeminiApiKeyPropNameForSheet_(sheetName) {
+  return sheetName === "dev"
+    ? PRIORITY_GEMINI_API_KEY_PROP_DEV
+    : PRIORITY_GEMINI_API_KEY_PROP_PROD;
+}
+
+function _getPriorityGeminiApiKeyBundleIfAvailable_(sheetName, usageTagOpt) {
+  const props = PropertiesService.getScriptProperties();
+  const propName = _priorityGeminiApiKeyPropNameForSheet_(sheetName);
+  const apiKey = String(props.getProperty(propName) || "").trim();
+  const tag = usageTagOpt || sheetName || "unknown";
+
+  if (!apiKey) return null;
+
+  // 429 quota超過で当日枯渇扱いになっている場合は、従来キーへフォールバック
+  if (_isApiKeyExhaustedToday_(propName)) {
+    const msg =
+      "priority apiKeyProp is exhausted today, fallback to default: " +
+      propName;
+    Logger.log("[gemini-key] " + msg);
+    _appendGeminiLog_("WARN", tag, msg);
+    return null;
+  }
+
+  const msg =
+    "use priority apiKeyProp=" + propName + " (sheet=" + sheetName + ")";
+  Logger.log("[gemini-key] " + msg);
+  _appendGeminiLog_("INFO", tag, msg);
+
+  return { apiKey: apiKey, propName: propName };
 }
 
 /************************************************************
@@ -930,6 +969,14 @@ function getGeminiApiKeyBundleFromSheetAndSource_(
   sourceRaw,
   usageTagOpt,
 ) {
+  const priorityBundle = _getPriorityGeminiApiKeyBundleIfAvailable_(
+    sheetName,
+    usageTagOpt,
+  );
+  if (priorityBundle) {
+    return priorityBundle;
+  }
+
   const props = PropertiesService.getScriptProperties();
   const propName = _pickApiKeyPropNameWithRotation_(sheetName, sourceRaw);
   const apiKey = props.getProperty(propName);
@@ -1063,12 +1110,15 @@ function _usageFromData_(data) {
   };
 }
 
+// Gemini 呼び出しモデル（変更する場合はここだけ差し替える）
+const GEMINI_MODEL = "gemini-3.1-flash-lite-preview";
+
 // usage ログ（標準出力＝Apps Script 実行ログ）
 function _logGeminiUsage_(data, usageTag, model) {
   const u = _usageFromData_(data);
   if (!u) return;
   const tag = usageTag || "gen";
-  const m = model || "gemini-2.5-flash";
+  const m = model || GEMINI_MODEL;
   Logger.log(
     "📊 TOKENS[%s] in=%s out=%s total=%s (cache create/read=%s/%s) model=%s",
     tag,
@@ -1219,7 +1269,7 @@ function callGeminiWithKey_(apiKey, prompt, usageTagOpt, apiKeyPropNameOpt) {
   }
 
   const usageTag = usageTagOpt || "generic";
-  const model = "gemini-2.5-flash";
+  const model = GEMINI_MODEL;
   const url =
     "https://generativelanguage.googleapis.com/v1beta/models/" +
     model +
@@ -1507,7 +1557,7 @@ function callGeminiTextWithKey_(
   }
 
   const usageTag = usageTagOpt || "generic";
-  const model = "gemini-2.5-flash";
+  const model = GEMINI_MODEL;
   const url =
     "https://generativelanguage.googleapis.com/v1beta/models/" +
     model +
@@ -1609,12 +1659,20 @@ const GEMINI_SUMMARY_COMPRESS_PROP_DEV = "GEMINI_API_TEST_KEY_SUMMARY_COMPRESS";
 // 圧縮プロンプト専用：Gemini(専用キー) → 失敗ならOpenAIへフォールバック
 function compressSummaryWithFallback_(sheetName, promptText, usageTagOpt) {
   const props = PropertiesService.getScriptProperties();
-  const propName =
-    sheetName === "dev"
+  const priorityBundle = _getPriorityGeminiApiKeyBundleIfAvailable_(
+    sheetName,
+    usageTagOpt,
+  );
+  const propName = priorityBundle
+    ? priorityBundle.propName
+    : sheetName === "dev"
       ? GEMINI_SUMMARY_COMPRESS_PROP_DEV
       : GEMINI_SUMMARY_COMPRESS_PROP_PROD;
 
-  const gemKey = props.getProperty(propName) || "";
+  const gemKey = priorityBundle
+    ? priorityBundle.apiKey
+    : props.getProperty(propName) || "";
+
   if (gemKey) {
     const r1 = callGeminiTextWithKey_(
       gemKey,

@@ -17,39 +17,18 @@ if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
 # ===== collect rules (no env var switching) =====
-_COLLECT_RULES_PATH = os.path.join(BASE_DIR, "collect_rules.json")
-_DEFAULT_IRRAWADDY_ALLOWED_CRONS = [
-    "17 14 * * *",  # 20:50枠（実際は20:47起動）
-    "17 15 * * *",  # 21:50枠
-    "17 16 * * *",  # 22:50枠
-    # "57 16 * * *",  # 23:30枠
-]
-
-def _load_collect_rules() -> dict:
-    """Load collect_rules.json if present; otherwise return empty dict."""
-    try:
-        if os.path.exists(_COLLECT_RULES_PATH):
-            with open(_COLLECT_RULES_PATH, "r", encoding="utf-8") as f:
-                return json.load(f) or {}
-    except Exception as e:
-        logging.warning(f"[rules] failed to load collect rules: {e}")
-    return {}
+# Irrawaddy は負荷が重いため、定時収集では 21:30 / 22:30 / 23:20 MMT のみ対象にする。
+_IRRAWADDY_ALLOWED_CRONS = {
+    "0 15 * * *",   # 21:30 MMT
+    "0 16 * * *",   # 22:30 MMT
+    "50 16 * * *",  # 23:20 MMT
+}
 
 def _should_collect_irrawaddy(schedule_cron: str | None) -> bool:
-    """
-    Decide whether to run Irrawaddy collector for this run.
-    - If schedule_cron is None/empty (e.g., local run / workflow_dispatch), run as before (True).
-    - If schedule_cron is provided, only run when it matches allowlist in collect_rules.json.
-    """
+    """Return True only for Irrawaddy-enabled collection slots."""
     if not schedule_cron:
-        return True
-    rules = _load_collect_rules()
-    allowed = rules.get("irrawaddy_allowed_crons")
-    if isinstance(allowed, list) and all(isinstance(x, str) for x in allowed):
-        allowlist = [x.strip() for x in allowed if x and x.strip()]
-    else:
-        allowlist = _DEFAULT_IRRAWADDY_ALLOWED_CRONS
-    return schedule_cron.strip() in set(allowlist)
+        return False
+    return schedule_cron.strip() in _IRRAWADDY_ALLOWED_CRONS
 
 def _setup_logger():
     level = (os.getenv("MNA_LOG_LEVEL") or "INFO").upper()
@@ -1495,8 +1474,6 @@ def _collect_all_for(
     plan: List[tuple] = [
         ("Mizzima (Burmese)", collect_mizzima_all_for_date, {"max_pages": 3}),
         ("BBC Burmese", collect_bbc_all_for_date, {}),
-        # Irrawaddy は cron 枠で制御（schedule_cron が渡されたときのみ）
-        # allowed list は collect_rules.json の irrawaddy_allowed_crons で変更可能
         ("Khit Thit Media", collect_khitthit_all_for_date, {"max_pages": 5}),
         ("DVB", collect_dvb_all_for_date, {}),
         ("Myanmar Now", collect_myanmar_now_mm_all_for_date, {"max_pages": 3}),
