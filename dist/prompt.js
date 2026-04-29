@@ -1110,8 +1110,11 @@ function _usageFromData_(data) {
   };
 }
 
-// Gemini 呼び出しモデル（変更する場合はここだけ差し替える）
+// Gemini 呼び出しモデル（通常時）
 const GEMINI_MODEL = "gemini-3.1-flash-lite-preview";
+
+// 通常GeminiがNG(2)になった後に1回だけ試すフォールバックモデル
+const GEMINI_FALLBACK_MODEL = "gemini-2.5-flash";
 
 // usage ログ（標準出力＝Apps Script 実行ログ）
 function _logGeminiUsage_(data, usageTag, model) {
@@ -1262,14 +1265,20 @@ function _isQuotaExhaustedMessage_(status, message) {
 }
 
 // apiKeyPropNameOpt: "GEMINI_API_KEY_KHITTHIT" のような Script Properties 名
-function callGeminiWithKey_(apiKey, prompt, usageTagOpt, apiKeyPropNameOpt) {
+function callGeminiWithKey_(
+  apiKey,
+  prompt,
+  usageTagOpt,
+  apiKeyPropNameOpt,
+  modelOpt,
+) {
   if (!apiKey) {
     Logger.log("[gemini] ERROR: API key not set");
     return "ERROR: API key not set";
   }
 
   const usageTag = usageTagOpt || "generic";
-  const model = GEMINI_MODEL;
+  const model = modelOpt || GEMINI_MODEL;
   const url =
     "https://generativelanguage.googleapis.com/v1beta/models/" +
     model +
@@ -1550,6 +1559,7 @@ function callGeminiTextWithKey_(
   prompt,
   usageTagOpt,
   apiKeyPropNameOpt,
+  modelOpt,
 ) {
   if (!apiKey) {
     Logger.log("[gemini] ERROR: API key not set");
@@ -1557,7 +1567,7 @@ function callGeminiTextWithKey_(
   }
 
   const usageTag = usageTagOpt || "generic";
-  const model = GEMINI_MODEL;
+  const model = modelOpt || GEMINI_MODEL;
   const url =
     "https://generativelanguage.googleapis.com/v1beta/models/" +
     model +
@@ -2025,7 +2035,8 @@ function processRow_(sheet, row, prevStatus) {
   const colM = 13; // タイトル原文
   const colN = 14; // 本文原文
 
-  // gpt-5-mini 側のリトライ上限（GPTNG(2) 以上は打ち切り）
+  // 通常Gemini NG(2) → gemini-2.5-flashを1回 → 失敗後にgpt-5-miniへ切替
+  const useFlash = shouldUseGemini25Flash_(prevStatus || "");
   const useGpt = shouldUseGpt5Mini_(prevStatus || "");
   const gptRetryCount = parseGptRetryCount_(prevStatus || "");
   if (useGpt && gptRetryCount >= GPT_JS_MAX_RETRIES) {
@@ -2089,6 +2100,9 @@ function processRow_(sheet, row, prevStatus) {
     const multiPrompt = buildMultiTaskPromptForRow_(multiParams);
     const tagMulti = sheetName + "#row" + row + ":EGI(multi)";
 
+    const geminiModelForThisRun = useFlash
+      ? GEMINI_FALLBACK_MODEL
+      : GEMINI_MODEL;
     const gemBundle = useGpt
       ? null
       : getGeminiApiKeyBundleFromSheetAndSource_(
@@ -2107,6 +2121,7 @@ function processRow_(sheet, row, prevStatus) {
           multiPrompt,
           tagMulti,
           gemBundle && gemBundle.propName,
+          geminiModelForThisRun,
         );
 
     // ★ 429(quota) のときは「その後は別キー」を即時反映するため、別キーで1回だけ即リトライ
@@ -2133,6 +2148,7 @@ function processRow_(sheet, row, prevStatus) {
           multiPrompt,
           tagRetry,
           gemBundle2.propName,
+          geminiModelForThisRun,
         );
       }
     }
@@ -2273,13 +2289,15 @@ function processRow_(sheet, row, prevStatus) {
   let statusText = "";
 
   if (errors.length === 0) {
-    statusText = useGpt ? "OK(GPT)" : "OK";
+    statusText = useGpt ? "OK(GPT)" : useFlash ? "OK(FLASH)" : "OK";
   } else {
     // 呼び出し元から渡された「前回までのステータス」から回数を計算
-    const retryKind = useGpt ? "GPTNG" : "NG";
+    const retryKind = useGpt ? "GPTNG" : useFlash ? "FLASHNG" : "NG";
     const prevCount = useGpt
       ? parseGptRetryCount_(prevStatus || "")
-      : parseRetryCount_(prevStatus || "");
+      : useFlash
+        ? parseFlashRetryCount_(prevStatus || "")
+        : parseRetryCount_(prevStatus || "");
     const newCount = prevCount + 1;
     statusText = `${retryKind}(${newCount}): ` + errors.join(" / ");
   }
@@ -2343,13 +2361,33 @@ function parseGptRetryCount_(status) {
   return Number(m[1]);
 }
 
+function parseFlashRetryCount_(status) {
+  if (!status) return 0;
+  const m = status.match(/^FLASHNG\((\d+)\)/);
+  if (!m) return 0;
+  return Number(m[1]);
+}
+
+function shouldUseGemini25Flash_(status) {
+  const s = String(status || "");
+  if (s.startsWith("RUNNING(FLASH)")) return true;
+
+  // 通常GeminiがNG(2)以上になった行は、GPTへ行く前にgemini-2.5-flashを1回だけ試す
+  const m = s.match(/^NG\((\d+)\)/);
+  if (!m) return false;
+  return Number(m[1]) >= MAX_RETRY_COUNT;
+}
+
 function shouldUseGpt5Mini_(status) {
   const s = String(status || "");
   if (s.startsWith("RUNNING(GPT)")) return true;
   if (s.startsWith("GPTNG(")) return true;
-  const m = s.match(/^NG\((\d+)\)/);
-  if (!m) return false;
-  return Number(m[1]) >= MAX_RETRY_COUNT; // NG(3) 以上なら gpt-5-mini に切替
+
+  // gemini-2.5-flashも1回失敗したら、従来どおりGPTへ切り替える
+  const fm = s.match(/^FLASHNG\((\d+)\)/);
+  if (fm) return Number(fm[1]) >= GEMINI_25_FLASH_MAX_RETRY_COUNT;
+
+  return false;
 }
 
 // ★ 古い RUNNING ステータスを NG(1): timeout に置き換える
@@ -2377,6 +2415,9 @@ function cleanupStaleRunningStatuses_() {
       if (status.startsWith("RUNNING(GPT)")) {
         values[i][0] = "GPTNG(1): timeout";
         changed = true;
+      } else if (status.startsWith("RUNNING(FLASH)")) {
+        values[i][0] = "FLASHNG(1): timeout";
+        changed = true;
       } else if (status.startsWith("RUNNING")) {
         // 1回目の失敗として扱う
         values[i][0] = "NG(1): timeout";
@@ -2398,8 +2439,11 @@ function cleanupStaleRunningStatuses_() {
 const MAX_ROWS_PER_RUN = 5; // 1回の実行で処理する最大行数
 const STATUS_COL = 12; // L列 (ステータス列の列番号)
 
-// NG の最大試行回数（これ以上失敗したら「打ち切り完了」とみなす）
+// 通常Geminiの最大試行回数（NG(2) になったら gemini-2.5-flash へ切替）
 const MAX_RETRY_COUNT = 2;
+
+// gemini-2.5-flash の最大試行回数（FLASHNG(1) になったら gpt-5-mini へ切替）
+const GEMINI_25_FLASH_MAX_RETRY_COUNT = 1;
 
 // ============================================================
 // ★ バッチ化（キー別まとめ投げ）＋推定トークンで 1件/2件自動調整
@@ -2797,13 +2841,20 @@ function _applyOutputsToRow_(
 
   let statusText = "";
   if (errors.length === 0) {
-    statusText = retryKindOpt === "GPTNG" ? "OK(GPT)" : "OK";
+    statusText =
+      retryKindOpt === "GPTNG"
+        ? "OK(GPT)"
+        : retryKindOpt === "FLASHNG"
+          ? "OK(FLASH)"
+          : "OK";
   } else {
     const retryKind = retryKindOpt || "NG";
     const prevCount =
       retryKind === "GPTNG"
         ? parseGptRetryCount_(prevStatus || "")
-        : parseRetryCount_(prevStatus || "");
+        : retryKind === "FLASHNG"
+          ? parseFlashRetryCount_(prevStatus || "")
+          : parseRetryCount_(prevStatus || "");
     const newCount = prevCount + 1;
     statusText = `${retryKind}(${newCount}): ` + errors.join(" / ");
   }
@@ -2908,6 +2959,7 @@ function processRowsBatch() {
         // ★ 再試行回数チェック
         const gemRetryCount = parseRetryCount_(status);
         const gptRetryCount = parseGptRetryCount_(status);
+        const useFlash = shouldUseGemini25Flash_(status);
         const useGpt = shouldUseGpt5Mini_(status);
 
         // gpt-5-mini 側のリトライ上限（GPTNG(2) になったら打ち切り）
@@ -2921,8 +2973,8 @@ function processRowsBatch() {
           continue;
         }
 
-        // Gemini 側は MAX_RETRY_COUNT 未満のみ再試行（NG(3) 以上は gpt-5-mini に回す）
-        if (!useGpt && gemRetryCount >= MAX_RETRY_COUNT) {
+        // 通常Gemini側は NG(2) になったら、スキップせず gemini-2.5-flash へ進める
+        if (!useGpt && !useFlash && gemRetryCount >= MAX_RETRY_COUNT) {
           Logger.log(
             "[processRowsBatch] skip row %s (gemRetryCount=%s >= %s)",
             rowIndex,
@@ -2945,15 +2997,16 @@ function processRowsBatch() {
 
         // 処理開始マーク
         sh.getRange(rowIndex, STATUS_COL).setValue(
-          useGpt ? "RUNNING(GPT)" : "RUNNING",
+          useGpt ? "RUNNING(GPT)" : useFlash ? "RUNNING(FLASH)" : "RUNNING",
         );
 
         // groupKey:
         // - OpenAI は "__OPENAI__" でまとめてOK（キー単一）
-        // - Gemini は「メディア正規化名」でまとめる（ただし呼び出し時に毎回キーを選ぶ）
+        // - Gemini は通常モデルと gemini-2.5-flash を分けてまとめる
         const groupKey = useGpt
           ? "__OPENAI__"
-          : normalizeSourceName_(sourceVal || "");
+          : (useFlash ? "__GEMINI_FLASH__:" : "__GEMINI_MAIN__:") +
+            normalizeSourceName_(sourceVal || "");
         if (!groups[groupKey]) {
           groups[groupKey] = [];
           groupOrder.push(groupKey);
@@ -3052,8 +3105,20 @@ function processRowsBatch() {
             ")";
 
           // ★ 呼び出し直前に「今使うべきキー」を毎回選ぶ（429後に即切替するため）
+          const isOpenAiGroup = groupKey === "__OPENAI__";
+          const isFlashGroup =
+            String(groupKey).indexOf("__GEMINI_FLASH__:") === 0;
+          const geminiModelForThisGroup = isFlashGroup
+            ? GEMINI_FALLBACK_MODEL
+            : GEMINI_MODEL;
+          const retryKindForGroup = isOpenAiGroup
+            ? "GPTNG"
+            : isFlashGroup
+              ? "FLASHNG"
+              : "NG";
+
           let resp = "";
-          if (groupKey === "__OPENAI__") {
+          if (isOpenAiGroup) {
             const apiKey = getOpenAiApiKey_(tagBatch);
             resp = callGpt5MiniWithKey_(
               apiKey,
@@ -3072,6 +3137,7 @@ function processRowsBatch() {
               batchPrompt,
               tagBatch,
               b1.propName,
+              geminiModelForThisGroup,
             );
 
             // ★ 429(quota)なら、その後の処理も別キーになるよう「即座に別キーで1回だけ再試行」
@@ -3097,6 +3163,7 @@ function processRowsBatch() {
                   batchPrompt,
                   tagRetry,
                   b2.propName,
+                  geminiModelForThisGroup,
                 );
               }
             }
@@ -3119,7 +3186,7 @@ function processRowsBatch() {
                 resp,
                 resp,
                 resp,
-                groupKey === "__OPENAI__" ? "GPTNG" : "NG",
+                retryKindForGroup,
               );
             });
             p += chunk.length;
@@ -3155,7 +3222,11 @@ function processRowsBatch() {
             promptItems.forEach(function (pi) {
               const o = byId[String(pi.rowIndex)] || null;
               if (!o) {
-                const modelLabel = groupKey === "__OPENAI__" ? "GPT" : "Gemini";
+                const modelLabel = isOpenAiGroup
+                  ? "GPT"
+                  : isFlashGroup
+                    ? "Gemini Flash"
+                    : "Gemini";
                 const errMsg =
                   "ERROR: invalid JSON array from " +
                   modelLabel +
@@ -3176,7 +3247,7 @@ function processRowsBatch() {
                   errMsg,
                   errMsg,
                   errMsg,
-                  groupKey === "__OPENAI__" ? "GPTNG" : "NG",
+                  retryKindForGroup,
                 );
                 return;
               }
@@ -3200,11 +3271,15 @@ function processRowsBatch() {
                 hB || "",
                 sm2 || "",
                 hBF || "",
-                groupKey === "__OPENAI__" ? "GPTNG" : "NG",
+                retryKindForGroup,
               );
             });
           } catch (e) {
-            const modelLabel = groupKey === "__OPENAI__" ? "GPT" : "Gemini";
+            const modelLabel = isOpenAiGroup
+              ? "GPT"
+              : isFlashGroup
+                ? "Gemini Flash"
+                : "Gemini";
             const errMsg =
               "ERROR: invalid JSON from " +
               modelLabel +
@@ -3225,7 +3300,7 @@ function processRowsBatch() {
                 errMsg,
                 errMsg,
                 errMsg,
-                groupKey === "__OPENAI__" ? "GPTNG" : "NG",
+                retryKindForGroup,
               );
             });
           }
@@ -3258,7 +3333,7 @@ function processRowsBatch() {
  *   完了の定義（対象行）:
  *   - A列が埋まっている
  *   - M列・N列が両方埋まっている
- *   - L列が OK または NG(x) かつ x >= MAX_RETRY_COUNT
+ *   - L列が OK / OK(FLASH) / OK(GPT)、または GPTNG(x) かつ x >= GPT_JS_MAX_RETRIES
  *
  *   prod / dev それぞれで、
  *   「対象行のすべてが上記を満たした時点」でメール送信。
@@ -3316,9 +3391,9 @@ function checkAndNotifyAllDoneIfNeededForSheet_(sheetName) {
 
     if (status.startsWith("OK")) {
       isDone = true;
-    } else if (status.startsWith("NG(")) {
-      const retryCount = parseRetryCount_(status);
-      if (retryCount >= MAX_RETRY_COUNT) {
+    } else if (status.startsWith("GPTNG(")) {
+      const retryCount = parseGptRetryCount_(status);
+      if (retryCount >= GPT_JS_MAX_RETRIES) {
         isDone = true;
       }
     }
