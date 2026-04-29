@@ -1794,12 +1794,27 @@ function callGpt5MiniWithKey_(apiKey, promptText, usageTagOpt, formatTypeOpt) {
 
   const url = "https://api.openai.com/v1/responses";
   const fmt = String(formatTypeOpt || "json_object");
+  const isBatchJsonSchema = fmt === "json_schema_batch";
   const payload = {
     model: GPT5_MINI_MODEL,
     input: String(promptText || ""),
   };
+
+  // バッチ処理（2件まとめ・Structured Outputs）時だけ、要約精度向上用の指示を追加する。
+  // formatTypeOpt="none" の圧縮フォールバック等には副作用を出さない。
+  if (isBatchJsonSchema) {
+    payload.instructions = [
+      "あなたは日本語報道要約・見出し生成の編集者です。",
+      "記事本文だけを根拠にし、推測で事実を補わないでください。",
+      "要約は、誰が・どこで・何をした・結果・規模を優先してください。",
+      "COMMON_TRANSLATION_RULES、SUMMARY_TASK、JSONスキーマを厳守してください。",
+    ].join("\n");
+    payload.reasoning = { effort: "medium" };
+    payload.max_output_tokens = 6000;
+  }
+
   if (fmt !== "none") {
-    if (fmt === "json_schema_batch") {
+    if (isBatchJsonSchema) {
       // Structured Outputs: JSON Schema を強制（配列を返せる）
       // docs: text.format に type:"json_schema", strict:true, schema:... を指定 :contentReference[oaicite:2]{index=2}
       payload.text = {
@@ -1839,6 +1854,20 @@ function callGpt5MiniWithKey_(apiKey, promptText, usageTagOpt, formatTypeOpt) {
       }
 
       if (code >= 200 && code < 300) {
+        if (data && data.status === "incomplete") {
+          const reason =
+            data.incomplete_details && data.incomplete_details.reason
+              ? data.incomplete_details.reason
+              : "unknown";
+          const msg = "ERROR: OpenAI response incomplete: " + reason;
+
+          if (attempt < GPT_JS_MAX_RETRIES) {
+            Utilities.sleep(_expBackoffMs_(attempt));
+            continue;
+          }
+          return msg;
+        }
+
         const outText = _extractOutputTextFromResponses_(data);
         if (outText) return outText;
         // 200 なのに本文が取れない場合も一旦エラー扱い
