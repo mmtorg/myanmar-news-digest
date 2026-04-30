@@ -3064,10 +3064,10 @@ function processRowsBatch() {
     cleanupStaleRunningStatuses_();
 
     // ★ 時間帯外なら即スキップ（16:00〜翌7:00だけ動かす）
-    if (!isWithinProcessingWindow_()) {
-      Logger.log("[processRowsBatch] outside allowed time window → skip");
-      return;
-    }
+    // if (!isWithinProcessingWindow_()) {
+    //   Logger.log("[processRowsBatch] outside allowed time window → skip");
+    //   return;
+    // }
 
     const ss = SpreadsheetApp.getActive();
     const sheetNames = ["prod", "dev"]; // 対象シート
