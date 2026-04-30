@@ -1170,6 +1170,126 @@ function _isRetriableError_(httpCode, data) {
   });
 }
 
+// ===== Gemini 503 high demand 専用の「15分後に再実行」制御 =====
+// high demand は一時的な容量不足なので、通常の NG 回数に入れず、
+// L列を WAIT_GEMINI(...) にして、15分後以降の時間トリガーで再試行する。
+const GEMINI_HIGH_DEMAND_WAIT_MIN = 15;
+const GEMINI_HIGH_DEMAND_WAIT_MAX_DEFERS = 2; // 最大2回まで延期
+
+function _isGeminiHighDemandMessage_(status, message) {
+  const lower = (
+    String(status || "") +
+    " " +
+    String(message || "")
+  ).toLowerCase();
+  return (
+    lower.indexOf("high demand") !== -1 ||
+    lower.indexOf("model is overloaded") !== -1 ||
+    lower.indexOf("temporarily overloaded") !== -1 ||
+    lower.indexOf("temporarily running out of capacity") !== -1 ||
+    (lower.indexOf("unavailable") !== -1 &&
+      lower.indexOf("please try again later") !== -1)
+  );
+}
+
+function _isGeminiHighDemandErrorResponse_(resp) {
+  if (typeof resp !== "string") return false;
+  if (resp.indexOf("ERROR:") !== 0) return false;
+  return _isGeminiHighDemandMessage_("", resp);
+}
+
+function _parseGeminiHighDemandWaitStatus_(status) {
+  const s = String(status || "");
+  const m = s.match(/^WAIT_GEMINI\((\d+)\|(\d+)\)/);
+  if (!m) return null;
+  return {
+    count: Number(m[1]) || 0,
+    nextAtMs: Number(m[2]) || 0,
+  };
+}
+
+function _isGeminiHighDemandWaitDue_(status) {
+  const parsed = _parseGeminiHighDemandWaitStatus_(status);
+  if (!parsed) return false;
+  return Date.now() >= parsed.nextAtMs;
+}
+
+function _hasExceededGeminiHighDemandDefers_(status) {
+  const parsed = _parseGeminiHighDemandWaitStatus_(status);
+  return parsed && parsed.count >= GEMINI_HIGH_DEMAND_WAIT_MAX_DEFERS;
+}
+
+function _buildGeminiHighDemandWaitStatus_(prevStatus, errorText) {
+  const parsed = _parseGeminiHighDemandWaitStatus_(prevStatus);
+  const nextCount = (parsed ? parsed.count : 0) + 1;
+
+  const nextAtMs = Date.now() + GEMINI_HIGH_DEMAND_WAIT_MIN * 60 * 1000;
+  const nextAtText = Utilities.formatDate(
+    new Date(nextAtMs),
+    Session.getScriptTimeZone() || "Asia/Yangon",
+    "yyyy-MM-dd HH:mm:ss",
+  );
+
+  const msg = String(errorText || "")
+    .replace(/^ERROR:\s*/, "")
+    .replace(/\s+/g, " ")
+    .slice(0, 180);
+
+  return (
+    "WAIT_GEMINI(" +
+    nextCount +
+    "|" +
+    nextAtMs +
+    "): next=" +
+    nextAtText +
+    " / " +
+    msg
+  );
+}
+
+function _deferRowsForGeminiHighDemand_(
+  sheet,
+  promptItems,
+  errorText,
+  retryKindForGroup,
+) {
+  promptItems.forEach(function (pi) {
+    if (_hasExceededGeminiHighDemandDefers_(pi.prevStatus || "")) {
+      _applyOutputsToRow_(
+        sheet,
+        pi.rowIndex,
+        pi.prevStatus,
+        {
+          sourceVal: pi.sourceVal,
+          urlVal: pi.urlVal,
+          titleRaw: pi.titleRaw,
+          bodyRaw: pi.bodyRaw,
+        },
+        errorText,
+        errorText,
+        errorText,
+        errorText,
+        retryKindForGroup || "NG",
+      );
+      return;
+    }
+
+    const waitStatus = _buildGeminiHighDemandWaitStatus_(
+      pi.prevStatus || "",
+      errorText,
+    );
+    sheet.getRange(pi.rowIndex, STATUS_COL).setValue(waitStatus);
+    _appendGeminiLog_(
+      "WARN",
+      (sheet.getName ? sheet.getName() : "") +
+        "#row" +
+        pi.rowIndex +
+        ":WAIT_GEMINI",
+      waitStatus,
+    );
+  });
+}
+
 // ===== グローバルスロットリング（Script Properties共有）=====
 // どのトリガー/実行経路でも、Gemini呼び出しを最低この間隔だけ空ける
 const GEMINI_GLOBAL_MIN_INTERVAL_MS = 20000; // 20秒（安全策）
@@ -2182,6 +2302,21 @@ function processRow_(sheet, row, prevStatus) {
       }
     }
 
+    if (!useGpt && _isGeminiHighDemandErrorResponse_(resp)) {
+      // high demand は一時的な容量不足なので、出力列にERRORを書かず15分後へ延期する
+      if (_hasExceededGeminiHighDemandDefers_(prevStatus || "")) {
+        // 上限到達後だけ従来の失敗処理へ進める
+      } else {
+        const waitStatus = _buildGeminiHighDemandWaitStatus_(
+          prevStatus || "",
+          resp,
+        );
+        sheet.getRange(row, 12).setValue(waitStatus);
+        _appendGeminiLog_("WARN", tagMulti, waitStatus);
+        return;
+      }
+    }
+
     if (typeof resp === "string" && resp.indexOf("ERROR:") === 0) {
       // callGeminiWithKey_ 自体がエラーを返した場合 → そのまま全列同じエラー扱い
       headlineA = resp;
@@ -2985,6 +3120,17 @@ function processRowsBatch() {
           continue;
         }
 
+        // Gemini high demand は、指定時刻までは通常のNG扱いにせず待機する
+        const highDemandWait = _parseGeminiHighDemandWaitStatus_(status);
+        if (highDemandWait && !_isGeminiHighDemandWaitDue_(status)) {
+          Logger.log(
+            "[processRowsBatch] skip row %s (Gemini high demand wait until %s)",
+            rowIndex,
+            highDemandWait.nextAtMs,
+          );
+          continue;
+        }
+
         // ★ 再試行回数チェック
         const gemRetryCount = parseRetryCount_(status);
         const gptRetryCount = parseGptRetryCount_(status);
@@ -3196,6 +3342,18 @@ function processRowsBatch() {
                 );
               }
             }
+          }
+
+          // Gemini high demand は、出力列にERRORを書かず、15分後以降の時間トリガーで再実行する
+          if (!isOpenAiGroup && _isGeminiHighDemandErrorResponse_(resp)) {
+            _deferRowsForGeminiHighDemand_(
+              sh,
+              promptItems,
+              resp,
+              retryKindForGroup,
+            );
+            p += chunk.length;
+            continue;
           }
 
           // API呼び出し自体がエラーなら全員同じエラー
