@@ -1458,14 +1458,13 @@ function _isGeminiHighDemandErrorResponse_(resp) {
 
 function _parseGeminiHighDemandWaitStatus_(status) {
   const s = String(status || "");
-  // 新形式: WAIT_GEMINI(count|nextAtMs|retryKind)
-  // 旧形式: WAIT_GEMINI(count|nextAtMs) も後方互換で読む
-  const m = s.match(/^WAIT_GEMINI\((\d+)\|(\d+)(?:\|([^\)]+))?\)/);
+  // 現行形式: WAIT_GEMINI(count|nextAtMs)
+  // 過去互換のため第3フィールドが残っていても読み取るが、現行仕様では使用しない。
+  const m = s.match(/^WAIT_GEMINI\((\d+)\|(\d+)(?:\|[^\)]+)?\)/);
   if (!m) return null;
   return {
     count: Number(m[1]) || 0,
     nextAtMs: Number(m[2]) || 0,
-    retryKind: String(m[3] || "").trim(),
   };
 }
 
@@ -1480,52 +1479,28 @@ function _hasExceededGeminiHighDemandDefers_(status) {
   return parsed && parsed.count >= GEMINI_HIGH_DEMAND_WAIT_MAX_DEFERS;
 }
 
-function _normalizeGeminiHighDemandRetryKind_(retryKindOpt) {
-  const k = String(retryKindOpt || "").trim();
-  return k === "FLASHNG" ? "FLASHNG" : "NG";
-}
-
-function _setStatusForGeminiHighDemandWaitExceeded_(
-  sheet,
-  rowIndex,
-  retryKindOpt,
-  tagOpt,
-) {
-  const retryKind = _normalizeGeminiHighDemandRetryKind_(retryKindOpt);
-
+function _setStatusForGeminiHighDemandWaitExceeded_(sheet, rowIndex, tagOpt) {
   // 通常Geminiで high demand 待機上限に達した場合は、次回 gemini-2.5-flash へ進めるため
   // WAIT_GEMINI を NG(2) 相当へ明示的に進める。
-  if (retryKind === "NG") {
-    const statusText =
-      "NG(" +
-      MAX_RETRY_COUNT +
-      "): Gemini high demand wait exceeded; move to Flash";
-    sheet.getRange(rowIndex, STATUS_COL).setValue(statusText);
-    _appendGeminiLog_(
-      "WARN",
-      tagOpt ||
-        (sheet.getName ? sheet.getName() : "") +
-          "#row" +
-          rowIndex +
-          ":WAIT_GEMINI_EXCEEDED",
-      statusText,
-    );
-    return true;
-  }
-
-  return false;
+  const statusText =
+    "NG(" +
+    MAX_RETRY_COUNT +
+    "): Gemini high demand wait exceeded; move to Flash";
+  sheet.getRange(rowIndex, STATUS_COL).setValue(statusText);
+  _appendGeminiLog_(
+    "WARN",
+    tagOpt ||
+      (sheet.getName ? sheet.getName() : "") +
+        "#row" +
+        rowIndex +
+        ":WAIT_GEMINI_EXCEEDED",
+    statusText,
+  );
 }
 
-function _buildGeminiHighDemandWaitStatus_(
-  prevStatus,
-  errorText,
-  retryKindOpt,
-) {
+function _buildGeminiHighDemandWaitStatus_(prevStatus, errorText) {
   const parsed = _parseGeminiHighDemandWaitStatus_(prevStatus);
   const nextCount = (parsed ? parsed.count : 0) + 1;
-  const retryKind = _normalizeGeminiHighDemandRetryKind_(
-    retryKindOpt || (parsed && parsed.retryKind) || "NG",
-  );
 
   const nextAtMs = Date.now() + GEMINI_HIGH_DEMAND_WAIT_MIN * 60 * 1000;
   const nextAtText = Utilities.formatDate(
@@ -1544,8 +1519,6 @@ function _buildGeminiHighDemandWaitStatus_(
     nextCount +
     "|" +
     nextAtMs +
-    "|" +
-    retryKind +
     "): next=" +
     nextAtText +
     " / " +
@@ -1559,25 +1532,12 @@ function _deferRowsForGeminiHighDemand_(
   errorText,
   retryKindForGroup,
 ) {
-  promptItems.forEach(function (pi) {
-    const retryKind = _normalizeGeminiHighDemandRetryKind_(
-      retryKindForGroup || "NG",
-    );
+  const retryKind = retryKindForGroup || "NG";
 
-    if (_hasExceededGeminiHighDemandDefers_(pi.prevStatus || "")) {
-      if (
-        _setStatusForGeminiHighDemandWaitExceeded_(
-          sheet,
-          pi.rowIndex,
-          retryKind,
-          (sheet.getName ? sheet.getName() : "") +
-            "#row" +
-            pi.rowIndex +
-            ":WAIT_GEMINI_EXCEEDED",
-        )
-      ) {
-        return;
-      }
+  promptItems.forEach(function (pi) {
+    // gemini-2.5-flash は high demand でも WAIT に入れず、1回失敗として扱う。
+    // FLASHNG(1) になれば、次回 shouldUseGpt5Mini_() により GPT へ進む。
+    if (retryKind === "FLASHNG") {
       _applyOutputsToRow_(
         sheet,
         pi.rowIndex,
@@ -1593,6 +1553,18 @@ function _deferRowsForGeminiHighDemand_(
         errorText,
         errorText,
         retryKind,
+      );
+      return;
+    }
+
+    if (_hasExceededGeminiHighDemandDefers_(pi.prevStatus || "")) {
+      _setStatusForGeminiHighDemandWaitExceeded_(
+        sheet,
+        pi.rowIndex,
+        (sheet.getName ? sheet.getName() : "") +
+          "#row" +
+          pi.rowIndex +
+          ":WAIT_GEMINI_EXCEEDED",
       );
       return;
     }
@@ -2650,27 +2622,37 @@ function processRow_(sheet, row, prevStatus) {
         );
 
     if (!useGpt && _isGeminiHighDemandErrorResponse_(summaryResp)) {
-      // high demand は一時的な容量不足なので、出力列にERRORを書かず15分後へ延期する
-      const retryKind = useFlash ? "FLASHNG" : "NG";
+      if (useFlash) {
+        // gemini-2.5-flash は high demand でも WAIT に入れず、1回失敗として扱う。
+        _applyOutputsToRow_(
+          sheet,
+          row,
+          prevStatus,
+          {
+            sourceVal: sourceVal,
+            urlVal: urlVal,
+            titleRaw: titleRaw,
+            bodyRaw: bodyRaw,
+          },
+          summaryResp,
+          summaryResp,
+          summaryResp,
+          summaryResp,
+          "FLASHNG",
+        );
+        return;
+      }
+
+      // 通常Geminiの high demand は、一時的な容量不足なので15分後へ延期する
       if (_hasExceededGeminiHighDemandDefers_(prevStatus || "")) {
-        if (
-          _setStatusForGeminiHighDemandWaitExceeded_(
-            sheet,
-            row,
-            retryKind,
-            tagSummary,
-          )
-        ) {
-          return;
-        }
-        // Flash中の上限到達後だけ従来の失敗処理へ進める
+        _setStatusForGeminiHighDemandWaitExceeded_(sheet, row, tagSummary);
+        return;
       } else {
         const waitStatus = _buildGeminiHighDemandWaitStatus_(
           prevStatus || "",
           summaryResp,
-          retryKind,
         );
-        sheet.getRange(row, 12).setValue(waitStatus);
+        sheet.getRange(row, STATUS_COL).setValue(waitStatus);
         _appendGeminiLog_("WARN", tagSummary, waitStatus);
         return;
       }
@@ -2764,26 +2746,35 @@ function processRow_(sheet, row, prevStatus) {
           );
 
       if (!useGpt && _isGeminiHighDemandErrorResponse_(headlineResp)) {
-        const retryKind = useFlash ? "FLASHNG" : "NG";
+        if (useFlash) {
+          // gemini-2.5-flash は high demand でも WAIT に入れず、1回失敗として扱う。
+          _applyOutputsToRow_(
+            sheet,
+            row,
+            prevStatus,
+            {
+              sourceVal: sourceVal,
+              urlVal: urlVal,
+              titleRaw: titleRaw,
+              bodyRaw: bodyRaw,
+            },
+            headlineResp,
+            headlineResp,
+            summaryJa || headlineResp,
+            headlineResp,
+            "FLASHNG",
+          );
+          return;
+        }
         if (_hasExceededGeminiHighDemandDefers_(prevStatus || "")) {
-          if (
-            _setStatusForGeminiHighDemandWaitExceeded_(
-              sheet,
-              row,
-              retryKind,
-              tagHeadline,
-            )
-          ) {
-            return;
-          }
-          // Flash中の上限到達後だけ従来の失敗処理へ進める
+          _setStatusForGeminiHighDemandWaitExceeded_(sheet, row, tagHeadline);
+          return;
         } else {
           const waitStatus = _buildGeminiHighDemandWaitStatus_(
             prevStatus || "",
             headlineResp,
-            retryKind,
           );
-          sheet.getRange(row, 12).setValue(waitStatus);
+          sheet.getRange(row, STATUS_COL).setValue(waitStatus);
           _appendGeminiLog_("WARN", tagHeadline, waitStatus);
           return;
         }
@@ -2950,15 +2941,6 @@ function parseFlashRetryCount_(status) {
 function shouldUseGemini25Flash_(status) {
   const s = String(status || "");
   if (s.startsWith("RUNNING(FLASH)")) return true;
-
-  // Flash実行中に high demand 待機へ入った行は、待機明けもFlashで再実行する。
-  const highDemandWait = _parseGeminiHighDemandWaitStatus_(s);
-  if (
-    highDemandWait &&
-    _normalizeGeminiHighDemandRetryKind_(highDemandWait.retryKind) === "FLASHNG"
-  ) {
-    return true;
-  }
 
   // 通常GeminiがNG(2)以上になった行は、GPTへ行く前にgemini-2.5-flashを1回だけ試す
   const m = s.match(/^NG\((\d+)\)/);
