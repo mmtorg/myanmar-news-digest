@@ -384,6 +384,27 @@ const HEADLINE_STRUCTURE_RULES = `
 - ダッシュ（―）・コロン（：）は使わない
 `;
 
+// F列用：G列の単なる重複を避け、編集者の確定見出しとして再構成するルール
+const F_HEADLINE_EDIT_RULES = `
+【F列見出しの役割（G列との差別化・重要）】
+- F列は、G列見出しB'の単なるコピーや軽微な言い換えではない。
+- Task2で作るG列見出しB'を「本文ベースの初稿見出し」として扱う。
+- F列では、その初稿見出しを、本文要約とE列見出しAを照合して、編集者が最終採用する確定見出しへ再編集する。
+- I列本文要約から、主体・地名・数値・結果・対立軸・時点のうちニュース価値が高く、G列に不足している要素を優先して補正する。
+- headlineBPrimeFewShot は headlineBPrime と完全一致させない。
+- ただし、差分を作るためだけの不自然な言い換えや、本文・要約にない事実の追加・推測は禁止。
+- G列が十分に良い場合でも、語順・焦点・情報の取捨選択を編集者見出しとして再構成する。
+`;
+
+// E/F/Gを同じAPIコールで生成するときの最終確認ルール
+const HEADLINE_OUTPUT_SELF_CHECK_RULE = `
+【見出し出力前の確認】
+- headlineBPrime は本文ベースの初稿見出し。
+- headlineBPrimeFewShot は、headlineBPrime を本文要約と headlineA で再編集した確定見出し。
+- headlineBPrimeFewShot は headlineBPrime と完全一致させない。
+- headlineBPrimeFewShot が headlineBPrime と同じになりそうな場合は、本文要約から重要要素を1つ補うか、焦点を編集者見出しとして再構成する。
+`;
+
 // HEADLINE_PROMPT_3：本文を読んで作る見出し（B/B'）
 const HEADLINE_PROMPT_3 = `
 ${TITLE_OUTPUT_RULES}
@@ -489,6 +510,7 @@ I列 本文要約: ${summaryJa || ""}
 を1行で生成してください。
 目標は、TITLE_CORRECTION_SS_ID_PROP の E列に近い傾向の見出しにすることです。
 
+${F_HEADLINE_EDIT_RULES}
 ${TITLE_OUTPUT_RULES}
 【本文用 用語固定ルール】
 ${bodyGlossaryRules || "(なし)"}`.trim();
@@ -549,6 +571,7 @@ ${bodyGlossaryRules || "(なし)"}
 - G列見出しB'（本文ベース）を主ベースとし、E列見出しAの要素も参考に取り込んで整えてください。
 - 単なる E/G の折衷ではなく、本文要約から重要度の高い要素を補正して、
   アーカイブの確定見出しに近い決め方で整えてください。
+${F_HEADLINE_EDIT_RULES}
 ${archiveTeacherSection}${HEADLINE_STRUCTURE_RULES}
 ${TITLE_OUTPUT_RULES}
 【本文用 用語固定ルール】
@@ -567,6 +590,7 @@ ${bodyGlossaryRules || "(なし)"}
 ====================
 
 ${PROMPT_SELF_CHECK_RULE}
+${HEADLINE_OUTPUT_SELF_CHECK_RULE}
 
 【最終出力フォーマット（必須）】
 
@@ -575,7 +599,7 @@ ${PROMPT_SELF_CHECK_RULE}
 {
   "headlineA": "ここにTask1の見出しAを入れる",
   "headlineBPrime": "ここにTask2の見出しB'を入れる",
-  "headlineBPrimeFewShot": "ここにTask2'の見出しB'を入れる",
+  "headlineBPrimeFewShot": "ここにTask2'の見出しFを入れる",
   "summary": "ここにTask3の本文要約を入れる"
 }
 
@@ -676,10 +700,12 @@ ${bodyGlossaryRules || "(なし)"}
 今回の記事では、Task1の見出しA、Task2の見出しB'、上の生成済み本文要約を合わせて使い、
 G列見出しB'（本文ベース）を主ベースとし、E列見出しAの要素も参考に取り込んで、
 編集者が最終的に確定しそうな1行見出しを生成してください。
+${F_HEADLINE_EDIT_RULES}
 ${archiveTeacherSection}${HEADLINE_STRUCTURE_RULES}
 ${TITLE_OUTPUT_RULES}
 【本文用 用語固定ルール】
 ${bodyGlossaryRules || "(なし)"}
+${HEADLINE_OUTPUT_SELF_CHECK_RULE}
 
 【最終出力フォーマット（必須）】
 JSON オブジェクトを1つだけ出力してください。
@@ -3255,6 +3281,7 @@ ${it.bodyGlossaryRules || "(なし)"}
 今回の記事では、Task1の見出しA、Task2の見出しB'、Task3で把握した本文要約の内容を合わせて使い、
 G列見出しB'（本文ベース）を主ベースとし、E列見出しAの要素も参考に取り込んで、
 編集者が最終的に確定しそうな1行見出しを生成すること。
+${F_HEADLINE_EDIT_RULES}
 ${archiveTeacherSection}${HEADLINE_STRUCTURE_RULES}
 ${TITLE_OUTPUT_RULES}
 【本文用 用語固定ルール】
@@ -3280,6 +3307,7 @@ ${COMMON_TRANSLATION_RULES}
 4) 本文要約
 
 ${PROMPT_SELF_CHECK_RULE}
+${HEADLINE_OUTPUT_SELF_CHECK_RULE}
 
 【最終出力フォーマット（必須）】
 入力順のまま、JSON オブジェクトを 1つだけ出力してください（それ以外の文字は一切出力しない）。
@@ -3396,6 +3424,7 @@ ${it.bodyGlossaryRules || "(なし)"}
 今回の記事では、Task1の見出しA、Task2の見出しB'、生成済み本文要約の内容を合わせて使い、
 G列見出しB'（本文ベース）を主ベースとし、E列見出しAの要素も参考に取り込んで、
 編集者が最終的に確定しそうな1行見出しを生成すること。
+${F_HEADLINE_EDIT_RULES}
 ${archiveTeacherSection}${HEADLINE_STRUCTURE_RULES}
 ${TITLE_OUTPUT_RULES}
 【本文用 用語固定ルール】
@@ -3413,6 +3442,7 @@ ${COMMON_TRANSLATION_RULES}
 1) 見出しA（タイトル翻訳ベース）
 2) 見出しB'（本文を読んで作る見出し・スタイル参考例なし）
 3) 見出しF（教師データ参考・編集者確定見出し）
+${HEADLINE_OUTPUT_SELF_CHECK_RULE}
 
 【最終出力フォーマット（必須）】
 入力順のまま、JSON オブジェクトを1つだけ出力してください（それ以外の文字は一切出力しない）。
