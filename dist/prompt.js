@@ -3026,35 +3026,36 @@ function fixKyatYenInText_(text) {
   );
 }
 
-// チャット以外の通貨（ドル/バーツ/ルピー等）に誤って付いた「（約◯◯円）」を削除
-// 例: 「10億ドル（約390億円）」→「10億ドル」
-//     「31億7300万ルピー（約58億円）」→「31億7300万ルピー」
+// チャット以外に誤って付いた「（約◯円）」を削除する
+// ルール上、要約で円併記してよいのは「チャット」のみ。
 function removeYenForNonKyat_(text) {
   if (!text) return text;
   let s = String(text);
 
-  // 代表的な「非チャット」通貨ラベル
-  // ルピー系・crore / crore rupees / クロール系も含める
-  const NON_KYAT_CCY =
-    "(?:米ドル|ドル|USD|US\\$|\\$|バーツ|THB|ユーロ|EUR|ポンド|GBP|元|人民元|CNY|ウォン|KRW|ルピー|インドルピー|INR|Rs\\.?|₹|crore\\s*rupees?|crore|クロール|クロー)";
-
-  // 「（約…円）」の中身は数字/カンマ/兆億万/範囲表記（〜, -, ～）を許容（“約”の有無も吸収）
   const NUM_RANGE = "[0-9０-９,，\\s兆億万\\.〜～\\-−–]+";
-  const YEN_PAREN = "（\\s*(?:約)?\\s*" + NUM_RANGE + "(?:円|えん)\\s*）";
-
-  // 1) 「10億ドル（約…円）」「317.30クロー（約…円）」のように “金額→通貨→円” の順
-  const pat1 = new RegExp(
-    "(" + NUM_RANGE + "\\s*" + NON_KYAT_CCY + ")\\s*" + YEN_PAREN,
-    "gi",
+  const YEN_PAREN = new RegExp(
+    "（\\s*(?:約)?\\s*" + NUM_RANGE + "(?:円|えん)\\s*）",
+    "g",
   );
-  s = s.replace(pat1, "$1");
 
-  // 2) 「USD 1 billion（約…円）」「INR 317.30 crore（約…円）」のように “通貨→金額→円” の順
-  const pat2 = new RegExp(
-    "(" + NON_KYAT_CCY + "\\s*" + NUM_RANGE + ")\\s*" + YEN_PAREN,
-    "gi",
+  // まず正しい「チャット（約◯円）」だけ一時退避
+  const protectedKyat = [];
+  s = s.replace(
+    /([0-9０-９,，\s兆億万]+チャット)（約[^）]*円）/g,
+    function (m) {
+      const key = "__KYAT_YEN_PAREN_" + protectedKyat.length + "__";
+      protectedKyat.push(m);
+      return key;
+    },
   );
-  s = s.replace(pat2, "$1");
+
+  // 残った「（約◯円）」はすべて削除
+  s = s.replace(YEN_PAREN, "");
+
+  // 退避したチャット円換算だけ戻す
+  protectedKyat.forEach(function (v, i) {
+    s = s.replace("__KYAT_YEN_PAREN_" + i + "__", v);
+  });
 
   return s;
 }
