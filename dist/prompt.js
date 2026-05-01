@@ -1404,8 +1404,8 @@ function _isRetriableError_(httpCode, data) {
 
 // ===== Gemini 503 high demand 専用の「15分後に再実行」制御 =====
 // high demand は一時的な容量不足なので、通常の NG 回数に入れず、
-// L列を WAIT_GEMINI(...) にして、10分後以降の時間トリガーで再試行する。
-const GEMINI_HIGH_DEMAND_WAIT_MIN = 10;
+// L列を WAIT_GEMINI(...) にして、15分後以降の時間トリガーで再試行する。
+const GEMINI_HIGH_DEMAND_WAIT_MIN = 15;
 const GEMINI_HIGH_DEMAND_WAIT_MAX_DEFERS = 2; // 最大2回まで延期
 
 function _isGeminiHighDemandMessage_(status, message) {
