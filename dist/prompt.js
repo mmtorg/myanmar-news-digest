@@ -1479,6 +1479,18 @@ function _hasExceededGeminiHighDemandDefers_(status) {
   return parsed && parsed.count >= GEMINI_HIGH_DEMAND_WAIT_MAX_DEFERS;
 }
 
+function _nextGeminiHighDemandDefersCount_(status) {
+  const parsed = _parseGeminiHighDemandWaitStatus_(status);
+  return (parsed ? parsed.count : 0) + 1;
+}
+
+function _shouldMoveToFlashOnThisHighDemand_(status) {
+  return (
+    _nextGeminiHighDemandDefersCount_(status) >=
+    GEMINI_HIGH_DEMAND_WAIT_MAX_DEFERS
+  );
+}
+
 function _setStatusForGeminiHighDemandWaitExceeded_(sheet, rowIndex, tagOpt) {
   // 通常Geminiで high demand 待機上限に達した場合は、次回 gemini-2.5-flash へ進めるため
   // WAIT_GEMINI を NG(2) 相当へ明示的に進める。
@@ -1557,7 +1569,9 @@ function _deferRowsForGeminiHighDemand_(
       return;
     }
 
-    if (_hasExceededGeminiHighDemandDefers_(pi.prevStatus || "")) {
+    // 2回目の high demand は WAIT_GEMINI(2|nextAtMs) で待たせず、
+    // NG(2) 相当にして次回すぐ gemini-2.5-flash へ進める。
+    if (_shouldMoveToFlashOnThisHighDemand_(pi.prevStatus || "")) {
       _setStatusForGeminiHighDemandWaitExceeded_(
         sheet,
         pi.rowIndex,
@@ -2643,8 +2657,8 @@ function processRow_(sheet, row, prevStatus) {
         return;
       }
 
-      // 通常Geminiの high demand は、一時的な容量不足なので15分後へ延期する
-      if (_hasExceededGeminiHighDemandDefers_(prevStatus || "")) {
+      // 通常Geminiの high demand は1回目だけ延期し、2回目はFlashへ進める
+      if (_shouldMoveToFlashOnThisHighDemand_(prevStatus || "")) {
         _setStatusForGeminiHighDemandWaitExceeded_(sheet, row, tagSummary);
         return;
       } else {
@@ -2766,7 +2780,7 @@ function processRow_(sheet, row, prevStatus) {
           );
           return;
         }
-        if (_hasExceededGeminiHighDemandDefers_(prevStatus || "")) {
+        if (_shouldMoveToFlashOnThisHighDemand_(prevStatus || "")) {
           _setStatusForGeminiHighDemandWaitExceeded_(sheet, row, tagHeadline);
           return;
         } else {
@@ -2941,6 +2955,15 @@ function parseFlashRetryCount_(status) {
 function shouldUseGemini25Flash_(status) {
   const s = String(status || "");
   if (s.startsWith("RUNNING(FLASH)")) return true;
+
+  // 既存の WAIT_GEMINI(2|nextAtMs) 行も、nextAtMs を待たずにFlashへ進める
+  const highDemandWait = _parseGeminiHighDemandWaitStatus_(s);
+  if (
+    highDemandWait &&
+    highDemandWait.count >= GEMINI_HIGH_DEMAND_WAIT_MAX_DEFERS
+  ) {
+    return true;
+  }
 
   // 通常GeminiがNG(2)以上になった行は、GPTへ行く前にgemini-2.5-flashを1回だけ試す
   const m = s.match(/^NG\((\d+)\)/);
@@ -3661,9 +3684,14 @@ function processRowsBatch() {
           continue;
         }
 
-        // Gemini high demand は、指定時刻までは通常のNG扱いにせず待機する
+        // Gemini high demand は1回目だけ指定時刻まで待機する。
+        // WAIT_GEMINI(2|nextAtMs) は待たずに、この実行でFlash対象にする。
         const highDemandWait = _parseGeminiHighDemandWaitStatus_(status);
-        if (highDemandWait && !_isGeminiHighDemandWaitDue_(status)) {
+        if (
+          highDemandWait &&
+          highDemandWait.count < GEMINI_HIGH_DEMAND_WAIT_MAX_DEFERS &&
+          !_isGeminiHighDemandWaitDue_(status)
+        ) {
           Logger.log(
             "[processRowsBatch] skip row %s (Gemini high demand wait until %s)",
             rowIndex,
