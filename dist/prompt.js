@@ -1426,11 +1426,42 @@ function _isRetriableError_(httpCode, data) {
   });
 }
 
-// ===== Gemini 503 high demand 専用の「15分後に再実行」制御 =====
+// ===== Gemini 503 high demand 専用の「時間帯別に再実行」制御 =====
 // high demand は一時的な容量不足なので、通常の NG 回数に入れず、
-// L列を WAIT_GEMINI(...) にして、15分後以降の時間トリガーで再試行する。
-const GEMINI_HIGH_DEMAND_WAIT_MIN = 15;
+// L列を WAIT_GEMINI(...) にして、指定時間後以降の時間トリガーで再試行する。
+// 18:00〜翌02:00 は 15分、それ以外は 60分待機。
+const GEMINI_HIGH_DEMAND_WAIT_MIN_BUSY = 15;
+const GEMINI_HIGH_DEMAND_WAIT_MIN_NORMAL = 60;
 const GEMINI_HIGH_DEMAND_WAIT_MAX_DEFERS = 2; // 最大2回まで延期
+
+const GEMINI_HIGH_DEMAND_BUSY_START_MIN = 18 * 60; // 18:00
+const GEMINI_HIGH_DEMAND_BUSY_END_MIN = 2 * 60; // 翌02:00
+
+function _geminiHighDemandWaitTimeZone_() {
+  return Session.getScriptTimeZone() || "Asia/Yangon";
+}
+function _minuteOfDayInTimeZone_(date) {
+  const tz = _geminiHighDemandWaitTimeZone_();
+  const hhmm = Utilities.formatDate(date || new Date(), tz, "HH:mm").split(":");
+  return Number(hhmm[0]) * 60 + Number(hhmm[1]);
+}
+
+function _isGeminiHighDemandBusyTime_(date) {
+  const t = _minuteOfDayInTimeZone_(date);
+
+  // 18:00〜24:00 または 00:00〜02:00
+  // 02:00ちょうど以降は「それ以外の時間」として60分待機
+  return (
+    t >= GEMINI_HIGH_DEMAND_BUSY_START_MIN ||
+    t < GEMINI_HIGH_DEMAND_BUSY_END_MIN
+  );
+}
+
+function _getGeminiHighDemandWaitMin_(date) {
+  return _isGeminiHighDemandBusyTime_(date)
+    ? GEMINI_HIGH_DEMAND_WAIT_MIN_BUSY
+    : GEMINI_HIGH_DEMAND_WAIT_MIN_NORMAL;
+}
 
 function _isGeminiTimeoutMessage_(status, message) {
   const lower = (
@@ -1540,10 +1571,13 @@ function _buildGeminiHighDemandWaitStatus_(prevStatus, errorText) {
   const parsed = _parseGeminiHighDemandWaitStatus_(prevStatus);
   const nextCount = (parsed ? parsed.count : 0) + 1;
 
-  const nextAtMs = Date.now() + GEMINI_HIGH_DEMAND_WAIT_MIN * 60 * 1000;
+  const now = new Date();
+  const waitMin = _getGeminiHighDemandWaitMin_(now);
+  const nextAtMs = now.getTime() + waitMin * 60 * 1000;
+
   const nextAtText = Utilities.formatDate(
     new Date(nextAtMs),
-    Session.getScriptTimeZone() || "Asia/Yangon",
+    _geminiHighDemandWaitTimeZone_(),
     "yyyy-MM-dd HH:mm:ss",
   );
 
@@ -1559,6 +1593,9 @@ function _buildGeminiHighDemandWaitStatus_(prevStatus, errorText) {
     nextAtMs +
     "): next=" +
     nextAtText +
+    " wait=" +
+    waitMin +
+    "min" +
     " / " +
     msg
   );
