@@ -16,8 +16,8 @@
  * 運用:
  * - Apps Script の時間主導型トリガーは prodScheduleTick を「1分おき」に1つだけ設定する。
  * - 指定時刻のみ記事収集を workflow_dispatch する。
- * - 15:30 は collect16 と同じく、既存シートを整理してから当日分を収集する。
- * - 18:30〜23:20 は当日分、00:10 は前日分を GitHub Actions 側で判定する。
+ * - 12:30 は collect16 と同じく、既存シートを整理してから当日分を収集する。
+ * - 13:30〜23:20 は当日分、00:10 は前日分を GitHub Actions 側で判定する。
  * - 00:45 / 01:15 / 01:45 は前日分の Khit Thit Media のみ収集する。
  * - Irrawaddy は sheet_pipeline.py 側で 21:30 / 22:30 / 23:20 のみ収集する。
  */
@@ -31,10 +31,16 @@ const TZ = "Asia/Yangon";
  */
 const COLLECT_SLOTS = [
   // 初回は既存 collect16 と同じ処理（シート整理あり）
-  { hhmm: "15:30", cron: "0 9 * * *", mode: "collect16" },
+  { hhmm: "12:30", cron: "0 6 * * *", mode: "collect16" },
 
   // 当日分取得
+  { hhmm: "13:30", cron: "0 7 * * *", mode: "collect" },
+  { hhmm: "14:30", cron: "0 8 * * *", mode: "collect" },
+  { hhmm: "15:30", cron: "0 9 * * *", mode: "collect" },
+  { hhmm: "16:30", cron: "0 10 * * *", mode: "collect" },
+  { hhmm: "17:30", cron: "0 11 * * *", mode: "collect" },
   { hhmm: "18:30", cron: "0 12 * * *", mode: "collect" },
+  { hhmm: "19:30", cron: "0 13 * * *", mode: "collect" },
   { hhmm: "20:30", cron: "0 14 * * *", mode: "collect" },
   { hhmm: "21:30", cron: "0 15 * * *", mode: "collect" },
   { hhmm: "22:30", cron: "0 16 * * *", mode: "collect" },
@@ -186,9 +192,26 @@ function testProdCurrentSlotNow() {
   dispatchProdCollect_(slot);
 }
 
-/** 手動テスト: 15:30枠（collect16）を本番 dispatch する */
+/** 手動テスト: 12:30枠（collect16）を本番 dispatch する */
+function testProd1230Now() {
+  const slot = COLLECT_SLOTS.find(
+    (slot) => slot.hhmm === "12:30" && slot.mode === "collect16",
+  );
+  if (!slot) {
+    throw new Error("12:30枠（collect16）が見つかりません。");
+  }
+  dispatchProdCollect_(slot);
+}
+
+/** 手動テスト: 15:30枠（当日分 collect）を本番 dispatch する */
 function testProd1530Now() {
-  dispatchProdCollect_(COLLECT_SLOTS[0]);
+  const slot = COLLECT_SLOTS.find(
+    (slot) => slot.hhmm === "15:30" && slot.mode === "collect",
+  );
+  if (!slot) {
+    throw new Error("15:30枠（collect）が見つかりません。");
+  }
+  dispatchProdCollect_(slot);
 }
 
 /** 手動テスト: 00:10枠（前日分）を本番 dispatch する */
