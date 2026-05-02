@@ -1434,12 +1434,40 @@ function _isRetriableError_(httpCode, data) {
 const GEMINI_HIGH_DEMAND_WAIT_MIN = 15;
 const GEMINI_HIGH_DEMAND_WAIT_MAX_DEFERS = 2; // 最大2回まで延期
 
+function _isGeminiTimeoutMessage_(status, message) {
+  const lower = (
+    String(status || "") +
+    " " +
+    String(message || "")
+  ).toLowerCase();
+
+  // UrlFetchApp.fetch() の通信タイムアウトは high demand / 混雑待機ではなく、
+  // 通常Geminiの1回失敗として NG(1) から進める。
+  return (
+    lower.indexOf("exception: timeout") !== -1 ||
+    (lower.indexOf("timeout") !== -1 &&
+      lower.indexOf("generativelanguage.googleapis.com") !== -1) ||
+    (lower.indexOf("timeout") !== -1 && lower.indexOf("generatecontent") !== -1)
+  );
+}
+
+function _isGeminiTimeoutErrorResponse_(resp) {
+  if (typeof resp !== "string") return false;
+  if (resp.indexOf("ERROR:") !== 0) return false;
+  return _isGeminiTimeoutMessage_("", resp);
+}
+
 function _isGeminiHighDemandMessage_(status, message) {
   const lower = (
     String(status || "") +
     " " +
     String(message || "")
   ).toLowerCase();
+
+  // Timeout は WAIT_GEMINI に入れない。
+  // 後段の通常エラー処理で NG(1), NG(2)... として扱う。
+  if (_isGeminiTimeoutMessage_(status, message)) return false;
+
   return (
     lower.indexOf("high demand") !== -1 ||
     lower.indexOf("model is overloaded") !== -1 ||
