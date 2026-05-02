@@ -1404,12 +1404,12 @@ function isWithinDuplicateProcessingWindow_() {
  */
 function runDuplicateTopicsProdBatch() {
   // 実行時間帯外なら何もしない
-  if (!isWithinDuplicateProcessingWindow_()) {
-    Logger.log(
-      "[runDuplicateTopicsProdBatch] outside allowed time window -> skip",
-    );
-    return;
-  }
+  // if (!isWithinDuplicateProcessingWindow_()) {
+  //   Logger.log(
+  //     "[runDuplicateTopicsProdBatch] outside allowed time window -> skip",
+  //   );
+  //   return;
+  // }
 
   // 判定対象が1件も無ければ何もしない
   if (!hasDuplicateCheckTargetsInProd_()) {
