@@ -165,6 +165,159 @@ def _bbc_extract_body(html: str) -> str:
     body_text = unicodedata.normalize("NFC", body_text or "").strip()
     return body_text
 
+def _bbc_get_text_from_block(block: object) -> str:
+    """
+    BBC Simorgh の block/model 配下から text を再帰的に集めて 1 つの文字列にする。
+    """
+    texts: List[str] = []
+    def _walk(x: object) -> None:
+        if isinstance(x, dict):
+            t = x.get("text")
+            if isinstance(t, str):
+                t = unicodedata.normalize("NFC", t).strip()
+                if t:
+                    texts.append(t)
+            for v in x.values():
+                _walk(v)
+        elif isinstance(x, list):
+            for v in x:
+                _walk(v)
+
+    _walk(block)
+    s = " ".join(texts)
+    s = re.sub(r"\s+", " ", s).strip()
+    return unicodedata.normalize("NFC", s)
+
+# BBC Burmese の「日付ニュース概要 - ...」形式だけを、同一URL複数記事として分割対象にする。
+# 日本語訳ではなく、RSS/ページタイトルに含まれるミャンマー語の形で判定する。
+_BBC_BURMESE_MONTH_NAMES = (
+    "ဇန်နဝါရီ", "ဖေဖော်ဝါရီ", "မတ်", "ဧပြီ", "မေ", "ဇွန်",
+    "ဇူလိုင်", "ဩဂုတ်", "သြဂုတ်", "စက်တင်ဘာ", "အောက်တိုဘာ",
+    "နိုဝင်ဘာ", "ဒီဇင်ဘာ",
+)
+_BBC_BURMESE_DAY_NUM = r"[0-9၀-၉]{1,2}"
+_BBC_BURMESE_DASHES = "-–—"
+
+_BBC_DATE_NEWS_SUMMARY_TITLE_RE = re.compile(
+    rf"(?:{'|'.join(re.escape(m) for m in _BBC_BURMESE_MONTH_NAMES)})"
+    rf"\s*{_BBC_BURMESE_DAY_NUM}\s*ရက်(?:နေ့)?\s*"
+    rf"(?:နိုင်ငံတဝန်း\s*)?သတင်း(?:များ)?\s*အနှစ်ချုပ်\s*[{re.escape(_BBC_BURMESE_DASHES)}]"
+)
+
+
+def _is_bbc_burmese_date_news_summary_title(title: str) -> bool:
+    """
+    BBC Burmese の「日付 + သတင်းအနှစ်ချုပ် + -」形式だけ True にする。
+
+    この形式のページは、1URL内に複数記事が含まれる前提で分割する。
+    一方、通常記事に subheadline が含まれていても、このタイトル形式でなければ 1URL=1記事として扱う。
+    """
+    t = unicodedata.normalize("NFC", title or "")
+    t = re.sub(r"\s+", " ", t).strip()
+    if not t:
+        return False
+
+    if _BBC_DATE_NEWS_SUMMARY_TITLE_RE.search(t):
+        return True
+
+    # 表記揺れ保険: 空白有無の差を吸収して、月・日付・概要・ハイフンを確認する。
+    compact = re.sub(r"\s+", "", t)
+    has_summary = (
+        "သတင်းအနှစ်ချုပ်" in compact
+        or "သတင်းများအနှစ်ချုပ်" in compact
+        or "နိုင်ငံတဝန်းသတင်းများအနှစ်ချုပ်" in compact
+    )
+    if not has_summary:
+        return False
+
+    has_month = any(month in t for month in _BBC_BURMESE_MONTH_NAMES)
+    has_day = bool(re.search(rf"{_BBC_BURMESE_DAY_NUM}\s*ရက်(?:နေ့)?", t))
+    has_dash_after_summary = bool(re.search(rf"အနှစ်ချုပ်\s*[{re.escape(_BBC_BURMESE_DASHES)}]", t))
+    return has_month and has_day and has_dash_after_summary
+
+
+def _bbc_extract_page_title_from_html(html: str) -> str:
+    """RSSタイトルとページ側タイトルがズレた場合の補助判定用。"""
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+        og = soup.find("meta", attrs={"property": "og:title"})
+        if og and og.get("content"):
+            return unicodedata.normalize("NFC", og.get("content", "").strip())
+        h1 = soup.find("h1")
+        if h1 and h1.get_text(strip=True):
+            return unicodedata.normalize("NFC", h1.get_text(strip=True))
+        if soup.title and soup.title.get_text(strip=True):
+            return unicodedata.normalize("NFC", soup.title.get_text(strip=True))
+    except Exception:
+        pass
+    return ""
+
+def _bbc_extract_split_articles_from_html(html: str) -> List[Dict]:
+    """
+    BBC Burmese の /burmese/articles/... にある「1ページ複数記事」形式を分割する。
+    先頭 headline も 1 記事として扱い、
+    最初の subheadline が出る前の text はその先頭記事の本文に含める。
+    以降は subheadline ごとに 1 記事とみなして、その後続の text を本文として束ねる。
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    next_data_tag = soup.find("script", id="__NEXT_DATA__")
+    if not next_data_tag or not next_data_tag.string:
+        return []
+
+    try:
+        data = json.loads(next_data_tag.string)
+        blocks = data["props"]["pageProps"]["pageData"]["content"]["model"]["blocks"]
+    except Exception:
+        return []
+
+    out: List[Dict] = []
+    current_title = ""
+    current_body_parts: List[str] = []
+    seen_page_headline = False
+
+    def _flush() -> None:
+        nonlocal current_title, current_body_parts, out
+        title = unicodedata.normalize("NFC", (current_title or "").strip())
+        body = "\n".join(x for x in current_body_parts if x).strip()
+        if title and body:
+            out.append({
+                "title": title,
+                "body": unicodedata.normalize("NFC", body),
+            })
+        current_title = ""
+        current_body_parts = []
+
+    for block in blocks:
+        btype = block.get("type")
+        model = block.get("model") or {}
+
+        if btype == "headline":
+            # 先頭 headline は「捨てる」のではなく、最初の記事タイトルとして採用する
+            if not seen_page_headline:
+                seen_page_headline = True
+                headline = _bbc_get_text_from_block(model)
+                if headline:
+                    current_title = headline
+                    current_body_parts = []
+                continue
+
+        if btype == "subheadline":
+            # ここで、それまで溜めた
+            # - 先頭 headline 記事
+            # - または直前の subheadline 記事
+            # を確定する
+            _flush()
+            current_title = _bbc_get_text_from_block(model)
+            current_body_parts = []
+            continue
+
+        if btype == "text":
+            txt = _bbc_get_text_from_block(model)
+            if txt and current_title:
+                current_body_parts.append(txt)
+    _flush()
+    return out
+
 def collect_bbc_all_for_date(target_date_mmt: date) -> List[Dict]:
     """
     BBC Burmese:
@@ -203,23 +356,59 @@ def collect_bbc_all_for_date(target_date_mmt: date) -> List[Dict]:
                 continue
 
             # ---- ここから本文取得（bot 対策付き） ----
-            body = ""
+            html = ""
             try:
-                html = _bbc_fetch_html_with_bot_bypass(
-                    url,
-                    session=session,
-                )
-                body = _bbc_extract_body(html)
+                html = _bbc_fetch_html_with_bot_bypass(url, session=session)
             except Exception as e:
                 # 本文取得失敗時はログを出しつつ空文字のまま
                 print(f"[bbc] 本文取得失敗: {e}")
-                body = ""
+                html = ""
+
+            split_items: List[Dict] = []
+            page_title = _bbc_extract_page_title_from_html(html) if html else ""
+            should_split_bbc_page = (
+                html
+                and url.startswith("https://www.bbc.com/burmese/articles/")
+                and (
+                    _is_bbc_burmese_date_news_summary_title(title)
+                    or _is_bbc_burmese_date_news_summary_title(page_title)
+                )
+            )
+            if should_split_bbc_page:
+                split_items = _bbc_extract_split_articles_from_html(html)
+
+            # BBC の「日付ニュース概要 - ...」形式だけ、1URL内の複数記事として分割して別レコード化
+            if split_items:
+                for idx, part in enumerate(split_items, start=1):
+                    part_title = unicodedata.normalize(
+                        "NFC", (part.get("title") or "").strip()
+                    )
+                    part_body = unicodedata.normalize(
+                        "NFC", (part.get("body") or "").strip()
+                    )
+                    if not part_title or not part_body:
+                        continue
+                    out.append(
+                        {
+                            "source": "BBC Burmese",
+                            "title": part_title,
+                            "url": url,
+                            "date": target_date_mmt.isoformat(),
+                            "body": part_body,
+                            "_row_key": f"{url}#bbc-{idx}",
+                        }
+                    )
+                continue
+
+            # 従来の通常記事はそのまま 1 レコード
+            body = _bbc_extract_body(html) if html else ""
 
             out.append(
                 {
                     "source": "BBC Burmese",
                     "title": title,
                     "url": url,
+                    "_row_key": url,
                     "date": target_date_mmt.isoformat(),
                     "body": body,
                 }
