@@ -3225,16 +3225,11 @@ function removeYenForNonKyat_(text) {
   if (!text) return text;
   let s = String(text);
 
-  const NUM_RANGE = "[0-9０-９,，\\s兆億万\\.〜～\\-−–]+";
-  const YEN_PAREN = new RegExp(
-    "（\\s*(?:約)?\\s*" + NUM_RANGE + "(?:円|えん)\\s*）",
-    "g",
-  );
-
   // まず正しい「チャット（約◯円）」だけ一時退避
+  // 「約180円から約1800円」などの範囲表現も保護できるよう広めに取る
   const protectedKyat = [];
   s = s.replace(
-    /([0-9０-９,，\s兆億万]+チャット)（約[^）]*円）/g,
+    /([0-9０-９,，\s兆億万]+チャット)（約[^）]*(?:円|えん)[^）]*）/g,
     function (m) {
       const key = "__KYAT_YEN_PAREN_" + protectedKyat.length + "__";
       protectedKyat.push(m);
@@ -3242,8 +3237,13 @@ function removeYenForNonKyat_(text) {
     },
   );
 
-  // 残った「（約◯円）」はすべて削除
-  s = s.replace(YEN_PAREN, "");
+  // 残った円換算括弧を削除
+  // 例:
+  // （約180円）
+  // （約180円から約1800円）
+  // （約180〜1800円）
+  // （約180円〜約1800円）
+  s = s.replace(/（[^）]*(?:約|およそ)[^）]*(?:円|えん)[^）]*）/g, "");
 
   // 退避したチャット円換算だけ戻す
   protectedKyat.forEach(function (v, i) {
