@@ -1,4 +1,4 @@
-/************************************************************
+﻿/************************************************************
  * 0. 共通ルール（Python側の COMMON_TRANSLATION_RULES / TITLE_OUTPUT_RULES / HEADLINE_PROMPT_x 相当）
  ************************************************************/
 
@@ -384,6 +384,27 @@ const HEADLINE_STRUCTURE_RULES = `
 - ダッシュ（―）・コロン（：）は使わない
 `;
 
+// F列用：G列の単なる重複を避け、編集者の確定見出しとして再構成するルール
+const F_HEADLINE_EDIT_RULES = `
+【F列見出しの役割（G列との差別化・重要）】
+- F列は、G列見出しB'の単なるコピーや軽微な言い換えではない。
+- Task2で作るG列見出しB'を「本文ベースの初稿見出し」として扱う。
+- F列では、その初稿見出しを、本文要約とE列見出しAを照合して、編集者が最終採用する確定見出しへ再編集する。
+- I列本文要約から、主体・地名・数値・結果・対立軸・時点のうちニュース価値が高く、G列に不足している要素を優先して補正する。
+- headlineBPrimeFewShot は headlineBPrime と完全一致させない。
+- ただし、差分を作るためだけの不自然な言い換えや、本文・要約にない事実の追加・推測は禁止。
+- G列が十分に良い場合でも、語順・焦点・情報の取捨選択を編集者見出しとして再構成する。
+`;
+
+// E/F/Gを同じAPIコールで生成するときの最終確認ルール
+const HEADLINE_OUTPUT_SELF_CHECK_RULE = `
+【見出し出力前の確認】
+- headlineBPrime は本文ベースの初稿見出し。
+- headlineBPrimeFewShot は、headlineBPrime を本文要約と headlineA で再編集した確定見出し。
+- headlineBPrimeFewShot は headlineBPrime と完全一致させない。
+- headlineBPrimeFewShot が headlineBPrime と同じになりそうな場合は、本文要約から重要要素を1つ補うか、焦点を編集者見出しとして再構成する。
+`;
+
 // HEADLINE_PROMPT_3：本文を読んで作る見出し（B/B'）
 const HEADLINE_PROMPT_3 = `
 ${TITLE_OUTPUT_RULES}
@@ -458,8 +479,6 @@ const SUMMARY_TASK = `
 【段落分けのルール】
 - 本文を必ず「2〜3段落」に分けて書くこと（1段落のみ・4段落以上は禁止）。
 - 目安：1段落あたり1〜2文程度（長くても3文まで）。
-- 箇条書きを使う場合でも段落数（空行区切り）は2〜3段落とすること。
-- 箇条書きは \`・\` を使ってください。
 
 【空行ルール（厳守）】
 - \`【要約】\` の直後に空行は入れない（すぐ本文を書く）。
@@ -491,6 +510,7 @@ I列 本文要約: ${summaryJa || ""}
 を1行で生成してください。
 目標は、TITLE_CORRECTION_SS_ID_PROP の E列に近い傾向の見出しにすることです。
 
+${F_HEADLINE_EDIT_RULES}
 ${TITLE_OUTPUT_RULES}
 【本文用 用語固定ルール】
 ${bodyGlossaryRules || "(なし)"}`.trim();
@@ -551,6 +571,7 @@ ${bodyGlossaryRules || "(なし)"}
 - G列見出しB'（本文ベース）を主ベースとし、E列見出しAの要素も参考に取り込んで整えてください。
 - 単なる E/G の折衷ではなく、本文要約から重要度の高い要素を補正して、
   アーカイブの確定見出しに近い決め方で整えてください。
+${F_HEADLINE_EDIT_RULES}
 ${archiveTeacherSection}${HEADLINE_STRUCTURE_RULES}
 ${TITLE_OUTPUT_RULES}
 【本文用 用語固定ルール】
@@ -569,6 +590,7 @@ ${bodyGlossaryRules || "(なし)"}
 ====================
 
 ${PROMPT_SELF_CHECK_RULE}
+${HEADLINE_OUTPUT_SELF_CHECK_RULE}
 
 【最終出力フォーマット（必須）】
 
@@ -577,7 +599,7 @@ ${PROMPT_SELF_CHECK_RULE}
 {
   "headlineA": "ここにTask1の見出しAを入れる",
   "headlineBPrime": "ここにTask2の見出しB'を入れる",
-  "headlineBPrimeFewShot": "ここにTask2'の見出しB'を入れる",
+  "headlineBPrimeFewShot": "ここにTask2'の見出しFを入れる",
   "summary": "ここにTask3の本文要約を入れる"
 }
 
@@ -586,11 +608,185 @@ ${PROMPT_SELF_CHECK_RULE}
 - 特に、\`\`\`json 〜 \`\`\` のようなコードブロックで囲まず
   純粋な JSON テキストのみを出力すること。
 - JSON 全体としては 1 つのオブジェクトだけを出力すればよい。summary の値の中では、
-  「【要約】」「[見出し]」「・箇条書き」などのために改行が必要な場合は、
+  「【要約】」「[見出し]」などのために改行が必要な場合は、
    JSON文字列を壊さないように **実改行は使わず**、必ず "\\n"（バックスラッシュ+n の2文字）として出力すること。
 `;
 }
 
+// 分割後 1回目：本文要約だけを生成するプロンプト
+function buildSummaryOnlyPromptForRow_(params) {
+  const { titleRaw, bodyRaw, bodyGlossaryRules } = params;
+
+  return `
+【共通ルール（要約に適用・最優先）】
+${COMMON_TRANSLATION_RULES}
+
+以下は1つのニュース記事です。
+本文要約だけを生成してください。見出しは生成しないでください。
+
+[記事タイトル]
+${titleRaw || ""}
+
+[記事本文]
+${bodyRaw || ""}
+
+--- SUMMARY_TASK ---
+${SUMMARY_TASK}
+--------------------
+【本文用 用語固定ルール】
+${bodyGlossaryRules || "(なし)"}
+
+${PROMPT_SELF_CHECK_RULE}
+
+【最終出力フォーマット（必須）】
+JSON オブジェクトを1つだけ出力してください。
+
+{
+  "summary": "ここに本文要約を入れる"
+}
+
+制約:
+- JSON以外の文字は出力しない
+- コードブロック禁止
+- summary の値の中で改行が必要な場合は、実改行ではなく必ず "\\n" として出力すること
+`.trim();
+}
+
+// 分割後 2回目：生成済み要約を使って見出しだけを生成するプロンプト
+function buildHeadlineOnlyPromptForRow_(params) {
+  const {
+    titleRaw,
+    bodyRaw,
+    summaryJa,
+    titleGlossaryRules,
+    bodyGlossaryRules,
+  } = params;
+
+  const archiveTeacherSection = buildArchiveTeacherSection_();
+
+  return `
+【共通ルール（見出し生成に適用・最優先）】
+${COMMON_TRANSLATION_RULES}
+
+以下は1つのニュース記事です。
+本文要約はすでに生成済みです。
+見出しAは記事タイトル、見出しB'と見出しFは生成済み本文要約を主な根拠として生成してください。
+
+[記事タイトル]
+${titleRaw || ""}
+
+[生成済み本文要約]
+${summaryJa || ""}
+
+====================
+[Task1: 見出しA（タイトル翻訳ベース）]
+${HEADLINE_PROMPT_1}
+【タイトル用 用語固定ルール】
+${titleGlossaryRules || "(なし)"}
+
+====================
+[Task2: 見出しB'（生成済み要約を根拠に作る見出し・スタイル参考例なし）]
+${HEADLINE_PROMPT_3}
+上の「生成済み本文要約」を本文の代替根拠として使ってください。
+【本文用 用語固定ルール】
+${bodyGlossaryRules || "(なし)"}
+
+====================
+[Task2': 見出しF（教師データ参考・編集者確定見出し生成）]
+目的は、F列に出力する見出しを、見出しアーカイブの確定見出し（TITLE_CORRECTION_SS_ID_PROP の E列）に近い傾向へ寄せることです。
+教師データとして、見出しアーカイブの B〜D列の見出し案、I列の本文要約、E列の確定見出しを参考にしてください。
+今回の記事では、Task1の見出しA、Task2の見出しB'、上の生成済み本文要約を合わせて使い、
+G列見出しB'（要約ベース）を主ベースとし、E列見出しAの要素も参考に取り込んで、
+編集者が最終的に確定しそうな1行見出しを生成してください。
+${F_HEADLINE_EDIT_RULES}
+${archiveTeacherSection}${HEADLINE_STRUCTURE_RULES}
+${TITLE_OUTPUT_RULES}
+【本文用 用語固定ルール】
+${bodyGlossaryRules || "(なし)"}
+${HEADLINE_OUTPUT_SELF_CHECK_RULE}
+
+【最終出力フォーマット（必須）】
+JSON オブジェクトを1つだけ出力してください。
+
+{
+  "headlineA": "ここに見出しAを入れる",
+  "headlineBPrime": "ここに見出しB'を入れる",
+  "headlineBPrimeFewShot": "ここに見出しFを入れる"
+}
+
+制約:
+- JSON以外の文字は出力しない
+- コードブロック禁止
+`.trim();
+}
+
+function _stripJsonCodeFence_(text) {
+  let cleaned = String(text || "").trim();
+  if (cleaned.startsWith("```")) {
+    cleaned = cleaned.replace(/^```[a-zA-Z]*\s*/, "");
+    const lastFence = cleaned.lastIndexOf("```");
+    if (lastFence !== -1) {
+      cleaned = cleaned.substring(0, lastFence);
+    }
+    cleaned = cleaned.trim();
+  }
+  return cleaned;
+}
+
+function _parseJsonObjectFromModelResponse_(text) {
+  return JSON.parse(_stripJsonCodeFence_(text));
+}
+
+function callGeminiJsonByPurposeWithRotation_(
+  sheetName,
+  sourceVal,
+  promptText,
+  usageTag,
+  purpose,
+  model,
+) {
+  const b1 = getGeminiApiKeyBundleFromSheetAndSourceByPurpose_(
+    sheetName,
+    sourceVal,
+    usageTag,
+    purpose,
+  );
+
+  let resp = callGeminiWithKey_(
+    b1 && b1.apiKey,
+    promptText,
+    usageTag,
+    b1 && b1.propName,
+    model,
+  );
+
+  // 429(quota) なら、同じ purpose の範囲で別キーへ1回だけ即時リトライ
+  if (
+    typeof resp === "string" &&
+    resp.indexOf("ERROR:") === 0 &&
+    _isQuotaExhaustedMessage_("", resp)
+  ) {
+    const tagRetry = usageTag + "|rotated";
+    const b2 = getGeminiApiKeyBundleFromSheetAndSourceByPurpose_(
+      sheetName,
+      sourceVal,
+      tagRetry,
+      purpose,
+    );
+
+    if (b2 && b2.apiKey && b2.propName && b2.propName !== (b1 && b1.propName)) {
+      resp = callGeminiWithKey_(
+        b2.apiKey,
+        promptText,
+        tagRetry,
+        b2.propName,
+        model,
+      );
+    }
+  }
+
+  return resp;
+}
 /************************************************************
  * スプレッドシート用語集
  ************************************************************/
@@ -778,11 +974,18 @@ const SHEET_KEY_PREFIX_MAP = {
 const DEFAULT_PREFIX = "GEMINI_API_KEY_"; // prod/dev以外のシート用
 
 // 特定のGemini APIキーを最優先で使いたい場合のScript Properties名
-// - prod: GEMINI_API_KEY_PRIORITY
-// - dev : GEMINI_API_TEST_KEY_PRIORITY
+// - 要約用（既存運用）
+//   prod: GEMINI_API_KEY_PRIORITY
+//   dev : GEMINI_API_TEST_KEY_PRIORITY
+// - 見出し用（要約とAPIキーを分けるために追加）
+//   prod: GEMINI_API_KEY_PRIORITY_TITLE
+//   dev : GEMINI_API_TEST_KEY_PRIORITY_TITLE
 // ここに値が入っていれば優先使用し、空なら従来のメディア別キー/ローテーションにフォールバックする。
 const PRIORITY_GEMINI_API_KEY_PROP_PROD = "GEMINI_API_KEY_PRIORITY";
 const PRIORITY_GEMINI_API_KEY_PROP_DEV = "GEMINI_API_TEST_KEY_PRIORITY";
+const PRIORITY_GEMINI_API_KEY_PROP_PROD_TITLE = "GEMINI_API_KEY_PRIORITY_TITLE";
+const PRIORITY_GEMINI_API_KEY_PROP_DEV_TITLE =
+  "GEMINI_API_TEST_KEY_PRIORITY_TITLE";
 
 function normalizeSourceName_(s) {
   if (!s) return "";
@@ -794,15 +997,41 @@ function normalizeSourceName_(s) {
   return out.toLowerCase();
 }
 
-function _priorityGeminiApiKeyPropNameForSheet_(sheetName) {
-  return sheetName === "dev"
+function _priorityGeminiApiKeyPropNameForSheetAndPurpose_(
+  sheetName,
+  purposeOpt,
+) {
+  const isDev = sheetName === "dev";
+  const purpose = purposeOpt || "summary";
+
+  if (purpose === "headline") {
+    return isDev
+      ? PRIORITY_GEMINI_API_KEY_PROP_DEV_TITLE
+      : PRIORITY_GEMINI_API_KEY_PROP_PROD_TITLE;
+  }
+
+  // default / summary は既存の priority キーを使う
+  return isDev
     ? PRIORITY_GEMINI_API_KEY_PROP_DEV
     : PRIORITY_GEMINI_API_KEY_PROP_PROD;
 }
 
-function _getPriorityGeminiApiKeyBundleIfAvailable_(sheetName, usageTagOpt) {
+// 互換ラッパー（既存の呼び出しが残っても、要約用priorityとして動く）
+function _priorityGeminiApiKeyPropNameForSheet_(sheetName) {
+  return _priorityGeminiApiKeyPropNameForSheetAndPurpose_(sheetName, "summary");
+}
+
+function _getPriorityGeminiApiKeyBundleIfAvailable_(
+  sheetName,
+  usageTagOpt,
+  purposeOpt,
+) {
   const props = PropertiesService.getScriptProperties();
-  const propName = _priorityGeminiApiKeyPropNameForSheet_(sheetName);
+  const purpose = purposeOpt || "summary";
+  const propName = _priorityGeminiApiKeyPropNameForSheetAndPurpose_(
+    sheetName,
+    purpose,
+  );
   const apiKey = String(props.getProperty(propName) || "").trim();
   const tag = usageTagOpt || sheetName || "unknown";
 
@@ -812,14 +1041,22 @@ function _getPriorityGeminiApiKeyBundleIfAvailable_(sheetName, usageTagOpt) {
   if (_isApiKeyExhaustedToday_(propName)) {
     const msg =
       "priority apiKeyProp is exhausted today, fallback to default: " +
-      propName;
+      propName +
+      " purpose=" +
+      purpose;
     Logger.log("[gemini-key] " + msg);
     _appendGeminiLog_("WARN", tag, msg);
     return null;
   }
 
   const msg =
-    "use priority apiKeyProp=" + propName + " (sheet=" + sheetName + ")";
+    "use priority apiKeyProp=" +
+    propName +
+    " purpose=" +
+    purpose +
+    " (sheet=" +
+    sheetName +
+    ")";
   Logger.log("[gemini-key] " + msg);
   _appendGeminiLog_("INFO", tag, msg);
 
@@ -969,9 +1206,26 @@ function getGeminiApiKeyBundleFromSheetAndSource_(
   sourceRaw,
   usageTagOpt,
 ) {
+  return getGeminiApiKeyBundleFromSheetAndSourceByPurpose_(
+    sheetName,
+    sourceRaw,
+    usageTagOpt,
+    "summary",
+  );
+}
+
+// 要約用 / 見出し用で priority キーを分けたい呼び出しはこちらを使う
+function getGeminiApiKeyBundleFromSheetAndSourceByPurpose_(
+  sheetName,
+  sourceRaw,
+  usageTagOpt,
+  purposeOpt,
+) {
+  const purpose = purposeOpt || "summary";
   const priorityBundle = _getPriorityGeminiApiKeyBundleIfAvailable_(
     sheetName,
     usageTagOpt,
+    purpose,
   );
   if (priorityBundle) {
     return priorityBundle;
@@ -991,6 +1245,8 @@ function getGeminiApiKeyBundleFromSheetAndSource_(
     sourceRaw +
     ", norm=" +
     normalizeSourceName_(sourceRaw || "") +
+    ", purpose=" +
+    purpose +
     ")";
 
   Logger.log("[gemini-key] " + msg);
@@ -1110,8 +1366,11 @@ function _usageFromData_(data) {
   };
 }
 
-// Gemini 呼び出しモデル（変更する場合はここだけ差し替える）
+// Gemini 呼び出しモデル（通常時）
 const GEMINI_MODEL = "gemini-3.1-flash-lite-preview";
+
+// 通常GeminiがNG(2)になった後に1回だけ試すフォールバックモデル
+const GEMINI_FALLBACK_MODEL = "gemini-2.5-flash";
 
 // usage ログ（標準出力＝Apps Script 実行ログ）
 function _logGeminiUsage_(data, usageTag, model) {
@@ -1164,6 +1423,243 @@ function _isRetriableError_(httpCode, data) {
   ];
   return hints.some(function (h) {
     return lower.indexOf(h) !== -1;
+  });
+}
+
+// ===== Gemini 503 high demand 専用の「時間帯別に再実行」制御 =====
+// high demand は一時的な容量不足なので、通常の NG 回数に入れず、
+// L列を WAIT_GEMINI(...) にして、指定時間後以降の時間トリガーで再試行する。
+// 18:00〜翌02:00 は 15分、それ以外は 60分待機。
+const GEMINI_HIGH_DEMAND_WAIT_MIN_BUSY = 15;
+const GEMINI_HIGH_DEMAND_WAIT_MIN_NORMAL = 60;
+const GEMINI_HIGH_DEMAND_WAIT_MAX_DEFERS = 2; // 最大2回まで延期
+
+const GEMINI_HIGH_DEMAND_BUSY_START_MIN = 18 * 60; // 18:00
+const GEMINI_HIGH_DEMAND_BUSY_END_MIN = 2 * 60; // 翌02:00
+
+function _geminiHighDemandWaitTimeZone_() {
+  return Session.getScriptTimeZone() || "Asia/Yangon";
+}
+function _minuteOfDayInTimeZone_(date) {
+  const tz = _geminiHighDemandWaitTimeZone_();
+  const hhmm = Utilities.formatDate(date || new Date(), tz, "HH:mm").split(":");
+  return Number(hhmm[0]) * 60 + Number(hhmm[1]);
+}
+
+function _isGeminiHighDemandBusyTime_(date) {
+  const t = _minuteOfDayInTimeZone_(date);
+
+  // 18:00〜24:00 または 00:00〜02:00
+  // 02:00ちょうど以降は「それ以外の時間」として60分待機
+  return (
+    t >= GEMINI_HIGH_DEMAND_BUSY_START_MIN ||
+    t < GEMINI_HIGH_DEMAND_BUSY_END_MIN
+  );
+}
+
+function _getGeminiHighDemandWaitMin_(date) {
+  return _isGeminiHighDemandBusyTime_(date)
+    ? GEMINI_HIGH_DEMAND_WAIT_MIN_BUSY
+    : GEMINI_HIGH_DEMAND_WAIT_MIN_NORMAL;
+}
+
+function _isGeminiTimeoutMessage_(status, message) {
+  const lower = (
+    String(status || "") +
+    " " +
+    String(message || "")
+  ).toLowerCase();
+
+  // UrlFetchApp.fetch() の通信タイムアウトは high demand / 混雑待機ではなく、
+  // 通常Geminiの1回失敗として NG(1) から進める。
+  return (
+    lower.indexOf("exception: timeout") !== -1 ||
+    (lower.indexOf("timeout") !== -1 &&
+      lower.indexOf("generativelanguage.googleapis.com") !== -1) ||
+    (lower.indexOf("timeout") !== -1 && lower.indexOf("generatecontent") !== -1)
+  );
+}
+
+function _isGeminiTimeoutErrorResponse_(resp) {
+  if (typeof resp !== "string") return false;
+  if (resp.indexOf("ERROR:") !== 0) return false;
+  return _isGeminiTimeoutMessage_("", resp);
+}
+
+function _isGeminiHighDemandMessage_(status, message) {
+  const lower = (
+    String(status || "") +
+    " " +
+    String(message || "")
+  ).toLowerCase();
+
+  // Timeout は WAIT_GEMINI に入れない。
+  // 後段の通常エラー処理で NG(1), NG(2)... として扱う。
+  if (_isGeminiTimeoutMessage_(status, message)) return false;
+
+  return (
+    lower.indexOf("high demand") !== -1 ||
+    lower.indexOf("model is overloaded") !== -1 ||
+    lower.indexOf("temporarily overloaded") !== -1 ||
+    lower.indexOf("temporarily running out of capacity") !== -1 ||
+    (lower.indexOf("unavailable") !== -1 &&
+      lower.indexOf("please try again later") !== -1)
+  );
+}
+
+function _isGeminiHighDemandErrorResponse_(resp) {
+  if (typeof resp !== "string") return false;
+  if (resp.indexOf("ERROR:") !== 0) return false;
+  return _isGeminiHighDemandMessage_("", resp);
+}
+
+function _parseGeminiHighDemandWaitStatus_(status) {
+  const s = String(status || "");
+  // 現行形式: WAIT_GEMINI(count|nextAtMs)
+  // 過去互換のため第3フィールドが残っていても読み取るが、現行仕様では使用しない。
+  const m = s.match(/^WAIT_GEMINI\((\d+)\|(\d+)(?:\|[^\)]+)?\)/);
+  if (!m) return null;
+  return {
+    count: Number(m[1]) || 0,
+    nextAtMs: Number(m[2]) || 0,
+  };
+}
+
+function _isGeminiHighDemandWaitDue_(status) {
+  const parsed = _parseGeminiHighDemandWaitStatus_(status);
+  if (!parsed) return false;
+  return Date.now() >= parsed.nextAtMs;
+}
+
+function _hasExceededGeminiHighDemandDefers_(status) {
+  const parsed = _parseGeminiHighDemandWaitStatus_(status);
+  return parsed && parsed.count >= GEMINI_HIGH_DEMAND_WAIT_MAX_DEFERS;
+}
+
+function _nextGeminiHighDemandDefersCount_(status) {
+  const parsed = _parseGeminiHighDemandWaitStatus_(status);
+  return (parsed ? parsed.count : 0) + 1;
+}
+
+function _shouldMoveToFlashOnThisHighDemand_(status) {
+  return (
+    _nextGeminiHighDemandDefersCount_(status) >=
+    GEMINI_HIGH_DEMAND_WAIT_MAX_DEFERS
+  );
+}
+
+function _setStatusForGeminiHighDemandWaitExceeded_(sheet, rowIndex, tagOpt) {
+  // 通常Geminiで high demand 待機上限に達した場合は、次回 gemini-2.5-flash へ進めるため
+  // WAIT_GEMINI を NG(2) 相当へ明示的に進める。
+  const statusText =
+    "NG(" +
+    MAX_RETRY_COUNT +
+    "): Gemini high demand wait exceeded; move to Flash";
+  sheet.getRange(rowIndex, STATUS_COL).setValue(statusText);
+  _appendGeminiLog_(
+    "WARN",
+    tagOpt ||
+      (sheet.getName ? sheet.getName() : "") +
+        "#row" +
+        rowIndex +
+        ":WAIT_GEMINI_EXCEEDED",
+    statusText,
+  );
+}
+
+function _buildGeminiHighDemandWaitStatus_(prevStatus, errorText) {
+  const parsed = _parseGeminiHighDemandWaitStatus_(prevStatus);
+  const nextCount = (parsed ? parsed.count : 0) + 1;
+
+  const now = new Date();
+  const waitMin = _getGeminiHighDemandWaitMin_(now);
+  const nextAtMs = now.getTime() + waitMin * 60 * 1000;
+
+  const nextAtText = Utilities.formatDate(
+    new Date(nextAtMs),
+    _geminiHighDemandWaitTimeZone_(),
+    "yyyy-MM-dd HH:mm:ss",
+  );
+
+  const msg = String(errorText || "")
+    .replace(/^ERROR:\s*/, "")
+    .replace(/\s+/g, " ")
+    .slice(0, 180);
+
+  return (
+    "WAIT_GEMINI(" +
+    nextCount +
+    "|" +
+    nextAtMs +
+    "): next=" +
+    nextAtText +
+    " wait=" +
+    waitMin +
+    "min" +
+    " / " +
+    msg
+  );
+}
+
+function _deferRowsForGeminiHighDemand_(
+  sheet,
+  promptItems,
+  errorText,
+  retryKindForGroup,
+) {
+  const retryKind = retryKindForGroup || "NG";
+
+  promptItems.forEach(function (pi) {
+    // gemini-2.5-flash は high demand でも WAIT に入れず、1回失敗として扱う。
+    // FLASHNG(1) になれば、次回 shouldUseGpt5Mini_() により GPT へ進む。
+    if (retryKind === "FLASHNG") {
+      _applyOutputsToRow_(
+        sheet,
+        pi.rowIndex,
+        pi.prevStatus,
+        {
+          sourceVal: pi.sourceVal,
+          urlVal: pi.urlVal,
+          titleRaw: pi.titleRaw,
+          bodyRaw: pi.bodyRaw,
+        },
+        errorText,
+        errorText,
+        errorText,
+        errorText,
+        retryKind,
+      );
+      return;
+    }
+
+    // 2回目の high demand は WAIT_GEMINI(2|nextAtMs) で待たせず、
+    // NG(2) 相当にして次回すぐ gemini-2.5-flash へ進める。
+    if (_shouldMoveToFlashOnThisHighDemand_(pi.prevStatus || "")) {
+      _setStatusForGeminiHighDemandWaitExceeded_(
+        sheet,
+        pi.rowIndex,
+        (sheet.getName ? sheet.getName() : "") +
+          "#row" +
+          pi.rowIndex +
+          ":WAIT_GEMINI_EXCEEDED",
+      );
+      return;
+    }
+
+    const waitStatus = _buildGeminiHighDemandWaitStatus_(
+      pi.prevStatus || "",
+      errorText,
+      retryKind,
+    );
+    sheet.getRange(pi.rowIndex, STATUS_COL).setValue(waitStatus);
+    _appendGeminiLog_(
+      "WARN",
+      (sheet.getName ? sheet.getName() : "") +
+        "#row" +
+        pi.rowIndex +
+        ":WAIT_GEMINI",
+      waitStatus,
+    );
   });
 }
 
@@ -1262,14 +1758,20 @@ function _isQuotaExhaustedMessage_(status, message) {
 }
 
 // apiKeyPropNameOpt: "GEMINI_API_KEY_KHITTHIT" のような Script Properties 名
-function callGeminiWithKey_(apiKey, prompt, usageTagOpt, apiKeyPropNameOpt) {
+function callGeminiWithKey_(
+  apiKey,
+  prompt,
+  usageTagOpt,
+  apiKeyPropNameOpt,
+  modelOpt,
+) {
   if (!apiKey) {
     Logger.log("[gemini] ERROR: API key not set");
     return "ERROR: API key not set";
   }
 
   const usageTag = usageTagOpt || "generic";
-  const model = GEMINI_MODEL;
+  const model = modelOpt || GEMINI_MODEL;
   const url =
     "https://generativelanguage.googleapis.com/v1beta/models/" +
     model +
@@ -1550,6 +2052,7 @@ function callGeminiTextWithKey_(
   prompt,
   usageTagOpt,
   apiKeyPropNameOpt,
+  modelOpt,
 ) {
   if (!apiKey) {
     Logger.log("[gemini] ERROR: API key not set");
@@ -1557,7 +2060,7 @@ function callGeminiTextWithKey_(
   }
 
   const usageTag = usageTagOpt || "generic";
-  const model = GEMINI_MODEL;
+  const model = modelOpt || GEMINI_MODEL;
   const url =
     "https://generativelanguage.googleapis.com/v1beta/models/" +
     model +
@@ -1773,9 +2276,58 @@ const GPT_MULTI2_WRAPPED_SCHEMA_ = {
   required: ["items"],
 };
 
+const GPT_SUMMARY_BATCH_WRAPPED_SCHEMA_ = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    items: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          id: { type: "string" },
+          summary: { type: "string" },
+        },
+        required: ["id", "summary"],
+      },
+    },
+  },
+  required: ["items"],
+};
+
+const GPT_HEADLINE_BATCH_WRAPPED_SCHEMA_ = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    items: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          id: { type: "string" },
+          headlineA: { type: "string" },
+          headlineBPrime: { type: "string" },
+          headlineBPrimeFewShot: { type: "string" },
+        },
+        required: [
+          "id",
+          "headlineA",
+          "headlineBPrime",
+          "headlineBPrimeFewShot",
+        ],
+      },
+    },
+  },
+  required: ["items"],
+};
+
 // formatTypeOpt:
 //   - "json_object" (default): 単体行のオブジェクト出力向け
 //   - "json_schema_batch": multi2（2件まとめ）で配列を厳密に返させたいとき
+//   - "json_schema_summary_batch": 分割後の要約だけを厳密に返させたいとき
+//   - "json_schema_headline_batch": 分割後の見出しだけを厳密に返させたいとき
 //   - "none": text.format を付けずに呼ぶ（最終手段）
 function callGpt5MiniWithKey_(apiKey, promptText, usageTagOpt, formatTypeOpt) {
   if (!apiKey) {
@@ -1784,20 +2336,47 @@ function callGpt5MiniWithKey_(apiKey, promptText, usageTagOpt, formatTypeOpt) {
 
   const url = "https://api.openai.com/v1/responses";
   const fmt = String(formatTypeOpt || "json_object");
+  const isBatchJsonSchema = fmt === "json_schema_batch";
+  const isSummaryBatchJsonSchema = fmt === "json_schema_summary_batch";
+  const isHeadlineBatchJsonSchema = fmt === "json_schema_headline_batch";
+  const isAnyBatchJsonSchema =
+    isBatchJsonSchema || isSummaryBatchJsonSchema || isHeadlineBatchJsonSchema;
   const payload = {
     model: GPT5_MINI_MODEL,
     input: String(promptText || ""),
   };
+
+  // バッチ処理（2件まとめ・Structured Outputs）時だけ、要約精度向上用の指示を追加する。
+  // formatTypeOpt="none" の圧縮フォールバック等には副作用を出さない。
+  if (isAnyBatchJsonSchema) {
+    payload.instructions = [
+      "あなたは日本語報道要約・見出し生成の編集者です。",
+      "記事本文だけを根拠にし、推測で事実を補わないでください。",
+      "要約は、誰が・どこで・何をした・結果・規模を優先してください。",
+      "COMMON_TRANSLATION_RULES、SUMMARY_TASK、JSONスキーマを厳守してください。",
+    ].join("\n");
+    payload.reasoning = { effort: "medium" };
+    payload.max_output_tokens = 6000;
+  }
+
   if (fmt !== "none") {
-    if (fmt === "json_schema_batch") {
+    if (isAnyBatchJsonSchema) {
       // Structured Outputs: JSON Schema を強制（配列を返せる）
-      // docs: text.format に type:"json_schema", strict:true, schema:... を指定 :contentReference[oaicite:2]{index=2}
+      let schemaName = "multi2_array";
+      let schema = GPT_MULTI2_WRAPPED_SCHEMA_;
+      if (isSummaryBatchJsonSchema) {
+        schemaName = "summary_batch_array";
+        schema = GPT_SUMMARY_BATCH_WRAPPED_SCHEMA_;
+      } else if (isHeadlineBatchJsonSchema) {
+        schemaName = "headline_batch_array";
+        schema = GPT_HEADLINE_BATCH_WRAPPED_SCHEMA_;
+      }
       payload.text = {
         format: {
           type: "json_schema",
-          name: "multi2_array",
+          name: schemaName,
           strict: true,
-          schema: GPT_MULTI2_WRAPPED_SCHEMA_,
+          schema: schema,
         },
       };
     } else {
@@ -1829,6 +2408,20 @@ function callGpt5MiniWithKey_(apiKey, promptText, usageTagOpt, formatTypeOpt) {
       }
 
       if (code >= 200 && code < 300) {
+        if (data && data.status === "incomplete") {
+          const reason =
+            data.incomplete_details && data.incomplete_details.reason
+              ? data.incomplete_details.reason
+              : "unknown";
+          const msg = "ERROR: OpenAI response incomplete: " + reason;
+
+          if (attempt < GPT_JS_MAX_RETRIES) {
+            Utilities.sleep(_expBackoffMs_(attempt));
+            continue;
+          }
+          return msg;
+        }
+
         const outText = _extractOutputTextFromResponses_(data);
         if (outText) return outText;
         // 200 なのに本文が取れない場合も一旦エラー扱い
@@ -2025,7 +2618,8 @@ function processRow_(sheet, row, prevStatus) {
   const colM = 13; // タイトル原文
   const colN = 14; // 本文原文
 
-  // gpt-5-mini 側のリトライ上限（GPTNG(2) 以上は打ち切り）
+  // 通常Gemini NG(2) → gemini-2.5-flashを1回 → 失敗後にgpt-5-miniへ切替
+  const useFlash = shouldUseGemini25Flash_(prevStatus || "");
   const useGpt = shouldUseGpt5Mini_(prevStatus || "");
   const gptRetryCount = parseGptRetryCount_(prevStatus || "");
   if (useGpt && gptRetryCount >= GPT_JS_MAX_RETRIES) {
@@ -2069,7 +2663,9 @@ function processRow_(sheet, row, prevStatus) {
   const sheetName = sheet.getName();
 
   /********************************************
-   * E / F / G / I を 1回の Gemini 呼び出しでまとめて生成
+   * I列（本文要約）を先に生成し、その要約を使って E / F / G（見出し）を生成
+   * - 要約: 既存 priority キー（GEMINI_API_KEY_PRIORITY / GEMINI_API_TEST_KEY_PRIORITY）
+   * - 見出し: 追加 priority キー（GEMINI_API_KEY_PRIORITY_TITLE / GEMINI_API_TEST_KEY_PRIORITY_TITLE）
    ********************************************/
   let headlineA = "";
   let headlineB2 = "";
@@ -2077,95 +2673,79 @@ function processRow_(sheet, row, prevStatus) {
   let summaryJa = "";
 
   if (titleRaw || bodyRaw) {
-    const multiParams = {
+    const geminiModelForThisRun = useFlash
+      ? GEMINI_FALLBACK_MODEL
+      : GEMINI_MODEL;
+    const summaryPrompt = buildSummaryOnlyPromptForRow_({
       titleRaw: titleRaw || "",
       bodyRaw: bodyRaw || "",
-      sourceVal: sourceVal || "",
-      urlVal: urlVal || "",
-      titleGlossaryRules: titleGlossaryRules || "",
       bodyGlossaryRules: bodyGlossaryRules || "",
-    };
+    });
+    const tagSummary = sheetName + "#row" + row + ":I(summary)";
 
-    const multiPrompt = buildMultiTaskPromptForRow_(multiParams);
-    const tagMulti = sheetName + "#row" + row + ":EGI(multi)";
-
-    const gemBundle = useGpt
-      ? null
-      : getGeminiApiKeyBundleFromSheetAndSource_(
+    let summaryResp = useGpt
+      ? callGpt5MiniWithKey_(
+          getOpenAiApiKey_(tagSummary),
+          summaryPrompt,
+          tagSummary,
+        )
+      : callGeminiJsonByPurposeWithRotation_(
           sheetName,
           sourceVal,
-          tagMulti,
-        );
-    const apiKey = useGpt
-      ? getOpenAiApiKey_(tagMulti)
-      : gemBundle && gemBundle.apiKey;
-
-    let resp = useGpt
-      ? callGpt5MiniWithKey_(apiKey, multiPrompt, tagMulti)
-      : callGeminiWithKey_(
-          apiKey,
-          multiPrompt,
-          tagMulti,
-          gemBundle && gemBundle.propName,
+          summaryPrompt,
+          tagSummary,
+          "summary",
+          geminiModelForThisRun,
         );
 
-    // ★ 429(quota) のときは「その後は別キー」を即時反映するため、別キーで1回だけ即リトライ
-    if (
-      !useGpt &&
-      typeof resp === "string" &&
-      resp.indexOf("ERROR:") === 0 &&
-      _isQuotaExhaustedMessage_("", resp)
-    ) {
-      const tagRetry = tagMulti + "|rotated";
-      const gemBundle2 = getGeminiApiKeyBundleFromSheetAndSource_(
-        sheetName,
-        sourceVal,
-        tagRetry,
-      );
-      if (
-        gemBundle2 &&
-        gemBundle2.apiKey &&
-        gemBundle2.propName &&
-        gemBundle2.propName !== (gemBundle && gemBundle.propName)
-      ) {
-        resp = callGeminiWithKey_(
-          gemBundle2.apiKey,
-          multiPrompt,
-          tagRetry,
-          gemBundle2.propName,
+    if (!useGpt && _isGeminiHighDemandErrorResponse_(summaryResp)) {
+      if (useFlash) {
+        // gemini-2.5-flash は high demand でも WAIT に入れず、1回失敗として扱う。
+        _applyOutputsToRow_(
+          sheet,
+          row,
+          prevStatus,
+          {
+            sourceVal: sourceVal,
+            urlVal: urlVal,
+            titleRaw: titleRaw,
+            bodyRaw: bodyRaw,
+          },
+          summaryResp,
+          summaryResp,
+          summaryResp,
+          summaryResp,
+          "FLASHNG",
         );
+        return;
+      }
+
+      // 通常Geminiの high demand は1回目だけ延期し、2回目はFlashへ進める
+      if (_shouldMoveToFlashOnThisHighDemand_(prevStatus || "")) {
+        _setStatusForGeminiHighDemandWaitExceeded_(sheet, row, tagSummary);
+        return;
+      } else {
+        const waitStatus = _buildGeminiHighDemandWaitStatus_(
+          prevStatus || "",
+          summaryResp,
+        );
+        sheet.getRange(row, STATUS_COL).setValue(waitStatus);
+        _appendGeminiLog_("WARN", tagSummary, waitStatus);
+        return;
       }
     }
 
-    if (typeof resp === "string" && resp.indexOf("ERROR:") === 0) {
-      // callGeminiWithKey_ 自体がエラーを返した場合 → そのまま全列同じエラー扱い
-      headlineA = resp;
-      headlineB2 = resp;
-      headlineBFewShot = resp;
-      summaryJa = resp;
+    if (
+      typeof summaryResp === "string" &&
+      summaryResp.indexOf("ERROR:") === 0
+    ) {
+      headlineA = summaryResp;
+      headlineB2 = summaryResp;
+      headlineBFewShot = summaryResp;
+      summaryJa = summaryResp;
     } else {
       try {
-        let cleaned = (resp || "").trim();
-
-        // もし ``` で始まっていたら、コードブロックを剥がす
-        if (cleaned.startsWith("```")) {
-          // 先頭の ```json / ``` を削除
-          cleaned = cleaned.replace(/^```[a-zA-Z]*\s*/, "");
-          // 最後の ``` 以降を削る
-          const lastFence = cleaned.lastIndexOf("```");
-          if (lastFence !== -1) {
-            cleaned = cleaned.substring(0, lastFence);
-          }
-          cleaned = cleaned.trim();
-        }
-
-        const obj = JSON.parse(cleaned);
-
-        headlineA = (obj.headlineA || "").toString().trim();
-        headlineB2 = (obj.headlineBPrime || obj.headlineB || "")
-          .toString()
-          .trim();
-        headlineBFewShot = (obj.headlineBPrimeFewShot || "").toString().trim();
+        const obj = _parseJsonObjectFromModelResponse_(summaryResp);
         summaryJa = decodeJsonNewlines_((obj.summary || "").toString().trim());
         summaryJa = normalizeSummaryHeader_(summaryJa);
 
@@ -2204,17 +2784,100 @@ function processRow_(sheet, row, prevStatus) {
           }
         }
 
-        headlineA = headlineA || "";
-        headlineB2 = headlineB2 || "";
-        headlineBFewShot = headlineBFewShot || "";
         summaryJa = summaryJa || "";
       } catch (e) {
         const errMsg =
-          "ERROR: invalid JSON from Gemini: " + String(resp).substring(0, 200);
+          "ERROR: invalid JSON from summary call: " +
+          String(summaryResp).substring(0, 200);
         headlineA = errMsg;
         headlineB2 = errMsg;
         headlineBFewShot = errMsg;
         summaryJa = errMsg;
+      }
+    }
+
+    // 要約が正常に作れた場合だけ、見出しAPIコールを別キーで実行する
+    if (!(typeof summaryJa === "string" && summaryJa.indexOf("ERROR:") === 0)) {
+      const headlinePrompt = buildHeadlineOnlyPromptForRow_({
+        titleRaw: titleRaw || "",
+        bodyRaw: bodyRaw || "",
+        summaryJa: summaryJa || "",
+        titleGlossaryRules: titleGlossaryRules || "",
+        bodyGlossaryRules: bodyGlossaryRules || "",
+      });
+      const tagHeadline = sheetName + "#row" + row + ":EFG(headline)";
+
+      const headlineResp = useGpt
+        ? callGpt5MiniWithKey_(
+            getOpenAiApiKey_(tagHeadline),
+            headlinePrompt,
+            tagHeadline,
+          )
+        : callGeminiJsonByPurposeWithRotation_(
+            sheetName,
+            sourceVal,
+            headlinePrompt,
+            tagHeadline,
+            "headline",
+            geminiModelForThisRun,
+          );
+
+      if (!useGpt && _isGeminiHighDemandErrorResponse_(headlineResp)) {
+        if (useFlash) {
+          // gemini-2.5-flash は high demand でも WAIT に入れず、1回失敗として扱う。
+          _applyOutputsToRow_(
+            sheet,
+            row,
+            prevStatus,
+            {
+              sourceVal: sourceVal,
+              urlVal: urlVal,
+              titleRaw: titleRaw,
+              bodyRaw: bodyRaw,
+            },
+            headlineResp,
+            headlineResp,
+            summaryJa || headlineResp,
+            headlineResp,
+            "FLASHNG",
+          );
+          return;
+        }
+        if (_shouldMoveToFlashOnThisHighDemand_(prevStatus || "")) {
+          _setStatusForGeminiHighDemandWaitExceeded_(sheet, row, tagHeadline);
+          return;
+        } else {
+          const waitStatus = _buildGeminiHighDemandWaitStatus_(
+            prevStatus || "",
+            headlineResp,
+          );
+          sheet.getRange(row, STATUS_COL).setValue(waitStatus);
+          _appendGeminiLog_("WARN", tagHeadline, waitStatus);
+          return;
+        }
+      }
+
+      if (
+        typeof headlineResp === "string" &&
+        headlineResp.indexOf("ERROR:") === 0
+      ) {
+        headlineA = headlineResp;
+        headlineB2 = headlineResp;
+        headlineBFewShot = headlineResp;
+      } else {
+        try {
+          const obj = _parseJsonObjectFromModelResponse_(headlineResp);
+          headlineA = String(obj.headlineA || "").trim();
+          headlineB2 = String(obj.headlineBPrime || obj.headlineB || "").trim();
+          headlineBFewShot = String(obj.headlineBPrimeFewShot || "").trim();
+        } catch (e) {
+          const errMsg =
+            "ERROR: invalid JSON from headline call: " +
+            String(headlineResp).substring(0, 200);
+          headlineA = errMsg;
+          headlineB2 = errMsg;
+          headlineBFewShot = errMsg;
+        }
       }
     }
   }
@@ -2273,13 +2936,15 @@ function processRow_(sheet, row, prevStatus) {
   let statusText = "";
 
   if (errors.length === 0) {
-    statusText = useGpt ? "OK(GPT)" : "OK";
+    statusText = useGpt ? "OK(GPT)" : useFlash ? "OK(FLASH)" : "OK";
   } else {
     // 呼び出し元から渡された「前回までのステータス」から回数を計算
-    const retryKind = useGpt ? "GPTNG" : "NG";
+    const retryKind = useGpt ? "GPTNG" : useFlash ? "FLASHNG" : "NG";
     const prevCount = useGpt
       ? parseGptRetryCount_(prevStatus || "")
-      : parseRetryCount_(prevStatus || "");
+      : useFlash
+        ? parseFlashRetryCount_(prevStatus || "")
+        : parseRetryCount_(prevStatus || "");
     const newCount = prevCount + 1;
     statusText = `${retryKind}(${newCount}): ` + errors.join(" / ");
   }
@@ -2343,13 +3008,42 @@ function parseGptRetryCount_(status) {
   return Number(m[1]);
 }
 
+function parseFlashRetryCount_(status) {
+  if (!status) return 0;
+  const m = status.match(/^FLASHNG\((\d+)\)/);
+  if (!m) return 0;
+  return Number(m[1]);
+}
+
+function shouldUseGemini25Flash_(status) {
+  const s = String(status || "");
+  if (s.startsWith("RUNNING(FLASH)")) return true;
+
+  // 既存の WAIT_GEMINI(2|nextAtMs) 行も、nextAtMs を待たずにFlashへ進める
+  const highDemandWait = _parseGeminiHighDemandWaitStatus_(s);
+  if (
+    highDemandWait &&
+    highDemandWait.count >= GEMINI_HIGH_DEMAND_WAIT_MAX_DEFERS
+  ) {
+    return true;
+  }
+
+  // 通常GeminiがNG(2)以上になった行は、GPTへ行く前にgemini-2.5-flashを1回だけ試す
+  const m = s.match(/^NG\((\d+)\)/);
+  if (!m) return false;
+  return Number(m[1]) >= MAX_RETRY_COUNT;
+}
+
 function shouldUseGpt5Mini_(status) {
   const s = String(status || "");
   if (s.startsWith("RUNNING(GPT)")) return true;
   if (s.startsWith("GPTNG(")) return true;
-  const m = s.match(/^NG\((\d+)\)/);
-  if (!m) return false;
-  return Number(m[1]) >= MAX_RETRY_COUNT; // NG(3) 以上なら gpt-5-mini に切替
+
+  // gemini-2.5-flashも1回失敗したら、従来どおりGPTへ切り替える
+  const fm = s.match(/^FLASHNG\((\d+)\)/);
+  if (fm) return Number(fm[1]) >= GEMINI_25_FLASH_MAX_RETRY_COUNT;
+
+  return false;
 }
 
 // ★ 古い RUNNING ステータスを NG(1): timeout に置き換える
@@ -2377,6 +3071,9 @@ function cleanupStaleRunningStatuses_() {
       if (status.startsWith("RUNNING(GPT)")) {
         values[i][0] = "GPTNG(1): timeout";
         changed = true;
+      } else if (status.startsWith("RUNNING(FLASH)")) {
+        values[i][0] = "FLASHNG(1): timeout";
+        changed = true;
       } else if (status.startsWith("RUNNING")) {
         // 1回目の失敗として扱う
         values[i][0] = "NG(1): timeout";
@@ -2398,8 +3095,11 @@ function cleanupStaleRunningStatuses_() {
 const MAX_ROWS_PER_RUN = 5; // 1回の実行で処理する最大行数
 const STATUS_COL = 12; // L列 (ステータス列の列番号)
 
-// NG の最大試行回数（これ以上失敗したら「打ち切り完了」とみなす）
+// 通常Geminiの最大試行回数（NG(2) になったら gemini-2.5-flash へ切替）
 const MAX_RETRY_COUNT = 2;
+
+// gemini-2.5-flash の最大試行回数（FLASHNG(1) になったら gpt-5-mini へ切替）
+const GEMINI_25_FLASH_MAX_RETRY_COUNT = 1;
 
 // ============================================================
 // ★ バッチ化（キー別まとめ投げ）＋推定トークンで 1件/2件自動調整
@@ -2519,35 +3219,36 @@ function fixKyatYenInText_(text) {
   );
 }
 
-// チャット以外の通貨（ドル/バーツ/ルピー等）に誤って付いた「（約◯◯円）」を削除
-// 例: 「10億ドル（約390億円）」→「10億ドル」
-//     「31億7300万ルピー（約58億円）」→「31億7300万ルピー」
+// チャット以外に誤って付いた「（約◯円）」を削除する
+// ルール上、要約で円併記してよいのは「チャット」のみ。
 function removeYenForNonKyat_(text) {
   if (!text) return text;
   let s = String(text);
 
-  // 代表的な「非チャット」通貨ラベル
-  // ルピー系・crore / crore rupees / クロール系も含める
-  const NON_KYAT_CCY =
-    "(?:米ドル|ドル|USD|US\\$|\\$|バーツ|THB|ユーロ|EUR|ポンド|GBP|元|人民元|CNY|ウォン|KRW|ルピー|インドルピー|INR|Rs\\.?|₹|crore\\s*rupees?|crore|クロール|クロー)";
-
-  // 「（約…円）」の中身は数字/カンマ/兆億万/範囲表記（〜, -, ～）を許容（“約”の有無も吸収）
-  const NUM_RANGE = "[0-9０-９,，\\s兆億万\\.〜～\\-−–]+";
-  const YEN_PAREN = "（\\s*(?:約)?\\s*" + NUM_RANGE + "(?:円|えん)\\s*）";
-
-  // 1) 「10億ドル（約…円）」「317.30クロー（約…円）」のように “金額→通貨→円” の順
-  const pat1 = new RegExp(
-    "(" + NUM_RANGE + "\\s*" + NON_KYAT_CCY + ")\\s*" + YEN_PAREN,
-    "gi",
+  // まず正しい「チャット（約◯円）」だけ一時退避
+  // 「約180円から約1800円」などの範囲表現も保護できるよう広めに取る
+  const protectedKyat = [];
+  s = s.replace(
+    /([0-9０-９,，\s兆億万]+チャット)（約[^）]*(?:円|えん)[^）]*）/g,
+    function (m) {
+      const key = "__KYAT_YEN_PAREN_" + protectedKyat.length + "__";
+      protectedKyat.push(m);
+      return key;
+    },
   );
-  s = s.replace(pat1, "$1");
 
-  // 2) 「USD 1 billion（約…円）」「INR 317.30 crore（約…円）」のように “通貨→金額→円” の順
-  const pat2 = new RegExp(
-    "(" + NON_KYAT_CCY + "\\s*" + NUM_RANGE + ")\\s*" + YEN_PAREN,
-    "gi",
-  );
-  s = s.replace(pat2, "$1");
+  // 残った円換算括弧を削除
+  // 例:
+  // （約180円）
+  // （約180円から約1800円）
+  // （約180〜1800円）
+  // （約180円〜約1800円）
+  s = s.replace(/（[^）]*(?:約|およそ)[^）]*(?:円|えん)[^）]*）/g, "");
+
+  // 退避したチャット円換算だけ戻す
+  protectedKyat.forEach(function (v, i) {
+    s = s.replace("__KYAT_YEN_PAREN_" + i + "__", v);
+  });
 
   return s;
 }
@@ -2648,6 +3349,7 @@ ${it.bodyGlossaryRules || "(なし)"}
 今回の記事では、Task1の見出しA、Task2の見出しB'、Task3で把握した本文要約の内容を合わせて使い、
 G列見出しB'（本文ベース）を主ベースとし、E列見出しAの要素も参考に取り込んで、
 編集者が最終的に確定しそうな1行見出しを生成すること。
+${F_HEADLINE_EDIT_RULES}
 ${archiveTeacherSection}${HEADLINE_STRUCTURE_RULES}
 ${TITLE_OUTPUT_RULES}
 【本文用 用語固定ルール】
@@ -2673,6 +3375,7 @@ ${COMMON_TRANSLATION_RULES}
 4) 本文要約
 
 ${PROMPT_SELF_CHECK_RULE}
+${HEADLINE_OUTPUT_SELF_CHECK_RULE}
 
 【最終出力フォーマット（必須）】
 入力順のまま、JSON オブジェクトを 1つだけ出力してください（それ以外の文字は一切出力しない）。
@@ -2694,6 +3397,137 @@ ${PROMPT_SELF_CHECK_RULE}
 - 配列の要素数は入力記事数と一致させること
 - 各要素の "id" は、各 ARTICLE ブロックにある「id: <value>」の <value> を一字一句そのままコピーすること（連番に作り直さない）
 - 例: 入力が id: 6 なら出力は "id": "6"（文字列）とすること
+- \`\`\`json などのコードブロック禁止。純粋な JSON テキストのみ
+
+${blocks}
+`.trim();
+}
+
+// 2件まとめ用：要約だけを返させるプロンプト
+function buildSummaryOnlyPromptForRows_(items) {
+  const blocks = items
+    .map(function (it, idx) {
+      return `
+====================
+[ARTICLE ${idx + 1}]
+id: ${it.id}
+[記事タイトル]
+${it.titleRaw || ""}
+
+[記事本文]
+${it.bodyRaw || ""}
+
+--- Task 本文要約ルール ---
+${SUMMARY_TASK}
+【本文用 用語固定ルール】
+${it.bodyGlossaryRules || "(なし)"}
+`.trim();
+    })
+    .join("\n\n");
+
+  return `
+【共通ルール（全ARTICLEの要約に適用・最優先）】
+${COMMON_TRANSLATION_RULES}
+
+以下は複数のニュース記事です（最大2件）。
+各記事ごとに、本文要約だけを生成してください。見出しは生成しないでください。
+
+${PROMPT_SELF_CHECK_RULE}
+
+【最終出力フォーマット（必須）】
+入力順のまま、JSON オブジェクトを1つだけ出力してください（それ以外の文字は一切出力しない）。
+最上位キーは必ず "items" とし、その値に各記事の結果を配列で入れてください。
+
+{
+  "items": [
+    {
+      "id": "入力の id をそのまま入れる",
+      "summary": "本文要約"
+    }
+  ]
+}
+
+制約:
+- 配列の要素数は入力記事数と一致させること
+- 各要素の "id" は、各 ARTICLE ブロックにある「id: <value>」の <value> を一字一句そのままコピーすること
+- summary の値の中で改行が必要な場合は、実改行ではなく必ず "\\n" として出力すること
+- \`\`\`json などのコードブロック禁止。純粋な JSON テキストのみ
+
+${blocks}
+`.trim();
+}
+
+// 2件まとめ用：生成済み要約を使って見出しだけを返させるプロンプト
+function buildHeadlineOnlyPromptForRows_(items) {
+  const archiveTeacherSection = buildArchiveTeacherSection_();
+
+  const blocks = items
+    .map(function (it, idx) {
+      return `
+====================
+[ARTICLE ${idx + 1}]
+id: ${it.id}
+[記事タイトル]
+${it.titleRaw || ""}
+
+[生成済み本文要約]
+${it.summaryJa || ""}
+
+--- Task1 見出しAルール ---
+${HEADLINE_PROMPT_1}
+【タイトル用 用語固定ルール】
+${it.titleGlossaryRules || "(なし)"}
+
+--- Task2 見出しB'ルール（生成済み要約を根拠に作る見出し・スタイル参考例なし）---
+${HEADLINE_PROMPT_3}
+上の「生成済み本文要約」を本文の代替根拠として使ってください。要約にない事実は補わないでください。
+【本文用 用語固定ルール】
+${it.bodyGlossaryRules || "(なし)"}
+
+--- Task2' 見出しFルール（教師データ参考・編集者確定見出し生成）---
+目的は、F列の見出しを見出しアーカイブの確定見出し（E列）に近い傾向へ寄せること。
+教師データとして、見出しアーカイブの B〜D列の見出し案、I列の本文要約、E列の確定見出しを参考にすること。
+今回の記事では、Task1の見出しA、Task2の見出しB'、生成済み本文要約の内容を合わせて使い、
+G列見出しB'（要約ベース）を主ベースとし、E列見出しAの要素も参考に取り込んで、
+編集者が最終的に確定しそうな1行見出しを生成すること。
+${F_HEADLINE_EDIT_RULES}
+${archiveTeacherSection}${HEADLINE_STRUCTURE_RULES}
+${TITLE_OUTPUT_RULES}
+【本文用 用語固定ルール】
+${it.bodyGlossaryRules || "(なし)"}
+`.trim();
+    })
+    .join("\n\n");
+
+  return `
+【共通ルール（全ARTICLEの見出し生成に適用・最優先）】
+${COMMON_TRANSLATION_RULES}
+
+以下は複数のニュース記事です（最大2件）。
+各記事ごとに、記事本文全文は再掲せず、記事タイトルと生成済み本文要約を根拠に、次の3つの見出しだけを生成してください：
+1) 見出しA（タイトル翻訳ベース）
+2) 見出しB'（本文を読んで作る見出し・スタイル参考例なし）
+3) 見出しF（教師データ参考・編集者確定見出し）
+${HEADLINE_OUTPUT_SELF_CHECK_RULE}
+
+【最終出力フォーマット（必須）】
+入力順のまま、JSON オブジェクトを1つだけ出力してください（それ以外の文字は一切出力しない）。
+最上位キーは必ず "items" とし、その値に各記事の結果を配列で入れてください。
+
+{
+  "items": [
+    {
+      "id": "入力の id をそのまま入れる",
+      "headlineA": "Task1 の見出しA",
+      "headlineBPrime": "Task2 の見出しB'",
+      "headlineBPrimeFewShot": "Task2' の見出しF"
+    }
+  ]
+}
+
+制約:
+- 配列の要素数は入力記事数と一致させること
+- 各要素の "id" は、各 ARTICLE ブロックにある「id: <value>」の <value> を一字一句そのままコピーすること
 - \`\`\`json などのコードブロック禁止。純粋な JSON テキストのみ
 
 ${blocks}
@@ -2797,13 +3631,20 @@ function _applyOutputsToRow_(
 
   let statusText = "";
   if (errors.length === 0) {
-    statusText = retryKindOpt === "GPTNG" ? "OK(GPT)" : "OK";
+    statusText =
+      retryKindOpt === "GPTNG"
+        ? "OK(GPT)"
+        : retryKindOpt === "FLASHNG"
+          ? "OK(FLASH)"
+          : "OK";
   } else {
     const retryKind = retryKindOpt || "NG";
     const prevCount =
       retryKind === "GPTNG"
         ? parseGptRetryCount_(prevStatus || "")
-        : parseRetryCount_(prevStatus || "");
+        : retryKind === "FLASHNG"
+          ? parseFlashRetryCount_(prevStatus || "")
+          : parseRetryCount_(prevStatus || "");
     const newCount = prevCount + 1;
     statusText = `${retryKind}(${newCount}): ` + errors.join(" / ");
   }
@@ -2849,10 +3690,10 @@ function processRowsBatch() {
     cleanupStaleRunningStatuses_();
 
     // ★ 時間帯外なら即スキップ（16:00〜翌7:00だけ動かす）
-    if (!isWithinProcessingWindow_()) {
-      Logger.log("[processRowsBatch] outside allowed time window → skip");
-      return;
-    }
+    // if (!isWithinProcessingWindow_()) {
+    //   Logger.log("[processRowsBatch] outside allowed time window → skip");
+    //   return;
+    // }
 
     const ss = SpreadsheetApp.getActive();
     const sheetNames = ["prod", "dev"]; // 対象シート
@@ -2905,9 +3746,26 @@ function processRowsBatch() {
           continue;
         }
 
+        // Gemini high demand は1回目だけ指定時刻まで待機する。
+        // WAIT_GEMINI(2|nextAtMs) は待たずに、この実行でFlash対象にする。
+        const highDemandWait = _parseGeminiHighDemandWaitStatus_(status);
+        if (
+          highDemandWait &&
+          highDemandWait.count < GEMINI_HIGH_DEMAND_WAIT_MAX_DEFERS &&
+          !_isGeminiHighDemandWaitDue_(status)
+        ) {
+          Logger.log(
+            "[processRowsBatch] skip row %s (Gemini high demand wait until %s)",
+            rowIndex,
+            highDemandWait.nextAtMs,
+          );
+          continue;
+        }
+
         // ★ 再試行回数チェック
         const gemRetryCount = parseRetryCount_(status);
         const gptRetryCount = parseGptRetryCount_(status);
+        const useFlash = shouldUseGemini25Flash_(status);
         const useGpt = shouldUseGpt5Mini_(status);
 
         // gpt-5-mini 側のリトライ上限（GPTNG(2) になったら打ち切り）
@@ -2921,8 +3779,8 @@ function processRowsBatch() {
           continue;
         }
 
-        // Gemini 側は MAX_RETRY_COUNT 未満のみ再試行（NG(3) 以上は gpt-5-mini に回す）
-        if (!useGpt && gemRetryCount >= MAX_RETRY_COUNT) {
+        // 通常Gemini側は NG(2) になったら、スキップせず gemini-2.5-flash へ進める
+        if (!useGpt && !useFlash && gemRetryCount >= MAX_RETRY_COUNT) {
           Logger.log(
             "[processRowsBatch] skip row %s (gemRetryCount=%s >= %s)",
             rowIndex,
@@ -2945,15 +3803,16 @@ function processRowsBatch() {
 
         // 処理開始マーク
         sh.getRange(rowIndex, STATUS_COL).setValue(
-          useGpt ? "RUNNING(GPT)" : "RUNNING",
+          useGpt ? "RUNNING(GPT)" : useFlash ? "RUNNING(FLASH)" : "RUNNING",
         );
 
         // groupKey:
         // - OpenAI は "__OPENAI__" でまとめてOK（キー単一）
-        // - Gemini は「メディア正規化名」でまとめる（ただし呼び出し時に毎回キーを選ぶ）
+        // - Gemini は通常モデルと gemini-2.5-flash を分けてまとめる
         const groupKey = useGpt
           ? "__OPENAI__"
-          : normalizeSourceName_(sourceVal || "");
+          : (useFlash ? "__GEMINI_FLASH__:" : "__GEMINI_MAIN__:") +
+            normalizeSourceName_(sourceVal || "");
         if (!groups[groupKey]) {
           groups[groupKey] = [];
           groupOrder.push(groupKey);
@@ -3041,69 +3900,68 @@ function processRowsBatch() {
             };
           });
 
-          const batchPrompt = buildMultiTaskPromptForRows_(promptItems);
           const n = promptItems.length;
-          const tagBatch =
+          const tagBase =
             sheetName +
             "#rows" +
             promptItems.map((x) => x.rowIndex).join(",") +
-            ":EGI(multi2:auto|n=" +
+            ":split2:auto|n=" +
             n +
             ")";
 
           // ★ 呼び出し直前に「今使うべきキー」を毎回選ぶ（429後に即切替するため）
-          let resp = "";
-          if (groupKey === "__OPENAI__") {
-            const apiKey = getOpenAiApiKey_(tagBatch);
-            resp = callGpt5MiniWithKey_(
-              apiKey,
-              batchPrompt,
-              tagBatch,
-              "json_schema_batch",
+          const isOpenAiGroup = groupKey === "__OPENAI__";
+          const isFlashGroup =
+            String(groupKey).indexOf("__GEMINI_FLASH__:") === 0;
+          const geminiModelForThisGroup = isFlashGroup
+            ? GEMINI_FALLBACK_MODEL
+            : GEMINI_MODEL;
+          const retryKindForGroup = isOpenAiGroup
+            ? "GPTNG"
+            : isFlashGroup
+              ? "FLASHNG"
+              : "NG";
+
+          const summaryPrompt = buildSummaryOnlyPromptForRows_(promptItems);
+          const tagSummary = tagBase + ":I(summary)";
+
+          let summaryResp = "";
+          if (isOpenAiGroup) {
+            summaryResp = callGpt5MiniWithKey_(
+              getOpenAiApiKey_(tagSummary),
+              summaryPrompt,
+              tagSummary,
+              "json_schema_summary_batch",
             );
           } else {
-            const b1 = getGeminiApiKeyBundleFromSheetAndSource_(
+            summaryResp = callGeminiJsonByPurposeWithRotation_(
               sheetName,
               chunk[0].sourceVal,
-              tagBatch,
+              summaryPrompt,
+              tagSummary,
+              "summary",
+              geminiModelForThisGroup,
             );
-            resp = callGeminiWithKey_(
-              b1.apiKey,
-              batchPrompt,
-              tagBatch,
-              b1.propName,
-            );
-
-            // ★ 429(quota)なら、その後の処理も別キーになるよう「即座に別キーで1回だけ再試行」
-            if (
-              typeof resp === "string" &&
-              resp.indexOf("ERROR:") === 0 &&
-              _isQuotaExhaustedMessage_("", resp)
-            ) {
-              const tagRetry = tagBatch + "|rotated";
-              const b2 = getGeminiApiKeyBundleFromSheetAndSource_(
-                sheetName,
-                chunk[0].sourceVal,
-                tagRetry,
-              );
-              if (
-                b2 &&
-                b2.apiKey &&
-                b2.propName &&
-                b2.propName !== b1.propName
-              ) {
-                resp = callGeminiWithKey_(
-                  b2.apiKey,
-                  batchPrompt,
-                  tagRetry,
-                  b2.propName,
-                );
-              }
-            }
           }
 
-          // API呼び出し自体がエラーなら全員同じエラー
-          if (typeof resp === "string" && resp.indexOf("ERROR:") === 0) {
+          if (
+            !isOpenAiGroup &&
+            _isGeminiHighDemandErrorResponse_(summaryResp)
+          ) {
+            _deferRowsForGeminiHighDemand_(
+              sh,
+              promptItems,
+              summaryResp,
+              retryKindForGroup,
+            );
+            p += chunk.length;
+            continue;
+          }
+
+          if (
+            typeof summaryResp === "string" &&
+            summaryResp.indexOf("ERROR:") === 0
+          ) {
             promptItems.forEach(function (pi) {
               _applyOutputsToRow_(
                 sh,
@@ -3115,51 +3973,118 @@ function processRowsBatch() {
                   titleRaw: pi.titleRaw,
                   bodyRaw: pi.bodyRaw,
                 },
-                resp,
-                resp,
-                resp,
-                resp,
-                groupKey === "__OPENAI__" ? "GPTNG" : "NG",
+                summaryResp,
+                summaryResp,
+                summaryResp,
+                summaryResp,
+                retryKindForGroup,
               );
             });
             p += chunk.length;
             continue;
           }
 
-          // JSON配列をパースして id=rowIndex で突合
           try {
-            let cleaned = (resp || "").trim();
-            if (cleaned.startsWith("```")) {
-              cleaned = cleaned.replace(/^```[a-zA-Z]*\s*/, "");
-              const lastFence = cleaned.lastIndexOf("```");
-              if (lastFence !== -1) cleaned = cleaned.substring(0, lastFence);
-              cleaned = cleaned.trim();
+            const parsedSummary = JSON.parse(_stripJsonCodeFence_(summaryResp));
+            const summaryArr =
+              parsedSummary && Array.isArray(parsedSummary.items)
+                ? parsedSummary.items
+                : [];
+
+            const summaryById = {};
+            summaryArr.forEach(function (o) {
+              if (!o) return;
+              summaryById[String(o.id || "")] = o;
+            });
+
+            promptItems.forEach(function (pi) {
+              const o = summaryById[String(pi.rowIndex)] || {};
+              pi.summaryJa = normalizeSummaryHeader_(
+                decodeJsonNewlines_(String(o.summary || "").trim()),
+              );
+            });
+
+            const headlinePrompt = buildHeadlineOnlyPromptForRows_(promptItems);
+            const tagHeadline = tagBase + ":EFG(headline)";
+
+            let headlineResp = "";
+            if (isOpenAiGroup) {
+              headlineResp = callGpt5MiniWithKey_(
+                getOpenAiApiKey_(tagHeadline),
+                headlinePrompt,
+                tagHeadline,
+                "json_schema_headline_batch",
+              );
+            } else {
+              headlineResp = callGeminiJsonByPurposeWithRotation_(
+                sheetName,
+                chunk[0].sourceVal,
+                headlinePrompt,
+                tagHeadline,
+                "headline",
+                geminiModelForThisGroup,
+              );
             }
 
-            const parsed = JSON.parse(cleaned);
-            // OpenAI json_schema_batch は { items: [...] } で返る想定。
-            // 旧挙動（配列直返し）も許容して両対応にする。
-            const arr = Array.isArray(parsed)
-              ? parsed
-              : parsed && Array.isArray(parsed.items)
-                ? parsed.items
-                : [];
-            const byId = {};
-            if (Array.isArray(arr)) {
-              arr.forEach(function (o) {
-                if (!o) return;
-                const id = String(o.id || "");
-                byId[id] = o;
-              });
+            if (
+              !isOpenAiGroup &&
+              _isGeminiHighDemandErrorResponse_(headlineResp)
+            ) {
+              _deferRowsForGeminiHighDemand_(
+                sh,
+                promptItems,
+                headlineResp,
+                retryKindForGroup,
+              );
+              p += chunk.length;
+              continue;
             }
+
+            if (
+              typeof headlineResp === "string" &&
+              headlineResp.indexOf("ERROR:") === 0
+            ) {
+              promptItems.forEach(function (pi) {
+                _applyOutputsToRow_(
+                  sh,
+                  pi.rowIndex,
+                  pi.prevStatus,
+                  {
+                    sourceVal: pi.sourceVal,
+                    urlVal: pi.urlVal,
+                    titleRaw: pi.titleRaw,
+                    bodyRaw: pi.bodyRaw,
+                  },
+                  headlineResp,
+                  headlineResp,
+                  pi.summaryJa || headlineResp,
+                  headlineResp,
+                  retryKindForGroup,
+                );
+              });
+              p += chunk.length;
+              continue;
+            }
+
+            const parsedHeadline = JSON.parse(
+              _stripJsonCodeFence_(headlineResp),
+            );
+            const headlineArr =
+              parsedHeadline && Array.isArray(parsedHeadline.items)
+                ? parsedHeadline.items
+                : [];
+
+            const headlineById = {};
+            headlineArr.forEach(function (o) {
+              if (!o) return;
+              headlineById[String(o.id || "")] = o;
+            });
+
             promptItems.forEach(function (pi) {
-              const o = byId[String(pi.rowIndex)] || null;
-              if (!o) {
-                const modelLabel = groupKey === "__OPENAI__" ? "GPT" : "Gemini";
+              const h = headlineById[String(pi.rowIndex)] || null;
+              if (!h) {
                 const errMsg =
-                  "ERROR: invalid JSON array from " +
-                  modelLabel +
-                  " (missing id=" +
+                  "ERROR: invalid JSON array from headline call (missing id=" +
                   pi.rowIndex +
                   ")";
                 _applyOutputsToRow_(
@@ -3174,17 +4099,12 @@ function processRowsBatch() {
                   },
                   errMsg,
                   errMsg,
+                  pi.summaryJa || errMsg,
                   errMsg,
-                  errMsg,
-                  groupKey === "__OPENAI__" ? "GPTNG" : "NG",
+                  retryKindForGroup,
                 );
                 return;
               }
-              const hA = String(o.headlineA || "").trim();
-              const hB = String(o.headlineBPrime || o.headlineB || "").trim();
-              const hBF = String(o.headlineBPrimeFewShot || "").trim();
-              const sm = decodeJsonNewlines_(String(o.summary || "").trim());
-              const sm2 = normalizeSummaryHeader_(sm);
 
               _applyOutputsToRow_(
                 sh,
@@ -3196,20 +4116,17 @@ function processRowsBatch() {
                   titleRaw: pi.titleRaw,
                   bodyRaw: pi.bodyRaw,
                 },
-                hA || "",
-                hB || "",
-                sm2 || "",
-                hBF || "",
-                groupKey === "__OPENAI__" ? "GPTNG" : "NG",
+                String(h.headlineA || "").trim(),
+                String(h.headlineBPrime || h.headlineB || "").trim(),
+                pi.summaryJa || "",
+                String(h.headlineBPrimeFewShot || "").trim(),
+                retryKindForGroup,
               );
             });
           } catch (e) {
-            const modelLabel = groupKey === "__OPENAI__" ? "GPT" : "Gemini";
             const errMsg =
-              "ERROR: invalid JSON from " +
-              modelLabel +
-              ": " +
-              String(resp).substring(0, 200);
+              "ERROR: invalid JSON from split batch call: " +
+              String(e && e.message ? e.message : e).substring(0, 200);
             promptItems.forEach(function (pi) {
               _applyOutputsToRow_(
                 sh,
@@ -3225,11 +4142,11 @@ function processRowsBatch() {
                 errMsg,
                 errMsg,
                 errMsg,
-                groupKey === "__OPENAI__" ? "GPTNG" : "NG",
+                retryKindForGroup,
               );
             });
           }
-          p += chunk.length; // 1 or 2
+          p += chunk.length;
         }
       }
     }
@@ -3258,7 +4175,7 @@ function processRowsBatch() {
  *   完了の定義（対象行）:
  *   - A列が埋まっている
  *   - M列・N列が両方埋まっている
- *   - L列が OK または NG(x) かつ x >= MAX_RETRY_COUNT
+ *   - L列が OK / OK(FLASH) / OK(GPT)、または GPTNG(x) かつ x >= GPT_JS_MAX_RETRIES
  *
  *   prod / dev それぞれで、
  *   「対象行のすべてが上記を満たした時点」でメール送信。
@@ -3316,9 +4233,9 @@ function checkAndNotifyAllDoneIfNeededForSheet_(sheetName) {
 
     if (status.startsWith("OK")) {
       isDone = true;
-    } else if (status.startsWith("NG(")) {
-      const retryCount = parseRetryCount_(status);
-      if (retryCount >= MAX_RETRY_COUNT) {
+    } else if (status.startsWith("GPTNG(")) {
+      const retryCount = parseGptRetryCount_(status);
+      if (retryCount >= GPT_JS_MAX_RETRIES) {
         isDone = true;
       }
     }
