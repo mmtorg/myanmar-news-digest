@@ -1583,15 +1583,12 @@ def _existing_row_keys_set() -> set:
     name_to_idx = {n: i for i, n in enumerate(header)}
     idx_J = name_to_idx.get("URL", 9)   # J列
     idx_Q = 16                          # Q列: 内部 row key 用
-    idx_S_legacy = 18                   # 旧配置: S列に残っている row key の移行用
     keys = set()
     for r in rows:
         try:
             row_key = ""
             if len(r) > idx_Q:
                 row_key = (r[idx_Q] or "").strip()
-            if not row_key and len(r) > idx_S_legacy:
-                row_key = (r[idx_S_legacy] or "").strip()
             url = ""
             if len(r) > idx_J:
                 url = (r[idx_J] or "").strip()
