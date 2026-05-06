@@ -1582,13 +1582,16 @@ def _existing_row_keys_set() -> set:
     header, rows, _ = _read_all_rows()
     name_to_idx = {n: i for i, n in enumerate(header)}
     idx_J = name_to_idx.get("URL", 9)   # J列
-    idx_S = 18                          # S列: 内部 row key 用
+    idx_Q = 16                          # Q列: 内部 row key 用
+    idx_S_legacy = 18                   # 旧配置: S列に残っている row key の移行用
     keys = set()
     for r in rows:
         try:
             row_key = ""
-            if len(r) > idx_S:
-                row_key = (r[idx_S] or "").strip()
+            if len(r) > idx_Q:
+                row_key = (r[idx_Q] or "").strip()
+            if not row_key and len(r) > idx_S_legacy:
+                row_key = (r[idx_S_legacy] or "").strip()
             url = ""
             if len(r) > idx_J:
                 url = (r[idx_J] or "").strip()
@@ -1751,7 +1754,7 @@ def cmd_collect_to_sheet(args):
             f"ayeyarwady={is_ay} url={normalized_url}"
         )
 
-        # ★ E/F/G はブランク, S に内部 row key, M にタイトル原文, N に本文原文
+        # ★ E/F/G はブランク, Q に内部 row key, M にタイトル原文, N に本文原文
         rows_to_append.append([
             target.isoformat(),                  # A 日付(配信日)
             ts,                                  # B timestamp
@@ -1767,9 +1770,9 @@ def cmd_collect_to_sheet(args):
             _clip_for_sheet_cell(body),          # N 記事本文原文
             "",                                  # O
             "",                                  # P
-            "",                                  # Q
+            effective_row_key,                   # Q 内部 row key（重複判定用）
             "",                                  # R
-            effective_row_key,                   # S 内部 row key（重複判定用）
+            "",                                  # S
         ])
         existing.add(effective_row_key)
 
