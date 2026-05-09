@@ -1435,7 +1435,7 @@ const GEMINI_HIGH_DEMAND_WAIT_MIN_NORMAL = 60;
 const GEMINI_HIGH_DEMAND_WAIT_MAX_DEFERS = 2; // 最大2回まで延期
 
 const GEMINI_HIGH_DEMAND_BUSY_START_MIN = 18 * 60; // 18:00
-const GEMINI_HIGH_DEMAND_BUSY_END_MIN = 2 * 60; // 翌02:00
+const GEMINI_HIGH_DEMAND_BUSY_END_MIN = 4 * 60; // 翌04:00
 
 function _geminiHighDemandWaitTimeZone_() {
   return Session.getScriptTimeZone() || "Asia/Yangon";
@@ -1449,8 +1449,8 @@ function _minuteOfDayInTimeZone_(date) {
 function _isGeminiHighDemandBusyTime_(date) {
   const t = _minuteOfDayInTimeZone_(date);
 
-  // 18:00〜24:00 または 00:00〜02:00
-  // 02:00ちょうど以降は「それ以外の時間」として60分待機
+  // 18:00〜24:00 または 00:00〜04:00
+  // 04:00ちょうど以降は「それ以外の時間」として60分待機
   return (
     t >= GEMINI_HIGH_DEMAND_BUSY_START_MIN ||
     t < GEMINI_HIGH_DEMAND_BUSY_END_MIN

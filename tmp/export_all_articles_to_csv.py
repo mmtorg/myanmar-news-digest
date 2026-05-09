@@ -44,6 +44,8 @@ import random
 from collections import deque
 import re
 import json
+import hashlib
+from urllib.parse import urlsplit, urlunsplit
 import requests
 from bs4 import BeautifulSoup, Tag
 from dateutil.parser import parse as parse_date
@@ -78,6 +80,20 @@ def daterange_mmt(start: date, end: date) -> Iterable[date]:
     while cur <= end:
         yield cur
         cur += timedelta(days=1)
+
+def deduplicate_by_row_key_or_url(items: List[Dict]) -> List[Dict]:
+    """
+    _row_key 優先で順序保持 dedupe。
+    BBCの同一URL複数トピックは残しつつ、同一トピックの再取得は落とす。
+    """
+    seen = set()
+    out: List[Dict] = []
+    for it in items:
+        key = (it.get("_row_key") or it.get("url") or "").strip()
+        if key and key not in seen:
+            out.append(it)
+            seen.add(key)
+    return out
 
 # ===== BBC Burmese (RSS + 本文取得) =====
 def _bbc_fetch_html_with_bot_bypass(
@@ -165,28 +181,56 @@ def _bbc_extract_body(html: str) -> str:
     body_text = unicodedata.normalize("NFC", body_text or "").strip()
     return body_text
 
-def _bbc_get_text_from_block(block: object) -> str:
+def _bbc_normalize_text(s: str) -> str:
+    """BBC本文/見出し用の軽い正規化。"""
+    s = unicodedata.normalize("NFC", s or "")
+    return re.sub(r"\s+", " ", s).strip()
+
+def _bbc_get_paragraph_texts_from_block(block: object) -> List[str]:
     """
-    BBC Simorgh の block/model 配下から text を再帰的に集めて 1 つの文字列にする。
+    BBC Simorgh block から paragraph の model.text だけを拾う。
+    fragment / altText / caption / recommendations 側の重複 text は拾わない。
     """
     texts: List[str] = []
+    
+    def _add(t: str) -> None:
+        t = _bbc_normalize_text(t)
+        if t and (not texts or texts[-1] != t):
+            texts.append(t)
+
     def _walk(x: object) -> None:
         if isinstance(x, dict):
             t = x.get("text")
-            if isinstance(t, str):
-                t = unicodedata.normalize("NFC", t).strip()
-                if t:
-                    texts.append(t)
-            for v in x.values():
-                _walk(v)
+            typ = x.get("type")
+            model = x.get("model")
+
+            if typ == "paragraph" and isinstance(model, dict):
+                t = model.get("text")
+                if isinstance(t, str):
+                    _add(t)
+                return
+
+            for key in ("blocks", "children", "items"):
+                v = x.get(key)
+                if v is not None:
+                    _walk(v)
+
+            if isinstance(model, dict):
+                for key in ("blocks", "children", "items"):
+                    v = model.get(key)
+                    if v is not None:
+                        _walk(v)
+
         elif isinstance(x, list):
             for v in x:
                 _walk(v)
 
     _walk(block)
-    s = " ".join(texts)
-    s = re.sub(r"\s+", " ", s).strip()
-    return unicodedata.normalize("NFC", s)
+    return texts
+
+def _bbc_get_first_paragraph_text_from_block(block: object) -> str:
+    texts = _bbc_get_paragraph_texts_from_block(block)
+    return texts[0] if texts else ""
 
 # BBC Burmese の「日付ニュース概要 - ...」形式だけを、同一URL複数記事として分割対象にする。
 # 日本語訳ではなく、RSS/ページタイトルに含まれるミャンマー語の形で判定する。
@@ -204,6 +248,32 @@ _BBC_DATE_NEWS_SUMMARY_TITLE_RE = re.compile(
     rf"(?:နိုင်ငံတဝန်း\s*)?သတင်း(?:များ)?\s*အနှစ်ချုပ်\s*[{re.escape(_BBC_BURMESE_DASHES)}]"
 )
 
+_BBC_SUMMARY_PREFIX_RE = re.compile(
+    rf"^\s*(?:{'|'.join(re.escape(m) for m in _BBC_BURMESE_MONTH_NAMES)})"
+    rf"\s*{_BBC_BURMESE_DAY_NUM}\s*ရက်(?:နေ့)?\s*"
+    rf"(?:နိုင်ငံတဝန်း\s*)?သတင်း(?:များ)?\s*အနှစ်ချုပ်\s*"
+    rf"[{re.escape(_BBC_BURMESE_DASHES)}]\s*"
+)
+
+def _canonical_url_without_query(url: str) -> str:
+    p = urlsplit((url or "").strip())
+    return urlunsplit((p.scheme, p.netloc, p.path.rstrip("/"), "", ""))
+
+def _bbc_strip_summary_prefix(title: str) -> str:
+    """先頭 headline に付く「メ 9日 ニュース概要 -」部分だけを落とす。"""
+    return _bbc_normalize_text(
+        _BBC_SUMMARY_PREFIX_RE.sub("", _bbc_normalize_text(title))
+    )
+
+def _bbc_stable_row_key(url: str, title: str) -> str:
+    """
+    BBCの同一URL複数記事を、ページ内順番ではなく見出しで安定識別する。
+    ページ更新で subheadline の順番が変わっても同一トピックを重複追加しない。
+    """
+    base_url = _canonical_url_without_query(url)
+    title_key = _bbc_normalize_text(title)
+    digest = hashlib.sha1(title_key.encode("utf-8")).hexdigest()[:16]
+    return f"{base_url}#bbc-title-{digest}"
 
 def _is_bbc_burmese_date_news_summary_title(title: str) -> bool:
     """
@@ -254,10 +324,8 @@ def _bbc_extract_page_title_from_html(html: str) -> str:
 
 def _bbc_extract_split_articles_from_html(html: str) -> List[Dict]:
     """
-    BBC Burmese の /burmese/articles/... にある「1ページ複数記事」形式を分割する。
-    先頭 headline も 1 記事として扱い、
-    最初の subheadline が出る前の text はその先頭記事の本文に含める。
-    以降は subheadline ごとに 1 記事とみなして、その後続の text を本文として束ねる。
+    BBC Burmese の「日付 + သတင်းအနှစ်ချုပ် - ...」ページを、
+    先頭 headline + 以降の subheadline 単位で複数記事に分割する。
     """
     soup = BeautifulSoup(html, "html.parser")
     next_data_tag = soup.find("script", id="__NEXT_DATA__")
@@ -277,7 +345,7 @@ def _bbc_extract_split_articles_from_html(html: str) -> List[Dict]:
 
     def _flush() -> None:
         nonlocal current_title, current_body_parts, out
-        title = unicodedata.normalize("NFC", (current_title or "").strip())
+        title = _bbc_normalize_text(current_title)
         body = "\n".join(x for x in current_body_parts if x).strip()
         if title and body:
             out.append({
@@ -292,29 +360,29 @@ def _bbc_extract_split_articles_from_html(html: str) -> List[Dict]:
         model = block.get("model") or {}
 
         if btype == "headline":
-            # 先頭 headline は「捨てる」のではなく、最初の記事タイトルとして採用する
+            # 先頭 headline は1本目の記事見出し。ただし「日付ニュース概要 -」は落とす。
             if not seen_page_headline:
                 seen_page_headline = True
-                headline = _bbc_get_text_from_block(model)
+                headline = _bbc_get_first_paragraph_text_from_block(model)
                 if headline:
-                    current_title = headline
+                    current_title = _bbc_strip_summary_prefix(headline)
                     current_body_parts = []
-                continue
+            continue
 
         if btype == "subheadline":
-            # ここで、それまで溜めた
-            # - 先頭 headline 記事
-            # - または直前の subheadline 記事
-            # を確定する
+            # 直前の記事を確定し、次の記事へ切り替える。
             _flush()
-            current_title = _bbc_get_text_from_block(model)
+            current_title = _bbc_get_first_paragraph_text_from_block(model)
             current_body_parts = []
             continue
 
         if btype == "text":
-            txt = _bbc_get_text_from_block(model)
-            if txt and current_title:
-                current_body_parts.append(txt)
+            if current_title:
+                current_body_parts.extend(_bbc_get_paragraph_texts_from_block(model))
+            continue
+
+        # image / video / wsoj / relatedContent / recommendations などは本文として扱わない。
+
     _flush()
     return out
 
@@ -379,7 +447,7 @@ def collect_bbc_all_for_date(target_date_mmt: date) -> List[Dict]:
 
             # BBC の「日付ニュース概要 - ...」形式だけ、1URL内の複数記事として分割して別レコード化
             if split_items:
-                for idx, part in enumerate(split_items, start=1):
+                for part in split_items:
                     part_title = unicodedata.normalize(
                         "NFC", (part.get("title") or "").strip()
                     )
@@ -395,7 +463,7 @@ def collect_bbc_all_for_date(target_date_mmt: date) -> List[Dict]:
                             "url": url,
                             "date": target_date_mmt.isoformat(),
                             "body": part_body,
-                            "_row_key": f"{url}#bbc-{idx}",
+                            "_row_key": _bbc_stable_row_key(url, part_title),
                         }
                     )
                 continue
@@ -3307,9 +3375,9 @@ def main(argv=None):
         all_rows.extend(collect_jetro_biznews_mm_all_for_date(d, max_pages=1))
 
     # 重複除去の前後をログ
-    print(f"Dedup by URL: before={len(all_rows)}")
-    all_rows = deduplicate_by_url(all_rows)
-    print(f"Dedup by URL: after={len(all_rows)}")
+    print(f"Dedup by row_key or URL: before={len(all_rows)}")
+    all_rows = deduplicate_by_row_key_or_url(all_rows)
+    print(f"Dedup by row_key or URL: after={len(all_rows)}")
 
     # レート制御ログ
     print(f"Rate limit: rpm={args.rpm}, min_interval={args.min_interval}s, jitter<= {args.jitter}s")
