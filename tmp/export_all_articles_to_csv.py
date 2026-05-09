@@ -186,10 +186,18 @@ def _bbc_normalize_text(s: str) -> str:
     s = unicodedata.normalize("NFC", s or "")
     return re.sub(r"\s+", " ", s).strip()
 
+_BBC_SKIP_TEXT_BLOCK_TYPES = {
+    "unorderedList",
+    "orderedList",
+    "listItem",
+    "urlLink",
+}
+
 def _bbc_get_paragraph_texts_from_block(block: object) -> List[str]:
     """
     BBC Simorgh block から paragraph の model.text だけを拾う。
     fragment / altText / caption / recommendations 側の重複 text は拾わない。
+    unorderedList / orderedList / listItem / urlLink 配下の関連記事リンクも本文として拾わない。
     """
     texts: List[str] = []
     
@@ -198,11 +206,15 @@ def _bbc_get_paragraph_texts_from_block(block: object) -> List[str]:
         if t and (not texts or texts[-1] != t):
             texts.append(t)
 
-    def _walk(x: object) -> None:
+    def _walk(x: object, *, inside_skip_block: bool = False) -> None:
         if isinstance(x, dict):
             t = x.get("text")
             typ = x.get("type")
             model = x.get("model")
+
+            # 箇条書きリンク・関連記事リンク配下は本文ではないので丸ごと除外
+            if typ in _BBC_SKIP_TEXT_BLOCK_TYPES or inside_skip_block:
+                return
 
             if typ == "paragraph" and isinstance(model, dict):
                 t = model.get("text")
@@ -213,17 +225,17 @@ def _bbc_get_paragraph_texts_from_block(block: object) -> List[str]:
             for key in ("blocks", "children", "items"):
                 v = x.get(key)
                 if v is not None:
-                    _walk(v)
+                    _walk(v, inside_skip_block=False)
 
             if isinstance(model, dict):
                 for key in ("blocks", "children", "items"):
                     v = model.get(key)
                     if v is not None:
-                        _walk(v)
+                        _walk(v, inside_skip_block=False)
 
         elif isinstance(x, list):
             for v in x:
-                _walk(v)
+                _walk(v, inside_skip_block=inside_skip_block)
 
     _walk(block)
     return texts
@@ -379,6 +391,15 @@ def _bbc_extract_split_articles_from_html(html: str) -> List[Dict]:
         if btype == "text":
             if current_title:
                 current_body_parts.extend(_bbc_get_paragraph_texts_from_block(model))
+            continue
+
+        if btype in {
+            "unorderedList",
+            "orderedList",
+            "listItem",
+            "links",
+            "relatedContent",
+        }:
             continue
 
         # image / video / wsoj / relatedContent / recommendations などは本文として扱わない。
