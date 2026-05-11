@@ -2019,7 +2019,8 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
     対象MMT日付の記事を取得（キーワード絞り込みなし）。
     """
     from curl_cffi.requests import Session as CurlSession
-    import xml.etree.ElementTree as ET  
+    import xml.etree.ElementTree as ET
+    from types import SimpleNamespace
 
     BASE_CATEGORIES = [
         "https://www.gnlm.com.mm/category/national/",
@@ -2086,6 +2087,82 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
 
     def _mmt_date(dt_utc: datetime) -> date:
         return dt_utc.astimezone(MMT).date()
+
+    def _gnlm_looks_like_blocked_page(html: str) -> bool:
+        """Cloudflare / bot challenge など、GNLM本文・一覧として使えないHTMLを判定する。"""
+        head = (html or "")[:5000].lower()
+        return (
+            "just a moment" in head
+            or "cf-browser-verification" in head
+            or "challenges.cloudflare.com" in head
+            or "attention required" in head
+            or "cloudflare" in head
+            or "target url returned error 403" in head
+            or "why_captcha" in head
+        )
+
+    def _gnlm_html_usable(html: str, *, kind: str) -> bool:
+        """
+        BrightData等で返ってきたHTMLが、GNLMの一覧/記事として使えるかを確認する。
+        kind: "list" or "article"
+        """
+        html = (html or "").strip()
+        if not html or _gnlm_looks_like_blocked_page(html):
+            return False
+
+        soup = BeautifulSoup(html, "html.parser")
+        if kind == "list":
+            return bool(soup.select("article.archives-page"))
+
+        # 記事ページは entry-content 内の p / h3 / 段落風 div のいずれかがあれば usable とする
+        content = soup.select_one("div.entry-content")
+        if not content:
+            return False
+        if content.find("p") or content.find("h3"):
+            return True
+        return any(_gnlm_div_looks_like_paragraph(div) for div in content.find_all("div"))
+
+    def _fetch_gnlm_via_brightdata(url: str, *, kind: str, allow_browser: bool = True) -> tuple[str, str]:
+        """
+        GNLM専用 BrightData fallback。
+        curl_cffi → cloudscraper の後に呼ぶ想定で、Irrawaddy と同じ順番で
+        Web Unlocker → Browser API を試す。
+        戻り値: (html, source) source は unlocker/browser/none。
+        """
+        # 1) BrightData Web Unlocker
+        try:
+            html = (fetch_html_via_brightdata_unlocker(
+                url,
+                timeout=BD_UNLOCKER_TIMEOUT,
+                retry_once=False,
+            ) or "").strip()
+            if _gnlm_html_usable(html, kind=kind):
+                print(f"[gnlm] brightdata unlocker ok kind={kind} len={len(html)} url={url}")
+                return html, "unlocker"
+            if html:
+                print(
+                    f"[gnlm] brightdata unlocker unusable kind={kind} "
+                    f"blocked={_gnlm_looks_like_blocked_page(html)} len={len(html)} url={url}"
+                )
+        except Exception as e:
+            print(f"[gnlm] brightdata unlocker failed kind={kind}: {e} url={url}")
+
+        # 2) BrightData Browser API
+        if allow_browser:
+            try:
+                html = (fetch_html_via_brightdata_browser(url) or "").strip()
+                if _gnlm_html_usable(html, kind=kind):
+                    print(f"[gnlm] brightdata browser ok kind={kind} len={len(html)} url={url}")
+                    return html, "browser"
+                if html:
+                    print(
+                        f"[gnlm] brightdata browser unusable kind={kind} "
+                        f"blocked={_gnlm_looks_like_blocked_page(html)} len={len(html)} url={url}"
+                    )
+            except Exception as e:
+                print(f"[gnlm] brightdata browser failed kind={kind}: {e} url={url}")
+
+        return "", "none"
 
     # --- RSS helpers ---
     def _rss_items(url: str) -> list[dict]:
@@ -2272,7 +2349,13 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
                         raise Exception(f"status={res.status_code}")
                 except Exception as e2:
                     print(f"[gnlm] cloudscraper list fetch failed: {e2} url={list_url}")
-                    break  # このカテゴリは諦める
+
+                    # C: BrightData fallback（Irrawaddy と同じく Web Unlocker → Browser API）
+                    bd_html, bd_source = _fetch_gnlm_via_brightdata(list_url, kind="list")
+                    if not bd_html:
+                        break  # このカテゴリは諦める
+                    res = SimpleNamespace(status_code=200, text=bd_html, content=bd_html.encode("utf-8", "ignore"), url=list_url)
+                    print(f"[gnlm] list fetch recovered via brightdata source={bd_source} url={list_url}")
 
             soup = BeautifulSoup(res.text, "html.parser")
             articles = soup.select("article.archives-page")
@@ -2344,17 +2427,23 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
             except Exception as e2:
                 print(f"[gnlm] cloudscraper article fetch failed: {e2} url={url}")
 
-                # 本文は取れないが、タイトル+URLだけでも残す
-                t = (fallback_titles.get(url) or "").strip() or _title_from_slug(url)
-                if t:
-                    out.append({
-                        "source": "Global New Light Of Myanmar (国営紙)",
-                        "title": unicodedata.normalize("NFC", t).strip(),
-                        "url": url,
-                        "date": target_date_mmt.isoformat(),
-                        "body": "",
-                    })
-                continue
+                # C: BrightData fallback（Irrawaddy と同じく Web Unlocker → Browser API）
+                bd_html, bd_source = _fetch_gnlm_via_brightdata(url, kind="article")
+                if bd_html:
+                    res = SimpleNamespace(status_code=200, text=bd_html, content=bd_html.encode("utf-8", "ignore"), url=url)
+                    print(f"[gnlm] article fetch recovered via brightdata source={bd_source} url={url}")
+                else:
+                    # 本文は取れないが、タイトル+URLだけでも残す
+                    t = (fallback_titles.get(url) or "").strip() or _title_from_slug(url)
+                    if t:
+                        out.append({
+                            "source": "Global New Light Of Myanmar (国営紙)",
+                            "title": unicodedata.normalize("NFC", t).strip(),
+                            "url": url,
+                            "date": target_date_mmt.isoformat(),
+                            "body": "",
+                        })
+                    continue
 
         soup = BeautifulSoup(res.text, "html.parser")
 
