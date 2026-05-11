@@ -1212,13 +1212,14 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
         def _looks_like_cloudflare_block(s: str) -> bool:
             if not s:
                 return False
-            low = s.lower()
+            head = s[:5000].lower()
             return (
-                "just a moment" in low
-                or "cf-browser-verification" in low
-                or "challenges.cloudflare.com" in low
-                or "attention required" in low
-                or "cloudflare" in low
+                "just a moment" in head
+                or "cf-browser-verification" in head
+                or "challenges.cloudflare.com" in head
+                or "attention required" in head
+                or "challenge-platform" in head
+                or "why_captcha" in head
             )
 
         def _is_article_url(u: str) -> bool:
@@ -1257,7 +1258,7 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
             except Exception:
                 content_type = ""
 
-            html = getattr(res, "content", None) or getattr(res, "text", "") or ""
+            html = _to_text(getattr(res, "content", None) or getattr(res, "text", "") or "")
             usable = _is_usable_article_html(url, html)
             blocked = _looks_like_cloudflare_block(html)
             if html and usable and status != 403:
@@ -1812,17 +1813,21 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
                 dt = parse_date(pub)
             except Exception:
                 dt = None
-            real_link = link
+            real_link = ""
             try:
                 if "news.google.com" in urlparse(link).netloc.lower():
                     real_link = _resolve_google_news_link_irrawaddy(link)
+                else:
+                    real_link = link
             except Exception:
-                real_link = link
+                real_link = ""
+
+            final_link = (real_link or "").strip()
+            if not final_link:
+                continue
 
             if debug and link != real_link:
                 print(f"[irrawaddy][gnews] resolved {link} -> {real_link}")
-
-            final_link = (real_link or link or "").strip()
                 
             if final_link and dt and _mmt_date(dt) == target_date_mmt and not _is_excluded_url(final_link):
                 if final_link not in seen_urls:
@@ -1879,7 +1884,7 @@ def collect_irrawaddy_all_for_date(target_date_mmt: date, debug: bool = False) -
             origin = origins.get(url)
             hint_date = hint.get("date") if hint else None
             hint_matches_target = (
-                origin in ("wp-json", "feed")
+                origin in ("wp-json", "feed", "gnews")
                 and hint_date == target_date_mmt.isoformat()
             )
 
