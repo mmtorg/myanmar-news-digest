@@ -89,6 +89,7 @@ const COMMON_TRANSLATION_RULES = `
 
 【日付の扱いルール】
 - 原文に年が書かれていない日付に年を補わないこと（「12月4日」のように月日のみで表記）。
+- 「ယနေ့ (မေ ၉)」「May 9」「9 May」のように月日だけが書かれている場合は、「5月9日」のように月日のみで訳す。記事公開年・現在年・取得年・URL・メタデータから年を推測して補わない。
 - 「原文の別箇所に同じ年がある」ことは年付与の根拠にならない。
   例）「March 2026」と「28 December」が混在しても、要約で「2026年12月28日」としてはならない。
 - 年を出力してよい条件：原文の同じ日付表現に年が結び付いている場合のみ（例：2026年3月、March 2026、၂၀၂၆ ခုနှစ် မတ်လ）。
@@ -2749,6 +2750,13 @@ function processRow_(sheet, row, prevStatus) {
         summaryJa = decodeJsonNewlines_((obj.summary || "").toString().trim());
         summaryJa = normalizeSummaryHeader_(summaryJa);
 
+        // ★ 原文にない年付き日付を補正
+        summaryJa = stripUnjustifiedYearsFromSummaryDates_(
+          summaryJa,
+          titleRaw,
+          bodyRaw,
+        );
+
         // ★ まず「クロー / crore」を日本語のルピー表記へ正規化
         summaryJa = normalizeRupeeCroreInText_(summaryJa);
         // ★ まず「チャット以外」の（約◯◯円）を削除（ドル等の誤換算対策）
@@ -2767,6 +2775,14 @@ function processRow_(sheet, row, prevStatus) {
 
           if (!(typeof resp2 === "string" && resp2.indexOf("ERROR:") === 0)) {
             summaryJa = normalizeSummaryHeader_(String(resp2 || "").trim());
+
+            // ★ 圧縮後に年が再混入した場合も補正
+            summaryJa = stripUnjustifiedYearsFromSummaryDates_(
+              summaryJa,
+              titleRaw,
+              bodyRaw,
+            );
+
             // 圧縮後も円表記補正をかけ直す
             summaryJa = normalizeRupeeCroreInText_(summaryJa);
             summaryJa = removeYenForNonKyat_(summaryJa);
@@ -3168,6 +3184,138 @@ function zenkakuDigitsToAscii_(s) {
   );
 }
 
+// ============================================================
+// 日付の年補完を機械的に補正
+// - 要約に「2024年5月9日」のような年付き日付が出た場合、
+//   原文の同じ日付表現に年が結び付いていなければ「5月9日」に戻す。
+// - 特定記事専用ではなく、任意の YYYY年M月D日 を対象にする。
+// ============================================================
+
+function normalizeDigitsForDateCheck_(s) {
+  return (
+    String(s || "")
+      // 全角数字 → 半角
+      .replace(/[０-９]/g, function (ch) {
+        return String.fromCharCode(ch.charCodeAt(0) - 0xfee0);
+      })
+      // ミャンマー数字 → 半角
+      .replace(/[၀-၉]/g, function (ch) {
+        return String(ch.charCodeAt(0) - 0x1040);
+      })
+      .replace(/[\u200B-\u200D\uFEFF]/g, "")
+      .replace(/\s+/g, " ")
+      .trim()
+  );
+}
+
+function monthNamePatternsForDateCheck_(month) {
+  const en = {
+    1: ["january", "jan"],
+    2: ["february", "feb"],
+    3: ["march", "mar"],
+    4: ["april", "apr"],
+    5: ["may"],
+    6: ["june", "jun"],
+    7: ["july", "jul"],
+    8: ["august", "aug"],
+    9: ["september", "sep", "sept"],
+    10: ["october", "oct"],
+    11: ["november", "nov"],
+    12: ["december", "dec"],
+  };
+
+  const mm = {
+    1: ["ဇန်နဝါရီ", "ဇန္နဝါရီ"],
+    2: ["ဖေဖော်ဝါရီ", "ဖေဖော်ဝါရီလ"],
+    3: ["မတ်", "မတ်လ"],
+    4: ["ဧပြီ", "ဧပြီလ"],
+    5: ["မေ", "မေလ"],
+    6: ["ဇွန်", "ဇွန်လ"],
+    7: ["ဇူလိုင်", "ဇူလိုင်လ"],
+    8: ["ဩဂုတ်", "သြဂုတ်", "ဩဂုတ်လ", "သြဂုတ်လ"],
+    9: ["စက်တင်ဘာ", "စက်တင်ဘာလ"],
+    10: ["အောက်တိုဘာ", "အောက်တိုဘာလ"],
+    11: ["နိုဝင်ဘာ", "နိုဝင်ဘာလ"],
+    12: ["ဒီဇင်ဘာ", "ဒီဇင်ဘာလ"],
+  };
+
+  return []
+    .concat(en[month] || [])
+    .concat(mm[month] || [])
+    .concat([month + "月", ("0" + month).slice(-2) + "月"]);
+}
+
+function sourceHasSameDateWithYear_(sourceText, year, month, day) {
+  const src = normalizeDigitsForDateCheck_(sourceText).toLowerCase();
+  const y = String(year);
+  const m = Number(month);
+  const d = Number(day);
+
+  if (!m || !d) return false;
+
+  const mNum = "0?" + m;
+  const dNum = "0?" + d;
+
+  // 2024-05-09 / 2024/5/9 / 2024年5月9日
+  const numericPatterns = [
+    new RegExp(
+      "\\b" + y + "\\s*[./-]\\s*" + mNum + "\\s*[./-]\\s*" + dNum + "\\b",
+    ),
+    new RegExp(y + "\\s*年\\s*" + mNum + "\\s*月\\s*" + dNum + "\\s*日?"),
+    new RegExp(
+      "\\b" + dNum + "\\s*[./-]\\s*" + mNum + "\\s*[./-]\\s*" + y + "\\b",
+    ),
+    new RegExp(
+      "\\b" + mNum + "\\s*[./-]\\s*" + dNum + "\\s*[./-]\\s*" + y + "\\b",
+    ),
+  ];
+  if (
+    numericPatterns.some(function (re) {
+      return re.test(src);
+    })
+  ) {
+    return true;
+  }
+
+  const monthPat =
+    "(?:" +
+    monthNamePatternsForDateCheck_(m).map(escapeRegExp_).join("|") +
+    ")";
+  const dayPat = dNum + "\\s*(?:日|ရက်|ရက္)?";
+  const yearPat = y + "\\s*(?:年|ခုနှစ်|ခုနွစ်|ခုႏွစ္)?";
+  const near = "[\\s\\S]{0,45}";
+
+  const namedPatterns = [
+    // 2024 ခုနှစ် မေ ၉
+    new RegExp(yearPat + near + monthPat + near + dayPat, "i"),
+    // မေ ၉ 2024 / May 9 2024
+    new RegExp(monthPat + near + dayPat + near + yearPat, "i"),
+    // 9 May 2024
+    new RegExp(dayPat + near + monthPat + near + yearPat, "i"),
+  ];
+
+  return namedPatterns.some(function (re) {
+    return re.test(src);
+  });
+}
+
+function stripUnjustifiedYearsFromSummaryDates_(summaryJa, titleRaw, bodyRaw) {
+  const sourceText = String(titleRaw || "") + "\n" + String(bodyRaw || "");
+  return String(summaryJa || "").replace(
+    /((?:19|20)\d{2})年([0-9０-９]{1,2})月([0-9０-９]{1,2})日/g,
+    function (match, year, monthRaw, dayRaw) {
+      const month = Number(zenkakuDigitsToAscii_(monthRaw));
+      const day = Number(zenkakuDigitsToAscii_(dayRaw));
+
+      if (sourceHasSameDateWithYear_(sourceText, year, month, day)) {
+        return match;
+      }
+
+      return month + "月" + day + "日";
+    },
+  );
+}
+
 // 例: "5400億チャット" / "1兆2345億6789万チャット" -> 整数チャット
 function parseJaKyatToInt_(s) {
   const t = String(s || "")
@@ -3555,6 +3703,13 @@ function _applyOutputsToRow_(
   const titleRaw = ctx.titleRaw;
   const bodyRaw = ctx.bodyRaw;
 
+  // ★ 原文にない年付き日付を補正
+  summaryJa = stripUnjustifiedYearsFromSummaryDates_(
+    summaryJa,
+    titleRaw,
+    bodyRaw,
+  );
+
   // ★ まず「クロー / crore」を日本語のルピー表記へ正規化
   summaryJa = normalizeRupeeCroreInText_(summaryJa);
   // ★ まず「チャット以外」の（約◯◯円）を削除（ドル等の誤換算対策）
@@ -3578,6 +3733,14 @@ function _applyOutputsToRow_(
 
       if (!(typeof resp2 === "string" && resp2.indexOf("ERROR:") === 0)) {
         summaryJa = normalizeSummaryHeader_(String(resp2 || "").trim());
+
+        // ★ 圧縮後に年が再混入した場合も補正
+        summaryJa = stripUnjustifiedYearsFromSummaryDates_(
+          summaryJa,
+          titleRaw,
+          bodyRaw,
+        );
+
         // 圧縮後も円表記補正をかけ直す
         summaryJa = normalizeRupeeCroreInText_(summaryJa);
         summaryJa = removeYenForNonKyat_(summaryJa);
@@ -4001,6 +4164,13 @@ function processRowsBatch() {
               const o = summaryById[String(pi.rowIndex)] || {};
               pi.summaryJa = normalizeSummaryHeader_(
                 decodeJsonNewlines_(String(o.summary || "").trim()),
+              );
+
+              // ★ 見出し生成に渡す前にも、原文にない年付き日付を補正
+              pi.summaryJa = stripUnjustifiedYearsFromSummaryDates_(
+                pi.summaryJa,
+                pi.titleRaw,
+                pi.bodyRaw,
               );
             });
 
