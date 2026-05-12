@@ -2719,23 +2719,231 @@ def collect_frontier_all_for_date(
     debug: bool = False,
 ) -> List[Dict]:
     """
-    Frontier Myanmar の英語版 RSS から、
-    対象 MMT 日付の記事を収集する。
+    Frontier Myanmar の英語版 RSS から、対象 MMT 日付の記事を収集する。
 
-    - RSS で当日記事の URL / タイトルを取得
-    - 各記事 HTML からタイトル / 本文を可能な範囲で抽出
+    403 / Cloudflare / bot challenge 対策として、GNLM / Irrawaddy と同じ方針で
+    direct → cloudscraper → BrightData Web Unlocker → BrightData Browser API の順に試す。
     """
     feed_url = "https://www.frontiermyanmar.net/en/feed/"
-
     session = _make_pooled_session()
-    try:
-        res = session.get(feed_url, timeout=15)
-        res.raise_for_status()
-    except Exception as e:
-        print(f"[frontier] RSS取得失敗: {e}")
+
+    FRONTIER_HEADERS = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/128.0.0.0 Safari/537.36"
+        ),
+        "Accept": "application/rss+xml,application/xml,text/xml,text/html,application/xhtml+xml,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.frontiermyanmar.net/en/",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+        "Connection": "keep-alive",
+    }
+
+    def _to_text(payload) -> str:
+        if isinstance(payload, (bytes, bytearray)):
+            return payload.decode("utf-8", "ignore")
+        return payload or ""
+
+    def _looks_like_blocked_page(html: str) -> bool:
+        head = (html or "")[:5000].lower()
+        return (
+            "just a moment" in head
+            or "cf-browser-verification" in head
+            or "challenges.cloudflare.com" in head
+            or "attention required" in head
+            or "cloudflare" in head
+            or "target url returned error 403" in head
+            or "why_captcha" in head
+            or "access denied" in head
+            or "forbidden" in head and "<rss" not in head and "<feed" not in head
+        )
+
+    def _frontier_payload_usable(html: str, *, kind: str) -> bool:
+        html = (html or "").strip()
+        if not html or _looks_like_blocked_page(html):
+            return False
+
+        low = html[:3000].lower()
+        if kind == "feed":
+            return ("<rss" in low) or ("<feed" in low) or ("<rdf:rdf" in low)
+
+        soup = BeautifulSoup(html, "html.parser")
+        # 記事ページは、タイトルだけでもRSS由来の候補を残せるので、本文必須にはしない。
+        if soup.find("meta", attrs={"property": "og:title"}) or soup.find("h1"):
+            return True
+        if soup.select_one("div.post-content-single div.elementor-widget-container"):
+            return True
+        if soup.find("div", class_=re.compile("post-content-single|theme-post-content|entry-content", re.I)):
+            return True
+        return bool(soup.find("p"))
+
+    def _fetch_frontier(url: str, *, kind: str, allow_browser: bool = True) -> tuple[str, str]:
+        """
+        Frontier Myanmar 用の403耐性付き取得。
+        戻り値: (html_or_xml, source) source は curl_cffi/cloudscraper/requests/unlocker/browser/none。
+        """
+        # 1) curl_cffi: Chrome 指紋で直接取得
+        try:
+            from curl_cffi import requests as cfr  # type: ignore
+            r = cfr.get(
+                url,
+                headers=FRONTIER_HEADERS,
+                impersonate="chrome124",
+                timeout=30,
+                allow_redirects=True,
+            )
+            html = _to_text(getattr(r, "text", "") or getattr(r, "content", b""))
+            if getattr(r, "status_code", None) == 200 and _frontier_payload_usable(html, kind=kind):
+                if debug:
+                    print(f"[frontier] curl_cffi ok kind={kind} len={len(html)} url={url}")
+                return html, "curl_cffi"
+            if debug:
+                print(
+                    f"[frontier] curl_cffi unusable kind={kind} "
+                    f"status={getattr(r, 'status_code', None)} blocked={_looks_like_blocked_page(html)} "
+                    f"len={len(html or '')} url={url}"
+                )
+        except Exception as e:
+            if debug:
+                print(f"[frontier] curl_cffi failed kind={kind}: {e} url={url}")
+
+        # 2) cloudscraper: Cloudflare系の軽いブロック対策
+        try:
+            import cloudscraper
+            scraper = cloudscraper.create_scraper(
+                browser={"browser": "chrome", "platform": "windows", "desktop": True}
+            )
+            r = scraper.get(url, headers=FRONTIER_HEADERS, timeout=30, allow_redirects=True)
+            html = _to_text(getattr(r, "text", "") or getattr(r, "content", b""))
+            if getattr(r, "status_code", None) == 200 and _frontier_payload_usable(html, kind=kind):
+                if debug:
+                    print(f"[frontier] cloudscraper ok kind={kind} len={len(html)} url={url}")
+                return html, "cloudscraper"
+            if debug:
+                print(
+                    f"[frontier] cloudscraper unusable kind={kind} "
+                    f"status={getattr(r, 'status_code', None)} blocked={_looks_like_blocked_page(html)} "
+                    f"len={len(html or '')} url={url}"
+                )
+        except Exception as e:
+            if debug:
+                print(f"[frontier] cloudscraper failed kind={kind}: {e} url={url}")
+
+        # 3) requests: 既存の pooled session でも一度試す
+        try:
+            r = session.get(url, headers=FRONTIER_HEADERS, timeout=20, allow_redirects=True)
+            html = _to_text(getattr(r, "text", "") or getattr(r, "content", b""))
+            if getattr(r, "status_code", None) == 200 and _frontier_payload_usable(html, kind=kind):
+                if debug:
+                    print(f"[frontier] requests ok kind={kind} len={len(html)} url={url}")
+                return html, "requests"
+            print(
+                f"[frontier] direct fallback kind={kind} status={getattr(r, 'status_code', None)} "
+                f"blocked={_looks_like_blocked_page(html)} len={len(html or '')} url={url}"
+            )
+        except Exception as e:
+            print(f"[frontier] direct fetch failed kind={kind}: {e} url={url}")
+
+        # 4) BrightData Web Unlocker
+        try:
+            html = (fetch_html_via_brightdata_unlocker(
+                url,
+                timeout=BD_UNLOCKER_TIMEOUT,
+                retry_once=False,
+            ) or "").strip()
+            if _frontier_payload_usable(html, kind=kind):
+                print(f"[frontier] brightdata unlocker ok kind={kind} len={len(html)} url={url}")
+                return html, "unlocker"
+            if html:
+                print(
+                    f"[frontier] brightdata unlocker unusable kind={kind} "
+                    f"blocked={_looks_like_blocked_page(html)} len={len(html)} url={url}"
+                )
+        except Exception as e:
+            print(f"[frontier] brightdata unlocker failed kind={kind}: {e} url={url}")
+
+        # 5) BrightData Browser API
+        if allow_browser:
+            try:
+                html = (fetch_html_via_brightdata_browser(url) or "").strip()
+                if _frontier_payload_usable(html, kind=kind):
+                    print(f"[frontier] brightdata browser ok kind={kind} len={len(html)} url={url}")
+                    return html, "browser"
+                if html:
+                    print(
+                        f"[frontier] brightdata browser unusable kind={kind} "
+                        f"blocked={_looks_like_blocked_page(html)} len={len(html)} url={url}"
+                    )
+            except Exception as e:
+                print(f"[frontier] brightdata browser failed kind={kind}: {e} url={url}")
+
+        return "", "none"
+
+    def _extract_frontier_body(article: BeautifulSoup) -> str:
+        host = (
+            article.select_one("div.post-content-single div.elementor-widget-container")
+            or article.find("div", class_=re.compile("post-content-single|theme-post-content", re.I))
+            or article.find("div", class_=re.compile("entry-content", re.I))
+            or article
+        )
+
+        parts: List[str] = []
+        PAYWALL_CLASS_RE = re.compile(r"\b(pmpro|pmpro_card|pmpro_card_content)\b", re.I)
+        RELATED_CLASS_RE = re.compile(r"(related|more-stories|elementor-post|share)", re.I)
+
+        for node in host.find_all(["p", "h2", "h3", "li"]):
+            if node.find_parent("div", class_=PAYWALL_CLASS_RE):
+                continue
+            if node.find_parent(class_=RELATED_CLASS_RE):
+                continue
+
+            text = node.get_text(" ", strip=True)
+            if not text:
+                continue
+
+            lower = text.lower()
+            if "you must have an account to access this content" in lower:
+                continue
+            if text.strip() in ("Create Account", "Account Required"):
+                continue
+            if lower.startswith("already a member?"):
+                continue
+
+            parts.append(re.sub(r"\s+", " ", text))
+
+        body = "\n".join(parts).strip()
+
+        if not body:
+            paras = extract_paragraphs_with_wait(host or article)
+            tmp_parts = []
+            for p in paras:
+                text = p.get_text(" ", strip=True)
+                if not text:
+                    continue
+                lower = text.lower()
+                if "you must have an account to access this content" in lower:
+                    continue
+                if text.strip() in ("Create Account", "Account Required"):
+                    continue
+                if lower.startswith("already a member?"):
+                    continue
+                tmp_parts.append(re.sub(r"\s+", " ", text))
+            body = "\n".join(tmp_parts).strip()
+
+        return unicodedata.normalize("NFC", body or "")
+
+    # --- RSS取得: ここが今回の403対策の主眼 ---
+    feed_xml, feed_source = _fetch_frontier(feed_url, kind="feed", allow_browser=True)
+    if not feed_xml:
+        print(f"[frontier] RSS取得失敗: all fallbacks exhausted url={feed_url}")
         return []
 
-    soup = BeautifulSoup(res.content, "xml")
+    if debug:
+        print(f"[frontier] RSS fetched source={feed_source} len={len(feed_xml)} url={feed_url}")
+
+    soup = BeautifulSoup(feed_xml, "xml")
 
     candidates: List[Dict] = []
     for item in soup.find_all("item"):
@@ -2759,11 +2967,10 @@ def collect_frontier_all_for_date(
         if dt.date() != target_date_mmt:
             continue
 
-        title = unicodedata.normalize("NFC", title_raw)
         candidates.append(
             {
                 "url": url,
-                "title": title,
+                "title": unicodedata.normalize("NFC", title_raw),
                 "date": dt.isoformat(),
             }
         )
@@ -2777,98 +2984,39 @@ def collect_frontier_all_for_date(
         url = item["url"]
         title = item["title"]
         art_date_iso = item["date"]
-
         body = ""
-        try:
-            res = session.get(url, timeout=15)
-            html = getattr(res, "content", None) or getattr(res, "text", "")
-            article = BeautifulSoup(html, "html.parser")
 
-            # og:title / h1 / <title> でタイトルを上書き（あれば）
-            og = article.find("meta", attrs={"property": "og:title"})
-            if og and og.get("content"):
-                title = unicodedata.normalize("NFC", og["content"].strip()) or title
-            else:
-                h1 = article.find("h1")
-                if h1:
-                    title = unicodedata.normalize("NFC", h1.get_text(strip=True)) or title
-                elif article.title:
-                    title = unicodedata.normalize(
-                        "NFC", article.title.get_text(strip=True)
-                    ) or title
+        html, article_source = _fetch_frontier(url, kind="article", allow_browser=True)
+        if html:
+            try:
+                article = BeautifulSoup(html, "html.parser")
 
-            # 本文抽出（Frontier 用）
-            host = (
-                # 一番確実：本文を持っているコンテナ
-                article.select_one("div.post-content-single div.elementor-widget-container")
-                # それが無い場合：post-content-single / theme-post-content を優先
-                or article.find("div", class_=re.compile("post-content-single|theme-post-content", re.I))
-                # さらに古いテンプレ互換：entry-content
-                or article.find("div", class_=re.compile("entry-content", re.I))
-                # 最後の手段
-                or article
-            )
+                # og:title / h1 / <title> でタイトルを上書き（あれば）
+                og = article.find("meta", attrs={"property": "og:title"})
+                if og and og.get("content"):
+                    title = unicodedata.normalize("NFC", og["content"].strip()) or title
+                else:
+                    h1 = article.find("h1")
+                    if h1:
+                        title = unicodedata.normalize("NFC", h1.get_text(strip=True)) or title
+                    elif article.title:
+                        title = unicodedata.normalize(
+                            "NFC", article.title.get_text(strip=True)
+                        ) or title
 
-            parts: List[str] = []
+                body = _extract_frontier_body(article)
 
-            PAYWALL_CLASS_RE = re.compile(r"\b(pmpro|pmpro_card|pmpro_card_content)\b", re.I)
-            RELATED_CLASS_RE = re.compile(r"(related|more-stories|elementor-post|share)", re.I)
-
-            for node in host.find_all(["p", "h2", "h3", "li"]):
-                # --- 1) Paywall ブロックだけをスキップ ---
-                # div.pmpro / div.pmpro_card / div.pmpro_card_content の中にある要素のみ弾く
-                if node.find_parent("div", class_=PAYWALL_CLASS_RE):
-                    continue
-
-                # --- 2) More stories / Related stories などもスキップ ---
-                if node.find_parent(class_=RELATED_CLASS_RE):
-                    continue
-
-                text = node.get_text(" ", strip=True)
-                if not text:
-                    continue
-
-                # --- 3) テキストベースのフィルタ（保険） ---
-                lower = text.lower()
-                if "you must have an account to access this content" in lower:
-                    continue
-                if text.strip() in ("Create Account", "Account Required"):
-                    continue
-                if lower.startswith("already a member?"):
-                    continue
-
-                # 余計な空白をつぶす
-                text = re.sub(r"\s+", " ", text)
-                parts.append(text)
-
-            body = "\n".join(parts).strip()
-
-            # fallback: 共通の段落抽出ユーティリティ（host ベース）
-            if not body:
-                paras = extract_paragraphs_with_wait(host or article)
-                tmp_parts = []
-                for p in paras:
-                    text = p.get_text(" ", strip=True)
-                    if not text:
-                        continue
-                    # 上と同じフィルタを軽くかける（最低限でOK）
-                    lower = text.lower()
-                    if "you must have an account to access this content" in lower:
-                        continue
-                    if text.strip() in ("Create Account", "Account Required"):
-                        continue
-                    if lower.startswith("already a member?"):
-                        continue
-
-                    text = re.sub(r"\s+", " ", text)
-                    tmp_parts.append(text)
-
-                body = "\n".join(tmp_parts).strip()
-
-        except Exception as e:
+                if debug:
+                    print(
+                        f"[frontier] article parsed source={article_source} "
+                        f"body_len={len(body or '')} url={url}"
+                    )
+            except Exception as e:
+                if debug:
+                    print(f"[frontier] article parse fail {url}: {e}")
+        else:
             if debug:
-                print(f"[frontier] article fetch fail {url}: {e}")
-            # body は空のままでも OK（CSV では使っていない）
+                print(f"[frontier] article fetch failed after fallbacks url={url}")
 
         results.append(
             {
