@@ -2712,7 +2712,7 @@ def collect_popular_all_for_date(
 
     return results
 
-# ===== Frontier Myanmar (RSS + WP REST + homepage/Google News fallback) =====
+# ===== Frontier Myanmar (RSS + WP REST + Google News + homepage fallback) =====
 def collect_frontier_all_for_date(
     target_date_mmt: date,
     *,
@@ -2724,7 +2724,7 @@ def collect_frontier_all_for_date(
     - 第1候補: Frontier の WordPress RSS
     - RSS が 403 / Cloudflare / bot challenge で使えない場合:
       1) WordPress REST API (/en/wp-json/wp/v2/posts) から日付付き候補を拾う
-      2) ホーム/一覧ページから記事URL候補を拾う
+      2) ホーム/一覧ページから記事URL候補を拾う（Podcast配下の Doh Athan / WHIM は除外）
       3) Google News RSS から記事URL候補を拾う
     - 添付されたトップページHTMLでは、記事URLは article.front-page__hero / article.loop-regular / #latestPosts 配下に存在する一方、日付は表示されない。
       そのためリスト由来候補は各記事ページ側の meta/JSON-LD/表示日付で対象日判定する。
@@ -2749,7 +2749,9 @@ def collect_frontier_all_for_date(
     }
 
     # 添付HTMLのヘッダーメニューでは Opinion / Features は /en/category/... 形式。
-    # トップページには hero / loop-regular / latestPosts のカードとして記事URLが埋まっている。
+    # Podcast 配下の Doh Athan / WHIM は取得対象外。
+    # トップページには hero / loop-regular / latestPosts のカードとして記事URLが埋まっている一方、
+    # 右カラムにも Doh Athan の記事リンクが直接入るため、カテゴリURLだけでなくリンク抽出時にも除外する。
     FRONTIER_LIST_URLS = [
         "https://www.frontiermyanmar.net/en/",
         "https://www.frontiermyanmar.net/en/page/2/",
@@ -2757,9 +2759,10 @@ def collect_frontier_all_for_date(
         "https://www.frontiermyanmar.net/en/category/opinion/page/2/",
         "https://www.frontiermyanmar.net/en/category/features/",
         "https://www.frontiermyanmar.net/en/category/features/page/2/",
-        "https://www.frontiermyanmar.net/en/category/doh-athan/",
-        "https://www.frontiermyanmar.net/en/category/whim/",
     ]
+
+    FRONTIER_EXCLUDED_CATEGORY_SLUGS = {"doh-athan", "whim"}
+    FRONTIER_EXCLUDED_SECTION_NAMES = {"doh athan", "whim"}
 
     NON_ARTICLE_SLUGS = {
         "feed", "login", "join-us", "membership", "magazine", "contact-us",
@@ -2767,6 +2770,7 @@ def collect_frontier_all_for_date(
         "opinion", "features", "podcasts", "doh-athan", "whim", "issue",
         "author", "tag", "category", "page", "my", "bur", "mm", "search",
         "privacy-policy", "account", "register", "forgot-password",
+        "membership-levels", "membership-packages", "wp-json",
     }
 
     def _to_text(payload) -> str:
@@ -2951,13 +2955,110 @@ def collect_frontier_all_for_date(
 
         return "", "none"
 
+    def _frontier_norm_label(s: str) -> str:
+        s = unicodedata.normalize("NFKC", s or "").strip().lower()
+        s = re.sub(r"\s+", " ", s)
+        return s
+
+    def _is_excluded_frontier_url(u: str) -> bool:
+        """Podcast配下カテゴリURLは、候補取得でも記事取得でも完全に除外する。"""
+        try:
+            from urllib.parse import urlparse
+            p = urlparse((u or "").strip())
+            path = (p.path or u or "").lower().strip("/")
+        except Exception:
+            path = (u or "").lower().strip("/")
+        parts = [x for x in path.split("/") if x]
+        # /en/category/doh-athan/ または /en/category/whim/
+        for i, part in enumerate(parts):
+            if part == "category" and i + 1 < len(parts) and parts[i + 1] in FRONTIER_EXCLUDED_CATEGORY_SLUGS:
+                return True
+        # 念のため /en/doh-athan/ /en/whim/ 形式も除外
+        if len(parts) >= 2 and parts[0] == "en" and parts[1] in FRONTIER_EXCLUDED_CATEGORY_SLUGS:
+            return True
+        return False
+
+    def _anchor_in_excluded_frontier_section(a) -> bool:
+        """トップページ右カラムなどで、Doh Athan / WHIM 見出し配下の記事リンクを除外する。"""
+        try:
+            href = a.get("href") or ""
+            if _is_excluded_frontier_url(href):
+                return True
+
+            # Podcastメニュー自体のカテゴリリンクは除外。
+            for anc in a.parents:
+                classes = " ".join(anc.get("class", []) or []) if hasattr(anc, "get") else ""
+                ident = (anc.get("id") or "") if hasattr(anc, "get") else ""
+                marker = _frontier_norm_label(f"{ident} {classes}")
+                if "menu-podcasts" in marker or "podcastmenu" in marker:
+                    return True
+                if "doh-athan" in marker or "whim" in marker:
+                    return True
+
+            # 典型構造: <h2>Doh Athan</h2><ul><li><a ...>article</a></li>...</ul>
+            list_parent = a.find_parent(["ul", "ol"])
+            if list_parent is not None:
+                h = list_parent.find_previous(["h1", "h2", "h3", "h4"])
+                label = _frontier_norm_label(h.get_text(" ", strip=True) if h else "")
+                if label in FRONTIER_EXCLUDED_SECTION_NAMES:
+                    return True
+
+            # 近い親ブロック内に除外セクション見出しがある場合。
+            for block in a.find_parents(["article", "section", "div"], limit=4):
+                h = block.find(["h1", "h2", "h3", "h4"])
+                label = _frontier_norm_label(h.get_text(" ", strip=True) if h else "")
+                if label in FRONTIER_EXCLUDED_SECTION_NAMES:
+                    return True
+        except Exception:
+            return False
+        return False
+
+    def _frontier_article_is_excluded(article: BeautifulSoup, url: str = "") -> bool:
+        """記事HTML側で Doh Athan / WHIM 所属が分かった場合は最終結果からも除外する。"""
+        if _is_excluded_frontier_url(url):
+            return True
+
+        # Yoast JSON-LD の articleSection にカテゴリ名が入ることがある。
+        try:
+            for node in _iter_frontier_jsonld_nodes(article):
+                sections = node.get("articleSection")
+                if isinstance(sections, str):
+                    vals = [sections]
+                elif isinstance(sections, list):
+                    vals = [str(x) for x in sections]
+                else:
+                    vals = []
+                for val in vals:
+                    if _frontier_norm_label(val) in FRONTIER_EXCLUDED_SECTION_NAMES:
+                        return True
+        except Exception:
+            pass
+
+        # カテゴリリンクやパンくずに /category/doh-athan/ /category/whim/ が含まれる場合。
+        try:
+            for a in article.select('a[href*="/category/"]'):
+                href = a.get("href") or ""
+                if _is_excluded_frontier_url(href):
+                    return True
+                label = _frontier_norm_label(a.get_text(" ", strip=True))
+                if label in FRONTIER_EXCLUDED_SECTION_NAMES:
+                    return True
+        except Exception:
+            pass
+
+        return False
+
     def _canonical_frontier_url(u: str) -> str:
         from urllib.parse import urlparse, urlunparse, urljoin
         if not u:
             return ""
+        if _is_excluded_frontier_url(u):
+            return ""
         # ブラウザで保存したソースURLが混ざっても実URLに戻す。
         if u.startswith("view-source:"):
             u = u[len("view-source:"):].strip()
+        if _is_excluded_frontier_url(u):
+            return ""
         if u.startswith("/"):
             u = urljoin(BASE, u)
         p = urlparse(u.strip())
@@ -2966,6 +3067,8 @@ def collect_frontier_all_for_date(
             return ""
         path = re.sub(r"/{2,}", "/", p.path or "")
         if not path.startswith("/en/"):
+            return ""
+        if _is_excluded_frontier_url(path):
             return ""
         path = path.rstrip("/") + "/"
         return urlunparse((p.scheme or "https", p.netloc or "www.frontiermyanmar.net", path, "", "", ""))
@@ -3002,6 +3105,8 @@ def collect_frontier_all_for_date(
         try:
             soup = BeautifulSoup(payload or "", "html.parser")
             for a in soup.select("a[href]"):
+                if _anchor_in_excluded_frontier_section(a):
+                    continue
                 _add(a.get("href") or "")
         except Exception:
             pass
@@ -3392,10 +3497,23 @@ def collect_frontier_all_for_date(
         return ""
 
     def _fallback_candidates_via_google_news() -> List[Dict]:
+        """
+        Google News RSS から日付付き候補を拾う。
+        BeautifulSoup Tag には ElementTree の findtext() が無いので、必ず find()+get_text() で読む。
+        ここは最終防衛線なので、RSSの一部が壊れていても例外で collector 全体を落とさない。
+        """
         gnews = (
             "https://news.google.com/rss/search?"
             "q=site:frontiermyanmar.net/en+when:7d&hl=en-US&gl=US&ceid=US:en"
         )
+
+        def _tag_text(parent, name: str) -> str:
+            try:
+                tag = parent.find(name)
+                return tag.get_text(" ", strip=True) if tag else ""
+            except Exception:
+                return ""
+
         try:
             r = session.get(gnews, headers={"User-Agent": FRONTIER_HEADERS["User-Agent"]}, timeout=20)
             xml = (r.text or "").strip() if r.status_code == 200 else ""
@@ -3406,26 +3524,35 @@ def collect_frontier_all_for_date(
         if not xml or ("<rss" not in xml[:3000].lower() and "<feed" not in xml[:3000].lower()):
             return []
 
-        soup = BeautifulSoup(xml, "xml")
         out: List[Dict] = []
-        for item in soup.find_all("item"):
-            link = (item.findtext("link") or "").strip()
-            title = (item.findtext("title") or "").strip()
-            pub = (item.findtext("pubDate") or "").strip()
+        try:
+            soup = BeautifulSoup(xml, "xml")
+            items = soup.find_all("item")
+        except Exception as e:
+            if debug:
+                print(f"[frontier] google-news parse failed: {e}")
+            return []
+
+        for item in items:
             try:
+                link = _tag_text(item, "link")
+                title = _tag_text(item, "title")
+                pub = _tag_text(item, "pubDate")
+                desc = _clean_html_text(_tag_text(item, "description"))
                 dt = parse_date(pub).astimezone(MMT)
             except Exception:
                 continue
             if dt.date() != target_date_mmt:
                 continue
             real = _resolve_google_news_link(link)
-            if not real:
+            if not real or _is_excluded_frontier_url(real):
                 continue
             out.append({
                 "url": real,
                 "title": unicodedata.normalize("NFC", title),
                 "date": dt.isoformat(),
                 "origin": "google-news",
+                "summary": desc,
             })
         return out
 
@@ -3433,6 +3560,11 @@ def collect_frontier_all_for_date(
         found_urls: List[str] = []
         seen = set()
         for list_url in FRONTIER_LIST_URLS:
+            # 二重保険: 設定ミスで Podcast カテゴリが混入しても巡回しない。
+            if _is_excluded_frontier_url(list_url):
+                if debug:
+                    print(f"[frontier] skip excluded podcast list url={list_url}")
+                continue
             html, src = _fetch_frontier(list_url, kind="list", allow_browser=True, allow_jina=True)
             if not html:
                 continue
@@ -3444,6 +3576,14 @@ def collect_frontier_all_for_date(
                     seen.add(u)
                     found_urls.append(u)
 
+        # トップ/カテゴリページは多数の過去記事を含むため、最終フォールバックでは取得数を絞る。
+        # Google News を先に試すので、ここまで来るのは日付付き経路が全滅した場合だけ。
+        max_list_articles = 24
+        if len(found_urls) > max_list_articles:
+            if debug:
+                print(f"[frontier] list candidates clipped: {len(found_urls)} -> {max_list_articles}")
+            found_urls = found_urls[:max_list_articles]
+
         out: List[Dict] = []
         for u in found_urls:
             html, src = _fetch_frontier(u, kind="article", allow_browser=True, allow_jina=True)
@@ -3452,6 +3592,10 @@ def collect_frontier_all_for_date(
                     print(f"[frontier] list-candidate article fetch failed url={u}")
                 continue
             article = BeautifulSoup(html, "html.parser")
+            if _frontier_article_is_excluded(article, u):
+                if debug:
+                    print(f"[frontier] list-candidate excluded podcast url={u}")
+                continue
             d = _frontier_date_from_article(article, html)
             if debug:
                 print(f"[frontier] list-candidate date={d} source={src} url={u}")
@@ -3485,17 +3629,19 @@ def collect_frontier_all_for_date(
             print(f"[frontier] wp-json fallback candidates={len(wp_cands)} date={target_date_mmt}")
             candidates.extend(wp_cands)
 
-    if not candidates:
-        list_cands = _fallback_candidates_via_lists()
-        if list_cands:
-            print(f"[frontier] list fallback candidates={len(list_cands)} date={target_date_mmt}")
-            candidates.extend(list_cands)
-
+    # Google News は pubDate を持つため、記事ページを大量取得する list fallback より先に試す。
+    # これにより、対象日の記事だけを数件に絞ってから記事HTML取得へ進める。
     if not candidates:
         gnews_cands = _fallback_candidates_via_google_news()
         if gnews_cands:
             print(f"[frontier] google-news fallback candidates={len(gnews_cands)} date={target_date_mmt}")
             candidates.extend(gnews_cands)
+
+    if not candidates:
+        list_cands = _fallback_candidates_via_lists()
+        if list_cands:
+            print(f"[frontier] list fallback candidates={len(list_cands)} date={target_date_mmt}")
+            candidates.extend(list_cands)
 
     # URL重複除去
     uniq: List[Dict] = []
@@ -3525,10 +3671,16 @@ def collect_frontier_all_for_date(
         if html:
             try:
                 article = BeautifulSoup(html, "html.parser")
+                if _frontier_article_is_excluded(article, url):
+                    if debug:
+                        print(f"[frontier] skip excluded podcast article origin={item.get('origin')} url={url}")
+                    continue
                 title = _title_from_article(article, title)
                 body = _extract_frontier_body(article)
                 if not body and item.get("body_hint"):
                     body = item.get("body_hint") or ""
+                if not body and item.get("summary"):
+                    body = item.get("summary") or ""
                 # Google News由来など日付がpubDateだけの場合も、記事側日付が取れれば上書き
                 d = _frontier_date_from_article(article, html)
                 if d:
@@ -3544,6 +3696,8 @@ def collect_frontier_all_for_date(
         else:
             if item.get("body_hint"):
                 body = item.get("body_hint") or ""
+            elif item.get("summary"):
+                body = item.get("summary") or ""
             if debug:
                 print(f"[frontier] article fetch failed after fallbacks url={url}")
 
