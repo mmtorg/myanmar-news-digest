@@ -2344,11 +2344,60 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
 
     def _gnlm_clean_pdf_text(s: str) -> str:
         s = unicodedata.normalize("NFC", s or "")
-        s = s.replace("\u00ad", "")
         s = s.replace("￾", "")
+        s = s.replace("\u00a0", " ")
         s = re.sub(r"[ \t]+", " ", s)
         s = re.sub(r"\n{3,}", "\n\n", s)
         return s.strip()
+
+    _GNLM_LINE_WRAP_SUFFIXES = {
+        "s", "es", "ed", "er", "or", "ing",
+        "ion", "ions", "tion", "tions",
+        "ment", "ments", "ity", "ities",
+        "ly", "al", "able", "ible", "ous", "ive",
+        "ance", "ence", "ant", "ent", "ary",
+        # GNLM PDFで頻出する分割語の保険
+        "mar", "ny", "lers", "cials", "ficer", "ficers",
+        "vices", "tains", "ness",
+    }
+
+    def _gnlm_join_pdf_lines(lines: list[str]) -> str:
+        """
+        PDF上の物理行を本文段落へ戻す。
+        - soft hyphen / 行末ハイフンは連結
+        - それ以外は基本スペース連結
+        """
+        out = ""
+        prev_hard_wrap = False
+
+        for raw in lines:
+            raw = raw or ""
+            line = _gnlm_clean_pdf_text(raw.replace("\u00ad", ""))
+            line = re.sub(r"\s+", " ", line).strip()
+            if not line:
+                continue
+
+            if not out:
+                out = line
+            else:
+                if prev_hard_wrap or out.endswith("-"):
+                    out = out.rstrip("-") + line
+                else:
+                    prev = re.search(r"([A-Za-z]{2,})$", out)
+                    nxt = re.match(r"([a-z]{1,8})(\b|[^A-Za-z])", line)
+                    if (
+                        prev and nxt
+                        and len(prev.group(1)) >= 3
+                        and nxt.group(1) in _GNLM_LINE_WRAP_SUFFIXES
+                        and not re.search(r"[.,;:!?\)]$", out)
+                    ):
+                        out += line
+                    else:
+                        out += " " + line
+
+            prev_hard_wrap = bool(re.search(r"[\u00ad-]\s*$", raw))
+
+        return _gnlm_clean_pdf_text(out)
 
     def _gnlm_norm_title_for_match(s: str) -> str:
         s = unicodedata.normalize("NFKC", s or "").lower()
@@ -2376,6 +2425,16 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
         denom = max(1.0, min(ax1 - ax0, bx1 - bx0))
         return overlap / denom
 
+    _GNLM_CAPTION_OR_AD_RE = re.compile(
+        r"^(?:"
+        r"this photo|this image|the photo|this illustration|the picture|"
+        r"a handover|house inspections|an outpatient|outstanding students are seen|"
+        r"ancient pagodas|yrtc vice-chairman|the office building|the head of|"
+        r"this photo features|this photo displays|this image illustrates"
+        r")\b",
+        re.I,
+    )
+
     def _gnlm_is_noise_pdf_text(t: str) -> bool:
         t = (t or "").strip()
         if not t:
@@ -2385,7 +2444,7 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
 
         noise_exact = {
             "national", "business", "opinion", "delicacy",
-            "public notice", "write for us",
+            "public notice", "write for us", "weather",
         }
         if low in noise_exact:
             return True
@@ -2394,26 +2453,37 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
             return True
         if re.fullmatch(r"\d{1,2}\s+[a-z]+\s+\d{4}", low):
             return True
-        if "www.gnlm.com.mm" in low:
+
+        noise_contains = [
+            "www.gnlm.com.mm",
+            "the global new light of myanmar",
+            "circulation & distribution",
+            "advertising & marketing",
+            "printed and published",
+            "subscription@gnlm.com.mm",
+            "we appreciate your feedback",
+            "letter to the editor",
+            "hotline",
+            "advertise",
+        ]
+        if any(x in low for x in noise_contains):
             return True
-        if "the global new light of myanmar" in low:
-            return True
+
         if low.startswith("photo:"):
             return True
-        if "circulation & distribution" in low:
+        if low.startswith("daily newspapers available online"):
             return True
-        if "advertising & marketing" in low:
+        if low.startswith("the people are urged to receive vaccination"):
             return True
-        if "printed and published" in low:
-            return True
-        if "subscription@gnlm.com.mm" in low:
+
+        if _GNLM_CAPTION_OR_AD_RE.search(low):
             return True
 
         return False
 
     def _gnlm_pdf_block_text(block: dict) -> tuple[str, float, float]:
-        lines = []
-        sizes = []
+        lines: list[str] = []
+        sizes: list[float] = []
 
         for line in block.get("lines", []):
             parts = []
@@ -2430,14 +2500,15 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
             if line_text:
                 lines.append(line_text)
 
-        text = _gnlm_clean_pdf_text("\n".join(lines))
+        text = _gnlm_join_pdf_lines(lines)
         if not sizes:
             return text, 0.0, 0.0
 
         return text, max(sizes), sum(sizes) / len(sizes)
 
     def _gnlm_pdf_sort_body_blocks(blocks: list[dict]) -> list[dict]:
-        return sorted(blocks, key=lambda b: (round(b["x0"] / 70), b["y0"], b["x0"]))
+        # 同じ記事内は「左列→右列、各列の上→下」で読む
+        return sorted(blocks, key=lambda b: (round(b["x0"] / 80), b["y0"], b["x0"]))
 
     def _gnlm_extract_articles_from_pdf_path(
         pdf_path: str,
@@ -2471,6 +2542,15 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
                     continue
 
                 x0, y0, x1, y1 = map(float, b.get("bbox", [0, 0, 0, 0]))
+
+                # ヘッダー・紙面名・日付などを除外
+                if y0 < 150:
+                    continue
+
+                # 1面下部の「PAGE 3 / PAGE 4 / PAGE 7」や記事ティーザーを除外
+                if page_index == 0 and y0 > 880:
+                    continue
+
                 raw_blocks.append({
                     "page": page_index + 1,
                     "x0": x0,
@@ -2486,7 +2566,7 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
             for b in raw_blocks:
                 t = b["text"].replace("\n", " ").strip()
 
-                if b["y0"] < 90 or b["y0"] > page_h - 80:
+                if b["y0"] < 150 or b["y0"] > page_h - 80:
                     continue
                 if len(t) < 18 or len(t) > 180:
                     continue
@@ -2521,7 +2601,7 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
                     "x1": min(page_w, tb["x1"] + 20),
                 }
 
-                if (tb["x1"] - tb["x0"]) > page_w * 0.65:
+                if (tb["x1"] - tb["x0"]) > page_w * 0.75:
                     region = {"x0": 25.0, "x1": page_w - 25.0}
 
                 body_blocks = []
@@ -2541,9 +2621,13 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
                     if bt.replace("\n", " ").strip() == title:
                         continue
 
-                    if b["max_size"] > 12.5:
+                    # ドロップキャップ（例: 1面冒頭の "M"）だけは本文として残す
+                    is_drop_cap = bool(re.fullmatch(r"[A-Z]", bt)) and b["max_size"] > 12.5
+                    if b["max_size"] > 12.5 and not is_drop_cap:
                         continue
-                    if len(bt) < 35:
+
+                    # 短い継続行（例: "and border trade channels."）を落とさない
+                    if len(bt) < 8 and not is_drop_cap:
                         continue
 
                     if bt.lower().startswith(("see page", "from page")):
@@ -2552,7 +2636,25 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
                     body_blocks.append(b)
 
                 body_blocks = _gnlm_pdf_sort_body_blocks(body_blocks)
-                body = "\n".join(b["text"] for b in body_blocks)
+
+                # ドロップキャップを次の本文ブロックへ連結
+                merged_body_blocks = []
+                i = 0
+                while i < len(body_blocks):
+                    b = body_blocks[i]
+                    if (
+                        re.fullmatch(r"[A-Z]", b["text"])
+                        and i + 1 < len(body_blocks)
+                    ):
+                        nb = dict(body_blocks[i + 1])
+                        nb["text"] = b["text"] + nb["text"].lstrip()
+                        merged_body_blocks.append(nb)
+                        i += 2
+                    else:
+                        merged_body_blocks.append(b)
+                        i += 1
+
+                body = "\n\n".join(b["text"] for b in merged_body_blocks)
                 body = _gnlm_clean_pdf_text(body)
 
                 if len(body) < 120:
