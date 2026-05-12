@@ -45,7 +45,9 @@ from collections import deque
 import re
 import json
 import hashlib
-from urllib.parse import urlsplit, urlunsplit
+from contextlib import contextmanager
+import tempfile
+from urllib.parse import urlsplit, urlunsplit, urljoin
 import requests
 from bs4 import BeautifulSoup, Tag
 from dateutil.parser import parse as parse_date
@@ -2119,6 +2121,15 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
         if kind == "list":
             return bool(soup.select("article.archives-page"))
 
+        if kind == "epaper":
+            return bool(
+                soup.select(
+                    'a.read-epaper[href$=".pdf"], '
+                    'a.download[href$=".pdf"], '
+                    'a[href$=".pdf"]'
+                )
+            )
+
         # 記事ページは entry-content 内の p / h3 / 段落風 div のいずれかがあれば usable とする
         content = soup.select_one("div.entry-content")
         if not content:
@@ -2168,6 +2179,451 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
                 print(f"[gnlm] brightdata browser failed kind={kind}: {e} url={url}")
 
         return "", "none"
+
+    def _gnlm_epaper_page_url(d: date) -> str:
+        return f"https://www.gnlm.com.mm/{d.day}-{d.strftime('%B').lower()}-{d.year}/"
+
+    def _gnlm_guess_pdf_urls(d: date) -> list[str]:
+        base = "https://cdn.digitalagencybangkok.com/file/client-cdn/gnlm/wp-content/uploads"
+        month_full = d.strftime("%B")
+        month_abbr = d.strftime("%b")
+        yy = str(d.year)[-2:]
+
+        candidates = []
+        for day_s in [str(d.day), f"{d.day:02d}"]:
+            for mon_s in [month_full, month_abbr]:
+                for year_s in [yy, str(d.year)]:
+                    candidates.append(
+                        f"{base}/{d.year}/{d.month:02d}/{day_s}_{mon_s}_{year_s}_gnlm.pdf"
+                    )
+
+        seen = set()
+        out = []
+        for u in candidates:
+            if u not in seen:
+                seen.add(u)
+                out.append(u)
+        return out
+
+    def _gnlm_download_pdf_candidate(pdf_url: str, tmp_dir: str) -> str:
+        try:
+            out_path = os.path.join(tmp_dir, "gnlm_epaper.pdf")
+
+            with requests.get(
+                pdf_url,
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=60,
+                stream=True,
+                allow_redirects=True,
+            ) as r:
+                if r.status_code != 200:
+                    print(f"[gnlm-pdf] candidate HTTP {r.status_code}: {pdf_url}")
+                    return ""
+
+                with open(out_path, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=1024 * 256):
+                        if chunk:
+                            f.write(chunk)
+
+            with open(out_path, "rb") as f:
+                head = f.read(8)
+
+            if not head.startswith(b"%PDF"):
+                print(f"[gnlm-pdf] not pdf: {pdf_url}")
+                try:
+                    os.remove(out_path)
+                except Exception:
+                    pass
+                return ""
+
+            return out_path
+
+        except Exception as e:
+            print(f"[gnlm-pdf] candidate download failed: {e} url={pdf_url}")
+            return ""
+
+    def _gnlm_extract_pdf_links_from_epaper_page(target_date_mmt: date) -> tuple[list[str], str]:
+        epaper_url = _gnlm_epaper_page_url(target_date_mmt)
+        html = ""
+
+        try:
+            r = sess.get(epaper_url, timeout=20)
+            if r.status_code == 200 and (r.text or "").strip():
+                html = r.text
+        except Exception as e:
+            print(f"[gnlm-pdf] epaper curl_cffi failed: {e} url={epaper_url}")
+
+        if not _gnlm_html_usable(html, kind="epaper"):
+            try:
+                import cloudscraper
+                scraper = cloudscraper.create_scraper(
+                    browser={"browser": "chrome", "platform": "windows", "desktop": True}
+                )
+                r = scraper.get(epaper_url, timeout=20)
+                if r.status_code == 200 and (r.text or "").strip():
+                    html = r.text
+            except Exception as e:
+                print(f"[gnlm-pdf] epaper cloudscraper failed: {e} url={epaper_url}")
+
+        if not _gnlm_html_usable(html, kind="epaper"):
+            try:
+                bd_html, bd_source = _fetch_gnlm_via_brightdata(epaper_url, kind="epaper")
+                if bd_html:
+                    html = bd_html
+                    print(f"[gnlm-pdf] epaper recovered via brightdata source={bd_source}")
+            except Exception as e:
+                print(f"[gnlm-pdf] epaper brightdata failed: {e}")
+
+        if not _gnlm_html_usable(html, kind="epaper"):
+            return [], epaper_url
+
+        soup = BeautifulSoup(html, "html.parser")
+
+        links = []
+        for sel in ('a.read-epaper[href]', 'a.download[href]', 'a[href$=".pdf"]'):
+            for a in soup.select(sel):
+                href = (a.get("href") or "").strip()
+                if href.lower().endswith(".pdf"):
+                    links.append(urljoin(epaper_url, href))
+
+        seen = set()
+        out = []
+        for u in links:
+            if u not in seen:
+                seen.add(u)
+                out.append(u)
+
+        return out, epaper_url
+
+    @contextmanager
+    def _gnlm_temp_pdf_for_date(target_date_mmt: date):
+        keep = str(os.getenv("GNLM_KEEP_TEMP_PDF", "0")).lower() in ("1", "true", "yes")
+        base_tmp = os.getenv("GNLM_TMP_DIR", "")
+
+        tmp_obj = None
+        if keep:
+            tmp_dir = base_tmp or tempfile.mkdtemp(prefix="gnlm_pdf_")
+            os.makedirs(tmp_dir, exist_ok=True)
+        else:
+            tmp_obj = tempfile.TemporaryDirectory(prefix="gnlm_pdf_")
+            tmp_dir = tmp_obj.name
+
+        pdf_path = ""
+        pdf_url = ""
+        epaper_url = _gnlm_epaper_page_url(target_date_mmt)
+
+        try:
+            for u in _gnlm_guess_pdf_urls(target_date_mmt):
+                p = _gnlm_download_pdf_candidate(u, tmp_dir)
+                if p:
+                    pdf_path = p
+                    pdf_url = u
+                    print(f"[gnlm-pdf] direct cdn pdf ok: {pdf_url}")
+                    break
+
+            if not pdf_path:
+                links, epaper_url = _gnlm_extract_pdf_links_from_epaper_page(target_date_mmt)
+                for u in links:
+                    p = _gnlm_download_pdf_candidate(u, tmp_dir)
+                    if p:
+                        pdf_path = p
+                        pdf_url = u
+                        print(f"[gnlm-pdf] epaper pdf ok: {pdf_url}")
+                        break
+
+            yield pdf_path, pdf_url, epaper_url
+
+        finally:
+            if tmp_obj is not None:
+                try:
+                    tmp_obj.cleanup()
+                except Exception:
+                    pass
+            elif keep:
+                print(f"[gnlm-pdf] keep temp dir: {tmp_dir}")
+
+    def _gnlm_clean_pdf_text(s: str) -> str:
+        s = unicodedata.normalize("NFC", s or "")
+        s = s.replace("\u00ad", "")
+        s = s.replace("￾", "")
+        s = re.sub(r"[ \t]+", " ", s)
+        s = re.sub(r"\n{3,}", "\n\n", s)
+        return s.strip()
+
+    def _gnlm_norm_title_for_match(s: str) -> str:
+        s = unicodedata.normalize("NFKC", s or "").lower()
+        s = s.replace("&", " and ")
+        s = re.sub(r"[^a-z0-9]+", " ", s)
+        return re.sub(r"\s+", " ", s).strip()
+
+    def _gnlm_title_score(a: str, b: str) -> float:
+        from difflib import SequenceMatcher
+
+        na = _gnlm_norm_title_for_match(a)
+        nb = _gnlm_norm_title_for_match(b)
+        if not na or not nb:
+            return 0.0
+        if na == nb:
+            return 1.0
+        if na in nb or nb in na:
+            return 0.95
+        return SequenceMatcher(None, na, nb).ratio()
+
+    def _gnlm_x_overlap_ratio(a: dict, b: dict) -> float:
+        ax0, ax1 = a["x0"], a["x1"]
+        bx0, bx1 = b["x0"], b["x1"]
+        overlap = max(0.0, min(ax1, bx1) - max(ax0, bx0))
+        denom = max(1.0, min(ax1 - ax0, bx1 - bx0))
+        return overlap / denom
+
+    def _gnlm_is_noise_pdf_text(t: str) -> bool:
+        t = (t or "").strip()
+        if not t:
+            return True
+
+        low = t.lower()
+
+        noise_exact = {
+            "national", "business", "opinion", "delicacy",
+            "public notice", "write for us",
+        }
+        if low in noise_exact:
+            return True
+
+        if re.fullmatch(r"page\s+\d+", low):
+            return True
+        if re.fullmatch(r"\d{1,2}\s+[a-z]+\s+\d{4}", low):
+            return True
+        if "www.gnlm.com.mm" in low:
+            return True
+        if "the global new light of myanmar" in low:
+            return True
+        if low.startswith("photo:"):
+            return True
+        if "circulation & distribution" in low:
+            return True
+        if "advertising & marketing" in low:
+            return True
+        if "printed and published" in low:
+            return True
+        if "subscription@gnlm.com.mm" in low:
+            return True
+
+        return False
+
+    def _gnlm_pdf_block_text(block: dict) -> tuple[str, float, float]:
+        lines = []
+        sizes = []
+
+        for line in block.get("lines", []):
+            parts = []
+            for sp in line.get("spans", []):
+                txt = sp.get("text") or ""
+                if txt:
+                    parts.append(txt)
+                    try:
+                        sizes.append(float(sp.get("size") or 0))
+                    except Exception:
+                        pass
+
+            line_text = "".join(parts).strip()
+            if line_text:
+                lines.append(line_text)
+
+        text = _gnlm_clean_pdf_text("\n".join(lines))
+        if not sizes:
+            return text, 0.0, 0.0
+
+        return text, max(sizes), sum(sizes) / len(sizes)
+
+    def _gnlm_pdf_sort_body_blocks(blocks: list[dict]) -> list[dict]:
+        return sorted(blocks, key=lambda b: (round(b["x0"] / 70), b["y0"], b["x0"]))
+
+    def _gnlm_extract_articles_from_pdf_path(
+        pdf_path: str,
+        *,
+        pdf_url: str,
+        target_date_mmt: date,
+    ) -> list[dict]:
+        import fitz
+        import hashlib
+
+        if not pdf_path or not os.path.exists(pdf_path):
+            return []
+
+        doc = fitz.open(pdf_path)
+        merged: dict[str, dict] = {}
+
+        for page_index in range(len(doc)):
+            page = doc[page_index]
+            page_w = float(page.rect.width)
+            page_h = float(page.rect.height)
+
+            raw_blocks = []
+            page_dict = page.get_text("dict")
+
+            for b in page_dict.get("blocks", []):
+                if b.get("type") != 0:
+                    continue
+
+                text, max_size, avg_size = _gnlm_pdf_block_text(b)
+                if not text or _gnlm_is_noise_pdf_text(text):
+                    continue
+
+                x0, y0, x1, y1 = map(float, b.get("bbox", [0, 0, 0, 0]))
+                raw_blocks.append({
+                    "page": page_index + 1,
+                    "x0": x0,
+                    "y0": y0,
+                    "x1": x1,
+                    "y1": y1,
+                    "text": text,
+                    "max_size": max_size,
+                    "avg_size": avg_size,
+                })
+
+            title_blocks = []
+            for b in raw_blocks:
+                t = b["text"].replace("\n", " ").strip()
+
+                if b["y0"] < 90 or b["y0"] > page_h - 80:
+                    continue
+                if len(t) < 18 or len(t) > 180:
+                    continue
+                if _gnlm_is_noise_pdf_text(t):
+                    continue
+                if t.isupper() and len(t) < 45:
+                    continue
+
+                if b["max_size"] >= 13.0:
+                    bb = dict(b)
+                    bb["title"] = t
+                    title_blocks.append(bb)
+
+            title_blocks = sorted(title_blocks, key=lambda b: (b["y0"], b["x0"]))
+
+            for tb in title_blocks:
+                title = tb["title"].strip()
+                if not title:
+                    continue
+
+                next_ys = [
+                    nb["y0"]
+                    for nb in title_blocks
+                    if nb is not tb
+                    and nb["y0"] > tb["y0"] + 20
+                    and _gnlm_x_overlap_ratio(tb, nb) > 0.15
+                ]
+                end_y = min(next_ys) - 6 if next_ys else page_h - 70
+
+                region = {
+                    "x0": max(0.0, tb["x0"] - 20),
+                    "x1": min(page_w, tb["x1"] + 20),
+                }
+
+                if (tb["x1"] - tb["x0"]) > page_w * 0.65:
+                    region = {"x0": 25.0, "x1": page_w - 25.0}
+
+                body_blocks = []
+                for b in raw_blocks:
+                    if b is tb:
+                        continue
+                    if b["y0"] <= tb["y1"] + 4:
+                        continue
+                    if b["y0"] >= end_y:
+                        continue
+                    if _gnlm_x_overlap_ratio(region, b) < 0.10:
+                        continue
+
+                    bt = b["text"].strip()
+                    if _gnlm_is_noise_pdf_text(bt):
+                        continue
+                    if bt.replace("\n", " ").strip() == title:
+                        continue
+
+                    if b["max_size"] > 12.5:
+                        continue
+                    if len(bt) < 35:
+                        continue
+
+                    if bt.lower().startswith(("see page", "from page")):
+                        continue
+
+                    body_blocks.append(b)
+
+                body_blocks = _gnlm_pdf_sort_body_blocks(body_blocks)
+                body = "\n".join(b["text"] for b in body_blocks)
+                body = _gnlm_clean_pdf_text(body)
+
+                if len(body) < 120:
+                    continue
+
+                key = _gnlm_norm_title_for_match(title)
+                if not key:
+                    continue
+
+                if key not in merged:
+                    h = hashlib.sha1(
+                        f"{target_date_mmt.isoformat()}|{title}".encode("utf-8")
+                    ).hexdigest()[:16]
+
+                    merged[key] = {
+                        "source": "Global New Light Of Myanmar (国営紙)",
+                        "title": title,
+                        "body": body,
+                        "date": target_date_mmt.isoformat(),
+                        "url": f"{pdf_url}#page={page_index + 1}" if pdf_url else "",
+                        "_row_key": f"gnlm-pdf:{target_date_mmt.isoformat()}:{h}",
+                        "_gnlm_body_source": "pdf",
+                    }
+                else:
+                    old = merged[key].get("body") or ""
+                    if body not in old:
+                        merged[key]["body"] = _gnlm_clean_pdf_text(old + "\n\n" + body)
+
+        return list(merged.values())
+
+    def _gnlm_attach_pdf_bodies_to_empty_items(
+        out: list[dict],
+        pdf_articles: list[dict],
+    ) -> list[dict]:
+        if not out or not pdf_articles:
+            return out
+
+        threshold = float(os.getenv("GNLM_PDF_MATCH_THRESHOLD", "0.76"))
+        used_pdf_keys = set()
+
+        for it in out:
+            if (it.get("body") or "").strip():
+                continue
+
+            title = it.get("title") or ""
+            best = None
+            best_score = 0.0
+
+            for pa in pdf_articles:
+                rk = pa.get("_row_key") or pa.get("title") or ""
+                if rk in used_pdf_keys:
+                    continue
+
+                score = _gnlm_title_score(title, pa.get("title") or "")
+                if score > best_score:
+                    best = pa
+                    best_score = score
+
+            if best and best_score >= threshold:
+                it["body"] = best.get("body") or ""
+                it["_gnlm_body_source"] = "pdf_matched"
+                it["_gnlm_pdf_match_score"] = f"{best_score:.3f}"
+                it["_gnlm_pdf_title"] = best.get("title") or ""
+                used_pdf_keys.add(best.get("_row_key") or best.get("title") or "")
+
+                print(
+                    f"[gnlm-pdf] matched score={best_score:.3f} "
+                    f"web_title={title!r} pdf_title={(best.get('title') or '')!r}"
+                )
+
+        return out
 
     # --- RSS helpers ---
     def _rss_items(url: str) -> list[dict]:
@@ -2432,23 +2888,19 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
             except Exception as e2:
                 print(f"[gnlm] cloudscraper article fetch failed: {e2} url={url}")
 
-                # C: BrightData fallback（Irrawaddy と同じく Web Unlocker → Browser API）
-                bd_html, bd_source = _fetch_gnlm_via_brightdata(url, kind="article")
-                if bd_html:
-                    res = SimpleNamespace(status_code=200, text=bd_html, content=bd_html.encode("utf-8", "ignore"), url=url)
-                    print(f"[gnlm] article fetch recovered via brightdata source={bd_source} url={url}")
-                else:
-                    # 本文は取れないが、タイトル+URLだけでも残す
-                    t = (fallback_titles.get(url) or "").strip() or _title_from_slug(url)
-                    if t:
-                        out.append({
-                            "source": "Global New Light Of Myanmar (国営紙)",
-                            "title": unicodedata.normalize("NFC", t).strip(),
-                            "url": url,
-                            "date": target_date_mmt.isoformat(),
-                            "body": "",
-                        })
-                    continue
+                # 本文取得ではBrightDataを使わない。
+                # URL・タイトルだけ残し、後段のPDF fallbackで本文補完を試す。
+                t = (fallback_titles.get(url) or "").strip() or _title_from_slug(url)
+                if t:
+                    out.append({
+                        "source": "Global New Light Of Myanmar (国営紙)",
+                        "title": unicodedata.normalize("NFC", t).strip(),
+                        "url": url,
+                        "date": target_date_mmt.isoformat(),
+                        "body": "",
+                        "_gnlm_body_source": "empty_after_direct_fetch",
+                    })
+                continue
 
         soup = BeautifulSoup(res.text, "html.parser")
 
@@ -2529,6 +2981,30 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
             "date": (art_date or target_date_mmt).isoformat(),
             "body": unicodedata.normalize("NFC", body).strip(),
         })
+
+    # ==================================================
+    # GNLM PDF fallback
+    # - 個別記事本文取得ではBrightDataを使わない
+    # - bodyが空の記事だけ、同日E-Paper PDFから本文補完する
+    # ==================================================
+    if any(not (x.get("body") or "").strip() for x in out):
+        try:
+            with _gnlm_temp_pdf_for_date(target_date_mmt) as (pdf_path, pdf_url, epaper_url):
+                if pdf_path:
+                    pdf_articles = _gnlm_extract_articles_from_pdf_path(
+                        pdf_path,
+                        pdf_url=pdf_url,
+                        target_date_mmt=target_date_mmt,
+                    )
+                    print(
+                        f"[gnlm-pdf] extracted articles={len(pdf_articles)} "
+                        f"pdf={pdf_url}"
+                    )
+                    out = _gnlm_attach_pdf_bodies_to_empty_items(out, pdf_articles)
+                else:
+                    print(f"[gnlm-pdf] pdf not available epaper={epaper_url}")
+        except Exception as e:
+            print(f"[gnlm-pdf] fallback failed: {e}")
 
     return deduplicate_by_url(out)
 
