@@ -2712,19 +2712,26 @@ def collect_popular_all_for_date(
 
     return results
 
-# ===== Frontier Myanmar (RSS + HTML) =====
+# ===== Frontier Myanmar (RSS + WP REST + homepage/Google News fallback) =====
 def collect_frontier_all_for_date(
     target_date_mmt: date,
     *,
     debug: bool = False,
 ) -> List[Dict]:
     """
-    Frontier Myanmar の英語版 RSS から、対象 MMT 日付の記事を収集する。
+    Frontier Myanmar の英語版記事を、対象 MMT 日付で収集する。
 
-    403 / Cloudflare / bot challenge 対策として、GNLM / Irrawaddy と同じ方針で
-    direct → cloudscraper → BrightData Web Unlocker → BrightData Browser API の順に試す。
+    - 第1候補: Frontier の WordPress RSS
+    - RSS が 403 / Cloudflare / bot challenge で使えない場合:
+      1) WordPress REST API (/en/wp-json/wp/v2/posts) から日付付き候補を拾う
+      2) ホーム/一覧ページから記事URL候補を拾う
+      3) Google News RSS から記事URL候補を拾う
+    - 添付されたトップページHTMLでは、記事URLは article.front-page__hero / article.loop-regular / #latestPosts 配下に存在する一方、日付は表示されない。
+      そのためリスト由来候補は各記事ページ側の meta/JSON-LD/表示日付で対象日判定する。
+    - 記事HTML取得も direct → cloudscraper → requests → BrightData Unlocker → Browser API の順に試す。
     """
     feed_url = "https://www.frontiermyanmar.net/en/feed/"
+    BASE = "https://www.frontiermyanmar.net"
     session = _make_pooled_session()
 
     FRONTIER_HEADERS = {
@@ -2739,6 +2746,27 @@ def collect_frontier_all_for_date(
         "Cache-Control": "no-cache",
         "Pragma": "no-cache",
         "Connection": "keep-alive",
+    }
+
+    # 添付HTMLのヘッダーメニューでは Opinion / Features は /en/category/... 形式。
+    # トップページには hero / loop-regular / latestPosts のカードとして記事URLが埋まっている。
+    FRONTIER_LIST_URLS = [
+        "https://www.frontiermyanmar.net/en/",
+        "https://www.frontiermyanmar.net/en/page/2/",
+        "https://www.frontiermyanmar.net/en/category/opinion/",
+        "https://www.frontiermyanmar.net/en/category/opinion/page/2/",
+        "https://www.frontiermyanmar.net/en/category/features/",
+        "https://www.frontiermyanmar.net/en/category/features/page/2/",
+        "https://www.frontiermyanmar.net/en/category/doh-athan/",
+        "https://www.frontiermyanmar.net/en/category/whim/",
+    ]
+
+    NON_ARTICLE_SLUGS = {
+        "feed", "login", "join-us", "membership", "magazine", "contact-us",
+        "terms-of-service", "donate", "the-frontier-story", "work-with-us",
+        "opinion", "features", "podcasts", "doh-athan", "whim", "issue",
+        "author", "tag", "category", "page", "my", "bur", "mm", "search",
+        "privacy-policy", "account", "register", "forgot-password",
     }
 
     def _to_text(payload) -> str:
@@ -2757,7 +2785,7 @@ def collect_frontier_all_for_date(
             or "target url returned error 403" in head
             or "why_captcha" in head
             or "access denied" in head
-            or "forbidden" in head and "<rss" not in head and "<feed" not in head
+            or ("forbidden" in head and "<rss" not in head and "<feed" not in head)
         )
 
     def _frontier_payload_usable(html: str, *, kind: str) -> bool:
@@ -2765,12 +2793,22 @@ def collect_frontier_all_for_date(
         if not html or _looks_like_blocked_page(html):
             return False
 
-        low = html[:3000].lower()
+        low = html[:5000].lower()
         if kind == "feed":
             return ("<rss" in low) or ("<feed" in low) or ("<rdf:rdf" in low)
+        if kind == "json":
+            return html.lstrip().startswith("[") or html.lstrip().startswith("{")
 
         soup = BeautifulSoup(html, "html.parser")
-        # 記事ページは、タイトルだけでもRSS由来の候補を残せるので、本文必須にはしない。
+        if kind == "list":
+            if soup.select('a[href*="frontiermyanmar.net/en/"]'):
+                return True
+            if soup.select('a[href^="/en/"]'):
+                return True
+            # Jina/Markdown 由来のテキストも候補抽出できるようにする
+            return bool(re.search(r"https?://www\.frontiermyanmar\.net/en/[a-z0-9][^\s\]\)\"'<]+", html, re.I))
+
+        # 記事ページは、タイトルだけでもRSS/一覧由来の候補を残せるので、本文必須にはしない。
         if soup.find("meta", attrs={"property": "og:title"}) or soup.find("h1"):
             return True
         if soup.select_one("div.post-content-single div.elementor-widget-container"):
@@ -2779,10 +2817,29 @@ def collect_frontier_all_for_date(
             return True
         return bool(soup.find("p"))
 
-    def _fetch_frontier(url: str, *, kind: str, allow_browser: bool = True) -> tuple[str, str]:
+    def _fetch_text_via_jina(url: str, timeout: int = 25) -> str:
+        """r.jina.ai 経由の最終フォールバック。RSS/feed には効かないことがあるが、一覧/記事では有効なことがある。"""
+        try:
+            from urllib.parse import urlparse
+            p = urlparse(url)
+            if p.scheme:
+                host_path = p.netloc + p.path
+                if p.query:
+                    host_path += "?" + p.query
+            else:
+                host_path = url.lstrip("/")
+            alt = f"https://r.jina.ai/http://{host_path}"
+            r = session.get(alt, headers={"User-Agent": "Mozilla/5.0"}, timeout=timeout)
+            if r.status_code == 200 and (r.text or "").strip():
+                return r.text
+        except Exception:
+            pass
+        return ""
+
+    def _fetch_frontier(url: str, *, kind: str, allow_browser: bool = True, allow_jina: bool = False) -> tuple[str, str]:
         """
         Frontier Myanmar 用の403耐性付き取得。
-        戻り値: (html_or_xml, source) source は curl_cffi/cloudscraper/requests/unlocker/browser/none。
+        戻り値: (html_or_xml, source) source は curl_cffi/cloudscraper/requests/unlocker/browser/jina/none。
         """
         # 1) curl_cffi: Chrome 指紋で直接取得
         try:
@@ -2879,19 +2936,184 @@ def collect_frontier_all_for_date(
             except Exception as e:
                 print(f"[frontier] brightdata browser failed kind={kind}: {e} url={url}")
 
+        # 6) Jina: list/article のみ。feedはXMLとして期待しづらいので使わない。
+        if allow_jina and kind in ("list", "article"):
+            try:
+                html = (_fetch_text_via_jina(url) or "").strip()
+                if _frontier_payload_usable(html, kind=kind):
+                    print(f"[frontier] jina ok kind={kind} len={len(html)} url={url}")
+                    return html, "jina"
+                if html and debug:
+                    print(f"[frontier] jina unusable kind={kind} len={len(html)} url={url}")
+            except Exception as e:
+                if debug:
+                    print(f"[frontier] jina failed kind={kind}: {e} url={url}")
+
         return "", "none"
 
+    def _canonical_frontier_url(u: str) -> str:
+        from urllib.parse import urlparse, urlunparse, urljoin
+        if not u:
+            return ""
+        # ブラウザで保存したソースURLが混ざっても実URLに戻す。
+        if u.startswith("view-source:"):
+            u = u[len("view-source:"):].strip()
+        if u.startswith("/"):
+            u = urljoin(BASE, u)
+        p = urlparse(u.strip())
+        host = (p.netloc or "").lower()
+        if host and not host.endswith("frontiermyanmar.net"):
+            return ""
+        path = re.sub(r"/{2,}", "/", p.path or "")
+        if not path.startswith("/en/"):
+            return ""
+        path = path.rstrip("/") + "/"
+        return urlunparse((p.scheme or "https", p.netloc or "www.frontiermyanmar.net", path, "", "", ""))
+
+    def _is_probable_article_url(u: str) -> bool:
+        from urllib.parse import urlparse
+        cu = _canonical_frontier_url(u)
+        if not cu:
+            return False
+        p = urlparse(cu)
+        parts = [x for x in (p.path or "").strip("/").split("/") if x]
+        # 通常記事は /en/<slug>/ 形式。カテゴリ/固定ページ/著者ページ等は除外。
+        if len(parts) != 2 or parts[0] != "en":
+            return False
+        slug = parts[1].lower()
+        if slug in NON_ARTICLE_SLUGS:
+            return False
+        if slug.startswith(("page", "category", "tag", "author")):
+            return False
+        if "." in slug:
+            return False
+        return True
+
+    def _extract_frontier_article_urls(payload: str) -> List[str]:
+        urls: List[str] = []
+        seen = set()
+
+        def _add(u: str) -> None:
+            cu = _canonical_frontier_url(u)
+            if cu and _is_probable_article_url(cu) and cu not in seen:
+                seen.add(cu)
+                urls.append(cu)
+
+        try:
+            soup = BeautifulSoup(payload or "", "html.parser")
+            for a in soup.select("a[href]"):
+                _add(a.get("href") or "")
+        except Exception:
+            pass
+
+        # Markdown / plain text / Jina 由来のURLも拾う
+        for m in re.finditer(r"https?://www\.frontiermyanmar\.net/en/[^\s\]\)\"'<#?]+/?", payload or "", re.I):
+            _add(m.group(0))
+
+        return urls
+
+    def _iter_frontier_jsonld_nodes(article: BeautifulSoup):
+        """Yoast SEO の schema graph から NewsArticle / WebPage などのノードを順に返す。"""
+        for script in article.find_all("script", attrs={"type": "application/ld+json"}):
+            raw = script.string or script.get_text(" ", strip=True)
+            if not raw:
+                continue
+            try:
+                data = json.loads(raw)
+            except Exception:
+                continue
+
+            queue = []
+            if isinstance(data, dict):
+                queue.append(data)
+                graph = data.get("@graph")
+                if isinstance(graph, list):
+                    queue.extend(x for x in graph if isinstance(x, dict))
+            elif isinstance(data, list):
+                queue.extend(x for x in data if isinstance(x, dict))
+
+            for node in queue:
+                typ = node.get("@type")
+                if isinstance(typ, list):
+                    types = {str(x).lower() for x in typ}
+                else:
+                    types = {str(typ).lower()} if typ else set()
+                if not types or types.intersection({"newsarticle", "article", "webpage"}):
+                    yield node
+
+    def _frontier_date_from_article(article: BeautifulSoup, payload: str = "") -> Optional[date]:
+        # 1) WordPress / Yoast meta。添付記事では article:published_time に UTC 時刻が入る。
+        for attrs in (
+            {"property": "article:published_time"},
+            {"name": "article:published_time"},
+            {"property": "og:updated_time"},
+            {"itemprop": "datePublished"},
+        ):
+            meta = article.find("meta", attrs=attrs)
+            if meta and meta.get("content"):
+                try:
+                    return parse_date(meta["content"]).astimezone(MMT).date()
+                except Exception:
+                    try:
+                        return parse_date(meta["content"]).date()
+                    except Exception:
+                        pass
+
+        # 2) Yoast JSON-LD。添付記事では NewsArticle.datePublished と WebPage.datePublished が入る。
+        for node in _iter_frontier_jsonld_nodes(article):
+            for key in ("datePublished", "dateCreated", "dateModified"):
+                val = node.get(key)
+                if not val:
+                    continue
+                try:
+                    return parse_date(str(val)).astimezone(MMT).date()
+                except Exception:
+                    try:
+                        return parse_date(str(val)).date()
+                    except Exception:
+                        pass
+
+        # 3) Elementor の post-info。添付記事では <time>May 11, 2026</time> がある。
+        for t in article.find_all("time"):
+            val = t.get("datetime") or t.get_text(" ", strip=True)
+            if val:
+                try:
+                    return parse_date(val).astimezone(MMT).date()
+                except Exception:
+                    try:
+                        return parse_date(val).date()
+                    except Exception:
+                        pass
+
+        # 4) 表示テキスト中の “May 11, 2026” 形式
+        text = article.get_text(" ", strip=True) if article else ""
+        text = f"{text} {payload or ''}"
+        month_re = (
+            r"January|February|March|April|May|June|July|August|September|October|November|December"
+        )
+        m = re.search(rf"\b({month_re})\s+\d{{1,2}},\s*\d{{4}}\b", text, re.I)
+        if m:
+            try:
+                return parse_date(m.group(0)).date()
+            except Exception:
+                pass
+        return None
+
     def _extract_frontier_body(article: BeautifulSoup) -> str:
+        # 添付記事では本文は Elementor の theme-post-content、
+        # div.post-content-single > div.elementor-widget-container 内に入る。
+        # ログアウト状態では先頭リード段落 + PMPro の Account Required ブロックのみ。
         host = (
-            article.select_one("div.post-content-single div.elementor-widget-container")
+            article.select_one("div.post-content-single.elementor-widget-theme-post-content > div.elementor-widget-container")
+            or article.select_one("div.post-content-single div.elementor-widget-container")
             or article.find("div", class_=re.compile("post-content-single|theme-post-content", re.I))
             or article.find("div", class_=re.compile("entry-content", re.I))
             or article
         )
 
         parts: List[str] = []
-        PAYWALL_CLASS_RE = re.compile(r"\b(pmpro|pmpro_card|pmpro_card_content)\b", re.I)
-        RELATED_CLASS_RE = re.compile(r"(related|more-stories|elementor-post|share)", re.I)
+        PAYWALL_CLASS_RE = re.compile(r"\b(pmpro|pmpro_card|pmpro_card_content|pmpro_content_message)\b", re.I)
+        RELATED_CLASS_RE = re.compile(r"(related|more-stories|elementor-post|share|footer|header|menu|nav|newsletter)", re.I)
 
         for node in host.find_all(["p", "h2", "h3", "li"]):
             if node.find_parent("div", class_=PAYWALL_CLASS_RE):
@@ -2909,6 +3131,8 @@ def collect_frontier_all_for_date(
             if text.strip() in ("Create Account", "Account Required"):
                 continue
             if lower.startswith("already a member?"):
+                continue
+            if lower in ("share", "more stories", "related stories"):
                 continue
 
             parts.append(re.sub(r"\s+", " ", text))
@@ -2932,101 +3156,404 @@ def collect_frontier_all_for_date(
                 tmp_parts.append(re.sub(r"\s+", " ", text))
             body = "\n".join(tmp_parts).strip()
 
+        # 本文が完全に取れない場合は、og:description / meta description / JSON-LD description を最低限の本文として使う。
+        if not body:
+            for attrs in (
+                {"property": "og:description"},
+                {"name": "description"},
+            ):
+                meta = article.find("meta", attrs=attrs)
+                if meta and meta.get("content"):
+                    body = meta.get("content", "").strip()
+                    break
+        if not body:
+            for node in _iter_frontier_jsonld_nodes(article):
+                desc = node.get("description")
+                if desc:
+                    body = str(desc).strip()
+                    break
+
         return unicodedata.normalize("NFC", body or "")
 
-    # --- RSS取得: ここが今回の403対策の主眼 ---
-    feed_xml, feed_source = _fetch_frontier(feed_url, kind="feed", allow_browser=True)
-    if not feed_xml:
-        print(f"[frontier] RSS取得失敗: all fallbacks exhausted url={feed_url}")
-        return []
+    def _title_from_article(article: BeautifulSoup, fallback: str = "") -> str:
+        title = fallback or ""
+        og = article.find("meta", attrs={"property": "og:title"})
+        if og and og.get("content"):
+            title = og["content"].strip() or title
+        else:
+            # 添付記事では h1.elementor-heading-title が本文上のタイトル。
+            h1 = article.select_one("h1.elementor-heading-title") or article.find("h1")
+            if h1:
+                title = h1.get_text(" ", strip=True) or title
+            else:
+                for node in _iter_frontier_jsonld_nodes(article):
+                    headline = node.get("headline") or node.get("name")
+                    if headline:
+                        title = str(headline)
+                        break
+                if not title and article.title:
+                    title = article.title.get_text(" ", strip=True) or title
+        title = re.sub(r"\s*\|\s*Frontier Myanmar\s*$", "", title or "", flags=re.I)
+        return unicodedata.normalize("NFC", re.sub(r"\s+", " ", title or "").strip())
 
-    if debug:
-        print(f"[frontier] RSS fetched source={feed_source} len={len(feed_xml)} url={feed_url}")
-
-    soup = BeautifulSoup(feed_xml, "xml")
-
-    candidates: List[Dict] = []
-    for item in soup.find_all("item"):
-        pub_tag = item.find("pubDate")
-        link_tag = item.find("link")
-        title_tag = item.find("title")
-        if not (pub_tag and link_tag and title_tag):
-            continue
-
-        pub_raw = (pub_tag.text or "").strip()
-        url = (link_tag.text or "").strip()
-        title_raw = (title_tag.text or "").strip()
-        if not url:
-            continue
-
+    def _clean_html_text(s: str) -> str:
         try:
-            dt = parse_date(pub_raw).astimezone(MMT)
+            txt = BeautifulSoup(s or "", "html.parser").get_text(" ", strip=True)
         except Exception:
-            continue
+            txt = s or ""
+        txt = re.sub(r"\s+", " ", txt).strip()
+        return unicodedata.normalize("NFC", txt)
 
-        if dt.date() != target_date_mmt:
-            continue
+    def _fallback_candidates_via_wp_json() -> List[Dict]:
+        """
+        Frontier のトップページHTMLに <link rel="https://api.w.org/" href=".../en/wp-json/"> があるため、
+        RSSが403になる場合は WordPress REST API を候補生成の主経路として使う。
+        REST payload には date/date_gmt/link/title/content が入るので、RSSや一覧HTMLより日付判定が安定する。
+        """
+        from datetime import timezone
 
-        candidates.append(
-            {
+        api_base = "https://www.frontiermyanmar.net/en/wp-json/wp/v2/posts"
+        out: List[Dict] = []
+        seen = set()
+
+        for page_no in (1, 2, 3):
+            api_url = (
+                f"{api_base}?per_page=20&page={page_no}&orderby=date&order=desc"
+                "&_fields=id,date,date_gmt,link,title,excerpt,content"
+            )
+            payload, src = _fetch_frontier(api_url, kind="json", allow_browser=False, allow_jina=False)
+
+            # _fetch_frontier は json kind をまだ専用判定していない環境でも動くよう、
+            # 直接 requests でも一度試す。
+            if not payload:
+                try:
+                    r = session.get(
+                        api_url,
+                        headers={**FRONTIER_HEADERS, "Accept": "application/json,text/plain,*/*"},
+                        timeout=20,
+                        allow_redirects=True,
+                    )
+                    if r.status_code == 200 and (r.text or "").strip().lstrip().startswith("["):
+                        payload = r.text
+                        src = "requests-json"
+                except Exception as e:
+                    if debug:
+                        print(f"[frontier] wp-json direct failed page={page_no}: {e}")
+
+            if not payload:
+                if debug:
+                    print(f"[frontier] wp-json empty page={page_no} url={api_url}")
+                continue
+
+            try:
+                posts = json.loads(payload)
+            except Exception as e:
+                if debug:
+                    head = (payload or "")[:120].replace("\n", "\\n")
+                    print(f"[frontier] wp-json parse failed page={page_no} src={src} err={e} head={head!r}")
+                continue
+
+            if not isinstance(posts, list) or not posts:
+                break
+
+            page_hits = 0
+            for post in posts:
+                if not isinstance(post, dict):
+                    continue
+
+                url = _canonical_frontier_url((post.get("link") or "").strip())
+                if not url or not _is_probable_article_url(url) or url in seen:
+                    continue
+
+                raw_date = (post.get("date_gmt") or post.get("date") or "").strip()
+                if not raw_date:
+                    continue
+                try:
+                    # date_gmt は通常 naive の UTC 文字列。date はサイトローカル。
+                    if post.get("date_gmt") and raw_date[-1:] != "Z" and "+" not in raw_date:
+                        dt = parse_date(raw_date).replace(tzinfo=timezone.utc).astimezone(MMT)
+                    else:
+                        dt0 = parse_date(raw_date)
+                        if dt0.tzinfo is None:
+                            dt0 = dt0.replace(tzinfo=MMT)
+                        dt = dt0.astimezone(MMT)
+                except Exception:
+                    continue
+
+                # desc orderなので、対象日より古くなったら以降ページは読まなくてもよいが、
+                # タイムゾーン差を考えて1ページ内では最後まで見る。
+                if dt.date() != target_date_mmt:
+                    continue
+
+                title = _clean_html_text(((post.get("title") or {}).get("rendered") or ""))
+                excerpt = _clean_html_text(((post.get("excerpt") or {}).get("rendered") or ""))
+                content_html = ((post.get("content") or {}).get("rendered") or "")
+                body_hint = _clean_html_text(content_html)
+
+                seen.add(url)
+                page_hits += 1
+                out.append({
+                    "url": url,
+                    "title": title,
+                    "date": dt.isoformat(),
+                    "origin": "wp-json",
+                    "summary": excerpt,
+                    "body_hint": body_hint,
+                })
+
+            if debug:
+                print(f"[frontier] wp-json page={page_no} src={src} hits={page_hits} total={len(out)}")
+
+            # 最新順で対象日ヒットがなく、投稿日がすでに対象日より古い場合は打ち切り。
+            try:
+                last_raw = (posts[-1].get("date_gmt") or posts[-1].get("date") or "").strip()
+                if last_raw:
+                    last_dt = parse_date(last_raw)
+                    if posts[-1].get("date_gmt") and last_dt.tzinfo is None:
+                        last_dt = last_dt.replace(tzinfo=timezone.utc)
+                    elif last_dt.tzinfo is None:
+                        last_dt = last_dt.replace(tzinfo=MMT)
+                    if last_dt.astimezone(MMT).date() < target_date_mmt:
+                        break
+            except Exception:
+                pass
+
+        return out
+
+    def _parse_rss_candidates(feed_xml: str) -> List[Dict]:
+        soup = BeautifulSoup(feed_xml, "xml")
+        out: List[Dict] = []
+        for item in soup.find_all("item"):
+            pub_tag = item.find("pubDate")
+            link_tag = item.find("link")
+            title_tag = item.find("title")
+            if not (pub_tag and link_tag and title_tag):
+                continue
+            pub_raw = (pub_tag.text or "").strip()
+            url = _canonical_frontier_url((link_tag.text or "").strip())
+            title_raw = (title_tag.text or "").strip()
+            if not url or not _is_probable_article_url(url):
+                continue
+            try:
+                dt = parse_date(pub_raw).astimezone(MMT)
+            except Exception:
+                continue
+            if dt.date() != target_date_mmt:
+                continue
+            out.append({
                 "url": url,
                 "title": unicodedata.normalize("NFC", title_raw),
                 "date": dt.isoformat(),
-            }
+                "origin": "rss",
+            })
+        return out
+
+    def _resolve_google_news_link(g_link: str, timeout: int = 20) -> str:
+        """Google News の /rss/articles/<token> を、可能なら元記事URLに戻す。"""
+        from urllib.parse import urlparse
+        if not g_link:
+            return ""
+        try:
+            host = urlparse(g_link).netloc.lower()
+        except Exception:
+            host = ""
+        if "news.google.com" not in host:
+            return _canonical_frontier_url(g_link) if _is_probable_article_url(g_link) else ""
+
+        # token内に元URLが埋まっているケース
+        try:
+            import base64
+            parts = urlparse(g_link).path.split("/")
+            if "articles" in parts:
+                token = parts[parts.index("articles") + 1]
+                token += "=" * (-len(token) % 4)
+                raw = base64.urlsafe_b64decode(token)
+                m = re.search(rb"https?://[^\s\"'<>\x00]+", raw)
+                if m:
+                    u = m.group(0).decode("utf-8", "ignore")
+                    if _is_probable_article_url(u):
+                        return _canonical_frontier_url(u)
+        except Exception:
+            pass
+
+        # 通常リダイレクト
+        try:
+            r = session.get(
+                g_link,
+                headers={"User-Agent": FRONTIER_HEADERS["User-Agent"]},
+                timeout=timeout,
+                allow_redirects=True,
+            )
+            final = getattr(r, "url", "") or ""
+            if _is_probable_article_url(final):
+                return _canonical_frontier_url(final)
+        except Exception:
+            pass
+        return ""
+
+    def _fallback_candidates_via_google_news() -> List[Dict]:
+        gnews = (
+            "https://news.google.com/rss/search?"
+            "q=site:frontiermyanmar.net/en+when:7d&hl=en-US&gl=US&ceid=US:en"
         )
+        try:
+            r = session.get(gnews, headers={"User-Agent": FRONTIER_HEADERS["User-Agent"]}, timeout=20)
+            xml = (r.text or "").strip() if r.status_code == 200 else ""
+        except Exception as e:
+            if debug:
+                print(f"[frontier] google-news fetch failed: {e}")
+            xml = ""
+        if not xml or ("<rss" not in xml[:3000].lower() and "<feed" not in xml[:3000].lower()):
+            return []
+
+        soup = BeautifulSoup(xml, "xml")
+        out: List[Dict] = []
+        for item in soup.find_all("item"):
+            link = (item.findtext("link") or "").strip()
+            title = (item.findtext("title") or "").strip()
+            pub = (item.findtext("pubDate") or "").strip()
+            try:
+                dt = parse_date(pub).astimezone(MMT)
+            except Exception:
+                continue
+            if dt.date() != target_date_mmt:
+                continue
+            real = _resolve_google_news_link(link)
+            if not real:
+                continue
+            out.append({
+                "url": real,
+                "title": unicodedata.normalize("NFC", title),
+                "date": dt.isoformat(),
+                "origin": "google-news",
+            })
+        return out
+
+    def _fallback_candidates_via_lists() -> List[Dict]:
+        found_urls: List[str] = []
+        seen = set()
+        for list_url in FRONTIER_LIST_URLS:
+            html, src = _fetch_frontier(list_url, kind="list", allow_browser=True, allow_jina=True)
+            if not html:
+                continue
+            urls = _extract_frontier_article_urls(html)
+            if debug:
+                print(f"[frontier] list source={src} candidates={len(urls)} url={list_url}")
+            for u in urls:
+                if u not in seen:
+                    seen.add(u)
+                    found_urls.append(u)
+
+        out: List[Dict] = []
+        for u in found_urls:
+            html, src = _fetch_frontier(u, kind="article", allow_browser=True, allow_jina=True)
+            if not html:
+                if debug:
+                    print(f"[frontier] list-candidate article fetch failed url={u}")
+                continue
+            article = BeautifulSoup(html, "html.parser")
+            d = _frontier_date_from_article(article, html)
+            if debug:
+                print(f"[frontier] list-candidate date={d} source={src} url={u}")
+            if d != target_date_mmt:
+                continue
+            title = _title_from_article(article)
+            out.append({
+                "url": u,
+                "title": title,
+                "date": d.isoformat(),
+                "origin": "list",
+                "_html": html,
+                "_article_source": src,
+            })
+        return out
+
+    # --- 1) RSS取得 ---
+    candidates: List[Dict] = []
+    feed_xml, feed_source = _fetch_frontier(feed_url, kind="feed", allow_browser=True, allow_jina=False)
+    if feed_xml:
+        candidates.extend(_parse_rss_candidates(feed_xml))
+        if debug:
+            print(f"[frontier] RSS fetched source={feed_source} candidates={len(candidates)} url={feed_url}")
+    else:
+        print(f"[frontier] RSS取得失敗: all fallbacks exhausted url={feed_url}")
+
+    # --- 2) RSSが使えない/当日候補0件の場合、WP REST → ホーム/一覧 → Google Newsへフォールバック ---
+    if not candidates:
+        wp_cands = _fallback_candidates_via_wp_json()
+        if wp_cands:
+            print(f"[frontier] wp-json fallback candidates={len(wp_cands)} date={target_date_mmt}")
+            candidates.extend(wp_cands)
+
+    if not candidates:
+        list_cands = _fallback_candidates_via_lists()
+        if list_cands:
+            print(f"[frontier] list fallback candidates={len(list_cands)} date={target_date_mmt}")
+            candidates.extend(list_cands)
+
+    if not candidates:
+        gnews_cands = _fallback_candidates_via_google_news()
+        if gnews_cands:
+            print(f"[frontier] google-news fallback candidates={len(gnews_cands)} date={target_date_mmt}")
+            candidates.extend(gnews_cands)
+
+    # URL重複除去
+    uniq: List[Dict] = []
+    seen_urls = set()
+    for c in candidates:
+        u = c.get("url") or ""
+        if u and u not in seen_urls:
+            seen_urls.add(u)
+            uniq.append(c)
+    candidates = uniq
 
     if debug:
-        print(f"[frontier] RSS candidates for {target_date_mmt}: {len(candidates)}")
+        print(f"[frontier] final candidates for {target_date_mmt}: {len(candidates)}")
 
     results: List[Dict] = []
-
     for item in candidates:
         url = item["url"]
-        title = item["title"]
-        art_date_iso = item["date"]
+        title = item.get("title") or ""
+        art_date_iso = item.get("date") or target_date_mmt.isoformat()
         body = ""
 
-        html, article_source = _fetch_frontier(url, kind="article", allow_browser=True)
+        html = item.get("_html") or ""
+        article_source = item.get("_article_source") or ""
+        if not html:
+            html, article_source = _fetch_frontier(url, kind="article", allow_browser=True, allow_jina=True)
+
         if html:
             try:
                 article = BeautifulSoup(html, "html.parser")
-
-                # og:title / h1 / <title> でタイトルを上書き（あれば）
-                og = article.find("meta", attrs={"property": "og:title"})
-                if og and og.get("content"):
-                    title = unicodedata.normalize("NFC", og["content"].strip()) or title
-                else:
-                    h1 = article.find("h1")
-                    if h1:
-                        title = unicodedata.normalize("NFC", h1.get_text(strip=True)) or title
-                    elif article.title:
-                        title = unicodedata.normalize(
-                            "NFC", article.title.get_text(strip=True)
-                        ) or title
-
+                title = _title_from_article(article, title)
                 body = _extract_frontier_body(article)
-
+                if not body and item.get("body_hint"):
+                    body = item.get("body_hint") or ""
+                # Google News由来など日付がpubDateだけの場合も、記事側日付が取れれば上書き
+                d = _frontier_date_from_article(article, html)
+                if d:
+                    art_date_iso = d.isoformat()
                 if debug:
                     print(
-                        f"[frontier] article parsed source={article_source} "
+                        f"[frontier] article parsed origin={item.get('origin')} source={article_source} "
                         f"body_len={len(body or '')} url={url}"
                     )
             except Exception as e:
                 if debug:
                     print(f"[frontier] article parse fail {url}: {e}")
         else:
+            if item.get("body_hint"):
+                body = item.get("body_hint") or ""
             if debug:
                 print(f"[frontier] article fetch failed after fallbacks url={url}")
 
-        results.append(
-            {
-                "source": "Frontier Myanmar",
-                "title": unicodedata.normalize("NFC", title or ""),
-                "url": url,
-                "date": art_date_iso,
-                "body": unicodedata.normalize("NFC", body or ""),
-            }
-        )
+        results.append({
+            "source": "Frontier Myanmar",
+            "title": unicodedata.normalize("NFC", title or ""),
+            "url": url,
+            "date": art_date_iso,
+            "body": unicodedata.normalize("NFC", body or ""),
+        })
 
     return results
 
