@@ -3034,15 +3034,51 @@ def collect_frontier_all_for_date(
         except Exception:
             pass
 
-        # カテゴリリンクやパンくずに /category/doh-athan/ /category/whim/ が含まれる場合。
+        # カテゴリリンク判定は「記事本文/記事メタ情報の近傍」に限定する。
+        # Frontier の記事ページHTMLには全ページ共通ヘッダー/メニュー内にも
+        # Podcasts → Doh Athan / WHIM のカテゴリリンクが含まれるため、
+        # ページ全体の a[href*="/category/"] を見ると通常記事まで誤除外してしまう。
         try:
-            for a in article.select('a[href*="/category/"]'):
-                href = a.get("href") or ""
-                if _is_excluded_frontier_url(href):
-                    return True
-                label = _frontier_norm_label(a.get_text(" ", strip=True))
-                if label in FRONTIER_EXCLUDED_SECTION_NAMES:
-                    return True
+            ARTICLE_META_SELECTORS = (
+                "main a[href*='/category/']",
+                "article a[href*='/category/']",
+                ".elementor-widget-post-info a[href*='/category/']",
+                ".post-categories a[href*='/category/']",
+                ".entry-meta a[href*='/category/']",
+                ".breadcrumb a[href*='/category/']",
+                ".rank-math-breadcrumb a[href*='/category/']",
+                ".yoast-breadcrumb a[href*='/category/']",
+            )
+            NAV_OR_LAYOUT_RE = re.compile(
+                r"(header|footer|menu|nav|off-?canvas|popup|sidebar|widget|"
+                r"elementor-location-header|elementor-location-footer)",
+                re.I,
+            )
+            checked_ids = set()
+            for selector in ARTICLE_META_SELECTORS:
+                for a in article.select(selector):
+                    if id(a) in checked_ids:
+                        continue
+                    checked_ids.add(id(a))
+                    # グローバルナビ/フッター/サイドバー配下は除外判定に使わない。
+                    skip = False
+                    for anc in a.parents:
+                        name = getattr(anc, "name", "") or ""
+                        if name in ("header", "footer", "nav", "aside"):
+                            skip = True
+                            break
+                        if hasattr(anc, "get"):
+                            marker = " ".join(anc.get("class", []) or []) + " " + (anc.get("id") or "")
+                            if NAV_OR_LAYOUT_RE.search(marker):
+                                skip = True
+                                break
+                    if skip:
+                        continue
+
+                    href = a.get("href") or ""
+                    label = _frontier_norm_label(a.get_text(" ", strip=True))
+                    if _is_excluded_frontier_url(href) or label in FRONTIER_EXCLUDED_SECTION_NAMES:
+                        return True
         except Exception:
             pass
 
