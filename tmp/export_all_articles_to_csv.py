@@ -2051,6 +2051,28 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
         except Exception:
             return ""
 
+    def _gnlm_clean_article_title(title: str) -> str:
+        """
+        GNLMのHTML/RSS/Google Newsでタイトル末尾に付く媒体名を除去する。
+        例: "... - Global New Light Of Myanmar" → "..."
+        """
+        t = unicodedata.normalize("NFC", title or "").strip()
+        if not t:
+            return ""
+
+        suffix_re = re.compile(
+            r"\s*(?:-|–|—|\|)\s*(?:the\s+)?global\s+new\s+light\s+of\s+myanmar\s*$",
+            re.I,
+        )
+        # 念のため、同じsuffixが複数回付いたケースにも対応する。
+        while True:
+            nt = suffix_re.sub("", t).strip()
+            if nt == t:
+                break
+            t = nt
+
+        return unicodedata.normalize("NFC", t).strip()
+
     # ★ curl_cffi セッション（最重要）
     sess = CurlSession(impersonate="chrome")
 
@@ -2400,6 +2422,7 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
         return _gnlm_clean_pdf_text(out)
 
     def _gnlm_norm_title_for_match(s: str) -> str:
+        s = _gnlm_clean_article_title(s)
         s = unicodedata.normalize("NFKC", s or "").lower()
         s = s.replace("&", " and ")
         s = re.sub(r"[^a-z0-9]+", " ", s)
@@ -2897,44 +2920,134 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
 
         return list(merged.values())
 
+    def _gnlm_text_tokens_for_match(s: str) -> list[str]:
+        """
+        GNLM PDF fallback の補助照合用トークン。
+        目的: Web見出しとPDF見出しが違うが、PDF本文には同じ固有語が出る記事を拾う。
+        例: Web「Pathein solar project expected to reach 90MW...」
+            PDF「Ayeyawady Development PCL to launch 30 MW solar power project in May」
+        """
+        s = unicodedata.normalize("NFKC", s or "").lower()
+        s = s.replace("&", " and ")
+        s = re.sub(r"(\d+)\s*mw\b", r"\1 mw", s)
+        s = re.sub(r"[^a-z0-9]+", " ", s)
+        stop = {
+            "global", "new", "light", "myanmar", "gnlm", "com", "mm",
+            "the", "a", "an", "and", "or", "of", "to", "for", "in", "on", "at",
+            "with", "by", "from", "as", "is", "are", "be", "will", "can", "could",
+            "expected", "depending", "under", "over", "into", "its", "their", "his", "her",
+            "article", "news", "may", "set", "held", "hold", "hosts", "host",
+        }
+        toks = []
+        for tok in s.split():
+            if tok in stop:
+                continue
+            if len(tok) < 3 and not tok.isdigit():
+                continue
+            toks.append(tok)
+        return toks
+
+    def _gnlm_token_overlap_score(needle: str, haystack: str) -> float:
+        """
+        Web見出し/slugの重要語が、PDF見出し+本文にどれだけ含まれるかを0..1で返す。
+        タイトル完全一致では拾えない別見出し・別URLを救済するための補助スコア。
+        """
+        ntoks = list(dict.fromkeys(_gnlm_text_tokens_for_match(needle)))
+        htoks = set(_gnlm_text_tokens_for_match(haystack))
+        if not ntoks or not htoks:
+            return 0.0
+        # 長い見出しほど全語一致を要求しすぎない。上位8語相当を母数にする。
+        denom = min(len(ntoks), 8)
+        hit = sum(1 for t in ntoks if t in htoks)
+        return hit / max(1, denom)
+
     def _gnlm_attach_pdf_bodies_to_empty_items(
         out: list[dict],
         pdf_articles: list[dict],
     ) -> list[dict]:
+        """
+        bodyが空の記事だけ、同日PDFから補完する。
+
+        修正点:
+        - PDF記事を一度マッチしただけで使用済みにしない。
+          Google News由来で同じ記事の別URL/別見出しが混ざるため、同じPDF本文の再利用を許可する。
+        - タイトル同士の類似だけでなく、URL slug / Web見出しの重要語がPDF本文に含まれるかも見る。
+          例: Pathein solar project ... というWeb見出しを、PDFの
+              Ayeyawady Development PCL to launch 30 MW solar power project in May に対応付ける。
+        """
         if not out or not pdf_articles:
             return out
 
-        threshold = float(os.getenv("GNLM_PDF_MATCH_THRESHOLD", "0.76"))
-        used_pdf_keys = set()
+        title_threshold = float(os.getenv("GNLM_PDF_MATCH_THRESHOLD", "0.76"))
+        token_threshold = float(os.getenv("GNLM_PDF_TOKEN_MATCH_THRESHOLD", "0.50"))
 
         for it in out:
             if (it.get("body") or "").strip():
                 continue
 
             title = it.get("title") or ""
+            url = it.get("url") or ""
+            try:
+                slug = urlsplit(url).path.rstrip("/").split("/")[-1].replace("-", " ")
+            except Exception:
+                slug = ""
+            needle = f"{title} {slug}"
+
             best = None
+            best_title_score = 0.0
+            best_token_score = 0.0
             best_score = 0.0
+            best_reason = ""
 
             for pa in pdf_articles:
-                rk = pa.get("_row_key") or pa.get("title") or ""
-                if rk in used_pdf_keys:
+                pdf_title = pa.get("title") or ""
+                pdf_body = pa.get("body") or ""
+                if not (pdf_body or "").strip():
                     continue
 
-                score = _gnlm_title_score(title, pa.get("title") or "")
-                if score > best_score:
+                title_score = _gnlm_title_score(title, pdf_title)
+                token_score = _gnlm_token_overlap_score(needle, f"{pdf_title}\n{pdf_body}")
+
+                # タイトル一致を優先。ただしタイトル不一致でも本文トークンが強ければ採用候補にする。
+                if title_score >= title_threshold:
+                    combined = 1.0 + title_score
+                    reason = "title"
+                elif token_score >= token_threshold:
+                    combined = token_score
+                    reason = "token"
+                else:
+                    combined = max(title_score, token_score) * 0.1
+                    reason = "weak"
+
+                if combined > best_score:
                     best = pa
-                    best_score = score
+                    best_title_score = title_score
+                    best_token_score = token_score
+                    best_score = combined
+                    best_reason = reason
 
-            if best and best_score >= threshold:
+            matched = False
+            if best is not None:
+                matched = (
+                    best_title_score >= title_threshold
+                    or best_token_score >= token_threshold
+                )
+
+            if matched:
                 it["body"] = best.get("body") or ""
-                it["_gnlm_body_source"] = "pdf_matched"
-                it["_gnlm_pdf_match_score"] = f"{best_score:.3f}"
+                it["_gnlm_body_source"] = "pdf_matched" if best_reason == "title" else "pdf_token_matched"
+                it["_gnlm_pdf_match_score"] = f"title={best_title_score:.3f};token={best_token_score:.3f}"
                 it["_gnlm_pdf_title"] = best.get("title") or ""
-                used_pdf_keys.add(best.get("_row_key") or best.get("title") or "")
-
                 print(
-                    f"[gnlm-pdf] matched score={best_score:.3f} "
-                    f"web_title={title!r} pdf_title={(best.get('title') or '')!r}"
+                    f"[gnlm-pdf] matched reason={best_reason} "
+                    f"title_score={best_title_score:.3f} token_score={best_token_score:.3f} "
+                    f"web_title={title!r} pdf_title={(best.get('title') or '')!r} url={url}"
+                )
+            else:
+                print(
+                    f"[gnlm-pdf] unmatched "
+                    f"best_title_score={best_title_score:.3f} best_token_score={best_token_score:.3f} "
+                    f"web_title={title!r} best_pdf_title={((best or {}).get('title') or '')!r} url={url}"
                 )
 
         return out
@@ -3074,8 +3187,9 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
 
                 it["body"] = unicodedata.normalize("NFC", body).strip()
                 it["_gnlm_body_source"] = f"brightdata_{bd_source}_after_pdf_fallback"
+                title = _gnlm_clean_article_title(title)
                 if title:
-                    it["title"] = unicodedata.normalize("NFC", title).strip()
+                    it["title"] = title
                 if art_date:
                     it["date"] = art_date.isoformat()
 
@@ -3220,7 +3334,7 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
             if "gnlm.com.mm" not in direct:
                 continue
 
-            out_items.append({"title": title, "link": direct, "pubDate": pub})
+            out_items.append({"title": _gnlm_clean_article_title(title), "link": direct, "pubDate": pub})
 
         print(f"[gnlm] google news resolved gnlm_links={len(out_items)}")
         return out_items
@@ -3244,8 +3358,9 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
                 continue
             if _mmt_date(dt) == target_date_mmt:
                 collected_urls.add(link)
-                if it.get("title"):
-                    fallback_titles[link] = it["title"]
+                clean_title = _gnlm_clean_article_title(it.get("title") or "")
+                if clean_title:
+                    fallback_titles[link] = clean_title
 
     if collected_urls:
         print(f"[gnlm] urls via RSS feeds: {len(collected_urls)}")
@@ -3323,8 +3438,9 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
                 dt = None
             if link and dt and _mmt_date(dt) == target_date_mmt:
                 collected_urls.add(link)
-                if title:
-                    fallback_titles[link] = title
+                clean_title = _gnlm_clean_article_title(title)
+                if clean_title:
+                    fallback_titles[link] = clean_title
 
         if collected_urls:
             print(f"[gnlm] fallback via Google News: {len(collected_urls)} urls")
@@ -3355,11 +3471,11 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
                 # ここではBrightDataをまだ使わない。
                 # URL・タイトルだけ残し、まず後段のPDF fallbackで本文補完を試す。
                 # PDFでも本文が取れなかった場合のみ、最後にBrightDataで記事HTMLを再取得する。
-                t = (fallback_titles.get(url) or "").strip() or _title_from_slug(url)
+                t = _gnlm_clean_article_title((fallback_titles.get(url) or "").strip() or _title_from_slug(url))
                 if t:
                     out.append({
                         "source": "Global New Light Of Myanmar (国営紙)",
-                        "title": unicodedata.normalize("NFC", t).strip(),
+                        "title": t,
                         "url": url,
                         "date": target_date_mmt.isoformat(),
                         "body": "",
@@ -3378,6 +3494,7 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
                 title = h1.get_text(strip=True)
         if not title:
             title = fallback_titles.get(url, "") or _title_from_slug(url)
+        title = _gnlm_clean_article_title(title)
         if not title:
             continue
 
@@ -3385,7 +3502,7 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
 
         out.append({
             "source": "Global New Light Of Myanmar (国営紙)",
-            "title": unicodedata.normalize("NFC", title).strip(),
+            "title": title,
             "url": url,
             "date": (art_date or target_date_mmt).isoformat(),
             "body": unicodedata.normalize("NFC", body).strip(),
@@ -3423,6 +3540,12 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
     # ==================================================
     if any(not (x.get("body") or "").strip() for x in out):
         out = _gnlm_fill_empty_bodies_via_brightdata(out)
+
+    # PDF/BrightData でも本文が取れない GNLM 行は落とさず残す。
+    # N列が空になる可能性はログで可視化し、URL・タイトルはシートに残す。
+    empty_count = sum(1 for x in out if not (x.get("body") or "").strip())
+    if empty_count:
+        print(f"[gnlm] empty-body items after all fallbacks kept: {empty_count}")
 
     return deduplicate_by_url(out)
 
