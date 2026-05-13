@@ -2020,6 +2020,18 @@ def _gnlm_div_looks_like_paragraph(node: Tag) -> bool:
 
     return True
 
+
+_GNLM_TITLE_SOURCE_SUFFIX_RE = re.compile(
+    r"\s*[-|–—]\s*(?:The\s+)?Global\s+New\s+Light\s+Of\s+Myanmar\s*$",
+    re.I,
+)
+
+def _gnlm_strip_source_suffix(title: str) -> str:
+    """GNLMの記事タイトル末尾に付く媒体名サフィックスを除去する。"""
+    title = unicodedata.normalize("NFC", title or "")
+    title = re.sub(r"\s+", " ", title).strip()
+    return _GNLM_TITLE_SOURCE_SUFFIX_RE.sub("", title).strip()
+
 def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List[Dict]:
     """
     Global New Light of Myanmar の National / Business / Local News から
@@ -3075,7 +3087,7 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
                 it["body"] = unicodedata.normalize("NFC", body).strip()
                 it["_gnlm_body_source"] = f"brightdata_{bd_source}_after_pdf_fallback"
                 if title:
-                    it["title"] = unicodedata.normalize("NFC", title).strip()
+                    it["title"] = _gnlm_strip_source_suffix(title)
                 if art_date:
                     it["date"] = art_date.isoformat()
 
@@ -3245,7 +3257,7 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
             if _mmt_date(dt) == target_date_mmt:
                 collected_urls.add(link)
                 if it.get("title"):
-                    fallback_titles[link] = it["title"]
+                    fallback_titles[link] = _gnlm_strip_source_suffix(it["title"])
 
     if collected_urls:
         print(f"[gnlm] urls via RSS feeds: {len(collected_urls)}")
@@ -3324,7 +3336,7 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
             if link and dt and _mmt_date(dt) == target_date_mmt:
                 collected_urls.add(link)
                 if title:
-                    fallback_titles[link] = title
+                    fallback_titles[link] = _gnlm_strip_source_suffix(title)
 
         if collected_urls:
             print(f"[gnlm] fallback via Google News: {len(collected_urls)} urls")
@@ -3355,11 +3367,11 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
                 # ここではBrightDataをまだ使わない。
                 # URL・タイトルだけ残し、まず後段のPDF fallbackで本文補完を試す。
                 # PDFでも本文が取れなかった場合のみ、最後にBrightDataで記事HTMLを再取得する。
-                t = (fallback_titles.get(url) or "").strip() or _title_from_slug(url)
+                t = _gnlm_strip_source_suffix((fallback_titles.get(url) or "").strip() or _title_from_slug(url))
                 if t:
                     out.append({
                         "source": "Global New Light Of Myanmar (国営紙)",
-                        "title": unicodedata.normalize("NFC", t).strip(),
+                        "title": t,
                         "url": url,
                         "date": target_date_mmt.isoformat(),
                         "body": "",
@@ -3378,6 +3390,7 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
                 title = h1.get_text(strip=True)
         if not title:
             title = fallback_titles.get(url, "") or _title_from_slug(url)
+        title = _gnlm_strip_source_suffix(title)
         if not title:
             continue
 
@@ -3385,7 +3398,7 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
 
         out.append({
             "source": "Global New Light Of Myanmar (国営紙)",
-            "title": unicodedata.normalize("NFC", title).strip(),
+            "title": title,
             "url": url,
             "date": (art_date or target_date_mmt).isoformat(),
             "body": unicodedata.normalize("NFC", body).strip(),
