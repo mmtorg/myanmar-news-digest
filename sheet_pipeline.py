@@ -24,11 +24,26 @@ _IRRAWADDY_ALLOWED_CRONS = {
     "50 16 * * *",  # 23:20 MMT
 }
 
+# GNLM（Global New Light Of Myanmar / 国営紙）は、定時収集では
+# 12:30 / 20:30 / 22:30 MMT の3枠だけ対象にする。
+_GNLM_ALLOWED_CRONS = {
+    "0 6 * * *",    # 12:30 MMT
+    "0 10 * * *",   # 16:30 MMT
+    "0 14 * * *",   # 20:30 MMT
+    "0 16 * * *",   # 22:30 MMT
+}
+
 def _should_collect_irrawaddy(schedule_cron: str | None) -> bool:
     """Return True only for Irrawaddy-enabled collection slots."""
     if not schedule_cron:
         return False
     return schedule_cron.strip() in _IRRAWADDY_ALLOWED_CRONS
+
+def _should_collect_gnlm(schedule_cron: str | None) -> bool:
+    """Return True only for GNLM-enabled collection slots."""
+    if not schedule_cron:
+        return False
+    return schedule_cron.strip() in _GNLM_ALLOWED_CRONS
 
 def _setup_logger():
     level = (os.getenv("MNA_LOG_LEVEL") or "INFO").upper()
@@ -1500,12 +1515,21 @@ def _collect_all_for(
         ("Khit Thit Media", collect_khitthit_all_for_date, {"max_pages": 5}),
         ("DVB", collect_dvb_all_for_date, {}),
         ("Myanmar Now", collect_myanmar_now_mm_all_for_date, {"max_pages": 3}),
-        ("GNLM", collect_gnlm_all_for_date, {"max_pages": 3}),
+    ]
+
+    if _should_collect_gnlm(schedule_cron):
+        plan.append(("GNLM", collect_gnlm_all_for_date, {"max_pages": 3}))
+        logging.info(f"[rules] GNLM enabled (schedule_cron={schedule_cron})")
+    else:
+        logging.info(f"[rules] GNLM disabled (schedule_cron={schedule_cron})")
+
+    plan.extend([
         ("Popular Myanmar", collect_popular_all_for_date, {}),
         ("Frontier Myanmar", collect_frontier_all_for_date, {}),
         ("JETRO", collect_jetro_biznews_mm_all_for_date, {}),
         ("News Eleven", collect_news_eleven_all_for_date, {}),
-    ]
+    ])
+
     if _should_collect_irrawaddy(schedule_cron):
         plan.insert(0, ("Irrawaddy", collect_irrawaddy_all_for_date, {}))
         logging.info(f"[rules] Irrawaddy enabled (schedule_cron={schedule_cron})")
