@@ -2362,28 +2362,19 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
         s = re.sub(r"\n{3,}", "\n\n", s)
         return s.strip()
 
-    _GNLM_LINE_WRAP_SUFFIXES = {
-        "s", "es", "ed", "er", "or", "ing",
-        "ion", "ions", "tion", "tions",
-        "ment", "ments", "ity", "ities",
-        "ly", "al", "able", "ible", "ous", "ive",
-        "ance", "ence", "ant", "ent", "ary",
-        # GNLM PDFで頻出する分割語の保険
-        "mar", "ny", "lers", "cials", "ficer", "ficers",
-        "vices", "tains", "ness",
-    }
-
     def _gnlm_join_pdf_lines(lines: list[str]) -> str:
         """
         PDF上の物理行を本文段落へ戻す。
-        - soft hyphen / 行末ハイフンは連結
-        - それ以外は基本スペース連結
+        重要: GNLM PDF では行末がハイフン/soft hyphenで明示された場合だけ単語連結する。
+        それ以外を suffix 推定で連結すると factual or -> factualor のような誤結合が起きるため、
+        常に半角スペースを入れる。
         """
         out = ""
-        prev_hard_wrap = False
+        join_next_without_space = False
 
         for raw in lines:
             raw = raw or ""
+            hard_wrap = bool(re.search(r"[\u00ad-]\s*$", raw))
             line = _gnlm_clean_pdf_text(raw.replace("\u00ad", ""))
             line = re.sub(r"\s+", " ", line).strip()
             if not line:
@@ -2391,23 +2382,12 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
 
             if not out:
                 out = line
+            elif join_next_without_space:
+                out = out.rstrip("-") + line
             else:
-                if prev_hard_wrap or out.endswith("-"):
-                    out = out.rstrip("-") + line
-                else:
-                    prev = re.search(r"([A-Za-z]{2,})$", out)
-                    nxt = re.match(r"([a-z]{1,8})(\b|[^A-Za-z])", line)
-                    if (
-                        prev and nxt
-                        and len(prev.group(1)) >= 3
-                        and nxt.group(1) in _GNLM_LINE_WRAP_SUFFIXES
-                        and not re.search(r"[.,;:!?\)]$", out)
-                    ):
-                        out += line
-                    else:
-                        out += " " + line
+                out += " " + line
 
-            prev_hard_wrap = bool(re.search(r"[\u00ad-]\s*$", raw))
+            join_next_without_space = hard_wrap
 
         return _gnlm_clean_pdf_text(out)
 
@@ -2439,11 +2419,13 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
 
     _GNLM_CAPTION_OR_AD_RE = re.compile(
         r"^(?:"
-        r"this photo|this image|the photo|the image|this illustration|the picture|"
+        r"this photo|these photos|this image|these images|the photo|the photos|the image|the images|"
+        r"this illustration|the picture|the facade|images? show|photos? show|"
         r"this photo features|this photo displays|this image illustrates|this image captures|"
         r"this image shows|this image features|this image depicts|the image captures|"
         r"a handover|house inspections|an outpatient|outstanding students are seen|"
         r"ancient pagodas|yrtc vice-chairman|the office building|the head of|"
+        r"footballers in action|new signing midfielder|female workers are attentively|"
         r"myanmar showcases seintalone mangoes"
         r")\b",
         re.I,
@@ -2485,11 +2467,13 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
 
         caption_patterns = [
             r"^photo\s*:",
-            r"^this image\b",
-            r"^this photo\b",
-            r"^the image\b",
-            r"^the photo\b",
-            r"photo\s*:",
+            r"\bphoto\s*:",
+            r"^(?:this|the|these)?\s*(?:photo|photos|image|images|picture|facade)\b",
+            r"^images?\s+show\b",
+            r"^photos?\s+show\b",
+            r"^footballers in action\b",
+            r"^new signing midfielder\b",
+            r"^female workers are attentively\b",
             r"^myanmar showcases seintalone mangoes",
         ]
         if any(re.search(pat, low) for pat in caption_patterns):
@@ -2646,191 +2630,250 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
         pdf_url: str,
         target_date_mmt: date,
     ) -> list[dict]:
+        """
+        GNLM e-paper PDF から記事候補を抽出する。
+
+        旧実装の「見出しbbox周辺のブロックを集める」方式は、GNLMの多段組で隣記事を混ぜやすい。
+        ここでは以下の順で安全側に寄せる。
+          1. PDFのテキストブロックを「大きいフォントの見出し行」と「本文行」に分離する
+          2. 見出しごとに、同じ段組/近接段組の本文行だけを拾う
+          3. byline（— MNA/KTZH 等）を見つけたら、その記事の本文収集を止める
+          4. タイトル類似度で Web 側のタイトルと照合しやすいよう、_row_key を安定化する
+
+        それでもPDF紙面はHTMLより誤読しやすいので、呼び出し側では BrightData HTML fallback の後にだけ使う。
+        """
         import fitz
         import hashlib
 
         if not pdf_path or not os.path.exists(pdf_path):
             return []
 
+        def _union_bbox(items: list[dict]) -> tuple[float, float, float, float]:
+            return (
+                min(x["x0"] for x in items),
+                min(x["y0"] for x in items),
+                max(x["x1"] for x in items),
+                max(x["y1"] for x in items),
+            )
+
+        def _is_byline_end(t: str) -> bool:
+            t = _gnlm_clean_pdf_text(t or "")
+            if not t:
+                return False
+            # GNLMの記事末尾は概ね "— Name/ABC" / "— MNA" / "— AFP"。
+            return bool(re.search(r"—\s*[A-Za-z][A-Za-z .()/-]{1,90}\s*$", t))
+
+        def _line_text_and_size(line: dict) -> tuple[str, float, float]:
+            parts: list[str] = []
+            sizes: list[float] = []
+            for sp in line.get("spans", []):
+                txt = sp.get("text") or ""
+                if txt:
+                    parts.append(txt)
+                try:
+                    sizes.append(float(sp.get("size") or 0))
+                except Exception:
+                    pass
+            text = _gnlm_clean_pdf_text("".join(parts))
+            if not sizes:
+                return text, 0.0, 0.0
+            return text, max(sizes), sum(sizes) / len(sizes)
+
+        def _ordered_lines(page, page_index: int) -> list[dict]:
+            lines: list[dict] = []
+            page_dict = page.get_text("dict")
+            order = 0
+            for block_no, b in enumerate(page_dict.get("blocks", [])):
+                if b.get("type") != 0:
+                    continue
+                for line_no, line in enumerate(b.get("lines", [])):
+                    text, max_size, avg_size = _line_text_and_size(line)
+                    if not text:
+                        continue
+                    x0, y0, x1, y1 = map(float, line.get("bbox", [0, 0, 0, 0]))
+
+                    # ヘッダー・紙面名・日付などを除外
+                    if y0 < 150:
+                        continue
+                    # 1面下部のティーザーを除外
+                    if page_index == 0 and y0 > 880:
+                        continue
+
+                    low = text.lower().strip()
+                    keep_marker = low.startswith(("see page", "from page"))
+                    if (not keep_marker) and _gnlm_is_noise_pdf_text(text):
+                        continue
+
+                    lines.append({
+                        "page": page_index + 1,
+                        "order": order,
+                        "block_no": block_no,
+                        "line_no": line_no,
+                        "x0": x0,
+                        "y0": y0,
+                        "x1": x1,
+                        "y1": y1,
+                        "text": text,
+                        "max_size": max_size,
+                        "avg_size": avg_size,
+                    })
+                    order += 1
+            return lines
+
+        def _title_candidates_from_lines(lines: list[dict], page_w: float, page_h: float) -> list[dict]:
+            title_lines = []
+            for ln in lines:
+                t = ln["text"].strip()
+                if ln["y0"] < 150 or ln["y0"] > page_h - 65:
+                    continue
+                if ln["max_size"] < 12.8:
+                    continue
+                if re.fullmatch(r"[A-Z]", t):
+                    continue
+                if re.match(r"^By\s+[A-Z]", t):
+                    continue
+                if _gnlm_is_noise_pdf_text(t):
+                    continue
+                title_lines.append(ln)
+
+            groups: list[list[dict]] = []
+            cur: list[dict] = []
+            for ln in title_lines:
+                if not cur:
+                    cur = [ln]
+                    continue
+                prev = cur[-1]
+                same_block = ln["block_no"] == prev["block_no"]
+                close_y = ln["y0"] <= prev["y1"] + 8
+                size_close = abs(ln["max_size"] - prev["max_size"]) <= 2.5
+                x_close = abs(ln["x0"] - prev["x0"]) <= 35 or _gnlm_x_overlap_ratio(ln, prev) > 0.35
+                if same_block and close_y and size_close and x_close:
+                    cur.append(ln)
+                else:
+                    groups.append(cur)
+                    cur = [ln]
+            if cur:
+                groups.append(cur)
+
+            out: list[dict] = []
+            for g in groups:
+                title = _gnlm_join_pdf_lines([x["text"] for x in g])
+                title = re.sub(r"\s+", " ", title).strip()
+                if len(title) < 14 or len(title) > 180:
+                    continue
+                if title.isupper() and len(title) < 45:
+                    continue
+                x0, y0, x1, y1 = _union_bbox(g)
+                out.append({
+                    "title": title,
+                    "page": g[0]["page"],
+                    "order": g[0]["order"],
+                    "x0": x0,
+                    "y0": y0,
+                    "x1": x1,
+                    "y1": y1,
+                    "max_size": max(x["max_size"] for x in g),
+                })
+            return out
+
+        def _body_lines_for_title(title: dict, lines: list[dict], title_blocks: list[dict], page_w: float, page_h: float) -> list[dict]:
+            # 見出しが広い/上部大見出しなら、本文が右側複数段へ流れることが多いので右方向へ広げる。
+            title_w = title["x1"] - title["x0"]
+            if title_w >= page_w * 0.42 or title["y0"] < 290:
+                region = {"x0": max(20.0, title["x0"] - 25), "x1": page_w - 25}
+            else:
+                region = {"x0": max(20.0, title["x0"] - 25), "x1": min(page_w - 20, title["x1"] + 35)}
+
+            # 同じ段組に下方の別見出しがあればそこで止める。
+            next_title_ys = [
+                tb["y0"]
+                for tb in title_blocks
+                if tb is not title
+                and tb["y0"] > title["y1"] + 20
+                and _gnlm_x_overlap_ratio(region, tb) > 0.12
+            ]
+            end_y = min(next_title_ys) - 6 if next_title_ys else page_h - 60
+
+            # 原則は見出し下。ただし見出しが紙面中央に置かれる記事があるため、
+            # GNLM_PDF_ALLOW_ABOVE_TITLE=1 の場合だけ上側本文も許可する。
+            allow_above = str(os.getenv("GNLM_PDF_ALLOW_ABOVE_TITLE", "0")).lower() in ("1", "true", "yes")
+            start_y = 150.0 if allow_above else title["y1"] + 2
+
+            body: list[dict] = []
+            for ln in lines:
+                if ln["max_size"] >= 12.8:
+                    continue
+                if ln["y0"] < start_y or ln["y0"] >= end_y:
+                    continue
+                if _gnlm_x_overlap_ratio(region, ln) < 0.08:
+                    continue
+
+                txt = ln["text"].strip()
+                low = txt.lower()
+                if low.startswith(("see page", "from page")):
+                    continue
+                if _gnlm_is_noise_pdf_text(txt):
+                    continue
+                if len(txt) < 2:
+                    continue
+                body.append(ln)
+
+            # 列単位で自然順に戻す。行単位なので、同じ段の上→下、左→右を優先する。
+            body = sorted(body, key=lambda x: (round(x["x0"] / 90), x["y0"], x["x0"], x["order"]))
+
+            # bylineで切る。別記事の混入を防ぐため、byline以降は捨てる。
+            trimmed: list[dict] = []
+            for ln in body:
+                trimmed.append(ln)
+                if _is_byline_end(ln["text"]):
+                    break
+            return trimmed
+
+        def _merge_lines_to_text(lines: list[dict]) -> str:
+            if not lines:
+                return ""
+            # ドロップキャップだけが別行/別ブロックになる場合は次行へ連結する。
+            merged_texts: list[str] = []
+            i = 0
+            while i < len(lines):
+                cur = lines[i]
+                txt = cur["text"]
+                if re.fullmatch(r"[A-Z]", txt.strip()) and i + 1 < len(lines):
+                    nxt = dict(lines[i + 1])
+                    merged_texts.append(txt.strip() + nxt["text"].lstrip())
+                    i += 2
+                else:
+                    merged_texts.append(txt)
+                    i += 1
+            text = _gnlm_join_pdf_lines(merged_texts)
+            text = re.sub(r"\s+", " ", text).strip()
+            return _gnlm_clean_pdf_text(text)
+
         doc = fitz.open(pdf_path)
         extracted: list[dict] = []
-        continuation_markers: list[tuple[int, dict, list[dict], list[dict], float]] = []
 
         for page_index in range(len(doc)):
             page = doc[page_index]
             page_w = float(page.rect.width)
             page_h = float(page.rect.height)
+            lines = _ordered_lines(page, page_index)
+            if not lines:
+                continue
 
-            raw_blocks: list[dict] = []
-            page_dict = page.get_text("dict")
-
-            for b in page_dict.get("blocks", []):
-                if b.get("type") != 0:
-                    continue
-
-                text, max_size, avg_size = _gnlm_pdf_block_text(b)
-                if not text:
-                    continue
-
-                x0, y0, x1, y1 = map(float, b.get("bbox", [0, 0, 0, 0]))
-
-                # ヘッダー・紙面名・日付などを除外
-                if y0 < 150:
-                    continue
-
-                # 1面下部の「PAGE 3 / PAGE 4 / PAGE 7」や記事ティーザーを除外
-                if page_index == 0 and y0 > 880:
-                    continue
-
-                # SEE/FROM PAGE は継続結合用の目印なので、noise判定の前に保持する。
-                lower_text = text.lower().strip()
-                keep_as_marker = lower_text.startswith(("see page", "from page"))
-                if (not keep_as_marker) and _gnlm_is_noise_pdf_text(text):
-                    continue
-
-                raw_blocks.append({
-                    "page": page_index + 1,
-                    "x0": x0,
-                    "y0": y0,
-                    "x1": x1,
-                    "y1": y1,
-                    "text": text,
-                    "max_size": max_size,
-                    "avg_size": avg_size,
-                })
-
-            title_blocks: list[dict] = []
-            for b in raw_blocks:
-                t = b["text"].replace("\n", " ").strip()
-
-                if b["y0"] < 150 or b["y0"] > page_h - 80:
-                    continue
-                if len(t) < 18 or len(t) > 180:
-                    continue
-                if _gnlm_is_noise_pdf_text(t):
-                    continue
-                # ドロップキャップや署名行を見出し候補にしない
-                if re.fullmatch(r"[A-Z]", t):
-                    continue
-                if re.match(r"^By\s+[A-Z]", t):
-                    continue
-                if t.isupper() and len(t) < 45:
-                    continue
-
-                if b["max_size"] >= 13.0:
-                    bb = dict(b)
-                    bb["title"] = t
-                    title_blocks.append(bb)
-
-            title_blocks = sorted(title_blocks, key=lambda b: (b["y0"], b["x0"]))
-
-            for b in raw_blocks:
-                from_page = _gnlm_parse_page_ref(b["text"], prefix="FROM PAGE")
-                if from_page:
-                    continuation_markers.append((from_page, b, raw_blocks, title_blocks, page_h))
+            title_blocks = _title_candidates_from_lines(lines, page_w, page_h)
+            if not title_blocks:
+                continue
 
             for tb in title_blocks:
-                title = tb["title"].strip()
-                if not title:
+                body_lines = _body_lines_for_title(tb, lines, title_blocks, page_w, page_h)
+                body = _merge_lines_to_text(body_lines)
+                if len(body) < 80:
                     continue
 
-                next_ys = [
-                    nb["y0"]
-                    for nb in title_blocks
-                    if nb is not tb
-                    and nb["y0"] > tb["y0"] + 20
-                    and _gnlm_x_overlap_ratio(tb, nb) > 0.15
-                ]
-                end_y = min(next_ys) - 6 if next_ys else page_h - 70
-
-                # 見出しより上に本文がある紙面構成にも対応するため、同じ段組内の直前見出しを下限にする。
-                prev_ys = [
-                    pb["y1"]
-                    for pb in title_blocks
-                    if pb is not tb
-                    and pb["y1"] < tb["y0"] - 10
-                    and _gnlm_x_overlap_ratio(tb, pb) > 0.15
-                ]
-                start_y_for_above_body = max(prev_ys) + 6 if prev_ys else 150.0
-
-                region = {
-                    "x0": max(0.0, tb["x0"] - 20),
-                    "x1": min(page_w, tb["x1"] + 20),
-                }
-
-                if (tb["x1"] - tb["x0"]) > page_w * 0.75:
-                    region = {"x0": 25.0, "x1": page_w - 25.0}
-
-                body_blocks: list[dict] = []
-                see_page: Optional[int] = None
-                for b in raw_blocks:
-                    if b is tb:
-                        continue
-                    if b["y0"] >= end_y:
-                        continue
-                    if _gnlm_x_overlap_ratio(region, b) < 0.10:
-                        continue
-
-                    bt = b["text"].strip()
-                    low = bt.lower()
-
-                    if low.startswith("see page"):
-                        see_page = _gnlm_parse_page_ref(bt, prefix="SEE PAGE") or see_page
-                        continue
-                    if low.startswith("from page"):
-                        continue
-
-                    if _gnlm_is_noise_pdf_text(bt):
-                        continue
-                    if bt.replace("\n", " ").strip() == title:
-                        continue
-
-                    # 既存実装では「見出しより下」だけを本文候補にしていたが、
-                    # GNLM紙面では見出しより上に本文ブロックが出ることがあるため、
-                    # 同じ記事領域・本文サイズなら残す。
-                    if b["y0"] <= tb["y1"] + 4:
-                        if not (
-                            b["y1"] >= start_y_for_above_body
-                            and _gnlm_x_overlap_ratio(region, b) >= 0.10
-                            and b["max_size"] < 12.5
-                            and len(bt) >= 8
-                        ):
-                            continue
-
-                    # ドロップキャップ（例: 1面冒頭の "D"）だけは本文として残す
-                    is_drop_cap = bool(re.fullmatch(r"[A-Z]", bt)) and b["max_size"] > 12.5
-                    if b["max_size"] > 12.5 and not is_drop_cap:
-                        continue
-
-                    # 短い継続行（例: "and border trade channels."）を落とさない
-                    if len(bt) < 8 and not is_drop_cap:
-                        continue
-
-                    body_blocks.append(b)
-
-                body_blocks = _gnlm_pdf_sort_body_blocks(body_blocks)
-
-                # ドロップキャップを次の本文ブロックへ連結
-                merged_body_blocks = []
-                i = 0
-                while i < len(body_blocks):
-                    b = body_blocks[i]
-                    if (
-                        re.fullmatch(r"[A-Z]", b["text"])
-                        and i + 1 < len(body_blocks)
-                    ):
-                        nb = dict(body_blocks[i + 1])
-                        nb["text"] = b["text"] + nb["text"].lstrip()
-                        merged_body_blocks.append(nb)
-                        i += 2
-                    else:
-                        merged_body_blocks.append(b)
-                        i += 1
-
-                body = "\n\n".join(b["text"] for b in merged_body_blocks)
-                body = _gnlm_clean_pdf_text(body)
-
-                if len(body) < 120:
+                title = tb["title"].strip()
+                # 見出し自体が本文に紛れた場合の保険
+                body = re.sub(rf"^\s*{re.escape(title)}\s*", "", body).strip()
+                if len(body) < 80:
                     continue
 
                 h = hashlib.sha1(
@@ -2844,68 +2887,24 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
                     "date": target_date_mmt.isoformat(),
                     "url": f"{pdf_url}#page={page_index + 1}" if pdf_url else "",
                     "_row_key": f"gnlm-pdf:{target_date_mmt.isoformat()}:{h}",
-                    "_gnlm_body_source": "pdf",
+                    "_gnlm_body_source": "pdf_title_region",
                     "_page": page_index + 1,
                     "_x0": tb["x0"],
                     "_y0": tb["y0"],
-                    "_see_page": see_page,
                 })
 
-        # FROM PAGE N の本文断片を、SEE PAGE を持つ元記事に結合する。
-        # タイトルがない継続断片にも対応するため、FROM PAGE マーカーから本文を別途回収する。
-        continuation_fragments: list[dict] = []
-        for from_page, marker, raw_blocks, title_blocks, page_h in continuation_markers:
-            body = _gnlm_collect_from_page_continuation(
-                raw_blocks=raw_blocks,
-                title_blocks=title_blocks,
-                from_page=from_page,
-                marker_block=marker,
-                page_h=page_h,
-            )
-            if len(body) < 80:
-                continue
-            h = hashlib.sha1(
-                f"{target_date_mmt.isoformat()}|from-page|{from_page}|{marker['page']}|{marker['x0']:.1f}|{marker['y0']:.1f}".encode("utf-8")
-            ).hexdigest()[:16]
-            continuation_fragments.append({
-                "source": "Global New Light Of Myanmar (国営紙)",
-                "title": f"FROM PAGE {from_page}",
-                "body": body,
-                "date": target_date_mmt.isoformat(),
-                "url": f"{pdf_url}#page={marker['page']}" if pdf_url else "",
-                "_row_key": f"gnlm-pdf-cont:{target_date_mmt.isoformat()}:{h}",
-                "_gnlm_body_source": "pdf_continuation_fragment",
-                "_page": marker["page"],
-                "_x0": marker["x0"],
-                "_y0": marker["y0"],
-                "_from_page": from_page,
-            })
-
-        extracted = _gnlm_merge_continuation_articles(extracted + continuation_fragments)
-
-        # 同じ見出しを複数ページ・複数段で拾った場合は、従来どおりタイトル単位で結合する。
+        # タイトル単位で重複結合。ただし、同じ見出しで本文が長い方を優先し、短い重複は捨てる。
         merged: dict[str, dict] = {}
         for art in extracted:
-            title = art.get("title") or ""
-            if title.upper().startswith("FROM PAGE"):
-                continue
-            key = _gnlm_norm_title_for_match(title)
+            key = _gnlm_norm_title_for_match(art.get("title") or "")
             if not key:
                 continue
-
             clean_art = dict(art)
-            for k in ("_page", "_x0", "_y0", "_see_page", "_from_page"):
+            for k in ("_page", "_x0", "_y0"):
                 clean_art.pop(k, None)
-
-            if key not in merged:
+            old = merged.get(key)
+            if old is None or len(clean_art.get("body") or "") > len(old.get("body") or ""):
                 merged[key] = clean_art
-            else:
-                old = merged[key].get("body") or ""
-                body = clean_art.get("body") or ""
-                if body and body not in old:
-                    merged[key]["body"] = _gnlm_clean_pdf_text(old + "\n\n" + body)
-                    if clean_art.get("_gnlm_body_source") == "pdf_continued":
-                        merged[key]["_gnlm_body_source"] = "pdf_continued"
 
         return list(merged.values())
 
@@ -3036,9 +3035,30 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
             path = (url or "").strip("/").lower()
         return bool(re.fullmatch(r"\d{1,2}-[a-z]+-\d{4}", path))
 
+    def _gnlm_is_valid_article_url(url: str) -> bool:
+        """GNLM の個別記事URLだけを収集対象にする。e-paper日付ページ/PDF/カテゴリ等は除外。"""
+        url = (url or "").strip()
+        if not url:
+            return False
+        try:
+            p = urlsplit(url)
+            host = (p.netloc or "").lower()
+            path = (p.path or "").strip("/").lower()
+        except Exception:
+            return False
+        if "gnlm.com.mm" not in host:
+            return False
+        if _gnlm_is_epaper_page_url(url):
+            return False
+        if path.endswith(".pdf"):
+            return False
+        if not path or path.startswith(("category/", "tag/", "author/", "page/", "wp-content/")):
+            return False
+        return True
+
     def _gnlm_fill_empty_bodies_via_brightdata(out: list[dict]) -> list[dict]:
         """
-        PDF fallback後も本文が空のGNLM記事だけ、BrightDataで記事HTMLを再取得して本文を補完する。
+        direct/cloudscraperで本文が空のGNLM記事だけ、BrightDataで記事HTMLを再取得して本文を補完する。
         通常HTMLで本文が取れている記事には触らない。
         """
         if not out:
@@ -3085,7 +3105,7 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
                 art_date = _article_date_from_meta_mmt(soup)
 
                 it["body"] = unicodedata.normalize("NFC", body).strip()
-                it["_gnlm_body_source"] = f"brightdata_{bd_source}_after_pdf_fallback"
+                it["_gnlm_body_source"] = f"brightdata_{bd_source}"
                 if title:
                     it["title"] = _gnlm_strip_source_suffix(title)
                 if art_date:
@@ -3097,7 +3117,7 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
                 )
 
             except Exception as e:
-                print(f"[gnlm-bd] failed after pdf fallback: {e} url={url}")
+                print(f"[gnlm-bd] failed: {e} url={url}")
 
         return out
 
@@ -3254,7 +3274,7 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
                 dt = parse_date(pub)
             except Exception:
                 continue
-            if _mmt_date(dt) == target_date_mmt:
+            if _mmt_date(dt) == target_date_mmt and _gnlm_is_valid_article_url(link):
                 collected_urls.add(link)
                 if it.get("title"):
                     fallback_titles[link] = _gnlm_strip_source_suffix(it["title"])
@@ -3317,7 +3337,7 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
                     break
 
                 a = art.select_one("h4.post-title a[href]")
-                if a and a.get("href"):
+                if a and a.get("href") and _gnlm_is_valid_article_url(a["href"]):
                     collected_urls.add(a["href"])
 
             if stop_paging:
@@ -3333,7 +3353,7 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
                 dt = parse_date(pub)
             except Exception:
                 dt = None
-            if link and dt and _mmt_date(dt) == target_date_mmt:
+            if link and dt and _mmt_date(dt) == target_date_mmt and _gnlm_is_valid_article_url(link):
                 collected_urls.add(link)
                 if title:
                     fallback_titles[link] = _gnlm_strip_source_suffix(title)
@@ -3364,9 +3384,31 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
             except Exception as e2:
                 print(f"[gnlm] cloudscraper article fetch failed: {e2} url={url}")
 
-                # ここではBrightDataをまだ使わない。
-                # URL・タイトルだけ残し、まず後段のPDF fallbackで本文補完を試す。
-                # PDFでも本文が取れなかった場合のみ、最後にBrightDataで記事HTMLを再取得する。
+                # PDFより先に、個別記事HTMLをBrightDataで取得する。PDFは最後の手段。
+                bd_html, bd_source = _fetch_gnlm_via_brightdata(url, kind="article", allow_browser=True)
+                if bd_html:
+                    soup = BeautifulSoup(bd_html, "html.parser")
+                    art_date = _article_date_from_meta_mmt(soup) or target_date_mmt
+                    title = _extract_title(soup)
+                    if not title:
+                        h1 = soup.select_one("header#article-title h1.entry-title")
+                        if h1:
+                            title = h1.get_text(strip=True)
+                    if not title:
+                        title = fallback_titles.get(url, "") or _title_from_slug(url)
+                    title = _gnlm_strip_source_suffix(title)
+                    body = _gnlm_extract_body_from_article_soup(soup)
+                    if title and body:
+                        out.append({
+                            "source": "Global New Light Of Myanmar (国営紙)",
+                            "title": title,
+                            "url": url,
+                            "date": (art_date or target_date_mmt).isoformat(),
+                            "body": unicodedata.normalize("NFC", body).strip(),
+                            "_gnlm_body_source": f"brightdata_{bd_source}",
+                        })
+                        continue
+
                 t = _gnlm_strip_source_suffix((fallback_titles.get(url) or "").strip() or _title_from_slug(url))
                 if t:
                     out.append({
@@ -3375,7 +3417,7 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
                         "url": url,
                         "date": target_date_mmt.isoformat(),
                         "body": "",
-                        "_gnlm_body_source": "empty_after_direct_fetch",
+                        "_gnlm_body_source": "empty_after_direct_and_brightdata_fetch",
                     })
                 continue
 
@@ -3406,9 +3448,17 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
         })
 
     # ==================================================
+    # GNLM BrightData fallback
+    # - direct/cloudscraperで本文が空の記事だけ、個別記事HTMLを再取得して補完する
+    # - PDFより記事HTMLの方が正確なので、PDF fallbackより先に実行する
+    # ==================================================
+    if any(not (x.get("body") or "").strip() for x in out):
+        out = _gnlm_fill_empty_bodies_via_brightdata(out)
+
+    # ==================================================
     # GNLM PDF fallback
-    # - bodyが空の記事だけ、同日E-Paper PDFから本文補完する
-    # - 通常HTMLで取れている本文は置換しない
+    # - BrightData後もbodyが空の記事だけ、同日E-Paper PDFから本文補完する
+    # - 通常HTML/BrightDataで本文が取れている記事には触らない
     # ==================================================
     if any(not (x.get("body") or "").strip() for x in out):
         try:
@@ -3428,14 +3478,6 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
                     print(f"[gnlm-pdf] pdf not available epaper={epaper_url}")
         except Exception as e:
             print(f"[gnlm-pdf] fallback failed: {e}")
-
-    # ==================================================
-    # GNLM BrightData fallback
-    # - PDF fallback後もbodyが空の記事だけ補完する
-    # - 通常HTML/PDFで本文が取れた記事には触らない
-    # ==================================================
-    if any(not (x.get("body") or "").strip() for x in out):
-        out = _gnlm_fill_empty_bodies_via_brightdata(out)
 
     return deduplicate_by_url(out)
 
