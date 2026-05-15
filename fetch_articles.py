@@ -1805,6 +1805,33 @@ def log_no_keyword_hit(source: str, url: str, title: str, body: str, stage: str)
     print("----- END NO KEYWORD HIT -----\n")
 
 
+MIZZIMA_MYANMAR_KEYWORD = unicodedata.normalize("NFC", "မြန်မာ")
+MIZZIMA_CATEGORY_PATHS = [
+    (
+        "/category/%e1%80%9e%e1%80%90%e1%80%84%e1%80%ba%e1%80%b8/"
+        "%e1%80%99%e1%80%bc%e1%80%94%e1%80%ba%e1%80%99%e1%80%ac"
+        "%e1%80%9e%e1%80%90%e1%80%84%e1%80%ba%e1%80%b8",
+        False,
+    ),
+    (
+        "/category/%e1%80%9e%e1%80%90%e1%80%84%e1%80%ba%e1%80%b8/"
+        "%e1%80%94%e1%80%ad%e1%80%af%e1%80%84%e1%80%ba%e1%80%84%e1%80%b6"
+        "%e1%80%90%e1%80%80%e1%80%ac%e1%80%9e%e1%80%90%e1%80%84%e1%80%ba%e1%80%b8",
+        True,
+    ),
+    (
+        "/category/%e1%80%9e%e1%80%90%e1%80%84%e1%80%ba%e1%80%b8/"
+        "%e1%80%a1%e1%80%91%e1%80%b0%e1%80%b8%e1%80%85%e1%80%af%e1%80%b6"
+        "%e1%80%85%e1%80%99%e1%80%ba%e1%80%b8%e1%80%90%e1%80%84%e1%80%ba"
+        "%e1%80%95%e1%80%bc%e1%80%81%e1%80%bb%e1%80%80%e1%80%ba%e1%80%99%e1%80%bb",
+        True,
+    ),
+]
+
+def _mizzima_has_myanmar_keyword(title: str, body: str) -> bool:
+    haystack = unicodedata.normalize("NFC", f"{title or ''}\n{body or ''}")
+    return MIZZIMA_MYANMAR_KEYWORD in haystack
+
 # Mizzimaカテゴリーページ巡回で取得
 def get_mizzima_articles_from_category(
     date_obj, base_url, source_name, category_path, max_pages=3
@@ -1817,32 +1844,47 @@ def get_mizzima_articles_from_category(
         "ဓာတ်ပုံသတင်း",
     ]
 
-    article_urls = []
+    if category_path is None:
+        category_specs = MIZZIMA_CATEGORY_PATHS
+    elif isinstance(category_path, (list, tuple)):
+        category_specs = category_path
+    else:
+        category_specs = [(category_path, False)]
 
-    for page_num in range(1, max_pages + 1):
-        if page_num == 1:
-            url = f"{base_url}{category_path}"
+    article_require_keyword = {}
+
+    for category_spec in category_specs:
+        if isinstance(category_spec, (list, tuple)) and len(category_spec) >= 2:
+            path, require_myanmar_keyword = category_spec[0], bool(category_spec[1])
         else:
-            url = f"{base_url}{category_path}/page/{page_num}/"
+            path, require_myanmar_keyword = str(category_spec), False
 
-        try:
-            res = requests.get(url, timeout=10)
-            if res.status_code != 200:
+        for page_num in range(1, max_pages + 1):
+            if page_num == 1:
+                url = f"{base_url}{path}"
+            else:
+                url = f"{base_url}{path}/page/{page_num}/"
+
+            try:
+                res = requests.get(url, timeout=10)
+                if res.status_code != 200:
+                    continue
+
+                soup = BeautifulSoup(res.content, "html.parser")
+                links = [
+                    a["href"]
+                    for a in soup.select("main.site-main article a.post-thumbnail[href]")
+                ]
+                for href in links:
+                    # 同一URLが複数カテゴリで見つかった場合は、False（制限なし）を優先する。
+                    article_require_keyword[href] = article_require_keyword.get(href, True) and require_myanmar_keyword
+
+            except Exception as e:
+                print(f"Error crawling category page {url}: {e}")
                 continue
 
-            soup = BeautifulSoup(res.content, "html.parser")
-            links = [
-                a["href"]
-                for a in soup.select("main.site-main article a.post-thumbnail[href]")
-            ]
-            article_urls.extend(links)
-
-        except Exception as e:
-            print(f"Error crawling category page {url}: {e}")
-            continue
-
     filtered_articles = []
-    for url in article_urls:
+    for url, require_myanmar_keyword in article_require_keyword.items():
         try:
             res_article = fetch_with_retry(url)
             soup_article = BeautifulSoup(res_article.content, "html.parser")
@@ -1884,6 +1926,10 @@ def get_mizzima_articles_from_category(
             body_text = unicodedata.normalize("NFC", body_text)
 
             if not body_text.strip():
+                continue
+
+            if require_myanmar_keyword and not _mizzima_has_myanmar_keyword(title_nfc, body_text):
+                print(f"SKIP: no မြန်မာ keyword in extra Mizzima category → {url} | TITLE: {title_nfc}")
                 continue
 
             # キーワード判定は正規化済みタイトルで行う
@@ -6018,7 +6064,7 @@ if __name__ == "__main__":
         date_mmt,
         "https://bur.mizzima.com",
         "Mizzima (Burmese)",
-        "/category/%e1%80%9e%e1%80%90%e1%80%84%e1%80%ba%e1%80%b8/%e1%80%99%e1%80%bc%e1%80%94%e1%80%ba%e1%80%99%e1%80%ac%e1%80%9e%e1%80%90%e1%80%84%e1%80%ba%e1%80%b8",
+        MIZZIMA_CATEGORY_PATHS,
         max_pages=3,
     )
     process_and_enqueue_articles(
