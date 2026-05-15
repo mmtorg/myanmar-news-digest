@@ -725,36 +725,65 @@ def collect_dvb_all_for_date(target_date_mmt: date) -> List[Dict]:
     return results
 
 # ===== Mizzima =====
-def collect_mizzima_all_for_date(target_date_mmt: date, max_pages: int = 15) -> List[Dict]:
-    base_url = "https://bur.mizzima.com"
-    category_path = (
+MIZZIMA_MYANMAR_KEYWORD = unicodedata.normalize("NFC", "မြန်မာ")
+
+# path, require_keyword_in_title_or_body
+MIZZIMA_CATEGORY_PATHS: List[Tuple[str, bool]] = [
+    (
         "/category/%e1%80%9e%e1%80%90%e1%80%84%e1%80%ba%e1%80%b8/"
         "%e1%80%99%e1%80%bc%e1%80%94%e1%80%ba%e1%80%99%e1%80%ac"
-        "%e1%80%9e%e1%80%90%e1%80%84%e1%80%ba%e1%80%b8"
-    )
+        "%e1%80%9e%e1%80%90%e1%80%84%e1%80%ba%e1%80%b8",
+        False,
+    ),
+    (
+        "/category/%e1%80%9e%e1%80%90%e1%80%84%e1%80%ba%e1%80%b8/"
+        "%e1%80%94%e1%80%ad%e1%80%af%e1%80%84%e1%80%ba%e1%80%84%e1%80%b6"
+        "%e1%80%90%e1%80%80%e1%80%ac%e1%80%9e%e1%80%90%e1%80%84%e1%80%ba%e1%80%b8",
+        True,
+    ),
+    (
+        "/category/%e1%80%9e%e1%80%90%e1%80%84%e1%80%ba%e1%80%b8/"
+        "%e1%80%a1%e1%80%91%e1%80%b0%e1%80%b8%e1%80%85%e1%80%af%e1%80%b6"
+        "%e1%80%85%e1%80%99%e1%80%ba%e1%80%b8%e1%80%90%e1%80%84%e1%80%ba"
+        "%e1%80%95%e1%80%bc%e1%80%81%e1%80%bb%e1%80%80%e1%80%ba%e1%80%99%e1%80%bb",
+        True,
+    ),
+]
+
+def _mizzima_has_myanmar_keyword(title: str, body: str) -> bool:
+    haystack = unicodedata.normalize("NFC", f"{title or ''}\n{body or ''}")
+    return MIZZIMA_MYANMAR_KEYWORD in haystack
+
+def collect_mizzima_all_for_date(target_date_mmt: date, max_pages: int = 15) -> List[Dict]:
+    base_url = "https://bur.mizzima.com"
 
     EXCLUDE_TITLE_KEYWORDS = [
         "နွေဦးတော်လှန်ရေး နေ့စဉ်မှတ်စု",
         "ဓာတ်ပုံသတင်း",
     ]
 
-    article_urls: List[str] = []
+    # URLごとに「မြန်မာ キーワード必須か」を保持する。
+    # 複数カテゴリに同一記事が出た場合、通常のミャンマーニュースカテゴリ経由なら必須条件なしで扱う。
+    article_require_keyword: Dict[str, bool] = {}
     session = _make_pooled_session()
-    for page_num in range(1, max_pages + 1):
-        url = f"{base_url}{category_path}" if page_num == 1 else f"{base_url}{category_path}/page/{page_num}/"
-        try:
-            res = session.get(url, timeout=10)
-            if res.status_code != 200:
+    for category_path, require_myanmar_keyword in MIZZIMA_CATEGORY_PATHS:
+        for page_num in range(1, max_pages + 1):
+            url = f"{base_url}{category_path}" if page_num == 1 else f"{base_url}{category_path}/page/{page_num}/"
+            try:
+                res = session.get(url, timeout=10)
+                if res.status_code != 200:
+                    continue
+                soup = BeautifulSoup(res.content, "html.parser")
+                links = [a["href"] for a in soup.select("main.site-main article a.post-thumbnail[href]")]
+                for href in links:
+                    # 同一URLが複数カテゴリで見つかった場合は、False（制限なし）を優先する。
+                    article_require_keyword[href] = article_require_keyword.get(href, True) and require_myanmar_keyword
+            except Exception as e:
+                print(f"[mizzima] list fail {url}: {e}")
                 continue
-            soup = BeautifulSoup(res.content, "html.parser")
-            links = [a["href"] for a in soup.select("main.site-main article a.post-thumbnail[href]")]
-            article_urls.extend(links)
-        except Exception as e:
-            print(f"[mizzima] list fail {url}: {e}")
-            continue
 
     results: List[Dict] = []
-    for url in article_urls:
+    for url, require_myanmar_keyword in article_require_keyword.items():
         try:
             res = session.get(url, timeout=10)
             if res.status_code != 200:
@@ -785,7 +814,12 @@ def collect_mizzima_all_for_date(target_date_mmt: date, max_pages: int = 15) -> 
                     break
                 paras.append(p)
             body_text = "\n".join(p.get_text(strip=True) for p in paras).strip()
-            if not body_text:
+            body_nfc = unicodedata.normalize("NFC", body_text)
+            if not body_nfc:
+                continue
+
+            if require_myanmar_keyword and not _mizzima_has_myanmar_keyword(title_nfc, body_nfc):
+                print(f"[mizzima] skip no မြန်မာ keyword in extra category → {url} | TITLE: {title_nfc}")
                 continue
 
             results.append(
@@ -794,7 +828,7 @@ def collect_mizzima_all_for_date(target_date_mmt: date, max_pages: int = 15) -> 
                     "title": title_nfc,
                     "url": url,
                     "date": target_date_mmt.isoformat(),
-                    "body": unicodedata.normalize("NFC", body_text),
+                    "body": body_nfc,
                 }
             )
         except Exception as e:
