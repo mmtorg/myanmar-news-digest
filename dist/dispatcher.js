@@ -18,7 +18,7 @@
  * - 指定時刻のみ記事収集を workflow_dispatch する。
  * - 12:30 は collect16 と同じく、既存シートを整理してから当日分を収集する。
  * - 13:30〜23:20 は当日分、00:10 は前日分を GitHub Actions 側で判定する。
- * - 00:45 / 01:15 / 01:45 は前日分の Khit Thit Media のみ収集する。
+ * - 00:45 / 01:15 / 01:45 / 02:00 は前日分の Khit Thit Media のみ収集する。
  * - Irrawaddy は sheet_pipeline.py 側で 21:30 / 22:30 / 23:20 のみ収集する。
  */
 
@@ -53,6 +53,7 @@ const COLLECT_SLOTS = [
   { hhmm: "00:45", cron: "15 18 * * *", mode: "collect" },
   { hhmm: "01:15", cron: "45 18 * * *", mode: "collect" },
   { hhmm: "01:45", cron: "15 19 * * *", mode: "collect" },
+  { hhmm: "02:00", cron: "30 19 * * *", mode: "collect" },
 ];
 
 const SLOT_WINDOW_MINUTES = 5;

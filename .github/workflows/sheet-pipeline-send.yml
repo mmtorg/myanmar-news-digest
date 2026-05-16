@@ -11,7 +11,8 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "collect16（15:30初回・シート整理あり） / collect（18:30〜00:10収集） /
+        description:
+          "collect16（15:30初回・シート整理あり） / collect（18:30〜00:10収集） /
           build-bundle（02:00） / send-only（artifactから再送）"
         type: choice
         required: true
@@ -172,7 +173,8 @@ jobs:
 
   schedule-collect:
     # 00:05 / 00:35 / 01:05 / 01:35 / 17:50 / 20:50 / 21:50 / 22:50 / 23:30 枠
-    if: github.event_name == 'schedule' && contains(fromJson('["35 17 * * *","5 18 *
+    if:
+      github.event_name == 'schedule' && contains(fromJson('["35 17 * * *","5 18 *
       * *","35 18 * * *","5 19 * * *","17 11 * * *","17 14 * * *","17 15 * *
       *","17 16 * * *","57 16 * * *"]'), github.event.schedule)
     runs-on: ubuntu-latest
@@ -611,7 +613,8 @@ jobs:
     runs-on: ubuntu-latest
     environment: ${{ github.ref_name == 'develop' && 'development' || 'production' }}
     concurrency:
-      group: mna-sheet-pipeline-${{ github.ref_name == 'develop' && 'development' ||
+      group:
+        mna-sheet-pipeline-${{ github.ref_name == 'develop' && 'development' ||
         'production' }}-${{ inputs.mode }}-${{ inputs.schedule_cron || 'manual'
         }}
       cancel-in-progress: false
@@ -789,6 +792,7 @@ jobs:
             "15 18 * * *") SLOT_LABEL="00:45（前日分・Khit Thit Mediaのみ）" ;;
             "45 18 * * *") SLOT_LABEL="01:15（前日分・Khit Thit Mediaのみ）" ;;
             "15 19 * * *") SLOT_LABEL="01:45（前日分・Khit Thit Mediaのみ）" ;;
+            "30 19 * * *") SLOT_LABEL="02:00（前日分・Khit Thit Mediaのみ）" ;;
             *)
               case "${{ inputs.mode }}" in
                 collect)   SLOT_LABEL="collect" ;;
@@ -838,7 +842,7 @@ jobs:
                     --schedule-cron "$CRON" \
                     --target-offset-days -1
                   ;;
-                "15 18 * * *"|"45 18 * * *"|"15 19 * * *")
+                "15 18 * * *"|"45 18 * * *"|"15 19 * * *"|"30 19 * * *")
                   python sheet_pipeline.py collect-to-sheet \
                     --schedule-cron "$CRON" \
                     --target-offset-days -1 \
