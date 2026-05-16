@@ -1368,7 +1368,7 @@ function _usageFromData_(data) {
 }
 
 // Gemini 呼び出しモデル（通常時）
-const GEMINI_MODEL = "gemini-3.1-flash-lite-preview";
+const GEMINI_MODEL = "gemini-3.1-flash-lite";
 
 // 通常GeminiがNG(2)になった後に1回だけ試すフォールバックモデル
 const GEMINI_FALLBACK_MODEL = "gemini-2.5-flash";
