@@ -3490,28 +3490,14 @@ def collect_gnlm_all_for_date(target_date_mmt: date, max_pages: int = 3) -> List
         out = _gnlm_fill_empty_bodies_via_brightdata(out)
 
     # ==================================================
-    # GNLM PDF fallback
-    # - BrightData後もbodyが空の記事だけ、同日E-Paper PDFから本文補完する
-    # - 通常HTML/BrightDataで本文が取れている記事には触らない
+    # GNLM PDF fallback is intentionally disabled.
+    # - Newspaper PDF text extraction is unstable and can mix adjacent articles.
+    # - Keep only article HTML extraction and BrightData article-HTML fallback.
+    # - If those fail, leave body empty so downstream steps can handle it explicitly.
     # ==================================================
-    if any(not (x.get("body") or "").strip() for x in out):
-        try:
-            with _gnlm_temp_pdf_for_date(target_date_mmt) as (pdf_path, pdf_url, epaper_url):
-                if pdf_path:
-                    pdf_articles = _gnlm_extract_articles_from_pdf_path(
-                        pdf_path,
-                        pdf_url=pdf_url,
-                        target_date_mmt=target_date_mmt,
-                    )
-                    print(
-                        f"[gnlm-pdf] extracted articles={len(pdf_articles)} "
-                        f"pdf={pdf_url}"
-                    )
-                    out = _gnlm_attach_pdf_bodies_to_empty_items(out, pdf_articles)
-                else:
-                    print(f"[gnlm-pdf] pdf not available epaper={epaper_url}")
-        except Exception as e:
-            print(f"[gnlm-pdf] fallback failed: {e}")
+    for x in out:
+        if not (x.get("body") or "").strip():
+            x["_gnlm_body_source"] = "empty_after_direct_and_brightdata_pdf_disabled"
 
     return deduplicate_by_url(out)
 
