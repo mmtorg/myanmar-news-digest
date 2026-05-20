@@ -3940,19 +3940,17 @@ PROMPT_SPECIAL_RULES = (
     "- 「D.K.B.A」\n"
     "\n"
     "使用してよい訳語：\n"
-    "- 「国軍傘下DKBA」\n"
-    "- 「国軍傘下の民主カレン仏教徒軍（DKBA）」\n"
+    "- 「親国軍勢力DKBA」\n"
     "- 「DKBA」\n"
-    "- 「国軍系勢力」\n"
     "\n"
     "使い分けの目安：\n"
-    "- 見出しにおいては、「国軍傘下DKBA」を優先する。\n"
-    "- 記事内で初めて出てくる箇所では「国軍傘下の民主カレン仏教徒軍（DKBA）」を優先する。\n"
-    "- 2回目以降は、可能な限り「DKBA」に短縮する。\n"
-    "- 細かい組織名より「国軍側の武装勢力」である点を強調したい文脈では「国軍系勢力」とだけ記述してもよい。\n"
+    "- 見出しにおいては、「親国軍勢力DKBA」を優先する。\n"
+    "- 記事内で初めて出てくる箇所では「親国軍勢力DKBA」を優先する。\n"
+    "- 2回目以降は、文脈上明らかな場合のみ「DKBA」に短縮してよい。\n"
+    "- 一般文脈でも「親国軍勢力DKBA」を用いる。\n"
     "\n"
     "禁止：\n"
-    "- 上記4種類のいずれにも該当しない省略形・短縮形（例：「国軍系DKBA」「DKBA部隊」「国軍傘下DKBA軍」など）は使用禁止。\n"
+    "- 「国軍傘下DKBA」「国軍傘下の民主カレン仏教徒軍（DKBA）」「国軍傘下の民主カレン仏教徒軍(DKBA)」「国軍系DKBA」「国軍系勢力DKBA」「DKBA部隊」「国軍傘下DKBA軍」は使用禁止。\n"
     "\n"
     "【武装組織名の訳語ルール（ピューソーティー関連）】\n"
     "翻訳・要約の出力に「ピューソーティー」または「ピュー・ソー・ティー」が含まれる場合は、\n"
@@ -4183,6 +4181,161 @@ COMMON_TRANSLATION_RULES = (
 
 # プロンプト先頭に1回だけ載せる共通ルールブロック（見出し/本文要約/全文訳などに適用）
 COMMON_RULES_HEADER = "【共通ルール（最優先）】\n" + COMMON_TRANSLATION_RULES + "\n\n"
+
+# ============================================================
+# メディア別表記・DKBA表記の強制補正
+# - prompt.js と同じ方針を Python 側にも適用する。
+# - LLM への指示だけでなく、生成後の文字列も機械的に補正する。
+# ============================================================
+
+_OFFICIAL_STYLE_SOURCE_NAMES = {
+    "popular myanmar",
+    "popular myanmar (国軍系メディア)",
+    "news eleven",
+    "news eleven burmese",
+    "newseleven",
+    "global new light of myanmar",
+    "global new light",
+    "global new light of myanmar (国営紙)",
+    "gnlm",
+}
+
+def _normalize_source_name_for_style(source: str) -> str:
+    s = str(source or "").strip()
+    try:
+        s = unicodedata.normalize("NFKC", s)
+    except Exception:
+        pass
+    s = re.sub(r"\s+", " ", s)
+    return s.lower()
+
+def _is_official_style_source(source: str) -> bool:
+    return _normalize_source_name_for_style(source) in _OFFICIAL_STYLE_SOURCE_NAMES
+
+def _build_source_specific_translation_rules(source: str) -> str:
+    source_label = str(source or "").strip() or "不明"
+    if _is_official_style_source(source):
+        return (
+            "【メディア別表記ルール（最優先）】\n"
+            f"対象メディア: {source_label}\n"
+            "このメディアが Popular Myanmar、News Eleven、Global New Light Of Myanmar のいずれかに該当する場合、以下を必ず守る。\n"
+            "- Min Aung Hlaing / ミンアウンフライン / ミン・アウン・フライン / ミン・アウン・ライン / ミンアウンライン / မင်းအောင်လှိုင် は、見出し・本文要約・全文翻訳とも必ず「ミンアウンフライン大統領」と表記する。\n"
+            "- 見出しで「総司令官、」「上級大将、」「国軍トップ、」のように肩書きだけで主語を省略しない。該当人物が Min Aung Hlaing の場合は必ず「ミンアウンフライン大統領、...」で始める。\n"
+            "- 「軍事政権」という表現は使用禁止。文脈上、組織・政権主体を示す必要がある場合は「政府」と表記する。\n"
+            "- 「軍事政権トップ・ミンアウンフライン」「軍事政権トップのミンアウンフライン」「国軍トップ・ミンアウンフライン」「ミンアウンフライン総司令官」などは使わない。\n"
+            "- DKBA は全メディア共通で「親国軍勢力DKBA」と表記し、「国軍傘下DKBA」は使わない。\n"
+        )
+    return (
+        "【メディア別表記ルール（最優先）】\n"
+        f"対象メディア: {source_label}\n"
+        "このメディアは Popular Myanmar、News Eleven、Global New Light Of Myanmar 以外として扱う。\n"
+        "- Min Aung Hlaing / ミンアウンフライン / ミン・アウン・フライン / ミン・アウン・ライン / ミンアウンライン / မင်းအောင်လှိုင် は、見出し・本文要約・全文翻訳とも必ず「軍事政権トップ・ミンアウンフライン」と表記する。\n"
+        "- 見出しで「総司令官、」「国軍トップ、」「国軍指導者、」のように肩書きだけで主語を省略しない。該当人物が Min Aung Hlaing の場合は必ず「軍事政権トップ・ミンアウンフライン、...」で始める。\n"
+        "- 「ミンアウンフライン大統領」「ミンアウンフライン総司令官」「国軍トップ・ミンアウンフライン」「国軍指導者ミンアウンフライン」などは使わない。\n"
+        "- DKBA は全メディア共通で「親国軍勢力DKBA」と表記し、「国軍傘下DKBA」は使わない。\n"
+    )
+
+def _normalize_dkba_terms(text: str) -> str:
+    if text is None:
+        return text
+    s = str(text)
+    placeholder = "__TERM_PLACEHOLDER_D__"
+
+    s = re.sub(r"親国軍勢力\s*DKBA", placeholder, s, flags=re.IGNORECASE)
+
+    s = re.sub(
+        r"国軍傘下の民主カレン仏教徒軍[（(]\s*D\.?\s*K\.?\s*B\.?\s*A\.?\s*[）)]",
+        placeholder,
+        s,
+        flags=re.IGNORECASE,
+    )
+    s = re.sub(
+        r"民主カレン仏教徒軍[（(]\s*D\.?\s*K\.?\s*B\.?\s*A\.?\s*[）)]",
+        placeholder,
+        s,
+        flags=re.IGNORECASE,
+    )
+    s = re.sub(
+        r"国軍傘下(?:の)?\s*D\.?\s*K\.?\s*B\.?\s*A\.?軍?",
+        placeholder,
+        s,
+        flags=re.IGNORECASE,
+    )
+    s = re.sub(
+        r"国軍系(?:勢力)?\s*D\.?\s*K\.?\s*B\.?\s*A\.?",
+        placeholder,
+        s,
+        flags=re.IGNORECASE,
+    )
+
+    # 単独 DKBA / D.K.B.A も、今回方針では「親国軍勢力DKBA」へ統一する。
+    s = re.sub(r"D\.?\s*K\.?\s*B\.?\s*A\.?", placeholder, s, flags=re.IGNORECASE)
+
+    # ビルマ語名が出力に漏れた場合の保険。
+    s = re.sub(r"ဒီမိုကရေစီ\s*အကျိုးပြု\s*ကရင်တပ်မတော်", placeholder, s)
+    s = re.sub(r"ဒီမိုကရက်တစ်ကရင်အကျိုးပြုတပ်မတော်", placeholder, s)
+    s = re.sub(r"ဒီမိုကရေစီ\s*ကရင်\s*တပ်မတော်", placeholder, s)
+
+    return s.replace(placeholder, "親国軍勢力DKBA")
+
+def _normalize_military_regime_for_official_source(text: str) -> str:
+    if text is None:
+        return text
+    return (
+        str(text)
+        .replace("軍事政権下", "政府の下")
+        .replace("軍事政権側", "政府側")
+        .replace("軍事政権当局", "政府当局")
+        .replace("軍事政権トップ", "政府トップ")
+        .replace("軍事政権指導者", "政府指導者")
+        .replace("軍事政権", "政府")
+    )
+
+def _normalize_min_aung_hlaing_term(text: str, official_style: bool) -> str:
+    if text is None:
+        return text
+    s = str(text)
+    if s.startswith("ERROR:"):
+        return s
+
+    placeholder = "__TERM_PLACEHOLDER_M__"
+    target = "ミンアウンフライン大統領" if official_style else "軍事政権トップ・ミンアウンフライン"
+
+    mah_name = r"(?:ミン[・･]?アウン[・･]?(?:フライン|ライン)|Min\s+Aung\s+Hlaing|မင်းအောင်လှိုင်)"
+    mah_title = r"(?:氏|大統領|国家大統領|暫定大統領|国軍大統領|上級大将|大将|総司令官|国軍司令官|国軍総司令官|元国軍司令官|元国軍総司令官|国家行政評議会議長|SAC議長)?"
+    leader_prefix = r"(?:(?:ミャンマー)?(?:軍事政権|国軍|軍事委員会|SAC)(?:の)?(?:トップ|指導者|最高指導者|リーダー)(?:である|としての|の|・)?\s*)"
+    title_before = r"(?:(?:元)?国軍(?:総)?司令官|国軍総司令官|総司令官|上級大将|大将|暫定大統領|国家大統領|大統領)\s*"
+
+    if official_style:
+        s = re.sub(leader_prefix + mah_name + mah_title, target, s, flags=re.IGNORECASE)
+        s = re.sub(title_before + mah_name + mah_title, target, s, flags=re.IGNORECASE)
+        s = re.sub(mah_name + mah_title, target, s, flags=re.IGNORECASE)
+        return s
+
+    s = re.sub(r"軍事政権トップ・" + mah_name + mah_title, placeholder, s, flags=re.IGNORECASE)
+    s = re.sub(leader_prefix + mah_name + mah_title, placeholder, s, flags=re.IGNORECASE)
+    s = re.sub(title_before + mah_name + mah_title, placeholder, s, flags=re.IGNORECASE)
+    s = re.sub(mah_name + mah_title, placeholder, s, flags=re.IGNORECASE)
+    return s.replace(placeholder, target)
+
+def normalize_output_terminology_by_source(text: str, source: str) -> str:
+    if text is None:
+        return text
+    s = str(text)
+    if s.startswith("ERROR:"):
+        return s
+
+    s = _normalize_dkba_terms(s)
+
+    official_style = _is_official_style_source(source)
+    s = _normalize_min_aung_hlaing_term(s, official_style)
+
+    # 公式系3メディアでは、Min Aung Hlaing の表記補正を終えてから「軍事政権」を除去する。
+    if official_style:
+        s = _normalize_military_regime_for_official_source(s)
+
+    return s
+
 
 PROMPT_SELF_CHECK_RULE = (
     "【出力前のセルフチェック（最重要）】\n"
@@ -4494,10 +4647,11 @@ def build_prompt(item: dict, *, skip_filters: bool, body_max: int) -> str:
         use_headline_ja=False,  # 本文は C 列（本文訳）
     )
     # terms シートのヒット語だけを固定する既存ルール（見出し=title_ja / 本文=body_ja）
+    source_rules = _build_source_specific_translation_rules(item.get("source") or "")
     term_rules = _build_term_rules_prompt(title_src, body_src)
 
     # ルール → 入力、の順でプロンプトを構成
-    return header + COMMON_RULES_HEADER + pre + STEP3_TASK + rg_title + rg_body + term_rules + "\n" + input_block
+    return header + COMMON_RULES_HEADER + source_rules + "\n" + pre + STEP3_TASK + rg_title + rg_body + term_rules + "\n" + input_block
 
 # ============================================================
 # 通貨換算・金額分解（Python版・機械固定）
@@ -4778,6 +4932,8 @@ def process_translation_batches(batch_size=TRANSLATION_BATCH_SIZE, wait_seconds=
 
                 lines_summary = build_summary_lines(output_text, lines)
                 summary_text = "\n".join(lines_summary).strip()
+                translated_title = normalize_output_terminology_by_source(translated_title, item.get("source") or "")
+                summary_text = normalize_output_terminology_by_source(summary_text, item.get("source") or "")
                 summary_html  = summary_text.replace("\n", "<br>")
 
                 norm_url = _norm_id(item.get("url") or "")
@@ -4888,6 +5044,7 @@ def translate_fulltexts_for_business(urls_in_order_or_items, url_to_source_title
                 "url": (raw.get("url") or "").strip(),
                 "title": (raw.get("title") or "").strip(),
                 "body": (raw.get("body") or "").strip(),
+                "source": (raw.get("source") or "").strip(),
             })
     else:
         urls_in_order = list(urls_in_order_or_items or [])
@@ -4899,6 +5056,7 @@ def translate_fulltexts_for_business(urls_in_order_or_items, url_to_source_title
                 "url": (u or "").strip(),
                 "title": (meta.get("title") or "").strip(),
                 "body": (meta.get("body") or "").strip(),
+                "source": (meta.get("source") or "").strip(),
             })
 
     item_to_source_title_body = {it["item_id"]: it for it in items_in_order}
@@ -5095,6 +5253,13 @@ def translate_fulltexts_for_business(urls_in_order_or_items, url_to_source_title
     # === 全文翻訳プロンプトの共通ビルダー（既存prompt_partsの共通化） ===
     def _build_fulltext_prompt(input_array: list[dict]) -> str:
         # 文字列の隣接連結と + の混在での解析エラーを避けるため、配列で組み立て
+        source_specific_rules = "\n".join(
+            (
+                f"【item_id={x.get('item_id','')} のメディア別表記ルール】\n"
+                + _build_source_specific_translation_rules(x.get("source") or "")
+            )
+            for x in input_array
+        )
         prompt_parts = (
             "次のニュース記事の【本文だけ】を**自然な日本語**に完全翻訳してください。\n"
             "・固有名詞は一般的な日本語表記に\n"
@@ -5105,6 +5270,7 @@ def translate_fulltexts_for_business(urls_in_order_or_items, url_to_source_title
             "・冗長な修飾は削り、できるだけ簡潔に表現する\n"
             "・半角の()括弧はすべて全角の（ ）に統一すること\n\n"
             f"{COMMON_TRANSLATION_RULES}\n"
+            f"{source_specific_rules}\n"
             f"{PROMPT_SELF_CHECK_RULE}\n"
             f"{_build_region_glossary_prompt_for(_select_region_entries_for_text(' '.join([x.get('body','') for x in input_array]), _load_regions_cached()), use_headline_ja=False)}\n"
             "【本文以外は必ず除外（この関数専用）】\n"
@@ -5130,9 +5296,9 @@ def translate_fulltexts_for_business(urls_in_order_or_items, url_to_source_title
         return "".join(prompt_parts)
     
     # === 未翻訳検知時の“単発リトライ”（同じプロンプトを単一要素配列で再利用） ===
-    def _single_fulltext_retry(item_id: str, url: str, raw_body: str, max_chars: int = 6000) -> str:
+    def _single_fulltext_retry(item_id: str, url: str, raw_body: str, source: str = "", max_chars: int = 6000) -> str:
         body_trim = trim_by_chars(raw_body or "", max_chars)
-        prompt = _build_fulltext_prompt([{"item_id": item_id, "url": url, "body": body_trim}])
+        prompt = _build_fulltext_prompt([{"item_id": item_id, "url": url, "body": body_trim, "source": source}])
 
         precheck_sleep(rough_token_estimate(prompt), tag="fulltext-retry")
         try:
@@ -5185,6 +5351,8 @@ def translate_fulltexts_for_business(urls_in_order_or_items, url_to_source_title
                     if not bj:
                         continue
                     if _normalize_item_id(x.get("item_id")) == target_item_id:
+                        bj = normalize_output_terminology_by_source(bj, source)
+                        bj = normalize_output_terminology_by_source(bj, source)
                         bj = remove_yen_for_non_kyat(bj)
                         bj = fix_kyat_yen_in_text(bj)
                         return bj
@@ -5195,6 +5363,7 @@ def translate_fulltexts_for_business(urls_in_order_or_items, url_to_source_title
                     if not candidate_body:
                         candidate_body = bj
                 if candidate_body:
+                    candidate_body = normalize_output_terminology_by_source(candidate_body, source)
                     candidate_body = remove_yen_for_non_kyat(candidate_body)
                     candidate_body = fix_kyat_yen_in_text(candidate_body)
                     return candidate_body
@@ -5222,6 +5391,7 @@ def translate_fulltexts_for_business(urls_in_order_or_items, url_to_source_title
         prepared.append({
             "item_id": item_id,
             "url": u,
+            "source": (it.get("source") or "").strip(),
             "title": title_src,
             "body": body_compact,
         })
@@ -5250,7 +5420,7 @@ def translate_fulltexts_for_business(urls_in_order_or_items, url_to_source_title
                 batch = [current]
                 effective_batch_size = 1
 
-        input_array = [{"item_id": b["item_id"], "url": b["url"], "body": b["body"]} for b in batch]
+        input_array = [{"item_id": b["item_id"], "url": b["url"], "source": b.get("source", ""), "body": b["body"]} for b in batch]
         prompt = _build_fulltext_prompt(input_array)
 
         precheck_sleep(rough_token_estimate(prompt), tag="fulltext-batch")
@@ -5299,6 +5469,7 @@ def translate_fulltexts_for_business(urls_in_order_or_items, url_to_source_title
                     body_ja = raw_body_ja
 
                 body_ja = _apply_term_glossary_to_output(body_ja, src=body_src, prefer="body_ja")
+                body_ja = normalize_output_terminology_by_source(body_ja, b.get("source") or "")
 
                 # ★ まず「チャット以外」の（約◯◯円）を削除（ドル等の誤換算対策）
                 body_ja = remove_yen_for_non_kyat(body_ja)
@@ -5316,6 +5487,7 @@ def translate_fulltexts_for_business(urls_in_order_or_items, url_to_source_title
             print("🛑 fulltext batch failed:", e)
             for b in batch:
                 bj = _apply_term_glossary_to_output(b["body"], src=b["body"], prefer="body_ja")
+                bj = normalize_output_terminology_by_source(bj, b.get("source") or "")
                 bj = remove_yen_for_non_kyat(bj)
                 bj = fix_kyat_yen_in_text(bj)
                 # ★ バッチそのものが失敗したので、各URLは確実に単体再翻訳に回す
@@ -5335,7 +5507,9 @@ def translate_fulltexts_for_business(urls_in_order_or_items, url_to_source_title
             body = item.get("body_ja") or ""
 
             # 元の本文（ビルマ語）を取り出す
-            raw_body = (item_to_source_title_body.get(item.get("item_id"), {}) or {}).get("body") or body
+            raw_meta = item_to_source_title_body.get(item.get("item_id"), {}) or {}
+            raw_body = raw_meta.get("body") or body
+            source_raw = raw_meta.get("source") or ""
 
             # 条件A：日本語が全く無い（既存ロジック）
             need_retry_untranslated = _needs_retry_untranslated(body)
@@ -5353,10 +5527,12 @@ def translate_fulltexts_for_business(urls_in_order_or_items, url_to_source_title
                     item.get("item_id", ""),
                     url,
                     raw_body,
+                    source=source_raw,
                     max_chars=FULLTEXT_MAX_CHARS,
                 )
                 if fixed and _contains_cjk(fixed):
                     repaired = _apply_term_glossary_to_output(fixed, src=raw_body, prefer="body_ja")
+                    repaired = normalize_output_terminology_by_source(repaired, source_raw)
                     repaired = remove_yen_for_non_kyat(repaired)
                     repaired = fix_kyat_yen_in_text(repaired)
                     results[j]["body_ja"] = repaired
@@ -6206,10 +6382,11 @@ if __name__ == "__main__":
     for ft in fulltexts:
         u = _norm_id(ft.get("url",""))
         meta = url_to_meta.get(u, {})
+        source = meta.get("source", "") or ""
         translated_items.append({
-            "title_ja":      ft.get("title_ja", "") or "",
-            "body_ja":       ft.get("body_ja", "") or "",
-            "source":        meta.get("source", "") or "",
+            "title_ja":      normalize_output_terminology_by_source(ft.get("title_ja", "") or "", source),
+            "body_ja":       normalize_output_terminology_by_source(ft.get("body_ja", "") or "", source),
+            "source":        source,
             "date":          meta.get("date", "") or "",   # ← 追加
             "url":           u,                            # ← 追加（PDF末尾に追記）
         })

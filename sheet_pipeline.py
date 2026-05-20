@@ -731,19 +731,17 @@ PROMPT_SPECIAL_RULES = (
     "- 「D.K.B.A」\n"
     "\n"
     "使用してよい訳語：\n"
-    "- 「国軍傘下DKBA」\n"
-    "- 「国軍傘下の民主カレン仏教徒軍（DKBA）」\n"
+    "- 「親国軍勢力DKBA」\n"
     "- 「DKBA」\n"
-    "- 「国軍系勢力」\n"
     "\n"
     "使い分けの目安：\n"
-    "- 見出しにおいては、「国軍傘下DKBA」を優先する。\n"
-    "- 記事内で初めて出てくる箇所では「国軍傘下の民主カレン仏教徒軍（DKBA）」を優先する。\n"
-    "- 2回目以降は、可能な限り「DKBA」に短縮する。\n"
-    "- 細かい組織名より「国軍側の武装勢力」である点を強調したい文脈では「国軍系勢力」とだけ記述してもよい。\n"
+    "- 見出しにおいては、「親国軍勢力DKBA」を優先する。\n"
+    "- 記事内で初めて出てくる箇所では「親国軍勢力DKBA」を優先する。\n"
+    "- 2回目以降は、文脈上明らかな場合のみ「DKBA」に短縮してよい。\n"
+    "- 一般文脈でも「親国軍勢力DKBA」を用いる。\n"
     "\n"
     "禁止：\n"
-    "- 上記4種類のいずれにも該当しない省略形・短縮形（例：「国軍系DKBA」「DKBA部隊」「国軍傘下DKBA軍」など）は使用禁止。\n"
+    "- 「国軍傘下DKBA」「国軍傘下の民主カレン仏教徒軍（DKBA）」「国軍傘下の民主カレン仏教徒軍(DKBA)」「国軍系DKBA」「国軍系勢力DKBA」「DKBA部隊」「国軍傘下DKBA軍」は使用禁止。\n"
     "\n"
     "【武装組織名の訳語ルール（ピューソーティー関連）】\n"
     "翻訳・要約の出力に「ピューソーティー」または「ピュー・ソー・ティー」が含まれる場合は、\n"
@@ -973,6 +971,161 @@ COMMON_TRANSLATION_RULES = (
 # プロンプト先頭に1回だけ載せる共通ルールブロック（Task/見出し/要約すべてに適用）
 COMMON_RULES_HEADER = "【共通ルール（最優先）】\n" + COMMON_TRANSLATION_RULES + "\n\n"
 
+# ============================================================
+# メディア別表記・DKBA表記の強制補正
+# - prompt.js と同じ方針を Python 側にも適用する。
+# - LLM への指示だけでなく、生成後の文字列も機械的に補正する。
+# ============================================================
+
+_OFFICIAL_STYLE_SOURCE_NAMES = {
+    "popular myanmar",
+    "popular myanmar (国軍系メディア)",
+    "news eleven",
+    "news eleven burmese",
+    "newseleven",
+    "global new light of myanmar",
+    "global new light",
+    "global new light of myanmar (国営紙)",
+    "gnlm",
+}
+
+def _normalize_source_name_for_style(source: str) -> str:
+    s = str(source or "").strip()
+    try:
+        s = unicodedata.normalize("NFKC", s)
+    except Exception:
+        pass
+    s = re.sub(r"\s+", " ", s)
+    return s.lower()
+
+def _is_official_style_source(source: str) -> bool:
+    return _normalize_source_name_for_style(source) in _OFFICIAL_STYLE_SOURCE_NAMES
+
+def _build_source_specific_translation_rules(source: str) -> str:
+    source_label = str(source or "").strip() or "不明"
+    if _is_official_style_source(source):
+        return (
+            "【メディア別表記ルール（最優先）】\n"
+            f"対象メディア: {source_label}\n"
+            "このメディアが Popular Myanmar、News Eleven、Global New Light Of Myanmar のいずれかに該当する場合、以下を必ず守る。\n"
+            "- Min Aung Hlaing / ミンアウンフライン / ミン・アウン・フライン / ミン・アウン・ライン / ミンアウンライン / မင်းအောင်လှိုင် は、見出し・本文要約・全文翻訳とも必ず「ミンアウンフライン大統領」と表記する。\n"
+            "- 見出しで「総司令官、」「上級大将、」「国軍トップ、」のように肩書きだけで主語を省略しない。該当人物が Min Aung Hlaing の場合は必ず「ミンアウンフライン大統領、...」で始める。\n"
+            "- 「軍事政権」という表現は使用禁止。文脈上、組織・政権主体を示す必要がある場合は「政府」と表記する。\n"
+            "- 「軍事政権トップ・ミンアウンフライン」「軍事政権トップのミンアウンフライン」「国軍トップ・ミンアウンフライン」「ミンアウンフライン総司令官」などは使わない。\n"
+            "- DKBA は全メディア共通で「親国軍勢力DKBA」と表記し、「国軍傘下DKBA」は使わない。\n"
+        )
+    return (
+        "【メディア別表記ルール（最優先）】\n"
+        f"対象メディア: {source_label}\n"
+        "このメディアは Popular Myanmar、News Eleven、Global New Light Of Myanmar 以外として扱う。\n"
+        "- Min Aung Hlaing / ミンアウンフライン / ミン・アウン・フライン / ミン・アウン・ライン / ミンアウンライン / မင်းအောင်လှိုင် は、見出し・本文要約・全文翻訳とも必ず「軍事政権トップ・ミンアウンフライン」と表記する。\n"
+        "- 見出しで「総司令官、」「国軍トップ、」「国軍指導者、」のように肩書きだけで主語を省略しない。該当人物が Min Aung Hlaing の場合は必ず「軍事政権トップ・ミンアウンフライン、...」で始める。\n"
+        "- 「ミンアウンフライン大統領」「ミンアウンフライン総司令官」「国軍トップ・ミンアウンフライン」「国軍指導者ミンアウンフライン」などは使わない。\n"
+        "- DKBA は全メディア共通で「親国軍勢力DKBA」と表記し、「国軍傘下DKBA」は使わない。\n"
+    )
+
+def _normalize_dkba_terms(text: str) -> str:
+    if text is None:
+        return text
+    s = str(text)
+    placeholder = "__TERM_PLACEHOLDER_D__"
+
+    s = re.sub(r"親国軍勢力\s*DKBA", placeholder, s, flags=re.IGNORECASE)
+
+    s = re.sub(
+        r"国軍傘下の民主カレン仏教徒軍[（(]\s*D\.?\s*K\.?\s*B\.?\s*A\.?\s*[）)]",
+        placeholder,
+        s,
+        flags=re.IGNORECASE,
+    )
+    s = re.sub(
+        r"民主カレン仏教徒軍[（(]\s*D\.?\s*K\.?\s*B\.?\s*A\.?\s*[）)]",
+        placeholder,
+        s,
+        flags=re.IGNORECASE,
+    )
+    s = re.sub(
+        r"国軍傘下(?:の)?\s*D\.?\s*K\.?\s*B\.?\s*A\.?軍?",
+        placeholder,
+        s,
+        flags=re.IGNORECASE,
+    )
+    s = re.sub(
+        r"国軍系(?:勢力)?\s*D\.?\s*K\.?\s*B\.?\s*A\.?",
+        placeholder,
+        s,
+        flags=re.IGNORECASE,
+    )
+
+    # 単独 DKBA / D.K.B.A も、今回方針では「親国軍勢力DKBA」へ統一する。
+    s = re.sub(r"D\.?\s*K\.?\s*B\.?\s*A\.?", placeholder, s, flags=re.IGNORECASE)
+
+    # ビルマ語名が出力に漏れた場合の保険。
+    s = re.sub(r"ဒီမိုကရေစီ\s*အကျိုးပြု\s*ကရင်တပ်မတော်", placeholder, s)
+    s = re.sub(r"ဒီမိုကရက်တစ်ကရင်အကျိုးပြုတပ်မတော်", placeholder, s)
+    s = re.sub(r"ဒီမိုကရေစီ\s*ကရင်\s*တပ်မတော်", placeholder, s)
+
+    return s.replace(placeholder, "親国軍勢力DKBA")
+
+def _normalize_military_regime_for_official_source(text: str) -> str:
+    if text is None:
+        return text
+    return (
+        str(text)
+        .replace("軍事政権下", "政府の下")
+        .replace("軍事政権側", "政府側")
+        .replace("軍事政権当局", "政府当局")
+        .replace("軍事政権トップ", "政府トップ")
+        .replace("軍事政権指導者", "政府指導者")
+        .replace("軍事政権", "政府")
+    )
+
+def _normalize_min_aung_hlaing_term(text: str, official_style: bool) -> str:
+    if text is None:
+        return text
+    s = str(text)
+    if s.startswith("ERROR:"):
+        return s
+
+    placeholder = "__TERM_PLACEHOLDER_M__"
+    target = "ミンアウンフライン大統領" if official_style else "軍事政権トップ・ミンアウンフライン"
+
+    mah_name = r"(?:ミン[・･]?アウン[・･]?(?:フライン|ライン)|Min\s+Aung\s+Hlaing|မင်းအောင်လှိုင်)"
+    mah_title = r"(?:氏|大統領|国家大統領|暫定大統領|国軍大統領|上級大将|大将|総司令官|国軍司令官|国軍総司令官|元国軍司令官|元国軍総司令官|国家行政評議会議長|SAC議長)?"
+    leader_prefix = r"(?:(?:ミャンマー)?(?:軍事政権|国軍|軍事委員会|SAC)(?:の)?(?:トップ|指導者|最高指導者|リーダー)(?:である|としての|の|・)?\s*)"
+    title_before = r"(?:(?:元)?国軍(?:総)?司令官|国軍総司令官|総司令官|上級大将|大将|暫定大統領|国家大統領|大統領)\s*"
+
+    if official_style:
+        s = re.sub(leader_prefix + mah_name + mah_title, target, s, flags=re.IGNORECASE)
+        s = re.sub(title_before + mah_name + mah_title, target, s, flags=re.IGNORECASE)
+        s = re.sub(mah_name + mah_title, target, s, flags=re.IGNORECASE)
+        return s
+
+    s = re.sub(r"軍事政権トップ・" + mah_name + mah_title, placeholder, s, flags=re.IGNORECASE)
+    s = re.sub(leader_prefix + mah_name + mah_title, placeholder, s, flags=re.IGNORECASE)
+    s = re.sub(title_before + mah_name + mah_title, placeholder, s, flags=re.IGNORECASE)
+    s = re.sub(mah_name + mah_title, placeholder, s, flags=re.IGNORECASE)
+    return s.replace(placeholder, target)
+
+def normalize_output_terminology_by_source(text: str, source: str) -> str:
+    if text is None:
+        return text
+    s = str(text)
+    if s.startswith("ERROR:"):
+        return s
+
+    s = _normalize_dkba_terms(s)
+
+    official_style = _is_official_style_source(source)
+    s = _normalize_min_aung_hlaing_term(s, official_style)
+
+    # 公式系3メディアでは、Min Aung Hlaing の表記補正を終えてから「軍事政権」を除去する。
+    if official_style:
+        s = _normalize_military_regime_for_official_source(s)
+
+    return s
+
+
 TITLE_OUTPUT_RULES = (
     "出力は見出し文だけを1行で返してください。\n"
     "【翻訳】や【日本語見出し案】、## 翻訳 などのラベル・注釈タグ・見出しは出力しないでください。\n"
@@ -1082,8 +1235,9 @@ def _build_summary_prompt(item: dict, *, body_max: int) -> str:
     )
     rg_title = _region_rules_for_title(item.get("title") or "")
     rg_body  = _region_rules_for_body(body)
+    source_rules = _build_source_specific_translation_rules(item.get("source") or "")
     term_rules = _build_term_rules_prompt(item.get("title") or "", body)
-    return header + COMMON_RULES_HEADER + pre + STEP3_TASK + (rg_title + rg_body) + term_rules + "\n" + input_block
+    return header + COMMON_RULES_HEADER + source_rules + "\n" + pre + STEP3_TASK + (rg_title + rg_body) + term_rules + "\n" + input_block
 
 # ===== 用語集（A:Myanmar / B:English / C:本文訳 / D:見出し訳） =====
 _TERM_CACHE: list[dict] | None = None
@@ -1352,6 +1506,7 @@ def _headline_variants_ja(title: str, source: str, url: str, body: str = "") -> 
     rg_title = _region_rules_for_title(title)
     rg_body  = _region_rules_for_body(body)
     glossary = rg_title + rg_body + _build_term_rules_prompt(title, body)
+    source_rules = _build_source_specific_translation_rules(source)
 
     # ---- 案1：原題ベース ----
     try:
@@ -1359,7 +1514,7 @@ def _headline_variants_ja(title: str, source: str, url: str, body: str = "") -> 
             _LIMITER.wait()
         resp1 = call_llm_with_fallback(
             client,
-            f"{COMMON_RULES_HEADER}{HEADLINE_PROMPT_1}{glossary}\n\n原題: {title}\nsource:{source}\nurl:{url}",
+            f"{COMMON_RULES_HEADER}{source_rules}\n{HEADLINE_PROMPT_1}{glossary}\n\n原題: {title}\nsource:{source}\nurl:{url}",
             model=model,
         )
         v1 = unicodedata.normalize("NFC", (resp1.text or "").strip())
@@ -1370,7 +1525,7 @@ def _headline_variants_ja(title: str, source: str, url: str, body: str = "") -> 
     try:
         if _LIMITER:
             _LIMITER.wait()
-        prompt2 = COMMON_RULES_HEADER + (glossary or "") + make_headline_prompt_2_from(v1)
+        prompt2 = COMMON_RULES_HEADER + source_rules + "\n" + (glossary or "") + make_headline_prompt_2_from(v1)
         resp2 = call_llm_with_fallback(client, prompt2, model=model)
         v2 = unicodedata.normalize("NFC", (resp2.text or "").strip())
     except Exception:
@@ -1387,6 +1542,7 @@ def _headline_variants_ja(title: str, source: str, url: str, body: str = "") -> 
         else:
             prompt3 = (
                 COMMON_RULES_HEADER
+                + source_rules + "\n"
                 + f"{HEADLINE_PROMPT_3}\n\n"
                 + (glossary or "")
                 + "【本文】\n" + body_for_prompt + "\n\n"
@@ -1398,9 +1554,9 @@ def _headline_variants_ja(title: str, source: str, url: str, body: str = "") -> 
         v3 = v1
 
     # 生成後の最終統一（州・管区名 → 既存）＋（用語集 → 新規）
-    v1 = _apply_region_glossary_to_text(v1); v1 = _apply_term_glossary_to_output(v1, src=title, prefer="title_ja")
-    v2 = _apply_region_glossary_to_text(v2); v2 = _apply_term_glossary_to_output(v2, src=title, prefer="title_ja")
-    v3 = _apply_region_glossary_to_text(v3); v3 = _apply_term_glossary_to_output(v3, src=title, prefer="title_ja")
+    v1 = _apply_region_glossary_to_text(v1); v1 = _apply_term_glossary_to_output(v1, src=title, prefer="title_ja"); v1 = normalize_output_terminology_by_source(v1, source)
+    v2 = _apply_region_glossary_to_text(v2); v2 = _apply_term_glossary_to_output(v2, src=title, prefer="title_ja"); v2 = normalize_output_terminology_by_source(v2, source)
+    v3 = _apply_region_glossary_to_text(v3); v3 = _apply_term_glossary_to_output(v3, src=title, prefer="title_ja"); v3 = normalize_output_terminology_by_source(v3, source)
     return [v1, v2, v3]
 
 def _summary_ja(source: str, title: str, body: str, url: str) -> str:
@@ -1420,7 +1576,8 @@ def _summary_ja(source: str, title: str, body: str, url: str) -> str:
             pass
         text = unicodedata.normalize("NFC", (body or "").strip())[:400]
         text = _apply_region_glossary_to_text(text)
-        return _apply_term_glossary_to_output(text, src=body, prefer="body_ja")
+        text = _apply_term_glossary_to_output(text, src=body, prefer="body_ja")
+        return normalize_output_terminology_by_source(text, source)
 
     # fetch_articles.py に定義があればそれを採用、無ければ 1800 に固定
     try:
@@ -1442,11 +1599,13 @@ def _summary_ja(source: str, title: str, body: str, url: str) -> str:
         )
         text = unicodedata.normalize("NFC", (resp.text or "").strip())
         text = _apply_region_glossary_to_text(text)
-        return _apply_term_glossary_to_output(text, src=body, prefer="body_ja")
+        text = _apply_term_glossary_to_output(text, src=body, prefer="body_ja")
+        return normalize_output_terminology_by_source(text, source)
     except Exception:
         text = unicodedata.normalize("NFC", (body or "").strip())[:400]
         text = _apply_region_glossary_to_text(text)
-        return _apply_term_glossary_to_output(text, src=body, prefer="body_ja")
+        text = _apply_term_glossary_to_output(text, src=body, prefer="body_ja")
+        return normalize_output_terminology_by_source(text, source)
 
 
 def _is_ayeyarwady(title_raw: str, body_raw: str) -> bool:
@@ -1990,8 +2149,11 @@ def cmd_build_bundle_from_sheet(args):
             meta = item_to_meta.get(item_id, {})
             if not meta:
                 continue
+            source = meta.get("source", "") or ""
             title_ja = _apply_region_glossary_to_text(meta.get("title_ja", ""))
+            title_ja = normalize_output_terminology_by_source(title_ja, source)
             body_ja  = _apply_region_glossary_to_text(it.get("body_ja", "") or "")
+            body_ja  = normalize_output_terminology_by_source(body_ja, source)
             translated_items.append({
                 "item_id": item_id,
                 "url": meta.get("url", ""),
