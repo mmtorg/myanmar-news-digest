@@ -539,18 +539,39 @@ jobs:
             fi
           done
 
+      - name: Prepare bundle artifact layout (preserve bundle directory)
+        if: ${{ steps.watch_build.outputs.built == 'true' }}
+        run: |
+          set -euo pipefail
+
+          test -f bundle/meta.json
+          rm -rf _artifact_upload
+          mkdir -p _artifact_upload/bundle
+
+          for f in \
+            meta.json \
+            summaries.json \
+            summaries_ayeyar.json \
+            digest.pdf \
+            attachment_name.txt \
+            bodies.json; do
+            if [ -f "bundle/${f}" ]; then
+              cp -a "bundle/${f}" _artifact_upload/bundle/
+            else
+              echo "WARN: bundle/${f} not found; skip copying to artifact layout" >&2
+            fi
+          done
+
+          echo "--- bundle files to upload ---"
+          find _artifact_upload -maxdepth 3 -type f -print | sort
+          test -f _artifact_upload/bundle/meta.json
+
       - name: Upload bundle artifact (always after successful build-bundle)
         if: ${{ steps.watch_build.outputs.built == 'true' }}
         uses: actions/upload-artifact@v4
         with:
           name: mna-bundle-${{ github.run_id }}
-          path: |
-            bundle/meta.json
-            bundle/summaries.json
-            bundle/summaries_ayeyar.json
-            bundle/digest.pdf
-            bundle/attachment_name.txt
-            bundle/bodies.json
+          path: _artifact_upload
           retention-days: 2
           if-no-files-found: error
 
