@@ -3815,8 +3815,6 @@ PROMPT_TERMINOLOGY_RULES = (
     "【翻訳時の用語統一ルール（必ず従うこと）】\n"
     "このルールは記事タイトルと本文の翻訳に必ず適用してください。\n"
     "クーデター指導者⇒総司令官\n"
-    "テロリスト指導者ミン・アウン・フライン⇒ミン・アウン・フライン\n"
-    "テロリストのミン・アウン・フライン⇒ミン・アウン・フライン\n"
     "テロリスト軍事指導者⇒総司令官\n"
     "テロリスト軍事政権⇒軍事政権\n"
     "テロリスト軍事評議会⇒軍事政権\n"
@@ -4183,9 +4181,10 @@ COMMON_TRANSLATION_RULES = (
 COMMON_RULES_HEADER = "【共通ルール（最優先）】\n" + COMMON_TRANSLATION_RULES + "\n\n"
 
 # ============================================================
-# メディア別表記・DKBA表記の強制補正
-# - prompt.js と同じ方針を Python 側にも適用する。
-# - LLM への指示だけでなく、生成後の文字列も機械的に補正する。
+# メディア別の訳語選択
+# - 具体的な訳語は regions シート E/F 列へ移管する。
+# - ここでは対象3メディア判定と、プロンプト上の優先順位説明だけを残す。
+# - DKBA の全メディア共通補正は COMMON_TRANSLATION_RULES と生成後補正に残す。
 # ============================================================
 
 _OFFICIAL_STYLE_SOURCE_NAMES = {
@@ -4216,23 +4215,16 @@ def _build_source_specific_translation_rules(source: str) -> str:
     source_label = str(source or "").strip() or "不明"
     if _is_official_style_source(source):
         return (
-            "【メディア別表記ルール（最優先）】\n"
+            "【メディア別用語ルール】\n"
             f"対象メディア: {source_label}\n"
-            "このメディアが Popular Myanmar、News Eleven、Global New Light Of Myanmar のいずれかに該当する場合、以下を必ず守る。\n"
-            "- Min Aung Hlaing / ミンアウンフライン / ミン・アウン・フライン / ミン・アウン・ライン / ミンアウンライン / မင်းအောင်လှိုင် は、見出し・本文要約・全文翻訳とも必ず「ミンアウンフライン大統領」と表記する。\n"
-            "- 見出しで「総司令官、」「上級大将、」「国軍トップ、」のように肩書きだけで主語を省略しない。該当人物が Min Aung Hlaing の場合は必ず「ミンアウンフライン大統領、...」で始める。\n"
-            "- 「軍事政権」という表現は使用禁止。文脈上、組織・政権主体を示す必要がある場合は「政府」と表記する。\n"
-            "- 「軍事政権トップ・ミンアウンフライン」「軍事政権トップのミンアウンフライン」「国軍トップ・ミンアウンフライン」「ミンアウンフライン総司令官」などは使わない。\n"
-            "- DKBA は全メディア共通で「親国軍勢力DKBA」と表記し、「国軍傘下DKBA」は使わない。\n"
+            "このメディアでは、regionsシートの3メディア用列（E:本文訳、F:見出し訳）に指定がある場合、"
+            "通常列（C:本文訳、D:見出し訳）より優先する。\n"
+            "具体的な訳語は、このプロンプト内の「用語固定（必須）」に列挙された指定に従う。\n"
         )
     return (
-        "【メディア別表記ルール（最優先）】\n"
+        "【メディア別用語ルール】\n"
         f"対象メディア: {source_label}\n"
-        "このメディアは Popular Myanmar、News Eleven、Global New Light Of Myanmar 以外として扱う。\n"
-        "- Min Aung Hlaing / ミンアウンフライン / ミン・アウン・フライン / ミン・アウン・ライン / ミンアウンライン / မင်းအောင်လှိုင် は、見出し・本文要約・全文翻訳とも必ず「軍事政権トップ・ミンアウンフライン」と表記する。\n"
-        "- 見出しで「総司令官、」「国軍トップ、」「国軍指導者、」のように肩書きだけで主語を省略しない。該当人物が Min Aung Hlaing の場合は必ず「軍事政権トップ・ミンアウンフライン、...」で始める。\n"
-        "- 「ミンアウンフライン大統領」「ミンアウンフライン総司令官」「国軍トップ・ミンアウンフライン」「国軍指導者ミンアウンフライン」などは使わない。\n"
-        "- DKBA は全メディア共通で「親国軍勢力DKBA」と表記し、「国軍傘下DKBA」は使わない。\n"
+        "このメディアでは、regionsシートの通常列（C:本文訳、D:見出し訳）を使用する。\n"
     )
 
 def _normalize_dkba_terms(text: str) -> str:
@@ -4240,83 +4232,16 @@ def _normalize_dkba_terms(text: str) -> str:
         return text
     s = str(text)
     placeholder = "__TERM_PLACEHOLDER_D__"
-
     s = re.sub(r"親国軍勢力\s*DKBA", placeholder, s, flags=re.IGNORECASE)
-
-    s = re.sub(
-        r"国軍傘下の民主カレン仏教徒軍[（(]\s*D\.?\s*K\.?\s*B\.?\s*A\.?\s*[）)]",
-        placeholder,
-        s,
-        flags=re.IGNORECASE,
-    )
-    s = re.sub(
-        r"民主カレン仏教徒軍[（(]\s*D\.?\s*K\.?\s*B\.?\s*A\.?\s*[）)]",
-        placeholder,
-        s,
-        flags=re.IGNORECASE,
-    )
-    s = re.sub(
-        r"国軍傘下(?:の)?\s*D\.?\s*K\.?\s*B\.?\s*A\.?軍?",
-        placeholder,
-        s,
-        flags=re.IGNORECASE,
-    )
-    s = re.sub(
-        r"国軍系(?:勢力)?\s*D\.?\s*K\.?\s*B\.?\s*A\.?",
-        placeholder,
-        s,
-        flags=re.IGNORECASE,
-    )
-
-    # 単独 DKBA / D.K.B.A も、今回方針では「親国軍勢力DKBA」へ統一する。
+    s = re.sub(r"国軍傘下の民主カレン仏教徒軍[（(]\s*D\.?\s*K\.?\s*B\.?\s*A\.?\s*[）)]", placeholder, s, flags=re.IGNORECASE)
+    s = re.sub(r"民主カレン仏教徒軍[（(]\s*D\.?\s*K\.?\s*B\.?\s*A\.?\s*[）)]", placeholder, s, flags=re.IGNORECASE)
+    s = re.sub(r"国軍傘下(?:の)?\s*D\.?\s*K\.?\s*B\.?\s*A\.?軍?", placeholder, s, flags=re.IGNORECASE)
+    s = re.sub(r"国軍系(?:勢力)?\s*D\.?\s*K\.?\s*B\.?\s*A\.?", placeholder, s, flags=re.IGNORECASE)
     s = re.sub(r"D\.?\s*K\.?\s*B\.?\s*A\.?", placeholder, s, flags=re.IGNORECASE)
-
-    # ビルマ語名が出力に漏れた場合の保険。
     s = re.sub(r"ဒီမိုကရေစီ\s*အကျိုးပြု\s*ကရင်တပ်မတော်", placeholder, s)
     s = re.sub(r"ဒီမိုကရက်တစ်ကရင်အကျိုးပြုတပ်မတော်", placeholder, s)
     s = re.sub(r"ဒီမိုကရေစီ\s*ကရင်\s*တပ်မတော်", placeholder, s)
-
     return s.replace(placeholder, "親国軍勢力DKBA")
-
-def _normalize_military_regime_for_official_source(text: str) -> str:
-    if text is None:
-        return text
-    return (
-        str(text)
-        .replace("軍事政権下", "政府の下")
-        .replace("軍事政権側", "政府側")
-        .replace("軍事政権当局", "政府当局")
-        .replace("軍事政権トップ", "政府トップ")
-        .replace("軍事政権指導者", "政府指導者")
-        .replace("軍事政権", "政府")
-    )
-
-def _normalize_min_aung_hlaing_term(text: str, official_style: bool) -> str:
-    if text is None:
-        return text
-    s = str(text)
-    if s.startswith("ERROR:"):
-        return s
-
-    placeholder = "__TERM_PLACEHOLDER_M__"
-    target = "ミンアウンフライン大統領" if official_style else "軍事政権トップ・ミンアウンフライン"
-
-    mah_name = r"(?:ミン[・･]?アウン[・･]?(?:フライン|ライン)|Min\s+Aung\s+Hlaing|မင်းအောင်လှိုင်)"
-    mah_title = r"(?:氏|大統領|国家大統領|暫定大統領|国軍大統領|上級大将|大将|総司令官|国軍司令官|国軍総司令官|元国軍司令官|元国軍総司令官|国家行政評議会議長|SAC議長)?"
-    leader_prefix = r"(?:(?:ミャンマー)?(?:軍事政権|国軍|軍事委員会|SAC)(?:の)?(?:トップ|指導者|最高指導者|リーダー)(?:である|としての|の|・)?\s*)"
-    title_before = r"(?:(?:元)?国軍(?:総)?司令官|国軍総司令官|総司令官|上級大将|大将|暫定大統領|国家大統領|大統領)\s*"
-
-    if official_style:
-        s = re.sub(leader_prefix + mah_name + mah_title, target, s, flags=re.IGNORECASE)
-        s = re.sub(title_before + mah_name + mah_title, target, s, flags=re.IGNORECASE)
-        s = re.sub(mah_name + mah_title, target, s, flags=re.IGNORECASE)
-        return s
-
-    s = re.sub(r"軍事政権トップ・" + mah_name + mah_title, placeholder, s, flags=re.IGNORECASE)
-    s = re.sub(leader_prefix + mah_name + mah_title, placeholder, s, flags=re.IGNORECASE)
-    s = re.sub(title_before + mah_name + mah_title, placeholder, s, flags=re.IGNORECASE)
-    s = re.sub(mah_name + mah_title, placeholder, s, flags=re.IGNORECASE)
-    return s.replace(placeholder, target)
 
 def normalize_output_terminology_by_source(text: str, source: str) -> str:
     if text is None:
@@ -4324,17 +4249,9 @@ def normalize_output_terminology_by_source(text: str, source: str) -> str:
     s = str(text)
     if s.startswith("ERROR:"):
         return s
-
-    s = _normalize_dkba_terms(s)
-
-    official_style = _is_official_style_source(source)
-    s = _normalize_min_aung_hlaing_term(s, official_style)
-
-    # 公式系3メディアでは、Min Aung Hlaing の表記補正を終えてから「軍事政権」を除去する。
-    if official_style:
-        s = _normalize_military_regime_for_official_source(s)
-
-    return s
+    # 3メディア固有の Min Aung Hlaing / 政府 表記は regions E/F 列に移管済み。
+    # ここでは全メディア共通で残すべき DKBA の表記ゆれだけ補正する。
+    return _normalize_dkba_terms(s)
 
 
 PROMPT_SELF_CHECK_RULE = (
@@ -4509,9 +4426,11 @@ def _apply_term_glossary_to_output(text: str, *, src: str, prefer: str) -> str:
 # =========================
 def _load_region_glossary_gsheet(sheet_key: str | None, worksheet_name: str = "regions"):
     """
-    Google シート A:D を列位置で読む（列名は見ない）
+    Google シート A:F を列位置で読む（列名は見ない）
       A: Myanmar / B: English / C: 本文訳 / D: 見出し訳
-    戻り値: {"mm","en","ja","ja_body","ja_headline"} の配列（ja は後方互換のフォールバック）
+      E: Popular Myanmar / News Eleven / GNLM 用本文訳
+      F: Popular Myanmar / News Eleven / GNLM 用見出し訳
+    戻り値: {"mm","en","ja","ja_body","ja_headline","ja_body_official","ja_headline_official"} の配列。
     """
     if not sheet_key:
         return []
@@ -4521,14 +4440,10 @@ def _load_region_glossary_gsheet(sheet_key: str | None, worksheet_name: str = "r
         from google.oauth2.service_account import Credentials
 
         scopes = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
-
-        # 1) ファイル優先（GOOGLE_SERVICE_ACCOUNT_FILE / GOOGLE_APPLICATION_CREDENTIALS）
-        file = (os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE")
-                or os.getenv("GOOGLE_APPLICATION_CREDENTIALS") or "").strip()
+        file = (os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE") or os.getenv("GOOGLE_APPLICATION_CREDENTIALS") or "").strip()
         if file:
             creds = Credentials.from_service_account_file(file, scopes=scopes)
         else:
-            # 2) 最後の手段として JSON 文字列
             creds_json = (os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON") or "").strip()
             if not creds_json:
                 print("[region-glossary] skip: no SA credential for region-glossary")
@@ -4538,36 +4453,38 @@ def _load_region_glossary_gsheet(sheet_key: str | None, worksheet_name: str = "r
 
         client = gspread.authorize(creds)
         ws = client.open_by_key(sheet_key).worksheet(worksheet_name)
-        values = ws.get("A:D") or []
+        values = ws.get("A:F") or []
         if len(values) <= 1:
-            print("[region-glossary] no data rows in A:D")
+            print("[region-glossary] no data rows in A:F")
             return []
-        rows_data = values[1:]  # 1行目はヘッダ相当としてスキップ
+        rows_data = values[1:]
         out = []
         for r in rows_data:
             mm = (r[0] if len(r) > 0 else "").strip()
             en = (r[1] if len(r) > 1 else "").strip()
             ja_body = (r[2] if len(r) > 2 else "").strip()
             ja_head = (r[3] if len(r) > 3 else "").strip()
-            if not (mm or en or ja_body or ja_head):
+            ja_body_official = (r[4] if len(r) > 4 else "").strip()
+            ja_head_official = (r[5] if len(r) > 5 else "").strip()
+            if not (mm or en or ja_body or ja_head or ja_body_official or ja_head_official):
                 continue
-            ja = ja_head or ja_body  # 既存呼び出しの後方互換
-            out.append(
-                {
-                    "mm": mm,
-                    "en": en,
-                    "ja": ja,
-                    "ja_body": ja_body,
-                    "ja_headline": ja_head,
-                }
-            )
-        print(f"[region-glossary] loaded {len(out)} entries from A:D of '{worksheet_name}'")
+            ja = ja_head or ja_body or ja_head_official or ja_body_official
+            out.append({
+                "mm": mm,
+                "en": en,
+                "ja": ja,
+                "ja_body": ja_body,
+                "ja_headline": ja_head,
+                "ja_body_official": ja_body_official,
+                "ja_headline_official": ja_head_official,
+            })
+        print(f"[region-glossary] loaded {len(out)} entries from A:F of '{worksheet_name}'")
         return out
     except Exception as e:
         print(f"[region-glossary] failed to load gsheet: {e}")
         return []
     
-# ===== Region Glossary helpers (タイトル=D列 / 本文=C列) =====
+# ===== Region Glossary helpers (通常: タイトル=D列 / 本文=C列、3メディア: タイトル=F列 / 本文=E列) =====
 _REGIONS_CACHE: list[dict] | None = None
 
 def _load_regions_cached() -> list[dict]:
@@ -4580,32 +4497,45 @@ def _load_regions_cached() -> list[dict]:
     return _REGIONS_CACHE or []
 
 def _select_region_entries_for_text(text: str, entries: list[dict]) -> list[dict]:
-    """本文/タイトル文字列に mm/en のどちらかが“出現した行だけ”を返す（NFCで近似一致）。"""
+    """本文/タイトル/生成済み日本語に mm/en/既存訳語のいずれかが出現した行だけを返す。"""
     import re, unicodedata
     if not (text and entries):
         return []
     t = unicodedata.normalize("NFC", text)
-    mm_block = r"\u1000-\u109F"  # Myanmar
+    mm_block = r"က-႟"
     picked, seen = [], set()
     for e in entries:
         mm = unicodedata.normalize("NFC", (e.get("mm") or ""))
         en = (e.get("en") or "")
+        ja_variants = [e.get("ja_body") or "", e.get("ja_headline") or "", e.get("ja_body_official") or "", e.get("ja_headline_official") or ""]
         hit = False
         if mm:
             pat_mm = re.compile(rf"(?<![{mm_block}]){re.escape(mm)}(?![{mm_block}])")
             if pat_mm.search(t):
                 hit = True
         if (not hit) and en:
-            pat_en = re.compile(rf"\b{re.escape(en)}\b", re.IGNORECASE)
+            pat_en = re.compile(rf"{re.escape(en)}", re.IGNORECASE)
             if pat_en.search(t):
                 hit = True
+        if not hit:
+            hit = any(v and v in t for v in ja_variants)
         if hit:
-            key = (mm, en)
+            key = (mm, en, *ja_variants)
             if key not in seen:
                 seen.add(key); picked.append(e)
     return picked
 
-def _build_region_glossary_prompt_for(entries: list[dict], *, use_headline_ja: bool) -> str:
+def _pick_region_ja(e: dict, *, use_headline_ja: bool, source: str = "") -> str:
+    official = _is_official_style_source(source)
+    if official:
+        if use_headline_ja:
+            return e.get("ja_headline_official") or e.get("ja_headline") or e.get("ja_body_official") or e.get("ja_body") or e.get("ja") or ""
+        return e.get("ja_body_official") or e.get("ja_body") or e.get("ja_headline_official") or e.get("ja_headline") or e.get("ja") or ""
+    if use_headline_ja:
+        return e.get("ja_headline") or e.get("ja") or e.get("ja_body") or ""
+    return e.get("ja_body") or e.get("ja") or e.get("ja_headline") or ""
+
+def _build_region_glossary_prompt_for(entries: list[dict], *, use_headline_ja: bool, source: str = "") -> str:
     """選ばれた entries から、翻訳プロンプトに埋め込む“用語固定”ルールを作る。"""
     if not entries:
         return ""
@@ -4613,16 +4543,47 @@ def _build_region_glossary_prompt_for(entries: list[dict], *, use_headline_ja: b
     for e in entries:
         mm = e.get("mm") or ""
         en = e.get("en") or ""
-        ja = (e.get("ja_headline") or e.get("ja")) if use_headline_ja else (e.get("ja_body") or e.get("ja"))
+        ja = _pick_region_ja(e, use_headline_ja=use_headline_ja, source=source)
         if not ja:
             continue
-        if mm and en:
-            lines.append(f"- 「{mm}」または「{en}」が出たら、必ず「{ja}」と訳す。")
-        elif mm:
-            lines.append(f"- 「{mm}」が出たら、必ず「{ja}」と訳す。")
-        elif en:
-            lines.append(f"- 「{en}」が出たら、必ず「{ja}」と訳す。")
+        triggers = []
+        if mm:
+            triggers.append(f"「{mm}」")
+        if en:
+            triggers.append(f"「{en}」")
+        if use_headline_ja:
+            for v in (e.get("ja_body") or "", e.get("ja_body_official") or ""):
+                if v and v != ja:
+                    triggers.append(f"本文訳「{v}」")
+        if triggers:
+            lines.append(f"- {'または'.join(triggers)}が出たら、必ず「{ja}」と訳す。")
     return ("【用語固定（必須）】\n" + "\n".join(lines) + "\n") if lines else ""
+
+def _apply_region_glossary_to_text(text: str, *, source: str = "", use_headline_ja: bool = False, source_texts: list[str] | None = None) -> str:
+    """生成後の保険。source_texts または text に出た regions 行だけを対象に、通常メディアは C/D、3メディアは E/F を優先して置換する。"""
+    if text is None:
+        return text
+    s = str(text)
+    if s.startswith("ERROR:"):
+        return s
+    probe_texts = source_texts if source_texts is not None else [s]
+    entries, seen = [], set()
+    for probe in probe_texts:
+        for e in _select_region_entries_for_text(probe or "", _load_regions_cached()):
+            key = (e.get("mm") or "", e.get("en") or "", e.get("ja_body") or "", e.get("ja_headline") or "", e.get("ja_body_official") or "", e.get("ja_headline_official") or "")
+            if key not in seen:
+                seen.add(key); entries.append(e)
+    for e in entries:
+        ja = _pick_region_ja(e, use_headline_ja=use_headline_ja, source=source)
+        if not ja:
+            continue
+        variants = [e.get("ja_body") or "", e.get("ja_headline") or "", e.get("ja_body_official") or "", e.get("ja_headline_official") or "", e.get("ja") or "", e.get("mm") or ""]
+        for v in sorted({v for v in variants if v and v != ja}, key=len, reverse=True):
+            s = s.replace(v, ja)
+        en = e.get("en") or ""
+        if en and en != ja:
+            s = re.sub(rf"{re.escape(en)}", ja, s, flags=re.IGNORECASE)
+    return s
 
 def build_prompt(item: dict, *, skip_filters: bool, body_max: int) -> str:
     header = "次の手順で記事を判定・処理してください。\n\n"
@@ -4640,11 +4601,13 @@ def build_prompt(item: dict, *, skip_filters: bool, body_max: int) -> str:
     body_src  = (item.get("body") or "")[:body_max]
     rg_title = _build_region_glossary_prompt_for(
         _select_region_entries_for_text(title_src, _load_regions_cached()),
-        use_headline_ja=True,   # タイトルは D 列（見出し訳）
+        use_headline_ja=True,   # タイトルは D/F 列（見出し訳）
+        source=item.get("source") or "",
     )
     rg_body = _build_region_glossary_prompt_for(
         _select_region_entries_for_text(body_src, _load_regions_cached()),
-        use_headline_ja=False,  # 本文は C 列（本文訳）
+        use_headline_ja=False,  # 本文は C/E 列（本文訳）
+        source=item.get("source") or "",
     )
     # terms シートのヒット語だけを固定する既存ルール（見出し=title_ja / 本文=body_ja）
     source_rules = _build_source_specific_translation_rules(item.get("source") or "")
@@ -4932,7 +4895,9 @@ def process_translation_batches(batch_size=TRANSLATION_BATCH_SIZE, wait_seconds=
 
                 lines_summary = build_summary_lines(output_text, lines)
                 summary_text = "\n".join(lines_summary).strip()
+                translated_title = _apply_region_glossary_to_text(translated_title, source=item.get("source") or "", use_headline_ja=True, source_texts=[item.get("title") or "", translated_title])
                 translated_title = normalize_output_terminology_by_source(translated_title, item.get("source") or "")
+                summary_text = _apply_region_glossary_to_text(summary_text, source=item.get("source") or "", use_headline_ja=False, source_texts=[item.get("title") or "", item.get("body") or "", summary_text])
                 summary_text = normalize_output_terminology_by_source(summary_text, item.get("source") or "")
                 summary_html  = summary_text.replace("\n", "<br>")
 
@@ -5260,6 +5225,18 @@ def translate_fulltexts_for_business(urls_in_order_or_items, url_to_source_title
             )
             for x in input_array
         )
+        region_rules_by_item = "\n".join(
+            (
+                f"【item_id={x.get('item_id','')} の本文用 用語固定ルール】\n"
+                + _build_region_glossary_prompt_for(
+                    _select_region_entries_for_text(x.get("body") or "", _load_regions_cached()),
+                    use_headline_ja=False,
+                    source=x.get("source") or "",
+                )
+            )
+            for x in input_array
+        )
+
         prompt_parts = (
             "次のニュース記事の【本文だけ】を**自然な日本語**に完全翻訳してください。\n"
             "・固有名詞は一般的な日本語表記に\n"
@@ -5272,7 +5249,7 @@ def translate_fulltexts_for_business(urls_in_order_or_items, url_to_source_title
             f"{COMMON_TRANSLATION_RULES}\n"
             f"{source_specific_rules}\n"
             f"{PROMPT_SELF_CHECK_RULE}\n"
-            f"{_build_region_glossary_prompt_for(_select_region_entries_for_text(' '.join([x.get('body','') for x in input_array]), _load_regions_cached()), use_headline_ja=False)}\n"
+            f"{region_rules_by_item}\n"
             "【本文以外は必ず除外（この関数専用）】\n"
             "以下は原文に含まれていても翻訳・出力しないこと（含めたら減点）。\n"
             "- 写真キャプション／クレジット（先頭が「写真:」「ဓာတ်ပုံ」「Photo」「(写真」「(Photo」「（写真」などの行）\n"
@@ -6384,8 +6361,8 @@ if __name__ == "__main__":
         meta = url_to_meta.get(u, {})
         source = meta.get("source", "") or ""
         translated_items.append({
-            "title_ja":      normalize_output_terminology_by_source(ft.get("title_ja", "") or "", source),
-            "body_ja":       normalize_output_terminology_by_source(ft.get("body_ja", "") or "", source),
+            "title_ja":      normalize_output_terminology_by_source(_apply_region_glossary_to_text(ft.get("title_ja", "") or "", source=source, use_headline_ja=True, source_texts=[ft.get("title", "") or "", ft.get("title_ja", "") or ""]), source),
+            "body_ja":       normalize_output_terminology_by_source(_apply_region_glossary_to_text(ft.get("body_ja", "") or "", source=source, use_headline_ja=False, source_texts=[ft.get("body", "") or "", ft.get("body_ja", "") or ""]), source),
             "source":        source,
             "date":          meta.get("date", "") or "",   # ← 追加
             "url":           u,                            # ← 追加（PDF末尾に追記）

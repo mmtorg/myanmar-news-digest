@@ -499,7 +499,8 @@ function buildFewShotHeadlineBPrimePrompt_(params) {
     params;
   const archiveSection = buildArchiveTeacherSection_();
   const effectiveHeadlineGlossaryRules =
-    bodyGlossaryRules || buildRegionRulesForHeadlineTexts_([summaryJa || ""]);
+    bodyGlossaryRules ||
+    buildRegionRulesForHeadlineTexts_([summaryJa || ""], sourceVal);
 
   return `【共通ルール（最優先）】
 ${COMMON_TRANSLATION_RULES}
@@ -536,7 +537,10 @@ function buildMultiTaskPromptForRow_(params) {
   const archiveTeacherSection = buildArchiveTeacherSection_();
   const effectiveHeadlineGlossaryRules =
     headlineGlossaryRules ||
-    buildRegionRulesForHeadlineTexts_([titleRaw || "", bodyRaw || ""]);
+    buildRegionRulesForHeadlineTexts_(
+      [titleRaw || "", bodyRaw || ""],
+      sourceVal,
+    );
 
   return `
 【共通ルール（Task1/2/2'/3すべてに適用・最優先）】
@@ -683,11 +687,10 @@ function buildHeadlineOnlyPromptForRow_(params) {
   const archiveTeacherSection = buildArchiveTeacherSection_();
   const effectiveHeadlineGlossaryRules =
     bodyGlossaryRules ||
-    buildRegionRulesForHeadlineTexts_([
-      titleRaw || "",
-      bodyRaw || "",
-      summaryJa || "",
-    ]);
+    buildRegionRulesForHeadlineTexts_(
+      [titleRaw || "", bodyRaw || "", summaryJa || ""],
+      sourceVal,
+    );
 
   return `
 【共通ルール（見出し生成に適用・最優先）】
@@ -825,13 +828,12 @@ function escapeRegExp_(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-// ==== 用語集（州・管区訳）: A:mm / B:en / C:本文訳 / D:見出し訳 ====
+// ==== 用語集（州・管区訳）: A:mm / B:en / C:本文訳 / D:見出し訳 / E:3メディア本文訳 / F:3メディア見出し訳 ====
 let REGION_GLOSSARY_CACHE = null;
 
 function loadRegionGlossary_() {
   if (REGION_GLOSSARY_CACHE) return REGION_GLOSSARY_CACHE;
 
-  // ★必要に応じて書き換え：同じスプレッドシート内の "regions" シートを想定
   const ss = SpreadsheetApp.getActive();
   const sheetName = "regions"; // Python 側の MNA_REGION_SHEET_NAME と合わせる
   const sh = ss.getSheetByName(sheetName);
@@ -847,32 +849,38 @@ function loadRegionGlossary_() {
     return REGION_GLOSSARY_CACHE;
   }
 
-  const values = sh.getRange(2, 1, lastRow - 1, 4).getValues(); // A:D
+  // A:D 既存列に加え、E/F を Popular Myanmar / News Eleven / GNLM 用として読む。
+  const values = sh.getRange(2, 1, lastRow - 1, 6).getValues(); // A:F
   const out = [];
   values.forEach(function (r) {
     const mm = (r[0] || "").toString().trim(); // A
     const en = (r[1] || "").toString().trim(); // B
     const jaBody = (r[2] || "").toString().trim(); // C
     const jaHead = (r[3] || "").toString().trim(); // D
-    if (!mm && !en && !jaBody && !jaHead) return;
-    const ja = jaHead || jaBody; // 後方互換
+    const jaBodyOfficial = (r[4] || "").toString().trim(); // E
+    const jaHeadOfficial = (r[5] || "").toString().trim(); // F
+    if (!mm && !en && !jaBody && !jaHead && !jaBodyOfficial && !jaHeadOfficial)
+      return;
+    const ja = jaHead || jaBody || jaHeadOfficial || jaBodyOfficial; // 後方互換
     out.push({
       mm: mm,
       en: en,
       ja: ja,
       ja_body: jaBody,
       ja_headline: jaHead,
+      ja_body_official: jaBodyOfficial,
+      ja_headline_official: jaHeadOfficial,
     });
   });
 
-  Logger.log("[region-glossary] loaded " + out.length + " entries");
+  Logger.log("[region-glossary] loaded " + out.length + " entries from A:F");
   REGION_GLOSSARY_CACHE = out;
   return REGION_GLOSSARY_CACHE;
 }
 
 function selectRegionEntriesForText_(text, entries) {
   if (!text || !entries || !entries.length) return [];
-  const t = text.toString(); // GAS の文字列
+  const t = text.toString();
 
   const picked = [];
   const seen = {};
@@ -882,34 +890,26 @@ function selectRegionEntriesForText_(text, entries) {
     const en = e.en || "";
     const jaBody = e.ja_body || "";
     const jaHead = e.ja_headline || "";
+    const jaBodyOfficial = e.ja_body_official || "";
+    const jaHeadOfficial = e.ja_headline_official || "";
     let hit = false;
 
-    // Myanmar 語は単純な部分文字列マッチ（Python 側とほぼ同等）
-    if (mm) {
-      if (t.indexOf(mm) !== -1) {
-        hit = true;
-      }
-    }
+    if (mm && t.indexOf(mm) !== -1) hit = true;
 
-    // 英語は \bword\b の単語境界で大文字小文字無視
     if (!hit && en) {
       const re = new RegExp("\\b" + escapeRegExp_(en) + "\\b", "i");
-      if (re.test(t)) {
-        hit = true;
-      }
+      if (re.test(t)) hit = true;
     }
 
-    // 生成済み要約を根拠に見出しを作る場合、要約内にはC列の本文訳が入ることがある。
-    // 日本語の本文訳・見出し訳でも該当行を拾えるようにする。
-    if (!hit && jaBody && t.indexOf(jaBody) !== -1) {
-      hit = true;
-    }
-    if (!hit && jaHead && t.indexOf(jaHead) !== -1) {
-      hit = true;
-    }
+    // 原文だけでなく、生成済み要約・見出しに入った日本語訳からも該当行を拾う。
+    [jaBody, jaHead, jaBodyOfficial, jaHeadOfficial].forEach(function (v) {
+      if (!hit && v && t.indexOf(v) !== -1) hit = true;
+    });
 
     if (hit) {
-      const key = mm + "|" + en + "|" + jaBody + "|" + jaHead;
+      const key = [mm, en, jaBody, jaHead, jaBodyOfficial, jaHeadOfficial].join(
+        "|",
+      );
       if (!seen[key]) {
         seen[key] = true;
         picked.push(e);
@@ -920,34 +920,62 @@ function selectRegionEntriesForText_(text, entries) {
   return picked;
 }
 
-function buildRegionGlossaryPromptFor_(entries, useHeadlineJa) {
+function pickRegionJa_(e, useHeadlineJa, sourceRaw) {
+  const official = isOfficialStyleSource_(sourceRaw || "");
+  if (official) {
+    if (useHeadlineJa) {
+      return (
+        e.ja_headline_official ||
+        e.ja_headline ||
+        e.ja_body_official ||
+        e.ja_body ||
+        e.ja ||
+        ""
+      );
+    }
+    return (
+      e.ja_body_official ||
+      e.ja_body ||
+      e.ja_headline_official ||
+      e.ja_headline ||
+      e.ja ||
+      ""
+    );
+  }
+  if (useHeadlineJa) return e.ja_headline || e.ja || e.ja_body || "";
+  return e.ja_body || e.ja || e.ja_headline || "";
+}
+
+function buildRegionGlossaryPromptFor_(entries, useHeadlineJa, sourceRaw) {
   if (!entries || !entries.length) return "";
 
   const lines = [];
   entries.forEach(function (e) {
     const mm = e.mm || "";
     const en = e.en || "";
-    const jaBody = e.ja_body || "";
-    const jaHead = e.ja_headline || e.ja || jaBody;
-    const ja = useHeadlineJa ? jaHead : jaBody || e.ja || jaHead;
+    const ja = pickRegionJa_(e, useHeadlineJa, sourceRaw);
     if (!ja) return;
 
     const triggers = [];
     if (mm) triggers.push("「" + mm + "」");
     if (en) triggers.push("「" + en + "」");
 
-    // 見出し生成時は、生成済み本文要約に入っているC列訳もD列訳へ寄せる。
-    if (useHeadlineJa && jaBody && jaBody !== ja) {
-      triggers.push("本文訳「" + jaBody + "」");
-    }
+    // 見出し生成時は、本文訳・3メディア本文訳が入力要約に入っていても見出し訳へ寄せる。
+    [e.ja_body, e.ja_body_official].forEach(function (v) {
+      const vv = String(v || "").trim();
+      if (
+        useHeadlineJa &&
+        vv &&
+        vv !== ja &&
+        triggers.indexOf("本文訳「" + vv + "」") === -1
+      ) {
+        triggers.push("本文訳「" + vv + "」");
+      }
+    });
 
     if (triggers.length) {
       lines.push(
-        "- " +
-          triggers.join("または") +
-          "が出たら、見出しでは必ず「" +
-          ja +
-          "」と訳す。",
+        "- " + triggers.join("または") + "が出たら、必ず「" + ja + "」と訳す。",
       );
     }
   });
@@ -956,22 +984,22 @@ function buildRegionGlossaryPromptFor_(entries, useHeadlineJa) {
   return "【用語固定（必須）】\n" + lines.join("\n") + "\n";
 }
 
-// タイトル用（D列=見出し訳）
-function buildRegionRulesForTitle_(title) {
+// タイトル用（D列、3メディアはF列優先）
+function buildRegionRulesForTitle_(title, sourceRaw) {
   const entries = selectRegionEntriesForText_(
     title || "",
     loadRegionGlossary_(),
   );
-  return buildRegionGlossaryPromptFor_(entries, true);
+  return buildRegionGlossaryPromptFor_(entries, true, sourceRaw);
 }
 
-// 本文用（C列=本文訳）
-function buildRegionRulesForBody_(body) {
+// 本文用（C列、3メディアはE列優先）
+function buildRegionRulesForBody_(body, sourceRaw) {
   const entries = selectRegionEntriesForText_(
     body || "",
     loadRegionGlossary_(),
   );
-  return buildRegionGlossaryPromptFor_(entries, false);
+  return buildRegionGlossaryPromptFor_(entries, false, sourceRaw);
 }
 
 function selectRegionEntriesForTexts_(texts, entries) {
@@ -983,14 +1011,14 @@ function selectRegionEntriesForTexts_(texts, entries) {
       text || "",
       entries || loadRegionGlossary_(),
     ).forEach(function (e) {
-      const key =
-        (e.mm || "") +
-        "|" +
-        (e.en || "") +
-        "|" +
-        (e.ja_body || "") +
-        "|" +
-        (e.ja_headline || "");
+      const key = [
+        e.mm || "",
+        e.en || "",
+        e.ja_body || "",
+        e.ja_headline || "",
+        e.ja_body_official || "",
+        e.ja_headline_official || "",
+      ].join("|");
       if (!seen[key]) {
         seen[key] = true;
         picked.push(e);
@@ -1001,42 +1029,53 @@ function selectRegionEntriesForTexts_(texts, entries) {
   return picked;
 }
 
-// 複数テキストに出た地域名を、見出し用のD列訳で固定する。
-function buildRegionRulesForHeadlineTexts_(texts) {
+// 複数テキストに出た地域名を、見出し用訳（D列、3メディアはF列優先）で固定する。
+function buildRegionRulesForHeadlineTexts_(texts, sourceRaw) {
   const entries = selectRegionEntriesForTexts_(
     texts || [],
     loadRegionGlossary_(),
   );
-  return buildRegionGlossaryPromptFor_(entries, true);
+  return buildRegionGlossaryPromptFor_(entries, true, sourceRaw);
 }
 
-// 複数テキストに出た地域名を、本文・要約用のC列訳で固定する。
-function buildRegionRulesForBodyTexts_(texts) {
+// 複数テキストに出た地域名を、本文・要約用訳（C列、3メディアはE列優先）で固定する。
+function buildRegionRulesForBodyTexts_(texts, sourceRaw) {
   const entries = selectRegionEntriesForTexts_(
     texts || [],
     loadRegionGlossary_(),
   );
-  return buildRegionGlossaryPromptFor_(entries, false);
+  return buildRegionGlossaryPromptFor_(entries, false, sourceRaw);
 }
 
-// モデル出力後の保険。見出しではC列本文訳や原語が残った場合もD列訳へ寄せる。
-function normalizeRegionTermsForHeadline_(text, sourceTexts) {
+function normalizeRegionTermsForText_(
+  text,
+  sourceTexts,
+  useHeadlineJa,
+  sourceRaw,
+) {
   if (text == null) return text;
   let s = String(text);
   if (s.indexOf("ERROR:") === 0) return s;
 
   const entries = selectRegionEntriesForTexts_(
-    sourceTexts || [],
+    sourceTexts || [s],
     loadRegionGlossary_(),
   );
   entries.forEach(function (e) {
-    const jaHead = e.ja_headline || e.ja || e.ja_body || "";
-    if (!jaHead) return;
+    const ja = pickRegionJa_(e, useHeadlineJa, sourceRaw);
+    if (!ja) return;
 
     const variants = [];
-    [e.ja_body, e.ja, e.mm].forEach(function (v) {
+    [
+      e.ja_body,
+      e.ja_headline,
+      e.ja_body_official,
+      e.ja_headline_official,
+      e.ja,
+      e.mm,
+    ].forEach(function (v) {
       const vv = String(v || "").trim();
-      if (vv && vv !== jaHead && variants.indexOf(vv) === -1) variants.push(vv);
+      if (vv && vv !== ja && variants.indexOf(vv) === -1) variants.push(vv);
     });
 
     variants
@@ -1044,16 +1083,26 @@ function normalizeRegionTermsForHeadline_(text, sourceTexts) {
         return b.length - a.length;
       })
       .forEach(function (v) {
-        s = s.split(v).join(jaHead);
+        s = s.split(v).join(ja);
       });
 
-    if (e.en && e.en !== jaHead) {
+    if (e.en && e.en !== ja) {
       const re = new RegExp("\\b" + escapeRegExp_(e.en) + "\\b", "gi");
-      s = s.replace(re, jaHead);
+      s = s.replace(re, ja);
     }
   });
 
   return s;
+}
+
+// モデル出力後の保険。見出しでは本文訳や原語が残った場合も、見出し用訳へ寄せる。
+function normalizeRegionTermsForHeadline_(text, sourceTexts, sourceRaw) {
+  return normalizeRegionTermsForText_(text, sourceTexts, true, sourceRaw);
+}
+
+// モデル出力後の保険。本文・要約では見出し訳や原語が残った場合も、本文用訳へ寄せる。
+function normalizeRegionTermsForBody_(text, sourceTexts, sourceRaw) {
+  return normalizeRegionTermsForText_(text, sourceTexts, false, sourceRaw);
 }
 
 /************************************************************
@@ -1124,24 +1173,24 @@ function normalizeSourceName_(s) {
   return out.toLowerCase();
 }
 
-// Global New Light Of Myanmar（国営紙）は、M列（タイトル原文）が空の行を
+// Global New Light Of Myanmar（国営紙）は、N列（本文原文）が空の行を
 // Gemini要約・見出し生成の処理対象から外す。
 const GNLM_STATE_SOURCE_NAME = "Global New Light Of Myanmar (国営紙)";
-const GNLM_EMPTY_TITLE_SKIP_STATUS = "SKIP_GNLM_EMPTY_M";
+const GNLM_EMPTY_BODY_SKIP_STATUS = "SKIP_GNLM_EMPTY_N";
 
-function shouldSkipGeminiForGnlmEmptyTitle_(sourceRaw, titleRaw) {
+function shouldSkipGeminiForGnlmEmptyBody_(sourceRaw, bodyRaw) {
   return (
     normalizeSourceName_(sourceRaw || "") ===
       normalizeSourceName_(GNLM_STATE_SOURCE_NAME) &&
-    String(titleRaw || "").trim() === ""
+    String(bodyRaw || "").trim() === ""
   );
 }
 
 // ============================================================
-// メディア別の表記ルール
-// - 国営紙・国軍系メディアでは「大統領」「政府」表記を優先
-// - それ以外では「軍事政権トップ・ミンアウンフライン」表記を優先
-// - DKBA は全メディアで「親国軍勢力DKBA」に統一
+// メディア別の訳語選択
+// - 具体的な訳語は regions シート E/F 列へ移管する。
+// - ここでは対象3メディア判定と、プロンプト上の優先順位説明だけを残す。
+// - DKBA の全メディア共通補正は COMMON_TRANSLATION_RULES と生成後補正に残す。
 // ============================================================
 const OFFICIAL_STYLE_SOURCE_NAMES = {
   "popular myanmar": true,
@@ -1164,24 +1213,16 @@ function buildSourceSpecificTranslationRules_(sourceRaw) {
   const sourceLabel = String(sourceRaw || "").trim() || "不明";
 
   if (isOfficialStyleSource_(sourceRaw)) {
-    return `【メディア別表記ルール（最優先）】
+    return `【メディア別用語ルール】
 対象メディア: ${sourceLabel}
-このメディアが Popular Myanmar、News Eleven、Global New Light Of Myanmar のいずれかに該当する場合、以下を必ず守る。
-- Min Aung Hlaing / ミンアウンフライン / ミン・アウン・フライン / ミン・アウン・ライン / ミンアウンライン / မင်းအောင်လှိုင် は、見出し・本文要約とも必ず「ミンアウンフライン大統領」と表記する。
-- 見出しで「総司令官、」「上級大将、」「国軍トップ、」のように肩書きだけで主語を省略しない。該当人物が Min Aung Hlaing の場合は必ず「ミンアウンフライン大統領、...」で始める。
-- 「軍事政権」という表現は使用禁止。文脈上、組織・政権主体を示す必要がある場合は「政府」と表記する。
-- 「軍事政権トップ・ミンアウンフライン」「国軍トップ・ミンアウンフライン」「ミンアウンフライン総司令官」などは使わない。
-- DKBA は全メディア共通で「親国軍勢力DKBA」と表記し、「国軍傘下DKBA」は使わない。
+このメディアでは、regionsシートの3メディア用列（E:本文訳、F:見出し訳）に指定がある場合、通常列（C:本文訳、D:見出し訳）より優先する。
+具体的な訳語は、このプロンプト内の「用語固定（必須）」に列挙された指定に従う。
 `;
   }
 
-  return `【メディア別表記ルール（最優先）】
+  return `【メディア別用語ルール】
 対象メディア: ${sourceLabel}
-このメディアは Popular Myanmar、News Eleven、Global New Light Of Myanmar 以外として扱う。
-- Min Aung Hlaing / ミンアウンフライン / ミン・アウン・フライン / ミン・アウン・ライン / ミンアウンライン / မင်းအောင်လှိုင် は、見出し・本文要約とも必ず「軍事政権トップ・ミンアウンフライン」と表記する。
-- 見出しで「総司令官、」「国軍トップ、」「国軍指導者、」のように肩書きだけで主語を省略しない。該当人物が Min Aung Hlaing の場合は必ず「軍事政権トップ・ミンアウンフライン、...」で始める。
-- 「ミンアウンフライン大統領」「ミンアウンフライン総司令官」「国軍トップ・ミンアウンフライン」などは使わない。
-- DKBA は全メディア共通で「親国軍勢力DKBA」と表記し、「国軍傘下DKBA」は使わない。
+このメディアでは、regionsシートの通常列（C:本文訳、D:見出し訳）を使用する。
 `;
 }
 
@@ -1189,13 +1230,9 @@ function normalizeDkbaTerms_(text) {
   if (text == null) return text;
   let s = String(text);
 
-  // 置換後の「親国軍勢力DKBA」が再度 DKBA として拾われないよう、
-  // DKBA を含まないプレースホルダへ一時退避する。
   const placeholder = "__TERM_PLACEHOLDER_D__";
 
   s = s.replace(/親国軍勢力\s*DKBA/g, placeholder);
-
-  // 旧表記・表記ゆれをすべて新表記へ寄せる。
   s = s.replace(
     /国軍傘下の民主カレン仏教徒軍[（(]\s*D\.?\s*K\.?\s*B\.?\s*A\.?\s*[）)]/gi,
     placeholder,
@@ -1209,91 +1246,11 @@ function normalizeDkbaTerms_(text) {
     placeholder,
   );
   s = s.replace(/国軍系(?:勢力)?\s*D\.?\s*K\.?\s*B\.?\s*A\.?/gi, placeholder);
-
-  // 単独の DKBA / D.K.B.A も、今回の方針では「親国軍勢力DKBA」へ統一する。
   s = s.replace(/D\.?\s*K\.?\s*B\.?\s*A\.?/gi, placeholder);
-
-  // ビルマ語名が出力に漏れた場合の保険。
   s = s.replace(/ဒီမိုကရေစီ\s*အကျိုးပြု\s*ကရင်တပ်မတော်/g, placeholder);
   s = s.replace(/ဒီမိုကရက်တစ်ကရင်အကျိုးပြုတပ်မတော်/g, placeholder);
 
   return s.replace(new RegExp(placeholder, "g"), "親国軍勢力DKBA");
-}
-
-function normalizeMilitaryRegimeForOfficialSource_(text) {
-  if (text == null) return text;
-
-  // 公式系3メディアでは「軍事政権」を禁止し、必要に応じて「政府」へ寄せる。
-  // 先に複合語を処理し、最後に単独の「軍事政権」を処理する。
-  return String(text)
-    .replace(/軍事政権下/g, "政府の下")
-    .replace(/軍事政権側/g, "政府側")
-    .replace(/軍事政権当局/g, "政府当局")
-    .replace(/軍事政権トップ/g, "政府トップ")
-    .replace(/軍事政権指導者/g, "政府指導者")
-    .replace(/軍事政権/g, "政府");
-}
-
-function normalizeMinAungHlaingTerm_(text, officialStyle) {
-  if (text == null) return text;
-  let s = String(text);
-  if (s.indexOf("ERROR:") === 0) return s;
-
-  const placeholder = "__TERM_PLACEHOLDER_M__";
-  const target = officialStyle
-    ? "ミンアウンフライン大統領"
-    : "軍事政権トップ・ミンアウンフライン";
-
-  // アーカイブで確認された表記ゆれ：
-  // ミン・アウン・フライン / ミンアウンフライン / ミン・アウン・ライン / ミンアウンライン
-  // 英語・ビルマ語が出力に漏れた場合も吸収する。
-  const mahName =
-    "(?:ミン[・･]?アウン[・･]?(?:フライン|ライン)|Min\\s+Aung\\s+Hlaing|မင်းအောင်လှိုင်)";
-
-  const mahTitle =
-    "(?:氏|大統領|国家大統領|暫定大統領|国軍大統領|上級大将|大将|総司令官|国軍司令官|国軍総司令官|元国軍司令官|元国軍総司令官|国家行政評議会議長|SAC議長)?";
-
-  // 例：
-  // 軍事政権トップのミン・アウン・フライン
-  // 軍事政権のトップであるミンアウンフライン
-  // 軍事政権指導者ミン・アウン・フライン
-  // 国軍指導者ミン・アウン・フライン
-  const leaderPrefix =
-    "(?:(?:ミャンマー)?(?:軍事政権|国軍|軍事委員会|SAC)(?:の)?(?:トップ|指導者|最高指導者|リーダー)(?:である|としての|の|・)?\\s*)";
-
-  // 例：
-  // 元国軍司令官ミン・アウン・ライン
-  // 国軍総司令官ミン・アウン・フライン
-  // 上級大将ミン・アウン・フライン
-  const titleBefore =
-    "(?:(?:元)?国軍(?:総)?司令官|国軍総司令官|総司令官|上級大将|大将|暫定大統領|国家大統領|大統領)\\s*";
-
-  if (officialStyle) {
-    s = s.replace(new RegExp(leaderPrefix + mahName + mahTitle, "gi"), target);
-    s = s.replace(new RegExp(titleBefore + mahName + mahTitle, "gi"), target);
-    s = s.replace(new RegExp(mahName + mahTitle, "gi"), target);
-    return s;
-  }
-
-  // 公式系以外では「軍事政権トップ・ミンアウンフライン」を正規表現で再度拾って
-  // 二重化しないよう、先にプレースホルダへ退避する。
-  s = s.replace(
-    new RegExp("軍事政権トップ・" + mahName + mahTitle, "gi"),
-    placeholder,
-  );
-
-  s = s.replace(
-    new RegExp(leaderPrefix + mahName + mahTitle, "gi"),
-    placeholder,
-  );
-  s = s.replace(
-    new RegExp(titleBefore + mahName + mahTitle, "gi"),
-    placeholder,
-  );
-  s = s.replace(new RegExp(mahName + mahTitle, "gi"), placeholder);
-
-  s = s.replace(new RegExp(placeholder, "g"), target);
-  return s;
 }
 
 function normalizeOutputTerminologyBySource_(text, sourceRaw) {
@@ -1301,18 +1258,9 @@ function normalizeOutputTerminologyBySource_(text, sourceRaw) {
   let s = String(text);
   if (s.indexOf("ERROR:") === 0) return s;
 
-  // 1. DKBA は全メディア共通で先に統一
+  // 3メディア固有の Min Aung Hlaing / 政府 表記は regions E/F 列に移管済み。
+  // ここでは全メディア共通で残すべき DKBA の表記ゆれだけ補正する。
   s = normalizeDkbaTerms_(s);
-
-  // 2. メディア別にミンアウンフライン表記を統一
-  const officialStyle = isOfficialStyleSource_(sourceRaw);
-  s = normalizeMinAungHlaingTerm_(s, officialStyle);
-
-  // 3. 公式系3メディアでは「軍事政権」を最後に除去
-  //    Min Aung Hlaing の「軍事政権トップ...」表現を先に処理するため、この順番が重要。
-  if (officialStyle) {
-    s = normalizeMilitaryRegimeForOfficialSource_(s);
-  }
 
   return s;
 }
@@ -2963,9 +2911,9 @@ function processRow_(sheet, row, prevStatus) {
   const bodyRaw = sheet.getRange(row, colN).getValue();
   const urlVal = sheet.getRange(row, colJ).getValue();
 
-  if (shouldSkipGeminiForGnlmEmptyTitle_(sourceVal, titleRaw)) {
-    sheet.getRange(row, STATUS_COL).setValue(GNLM_EMPTY_TITLE_SKIP_STATUS);
-    Logger.log("[processRow_] skip row %s (GNLM with empty M/title)", row);
+  if (shouldSkipGeminiForGnlmEmptyBody_(sourceVal, bodyRaw)) {
+    sheet.getRange(row, STATUS_COL).setValue(GNLM_EMPTY_BODY_SKIP_STATUS);
+    Logger.log("[processRow_] skip row %s (GNLM with empty N/body)", row);
     return;
   }
 
@@ -2975,13 +2923,16 @@ function processRow_(sheet, row, prevStatus) {
   }
 
   // タイトル翻訳用（D列）は従来どおり D列（見出し訳）を採用。
-  const titleGlossaryRules = buildRegionRulesForTitle_(titleRaw || "");
+  const titleGlossaryRules = buildRegionRulesForTitle_(
+    titleRaw || "",
+    sourceVal,
+  );
 
   // 本文要約用（I列）は C列（本文訳）を採用。
-  const bodyGlossaryRules = buildRegionRulesForBodyTexts_([
-    titleRaw || "",
-    bodyRaw || "",
-  ]);
+  const bodyGlossaryRules = buildRegionRulesForBodyTexts_(
+    [titleRaw || "", bodyRaw || ""],
+    sourceVal,
+  );
 
   const sheetName = sheet.getName();
 
@@ -3086,7 +3037,12 @@ function processRow_(sheet, row, prevStatus) {
         summaryJa = removeYenForNonKyat_(summaryJa);
         // ★ 次に「チャット」の（約◯◯円）だけを再計算で矯正
         summaryJa = fixKyatYenInText_(summaryJa);
-        // ★ メディア別表記・DKBA表記を機械的にも補正
+        // ★ regions本文訳（C/E列）とDKBA表記を機械的にも補正
+        summaryJa = normalizeRegionTermsForBody_(
+          summaryJa,
+          [titleRaw || "", bodyRaw || "", summaryJa || ""],
+          sourceVal,
+        );
         summaryJa = normalizeOutputTerminologyBySource_(summaryJa, sourceVal);
 
         // ===== 400字超のときだけ、圧縮の再生成を「1回だけ」挟む（切り詰めはしない） =====
@@ -3112,7 +3068,12 @@ function processRow_(sheet, row, prevStatus) {
             summaryJa = normalizeRupeeCroreInText_(summaryJa);
             summaryJa = removeYenForNonKyat_(summaryJa);
             summaryJa = fixKyatYenInText_(summaryJa);
-            // ★ 圧縮後もメディア別表記・DKBA表記を補正
+            // ★ 圧縮後も regions本文訳（C/E列）とDKBA表記を補正
+            summaryJa = normalizeRegionTermsForBody_(
+              summaryJa,
+              [titleRaw || "", bodyRaw || "", summaryJa || ""],
+              sourceVal,
+            );
             summaryJa = normalizeOutputTerminologyBySource_(
               summaryJa,
               sourceVal,
@@ -3144,11 +3105,10 @@ function processRow_(sheet, row, prevStatus) {
 
     // 要約が正常に作れた場合だけ、見出しAPIコールを別キーで実行する
     if (!(typeof summaryJa === "string" && summaryJa.indexOf("ERROR:") === 0)) {
-      const headlineGlossaryRules = buildRegionRulesForHeadlineTexts_([
-        titleRaw || "",
-        bodyRaw || "",
-        summaryJa || "",
-      ]);
+      const headlineGlossaryRules = buildRegionRulesForHeadlineTexts_(
+        [titleRaw || "", bodyRaw || "", summaryJa || ""],
+        sourceVal,
+      );
 
       const headlinePrompt = buildHeadlineOnlyPromptForRow_({
         titleRaw: titleRaw || "",
@@ -3229,6 +3189,7 @@ function processRow_(sheet, row, prevStatus) {
             normalizeRegionTermsForHeadline_(
               String(obj.headlineA || "").trim(),
               headlineRegionSources,
+              sourceVal,
             ),
             sourceVal,
           );
@@ -3236,6 +3197,7 @@ function processRow_(sheet, row, prevStatus) {
             normalizeRegionTermsForHeadline_(
               String(obj.headlineBPrime || obj.headlineB || "").trim(),
               headlineRegionSources,
+              sourceVal,
             ),
             sourceVal,
           );
@@ -3243,6 +3205,7 @@ function processRow_(sheet, row, prevStatus) {
             normalizeRegionTermsForHeadline_(
               String(obj.headlineBPrimeFewShot || "").trim(),
               headlineRegionSources,
+              sourceVal,
             ),
             sourceVal,
           );
@@ -3274,17 +3237,26 @@ function processRow_(sheet, row, prevStatus) {
     summaryJa || "",
   ];
   headlineA = normalizeOutputTerminologyBySource_(
-    normalizeRegionTermsForHeadline_(headlineA, finalHeadlineRegionSources),
+    normalizeRegionTermsForHeadline_(
+      headlineA,
+      finalHeadlineRegionSources,
+      sourceVal,
+    ),
     sourceVal,
   );
   headlineB2 = normalizeOutputTerminologyBySource_(
-    normalizeRegionTermsForHeadline_(headlineB2, finalHeadlineRegionSources),
+    normalizeRegionTermsForHeadline_(
+      headlineB2,
+      finalHeadlineRegionSources,
+      sourceVal,
+    ),
     sourceVal,
   );
   headlineBFewShot = normalizeOutputTerminologyBySource_(
     normalizeRegionTermsForHeadline_(
       headlineBFewShot,
       finalHeadlineRegionSources,
+      sourceVal,
     ),
     sourceVal,
   );
@@ -3856,11 +3828,10 @@ function buildMultiTaskPromptForRows_(items) {
     .map(function (it, idx) {
       const effectiveHeadlineGlossaryRules =
         it.headlineGlossaryRules ||
-        buildRegionRulesForHeadlineTexts_([
-          it.titleRaw || "",
-          it.bodyRaw || "",
-          it.summaryJa || "",
-        ]);
+        buildRegionRulesForHeadlineTexts_(
+          [it.titleRaw || "", it.bodyRaw || "", it.summaryJa || ""],
+          it.sourceVal,
+        );
 
       return `
 ====================
@@ -4012,11 +3983,10 @@ function buildHeadlineOnlyPromptForRows_(items) {
     .map(function (it, idx) {
       const effectiveHeadlineGlossaryRules =
         it.headlineGlossaryRules ||
-        buildRegionRulesForHeadlineTexts_([
-          it.titleRaw || "",
-          it.bodyRaw || "",
-          it.summaryJa || "",
-        ]);
+        buildRegionRulesForHeadlineTexts_(
+          [it.titleRaw || "", it.bodyRaw || "", it.summaryJa || ""],
+          it.sourceVal,
+        );
 
       return `
 ====================
@@ -4122,15 +4092,27 @@ function _applyOutputsToRow_(
     summaryJa || "",
   ];
   headlineA = normalizeOutputTerminologyBySource_(
-    normalizeRegionTermsForHeadline_(headlineA, headlineRegionSources),
+    normalizeRegionTermsForHeadline_(
+      headlineA,
+      headlineRegionSources,
+      sourceVal,
+    ),
     sourceVal,
   );
   headlineB2 = normalizeOutputTerminologyBySource_(
-    normalizeRegionTermsForHeadline_(headlineB2, headlineRegionSources),
+    normalizeRegionTermsForHeadline_(
+      headlineB2,
+      headlineRegionSources,
+      sourceVal,
+    ),
     sourceVal,
   );
   headlineBFewShot = normalizeOutputTerminologyBySource_(
-    normalizeRegionTermsForHeadline_(headlineBFewShot, headlineRegionSources),
+    normalizeRegionTermsForHeadline_(
+      headlineBFewShot,
+      headlineRegionSources,
+      sourceVal,
+    ),
     sourceVal,
   );
 
@@ -4328,15 +4310,15 @@ function processRowsBatch() {
         const bodyRaw = row[14 - 1]; // N列 (14)
         const status = (row[STATUS_COL - 1] || "").toString(); // L列 (STATUS_COL=12)
 
-        // GNLM（国営紙）でM列（タイトル原文）が空の行は、Gemini処理対象から外す
-        if (shouldSkipGeminiForGnlmEmptyTitle_(sourceVal, titleRaw)) {
-          if (status !== GNLM_EMPTY_TITLE_SKIP_STATUS) {
+        // GNLM（国営紙）でN列（本文原文）が空の行は、Gemini処理対象から外す
+        if (shouldSkipGeminiForGnlmEmptyBody_(sourceVal, bodyRaw)) {
+          if (status !== GNLM_EMPTY_BODY_SKIP_STATUS) {
             sh.getRange(rowIndex, STATUS_COL).setValue(
-              GNLM_EMPTY_TITLE_SKIP_STATUS,
+              GNLM_EMPTY_BODY_SKIP_STATUS,
             );
           }
           Logger.log(
-            "[processRowsBatch] skip %s row %s (GNLM with empty M/title)",
+            "[processRowsBatch] skip %s row %s (GNLM with empty N/body)",
             sheetName,
             rowIndex,
           );
@@ -4461,15 +4443,16 @@ function processRowsBatch() {
             const promptItems2 = [first, second].map(function (it) {
               const titleGlossaryRules = buildRegionRulesForTitle_(
                 it.titleRaw || "",
+                it.sourceVal,
               );
-              const bodyGlossaryRules = buildRegionRulesForBodyTexts_([
-                it.titleRaw || "",
-                it.bodyRaw || "",
-              ]);
-              const headlineGlossaryRules = buildRegionRulesForHeadlineTexts_([
-                it.titleRaw || "",
-                it.bodyRaw || "",
-              ]);
+              const bodyGlossaryRules = buildRegionRulesForBodyTexts_(
+                [it.titleRaw || "", it.bodyRaw || ""],
+                it.sourceVal,
+              );
+              const headlineGlossaryRules = buildRegionRulesForHeadlineTexts_(
+                [it.titleRaw || "", it.bodyRaw || ""],
+                it.sourceVal,
+              );
               return {
                 id: String(it.rowIndex),
                 rowIndex: it.rowIndex,
@@ -4498,15 +4481,16 @@ function processRowsBatch() {
           const promptItems = chunk.map(function (it) {
             const titleGlossaryRules = buildRegionRulesForTitle_(
               it.titleRaw || "",
+              it.sourceVal,
             );
-            const bodyGlossaryRules = buildRegionRulesForBodyTexts_([
-              it.titleRaw || "",
-              it.bodyRaw || "",
-            ]);
-            const headlineGlossaryRules = buildRegionRulesForHeadlineTexts_([
-              it.titleRaw || "",
-              it.bodyRaw || "",
-            ]);
+            const bodyGlossaryRules = buildRegionRulesForBodyTexts_(
+              [it.titleRaw || "", it.bodyRaw || ""],
+              it.sourceVal,
+            );
+            const headlineGlossaryRules = buildRegionRulesForHeadlineTexts_(
+              [it.titleRaw || "", it.bodyRaw || ""],
+              it.sourceVal,
+            );
 
             return {
               id: String(it.rowIndex),
@@ -4632,17 +4616,21 @@ function processRowsBatch() {
                 pi.bodyRaw,
               );
               // ★ 見出し生成前にメディア別表記・DKBA表記を補正
+              pi.summaryJa = normalizeRegionTermsForBody_(
+                pi.summaryJa,
+                [pi.titleRaw || "", pi.bodyRaw || "", pi.summaryJa || ""],
+                pi.sourceVal,
+              );
               pi.summaryJa = normalizeOutputTerminologyBySource_(
                 pi.summaryJa,
                 pi.sourceVal,
               );
 
               // 見出し用は、タイトル・本文・生成済み要約の全てから拾った地域名をD列訳で固定する。
-              pi.headlineGlossaryRules = buildRegionRulesForHeadlineTexts_([
-                pi.titleRaw || "",
-                pi.bodyRaw || "",
-                pi.summaryJa || "",
-              ]);
+              pi.headlineGlossaryRules = buildRegionRulesForHeadlineTexts_(
+                [pi.titleRaw || "", pi.bodyRaw || "", pi.summaryJa || ""],
+                pi.sourceVal,
+              );
             });
 
             const headlinePrompt = buildHeadlineOnlyPromptForRows_(promptItems);

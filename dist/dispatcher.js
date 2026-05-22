@@ -35,7 +35,8 @@ const COLLECT_SLOTS = [
   { hhmm: "12:30", cron: "0 6 * * *", mode: "collect16" },
 
   // 当日分取得
-  { hhmm: "13:30", cron: "0 7 * * *", mode: "collect" },
+  // 一時停止: 13:30の記事収集は停止中。再開する場合は次の行のコメントアウトを解除する。
+  // { hhmm: "13:30", cron: "0 7 * * *", mode: "collect" },
   { hhmm: "14:30", cron: "0 8 * * *", mode: "collect" },
   { hhmm: "15:30", cron: "0 9 * * *", mode: "collect" },
   { hhmm: "16:30", cron: "0 10 * * *", mode: "collect" },
