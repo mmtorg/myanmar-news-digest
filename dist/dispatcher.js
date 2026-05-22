@@ -15,11 +15,12 @@
  *
  * 運用:
  * - Apps Script の時間主導型トリガーは prodScheduleTick を「1分おき」に1つだけ設定する。
- * - 指定時刻のみ記事収集を workflow_dispatch する。
+ * - 指定時刻のみ記事収集および watch-build-send を workflow_dispatch する。
  * - 12:30 は collect16 と同じく、既存シートを整理してから当日分を収集する。
  * - 13:30〜23:20 は当日分、00:10 は前日分を GitHub Actions 側で判定する。
  * - 00:45 / 01:15 / 01:45 / 02:00 は前日分の Khit Thit Media のみ収集する。
  * - Irrawaddy は sheet_pipeline.py 側で 21:30 / 22:30 / 23:20 のみ収集する。
+ * - 02:05 は schedule-watch-build-send を GitHub Actions 側で起動する。
  */
 
 const TZ = "Asia/Yangon";
@@ -54,6 +55,14 @@ const COLLECT_SLOTS = [
   { hhmm: "01:15", cron: "45 18 * * *", mode: "collect" },
   { hhmm: "01:45", cron: "15 19 * * *", mode: "collect" },
   { hhmm: "02:00", cron: "30 19 * * *", mode: "collect" },
+];
+
+/**
+ * bundle生成・送信監視枠。
+ * GitHub Actions の schedule ではなく、GAS から workflow_dispatch する。
+ */
+const WATCH_BUILD_SEND_SLOTS = [
+  { hhmm: "02:05", cron: "35 19 * * *", mode: "watch-build-send" },
 ];
 
 const SLOT_WINDOW_MINUTES = 5;
@@ -153,35 +162,71 @@ function dispatchDevCollect_(slot) {
   );
 }
 
-/** 現在時刻が収集枠の許容範囲内なら、その slot を返す */
-function findCurrentSlot_() {
+function dispatchProdWatchBuildSend_(slot) {
+  dispatchOncePerDay_(
+    "main",
+    slot,
+    `prod_${slot.mode}_${slot.hhmm.replace(":", "")}`,
+  );
+}
+
+function dispatchDevWatchBuildSend_(slot) {
+  dispatchOncePerDay_(
+    "develop",
+    slot,
+    `dev_${slot.mode}_${slot.hhmm.replace(":", "")}`,
+  );
+}
+
+function isNowInSlot_(slot) {
   const now = new Date();
   const currentMinutes =
     Number(Utilities.formatDate(now, TZ, "H")) * 60 +
     Number(Utilities.formatDate(now, TZ, "m"));
 
-  return COLLECT_SLOTS.find((slot) => {
-    const parts = slot.hhmm.split(":");
-    const slotMinutes = Number(parts[0]) * 60 + Number(parts[1]);
-    return (
-      currentMinutes >= slotMinutes &&
-      currentMinutes < slotMinutes + SLOT_WINDOW_MINUTES
-    );
-  });
+  const parts = slot.hhmm.split(":");
+  const slotMinutes = Number(parts[0]) * 60 + Number(parts[1]);
+
+  return (
+    currentMinutes >= slotMinutes &&
+    currentMinutes < slotMinutes + SLOT_WINDOW_MINUTES
+  );
+}
+
+/** 現在時刻が収集枠の許容範囲内なら、その slot を返す */
+function findCurrentSlot_() {
+  return COLLECT_SLOTS.find(isNowInSlot_);
+}
+
+/** 現在時刻が watch-build-send 枠の許容範囲内なら、その slot を返す */
+function findCurrentWatchBuildSendSlot_() {
+  return WATCH_BUILD_SEND_SLOTS.find(isNowInSlot_);
 }
 
 /** 本番用: 1分おきトリガーから呼ぶ */
 function prodScheduleTick() {
-  const slot = findCurrentSlot_();
-  if (!slot) return;
-  dispatchProdCollect_(slot);
+  const collectSlot = findCurrentSlot_();
+  if (collectSlot) {
+    dispatchProdCollect_(collectSlot);
+  }
+
+  const watchSlot = findCurrentWatchBuildSendSlot_();
+  if (watchSlot) {
+    dispatchProdWatchBuildSend_(watchSlot);
+  }
 }
 
 /** 開発用: 必要な場合だけ1分おきトリガーから呼ぶ */
 function devScheduleTick() {
-  const slot = findCurrentSlot_();
-  if (!slot) return;
-  dispatchDevCollect_(slot);
+  const collectSlot = findCurrentSlot_();
+  if (collectSlot) {
+    dispatchDevCollect_(collectSlot);
+  }
+
+  const watchSlot = findCurrentWatchBuildSendSlot_();
+  if (watchSlot) {
+    dispatchDevWatchBuildSend_(watchSlot);
+  }
 }
 
 /** 手動テスト: 現在時刻の slot を本番 dispatch する */
@@ -222,4 +267,16 @@ function testProd0010Now() {
     throw new Error("00:10枠が見つかりません。");
   }
   dispatchProdCollect_(slot);
+}
+
+/** 手動テスト: 02:05枠（watch-build-send）を本番 dispatch する */
+function testProdWatchBuildSendNow() {
+  const slot = WATCH_BUILD_SEND_SLOTS[0];
+  dispatchProdWatchBuildSend_(slot);
+}
+
+/** 手動テスト: 02:05枠（watch-build-send）を開発 dispatch する */
+function testDevWatchBuildSendNow() {
+  const slot = WATCH_BUILD_SEND_SLOTS[0];
+  dispatchDevWatchBuildSend_(slot);
 }
