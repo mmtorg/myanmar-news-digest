@@ -712,6 +712,7 @@ jobs:
         run: |
           set -euo pipefail
           RID="${{ inputs.bundle_run_id }}"
+
           if [ -z "${RID}" ]; then
             echo "bundle_run_id not provided. Searching the latest successful run that has a bundle artifact..."
             # Newest-first. Search within the same branch as this dispatch, to avoid mixing environments.
@@ -731,7 +732,34 @@ jobs:
 
           ART_NAME="mna-bundle-${RID}"
           echo "Downloading artifact: ${ART_NAME} from run_id=${RID}"
-          gh run download "${RID}" -n "${ART_NAME}" -D .
+
+          rm -rf _artifact bundle
+          mkdir -p _artifact bundle
+
+          # gh run download は artifact 内のroot構造をそのまま展開する。
+          # upload-artifact 側のpath指定によって、meta.json が root直下の場合と bundle/配下の場合があるため、
+          # いったん _artifact に展開してから bundle/ に正規化する。
+          gh run download "${RID}" -n "${ART_NAME}" -D _artifact
+
+          echo "--- downloaded raw artifact files ---"
+          find _artifact -maxdepth 4 -type f -print | sort
+
+          if [ -f _artifact/meta.json ]; then
+            cp -a _artifact/. bundle/
+          elif [ -f _artifact/bundle/meta.json ]; then
+            cp -a _artifact/bundle/. bundle/
+          else
+            echo "meta.json not found after artifact download." >&2
+            echo "Expected one of:" >&2
+            echo "  _artifact/meta.json" >&2
+            echo "  _artifact/bundle/meta.json" >&2
+            echo "Actual artifact tree:" >&2
+            find _artifact -maxdepth 4 -print | sort >&2
+            exit 1
+          fi
+
+          echo "--- normalized bundle files ---"
+          find bundle -maxdepth 2 -type f -print | sort
 
           test -f bundle/meta.json
           ls -al bundle
