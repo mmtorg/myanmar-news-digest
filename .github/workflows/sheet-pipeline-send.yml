@@ -833,6 +833,7 @@ jobs:
           case "${{ inputs.schedule_cron }}" in
             "0 9 * * *")   SLOT_LABEL="15:30（当日分・初回整理）" ;;
             "0 12 * * *")  SLOT_LABEL="18:30（当日分）" ;;
+            "0 13 * * *")  SLOT_LABEL="19:30（当日分・GNLMあり）" ;;
             "0 14 * * *")  SLOT_LABEL="20:30（当日分）" ;;
             "0 15 * * *")  SLOT_LABEL="21:30（当日分・Irrawaddyあり）" ;;
             "0 16 * * *")  SLOT_LABEL="22:30（当日分・Irrawaddyあり）" ;;

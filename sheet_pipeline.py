@@ -25,11 +25,11 @@ _IRRAWADDY_ALLOWED_CRONS = {
 }
 
 # GNLM（Global New Light Of Myanmar / 国営紙）は、定時収集では
-# 12:30 / 20:30 / 22:30 MMT の3枠だけ対象にする。
+# 12:30 / 16:30 / 19:30 / 22:30 MMT の4枠だけ対象にする。
 _GNLM_ALLOWED_CRONS = {
     "0 6 * * *",    # 12:30 MMT
     "0 10 * * *",   # 16:30 MMT
-    "0 14 * * *",   # 20:30 MMT
+    "0 13 * * *",   # 19:30 MMT
     "0 16 * * *",   # 22:30 MMT
 }
 
