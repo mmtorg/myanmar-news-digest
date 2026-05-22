@@ -5305,7 +5305,7 @@ def translate_fulltexts_for_business(urls_in_order_or_items, url_to_source_title
             resp = call_llm_with_fallback(
                 client_fulltext,
                 prompt,
-                model="gemini-2.5-flash",
+                model="gemini-3.1-flash-lite",
                 usage_tag="fulltext-retry",
             )
 
@@ -5429,7 +5429,7 @@ def translate_fulltexts_for_business(urls_in_order_or_items, url_to_source_title
             resp = call_llm_with_fallback(
                 client_fulltext,
                 prompt,
-                model="gemini-2.5-flash",
+                model="gemini-3.1-flash-lite",
                 usage_tag="fulltext",
             )
             text = getattr(resp, "text", None) or ""
