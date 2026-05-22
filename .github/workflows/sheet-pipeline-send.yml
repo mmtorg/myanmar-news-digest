@@ -1,19 +1,10 @@
 name: Daily Myanmar News Alert Sheet Pipeline Send Integrated
 
 on:
-  schedule:
-    # collect系は Google Apps Script から workflow_dispatch で起動する。
-    # GitHub Actions 側の cron 自動起動として残すのは bundle 生成のみ。
-
-    # 02:00 MMT（= 19:30 UTC 前日）: bundle生成
-    - cron: "35 19 * * *" # 02:05 MMT（監視ループ開始）
-
   workflow_dispatch:
     inputs:
       mode:
-        description:
-          "collect16（15:30初回・シート整理あり） / collect（18:30〜00:10収集） /
-          build-bundle（02:00） / send-only（artifactから再送）"
+        description: "collect16 / collect / build-bundle / watch-build-send / notify-email / send-only"
         type: choice
         required: true
         default: collect
@@ -21,6 +12,7 @@ on:
           - collect16
           - collect
           - build-bundle
+          - watch-build-send
           - notify-email
           - send-only
 
@@ -337,7 +329,10 @@ jobs:
 
   schedule-watch-build-send:
     # 02:05 MMT（= 19:35 UTC 前日）以降に監視ループ開始
-    if: github.event_name == 'schedule' && github.event.schedule == '35 19 * * *'
+    # GitHub Actions の schedule ではなく、GAS から workflow_dispatch で起動する。
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.event.inputs.mode == 'watch-build-send'
     runs-on: ubuntu-latest
     environment: production
     concurrency:
@@ -630,7 +625,9 @@ jobs:
           PY
 
   manual-run:
-    if: github.event_name == 'workflow_dispatch'
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.event.inputs.mode != 'watch-build-send'
     runs-on: ubuntu-latest
     environment: ${{ github.ref_name == 'develop' && 'development' || 'production' }}
     concurrency:
