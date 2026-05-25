@@ -9,6 +9,11 @@ const COMMON_TRANSLATION_RULES = `
 軍事評議会・軍事委員会 → 軍事政権
 徴用 → 徴兵
 軍事評議会軍 → 国軍
+軍政軍 → 国軍
+軍事政権部隊 → 国軍
+軍事政権側部隊 → 国軍
+ミンアウンフライン率いる国軍 → 国軍
+軍事政権トップ・ミンアウンフライン率いる国軍 → 国軍
 アジア道路 → アジアハイウェイ
 来客登録 → 宿泊登録 / 来客登録者 → 宿泊登録者
 タウンシップ → 郡区
@@ -17,6 +22,11 @@ const COMMON_TRANSLATION_RULES = `
 ネーピードー → ネピドー
 ミャンマー国民 → ミャンマー人
 タディンユット → ダディンジュ
+
+【国軍表記の強制ルール】
+「စစ်တပ်」「စစ်ကောင်စီတပ်」「စစ်အာဏာရှင်တပ်」「အကြမ်းဖက် စစ်တပ်」「junta troops」「regime forces」「military column」が国軍・国軍部隊を指す文脈では、本文要約・見出しとも「国軍」と表記する。
+「軍事政権軍」「軍政軍」「軍事政権部隊」「軍事政権トップ・ミンアウンフライン率いる国軍」「ミンアウンフライン率いる国軍」は使用禁止。必ず「国軍」に置き換える。
+原文に Min Aung Hlaing / မင်းအောင်လှိုင် が明示されていない場合、国軍の行動主体に「ミンアウンフライン」を補ってはならない。
 
 【ミャンマー情勢の用語置き換えルール】（反政権側の運動・組織を指す文脈のみ）
 革命 → 抵抗 / 革命勢力 → 抵抗勢力 / 革命軍 → 抵抗勢力
@@ -460,7 +470,7 @@ const SUMMARY_TASK = `
   ・誰と誰の間で、いくら、どの分野について合意／投資したか
   ・同じ種類の合意や金額が並ぶ場合は、可能な範囲で1文に圧縮する。
 - 人権侵害・軍事攻撃・オンライン詐欺などの事件では：
-  ・加害主体（国軍・軍事政権・武装組織など）、被害者、人数・被害の規模
+  ・加害主体（国軍・武装組織など）、被害者、人数・被害の規模
   ・場所（州・郡区レベル）と現在の状況（拘束中／送還が滞っている 等）
   を優先し、細かな経緯や枝葉の情報は必要に応じて削る。
 
@@ -1124,23 +1134,32 @@ function normalizeSourceName_(s) {
   return out.toLowerCase();
 }
 
-// Global New Light Of Myanmar（国営紙）は、M列（タイトル原文）が空の行を
+// Global New Light Of Myanmar（国営紙）は、N列（本文原文）が空の行を
 // Gemini要約・見出し生成の処理対象から外す。
 const GNLM_STATE_SOURCE_NAME = "Global New Light Of Myanmar (国営紙)";
-const GNLM_EMPTY_TITLE_SKIP_STATUS = "SKIP_GNLM_EMPTY_M";
+const GNLM_EMPTY_BODY_SKIP_STATUS = "SKIP_GNLM_EMPTY_N";
 
-function shouldSkipGeminiForGnlmEmptyTitle_(sourceRaw, titleRaw) {
+function isBlankSheetCellValue_(v) {
+  return (
+    String(v == null ? "" : v)
+      .replace(/[\u200B-\u200D\uFEFF]/g, "")
+      .replace(/\u00A0/g, " ")
+      .trim() === ""
+  );
+}
+
+function shouldSkipGeminiForGnlmEmptyBody_(sourceRaw, bodyRaw) {
   return (
     normalizeSourceName_(sourceRaw || "") ===
       normalizeSourceName_(GNLM_STATE_SOURCE_NAME) &&
-    String(titleRaw || "").trim() === ""
+    isBlankSheetCellValue_(bodyRaw)
   );
 }
 
 // ============================================================
 // メディア別の表記ルール
-// - 国営紙・国軍系メディアでは「大統領」「政府」表記を優先
-// - それ以外では「軍事政権トップ・ミンアウンフライン」表記を優先
+// - 国営紙・国軍系メディアでは本文は「ミンアウンフライン大統領」、見出しは「大統領」、政権主体は「政府」表記を優先
+// - それ以外では本文は「軍事政権トップ・ミンアウンフライン」、見出しは「ミンアウンフライン」表記を優先
 // - DKBA は全メディアで「親国軍勢力DKBA」に統一
 // ============================================================
 const OFFICIAL_STYLE_SOURCE_NAMES = {
@@ -1167,10 +1186,13 @@ function buildSourceSpecificTranslationRules_(sourceRaw) {
     return `【メディア別表記ルール（最優先）】
 対象メディア: ${sourceLabel}
 このメディアが Popular Myanmar、News Eleven、Global New Light Of Myanmar のいずれかに該当する場合、以下を必ず守る。
-- Min Aung Hlaing / ミンアウンフライン / ミン・アウン・フライン / ミン・アウン・ライン / ミンアウンライン / မင်းအောင်လှိုင် は、見出し・本文要約とも必ず「ミンアウンフライン大統領」と表記する。
-- 見出しで「総司令官、」「上級大将、」「国軍トップ、」のように肩書きだけで主語を省略しない。該当人物が Min Aung Hlaing の場合は必ず「ミンアウンフライン大統領、...」で始める。
+- 本文要約（summary）では、Min Aung Hlaing / ミンアウンフライン / ミン・アウン・フライン / ミン・アウン・ライン / ミンアウンライン / မင်းအောင်လှိုင် は必ず「ミンアウンフライン大統領」と表記する。
+- 人物名の誤推定禁止：「တပ်မတော်ကာကွယ်ရေးဦးစီးချုပ်」「国軍総司令官」「Commander-in-Chief」などの役職名だけを根拠に、人物をミンアウンフラインと推定してはならない。原文に人物名が併記されている場合は、その人物名を必ず優先する。
+- 「ရဲဝင်းဦး」「ဗိုလ်ချုပ်ကြီး ရဲဝင်းဦး」「Ye Win Oo」「General Ye Win Oo」が原文に出た場合は、本文要約（summary）・見出し（headlineA / headlineBPrime / headlineBPrimeFewShot）とも必ず「国軍総司令官イェ・ウィン・ウー」と表記する。
+- Min Aung Hlaing / မင်းအောင်လှိုင် の表記ルールは、原文に Min Aung Hlaing 系の名前が明示されている場合に限って適用する。
+- 見出し（headlineA / headlineBPrime / headlineBPrimeFewShot）では、同人物は必ず「大統領」と表記する。「ミンアウンフライン大統領」「軍事政権トップ・ミンアウンフライン」「国軍トップ・ミンアウンフライン」「ミンアウンフライン総司令官」は使わない。
+- 見出しで「総司令官、」「上級大将、」「国軍トップ、」のように肩書きだけで主語を省略しない。該当人物が Min Aung Hlaing の場合は必ず「大統領、...」で始める。
 - 「軍事政権」という表現は使用禁止。文脈上、組織・政権主体を示す必要がある場合は「政府」と表記する。
-- 「軍事政権トップ・ミンアウンフライン」「国軍トップ・ミンアウンフライン」「ミンアウンフライン総司令官」などは使わない。
 - DKBA は全メディア共通で「親国軍勢力DKBA」と表記し、「国軍傘下DKBA」は使わない。
 `;
   }
@@ -1178,9 +1200,12 @@ function buildSourceSpecificTranslationRules_(sourceRaw) {
   return `【メディア別表記ルール（最優先）】
 対象メディア: ${sourceLabel}
 このメディアは Popular Myanmar、News Eleven、Global New Light Of Myanmar 以外として扱う。
-- Min Aung Hlaing / ミンアウンフライン / ミン・アウン・フライン / ミン・アウン・ライン / ミンアウンライン / မင်းအောင်လှိုင် は、見出し・本文要約とも必ず「軍事政権トップ・ミンアウンフライン」と表記する。
-- 見出しで「総司令官、」「国軍トップ、」「国軍指導者、」のように肩書きだけで主語を省略しない。該当人物が Min Aung Hlaing の場合は必ず「軍事政権トップ・ミンアウンフライン、...」で始める。
-- 「ミンアウンフライン大統領」「ミンアウンフライン総司令官」「国軍トップ・ミンアウンフライン」などは使わない。
+- 本文要約（summary）では、Min Aung Hlaing / ミンアウンフライン / ミン・アウン・フライン / ミン・アウン・ライン / ミンアウンライン / မင်းအောင်လှိုင် は必ず「軍事政権トップ・ミンアウンフライン」と表記する。
+- 人物名の誤推定禁止：「တပ်မတော်ကာကွယ်ရေးဦးစီးချုပ်」「国軍総司令官」「Commander-in-Chief」などの役職名だけを根拠に、人物をミンアウンフラインと推定してはならない。原文に人物名が併記されている場合は、その人物名を必ず優先する。
+- 「ရဲဝင်းဦး」「ဗိုလ်ချုပ်ကြီး ရဲဝင်းဦး」「Ye Win Oo」「General Ye Win Oo」が原文に出た場合は、本文要約（summary）・見出し（headlineA / headlineBPrime / headlineBPrimeFewShot）とも必ず「国軍総司令官イェ・ウィン・ウー」と表記する。
+- Min Aung Hlaing / မင်းအောင်လှိုင် の表記ルールは、原文に Min Aung Hlaing 系の名前が明示されている場合に限って適用する。
+- 見出し（headlineA / headlineBPrime / headlineBPrimeFewShot）では、同人物は必ず「ミンアウンフライン」と表記する。「軍事政権トップ・ミンアウンフライン」「ミンアウンフライン大統領」「ミンアウンフライン総司令官」「国軍トップ・ミンアウンフライン」は使わない。
+- 見出しで「総司令官、」「国軍トップ、」「国軍指導者、」のように肩書きだけで主語を省略しない。該当人物が Min Aung Hlaing の場合は必ず「ミンアウンフライン、...」で始める。
 - DKBA は全メディア共通で「親国軍勢力DKBA」と表記し、「国軍傘下DKBA」は使わない。
 `;
 }
@@ -1220,6 +1245,40 @@ function normalizeDkbaTerms_(text) {
   return s.replace(new RegExp(placeholder, "g"), "親国軍勢力DKBA");
 }
 
+function normalizeTatmadawTerms_(text) {
+  if (text == null) return text;
+  let s = String(text);
+  if (s.indexOf("ERROR:") === 0) return s;
+
+  // 「軍事政権軍」系は、国軍部隊を指す場合はすべて「国軍」へ寄せる。
+  s = s.replace(/軍事政権軍/g, "国軍");
+  s = s.replace(/軍政軍/g, "国軍");
+  s = s.replace(/軍事政権部隊/g, "国軍");
+  s = s.replace(/軍事政権側部隊/g, "国軍");
+  s = s.replace(/軍事政権傘下(?:の)?部隊/g, "国軍");
+  s = s.replace(/軍事政権傘下(?:の)?軍/g, "国軍");
+
+  // 「ミンアウンフライン率いる国軍」系は、人物名を補わず「国軍」に統一する。
+  s = s.replace(
+    /軍事政権トップ・ミンアウンフライン(?:が率いる|の率いる|率いる)(?:国軍|軍|部隊|軍部隊)/g,
+    "国軍",
+  );
+  s = s.replace(
+    /ミンアウンフライン(?:が率いる|の率いる|率いる)(?:国軍|軍|部隊|軍部隊)/g,
+    "国軍",
+  );
+  s = s.replace(
+    /大統領(?:が率いる|の率いる|率いる)(?:国軍|軍|部隊|軍部隊)/g,
+    "国軍",
+  );
+
+  // 周辺語のゆれ
+  s = s.replace(/国軍の部隊/g, "国軍");
+  s = s.replace(/国軍部隊/g, "国軍");
+
+  return s;
+}
+
 function normalizeMilitaryRegimeForOfficialSource_(text) {
   if (text == null) return text;
 
@@ -1234,15 +1293,21 @@ function normalizeMilitaryRegimeForOfficialSource_(text) {
     .replace(/軍事政権/g, "政府");
 }
 
-function normalizeMinAungHlaingTerm_(text, officialStyle) {
+function normalizeMinAungHlaingTerm_(text, officialStyle, contextOpt) {
   if (text == null) return text;
   let s = String(text);
   if (s.indexOf("ERROR:") === 0) return s;
 
   const placeholder = "__TERM_PLACEHOLDER_M__";
+  const context = String(contextOpt || "body").toLowerCase();
+  const isHeadline = context === "headline" || context === "title";
   const target = officialStyle
-    ? "ミンアウンフライン大統領"
-    : "軍事政権トップ・ミンアウンフライン";
+    ? isHeadline
+      ? "大統領"
+      : "ミンアウンフライン大統領"
+    : isHeadline
+      ? "ミンアウンフライン"
+      : "軍事政権トップ・ミンアウンフライン";
 
   // アーカイブで確認された表記ゆれ：
   // ミン・アウン・フライン / ミンアウンフライン / ミン・アウン・ライン / ミンアウンライン
@@ -1296,7 +1361,7 @@ function normalizeMinAungHlaingTerm_(text, officialStyle) {
   return s;
 }
 
-function normalizeOutputTerminologyBySource_(text, sourceRaw) {
+function normalizeOutputTerminologyBySource_(text, sourceRaw, contextOpt) {
   if (text == null) return text;
   let s = String(text);
   if (s.indexOf("ERROR:") === 0) return s;
@@ -1305,8 +1370,14 @@ function normalizeOutputTerminologyBySource_(text, sourceRaw) {
   s = normalizeDkbaTerms_(s);
 
   // 2. メディア別にミンアウンフライン表記を統一
+  //    contextOpt="headline" の場合だけ、見出し専用表記へ寄せる。
   const officialStyle = isOfficialStyleSource_(sourceRaw);
-  s = normalizeMinAungHlaingTerm_(s, officialStyle);
+  s = normalizeMinAungHlaingTerm_(s, officialStyle, contextOpt);
+
+  // 2.5. 国軍部隊の不自然な表記を「国軍」へ統一
+  //      normalizeMinAungHlaingTerm_ により
+  //      「軍事政権トップ・ミンアウンフライン率いる国軍」が生成される場合があるため、必ずこの後で実行する。
+  s = normalizeTatmadawTerms_(s);
 
   // 3. 公式系3メディアでは「軍事政権」を最後に除去
   //    Min Aung Hlaing の「軍事政権トップ...」表現を先に処理するため、この順番が重要。
@@ -2963,9 +3034,9 @@ function processRow_(sheet, row, prevStatus) {
   const bodyRaw = sheet.getRange(row, colN).getValue();
   const urlVal = sheet.getRange(row, colJ).getValue();
 
-  if (shouldSkipGeminiForGnlmEmptyTitle_(sourceVal, titleRaw)) {
-    sheet.getRange(row, STATUS_COL).setValue(GNLM_EMPTY_TITLE_SKIP_STATUS);
-    Logger.log("[processRow_] skip row %s (GNLM with empty M/title)", row);
+  if (shouldSkipGeminiForGnlmEmptyBody_(sourceVal, bodyRaw)) {
+    sheet.getRange(row, STATUS_COL).setValue(GNLM_EMPTY_BODY_SKIP_STATUS);
+    Logger.log("[processRow_] skip row %s (GNLM with empty N/body)", row);
     return;
   }
 
@@ -3231,6 +3302,7 @@ function processRow_(sheet, row, prevStatus) {
               headlineRegionSources,
             ),
             sourceVal,
+            "headline",
           );
           headlineB2 = normalizeOutputTerminologyBySource_(
             normalizeRegionTermsForHeadline_(
@@ -3238,6 +3310,7 @@ function processRow_(sheet, row, prevStatus) {
               headlineRegionSources,
             ),
             sourceVal,
+            "headline",
           );
           headlineBFewShot = normalizeOutputTerminologyBySource_(
             normalizeRegionTermsForHeadline_(
@@ -3245,6 +3318,7 @@ function processRow_(sheet, row, prevStatus) {
               headlineRegionSources,
             ),
             sourceVal,
+            "headline",
           );
         } catch (e) {
           const errMsg =
@@ -3276,10 +3350,12 @@ function processRow_(sheet, row, prevStatus) {
   headlineA = normalizeOutputTerminologyBySource_(
     normalizeRegionTermsForHeadline_(headlineA, finalHeadlineRegionSources),
     sourceVal,
+    "headline",
   );
   headlineB2 = normalizeOutputTerminologyBySource_(
     normalizeRegionTermsForHeadline_(headlineB2, finalHeadlineRegionSources),
     sourceVal,
+    "headline",
   );
   headlineBFewShot = normalizeOutputTerminologyBySource_(
     normalizeRegionTermsForHeadline_(
@@ -3287,6 +3363,7 @@ function processRow_(sheet, row, prevStatus) {
       finalHeadlineRegionSources,
     ),
     sourceVal,
+    "headline",
   );
   summaryJa = normalizeOutputTerminologyBySource_(summaryJa, sourceVal);
 
@@ -4124,14 +4201,17 @@ function _applyOutputsToRow_(
   headlineA = normalizeOutputTerminologyBySource_(
     normalizeRegionTermsForHeadline_(headlineA, headlineRegionSources),
     sourceVal,
+    "headline",
   );
   headlineB2 = normalizeOutputTerminologyBySource_(
     normalizeRegionTermsForHeadline_(headlineB2, headlineRegionSources),
     sourceVal,
+    "headline",
   );
   headlineBFewShot = normalizeOutputTerminologyBySource_(
     normalizeRegionTermsForHeadline_(headlineBFewShot, headlineRegionSources),
     sourceVal,
+    "headline",
   );
 
   // ★ 原文にない年付き日付を補正
@@ -4328,15 +4408,15 @@ function processRowsBatch() {
         const bodyRaw = row[14 - 1]; // N列 (14)
         const status = (row[STATUS_COL - 1] || "").toString(); // L列 (STATUS_COL=12)
 
-        // GNLM（国営紙）でM列（タイトル原文）が空の行は、Gemini処理対象から外す
-        if (shouldSkipGeminiForGnlmEmptyTitle_(sourceVal, titleRaw)) {
-          if (status !== GNLM_EMPTY_TITLE_SKIP_STATUS) {
+        // GNLM（国営紙）でN列（本文原文）が空の行は、Gemini処理対象から外す
+        if (shouldSkipGeminiForGnlmEmptyBody_(sourceVal, bodyRaw)) {
+          if (status !== GNLM_EMPTY_BODY_SKIP_STATUS) {
             sh.getRange(rowIndex, STATUS_COL).setValue(
-              GNLM_EMPTY_TITLE_SKIP_STATUS,
+              GNLM_EMPTY_BODY_SKIP_STATUS,
             );
           }
           Logger.log(
-            "[processRowsBatch] skip %s row %s (GNLM with empty M/title)",
+            "[processRowsBatch] skip %s row %s (GNLM with empty N/body)",
             sheetName,
             rowIndex,
           );
