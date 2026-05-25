@@ -4314,6 +4314,10 @@ def collect_frontier_all_for_date(
         txt = re.sub(r"\s+", " ", txt).strip()
         return unicodedata.normalize("NFC", txt)
 
+    # WP JSON が正常に読めた場合、最新記事の日付をここに保持する。
+    # 最新日付が対象日より古ければ、重いホーム/カテゴリ一覧探索は不要。
+    wp_json_latest_date_mmt: Optional[date] = None
+
     def _fallback_candidates_via_wp_json() -> List[Dict]:
         """
         Frontier のトップページHTMLに <link rel="https://api.w.org/" href=".../en/wp-json/"> があるため、
@@ -4321,6 +4325,7 @@ def collect_frontier_all_for_date(
         REST payload には date/date_gmt/link/title/content が入るので、RSSや一覧HTMLより日付判定が安定する。
         """
         from datetime import timezone
+        nonlocal wp_json_latest_date_mmt
 
         api_base = "https://www.frontiermyanmar.net/en/wp-json/wp/v2/posts"
         out: List[Dict] = []
@@ -4390,9 +4395,13 @@ def collect_frontier_all_for_date(
                 except Exception:
                     continue
 
+                dt_mmt_date = dt.date()
+                if wp_json_latest_date_mmt is None or dt_mmt_date > wp_json_latest_date_mmt:
+                    wp_json_latest_date_mmt = dt_mmt_date
+
                 # desc orderなので、対象日より古くなったら以降ページは読まなくてもよいが、
                 # タイムゾーン差を考えて1ページ内では最後まで見る。
-                if dt.date() != target_date_mmt:
+                if dt_mmt_date != target_date_mmt:
                     continue
 
                 title = _clean_html_text(((post.get("title") or {}).get("rendered") or ""))
@@ -4634,6 +4643,16 @@ def collect_frontier_all_for_date(
             print(f"[frontier] wp-json fallback candidates={len(wp_cands)} date={target_date_mmt}")
             candidates.extend(wp_cands)
 
+    skip_list_fallback_due_to_wp_latest = (
+        wp_json_latest_date_mmt is not None
+        and wp_json_latest_date_mmt < target_date_mmt
+    )
+    if skip_list_fallback_due_to_wp_latest:
+        print(
+            f"[frontier] skip list fallback: "
+            f"wp-json latest_date={wp_json_latest_date_mmt} < target={target_date_mmt}"
+        )
+
     # Google News は pubDate を持つため、記事ページを大量取得する list fallback より先に試す。
     # これにより、対象日の記事だけを数件に絞ってから記事HTML取得へ進める。
     if not candidates:
@@ -4643,10 +4662,17 @@ def collect_frontier_all_for_date(
             candidates.extend(gnews_cands)
 
     if not candidates:
-        list_cands = _fallback_candidates_via_lists()
-        if list_cands:
-            print(f"[frontier] list fallback candidates={len(list_cands)} date={target_date_mmt}")
-            candidates.extend(list_cands)
+        if skip_list_fallback_due_to_wp_latest:
+            if debug:
+                print(
+                    f"[frontier] list fallback skipped "
+                    f"latest_date={wp_json_latest_date_mmt} target={target_date_mmt}"
+                )
+        else:
+            list_cands = _fallback_candidates_via_lists()
+            if list_cands:
+                print(f"[frontier] list fallback candidates={len(list_cands)} date={target_date_mmt}")
+                candidates.extend(list_cands)
 
     # URL重複除去
     uniq: List[Dict] = []
