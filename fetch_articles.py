@@ -4173,17 +4173,168 @@ PROMPT_CURRENCY_RULES = (
     "  → まず「50 × 100万チャット」として解釈し、その上で「〜くらい」「およそ」などのニュアンスを日本語に反映する。\n"
 )
 
-COMMON_TRANSLATION_RULES = (
-    PROMPT_TERMINOLOGY_RULES + "\n" +
-    PROMPT_SPECIAL_RULES + "\n" +
-    PROMPT_CURRENCY_RULES + "\n"
-)
+COMMON_TRANSLATION_RULES = """
+【翻訳時の用語統一ルール（必ず従うこと）】
+このルールは記事タイトルと本文の翻訳に必ず適用してください。
+軍事評議会・軍事委員会 → 親軍政権
+徴用 → 徴兵
+軍事評議会軍 → 国軍
+軍政軍 → 国軍
+親軍政権部隊 → 国軍
+親軍政権側部隊 → 国軍
+ミンアウンフライン率いる国軍 → 国軍
+親軍政権トップ・ミンアウンフライン率いる国軍 → 国軍
+アジア道路 → アジアハイウェイ
+来客登録 → 宿泊登録 / 来客登録者 → 宿泊登録者
+タウンシップ → 郡区
+北オークカラパ・北オカラパ → 北オカラッパ
+サリンギ郡区 → タンリン郡区
+ネーピードー → ネピドー
+ミャンマー国民 → ミャンマー人
+タディンユット → ダディンジュ
+
+【国軍表記の強制ルール】
+「စစ်တပ်」「စစ်ကောင်စီတပ်」「စစ်အာဏာရှင်တပ်」「အကြမ်းဖက် စစ်တပ်」「junta troops」「regime forces」「military column」が国軍・国軍部隊を指す文脈では、本文要約・見出しとも「国軍」と表記する。
+「親軍政権軍」「軍事政権軍」「軍政軍」「親軍政権部隊」「軍事政権部隊」「親軍政権側部隊」「軍事政権側部隊」「親軍政権トップ・ミンアウンフライン率いる国軍」「軍事政権トップ・ミンアウンフライン率いる国軍」「ミンアウンフライン率いる国軍」は使用禁止。必ず「国軍」に置き換える。
+原文に Min Aung Hlaing / မင်းအောင်လှိုင် が明示されていない場合、国軍の行動主体に「ミンアウンフライン」を補ってはならない。
+
+【ミャンマー情勢の用語置き換えルール】（反政権側の運動・組織を指す文脈のみ）
+革命 → 抵抗 / 革命勢力 → 抵抗勢力 / 革命軍 → 抵抗勢力
+
+【その他の用語統一】
+サイドカー → サイカー / SpaceX → スペースX / KK Park → KKパーク / Starlink → スターリンク
+
+【翻訳時の特別ルール】
+「ဖမ်းဆီး」の訳語は文脈によって使い分けること。
+- 犯罪容疑や法律違反に対する文脈 → 「逮捕」
+- それ以外の文脈 → 「拘束」
+
+【政党名の訳語ルール（USDP）】
+「ကြံ့ဖွတ်ပါတီ」「ပြည်ထောင်စုကြံ့ခိုင်ရေးနှင့် ဖွံ့ဖြိုးရေးပါတီ」「USDP」が原文に出た場合：
+使用してよい訳語：「国軍系政党」「国軍系USDP党」「国軍系連邦団結発展党（USDP）」
+- 見出し：「国軍系USDP党」を優先
+- 本文初出：「国軍系連邦団結発展党（USDP）」を優先
+- 2回目以降：「USDP」
+- 一般文脈：「国軍系政党」
+禁止：上記3種類以外の省略形（例：「国軍系USDP」「USDP政党」など）
+
+【武装組織名の訳語ルール（BGF）】
+「BGF」「Karen Border Guard Force」「カレン国境警備隊」が原文に出た場合：
+使用してよい訳語：「国軍系勢力」「国軍系勢力BGF」「国軍傘下のカレン国境警備隊」「国軍傘下のカレン国境警備隊（BGF）」
+- 見出し：「国軍傘下BGF」を優先
+- 本文初出：「国軍傘下のカレン国境警備隊（BGF）」を優先
+- 2回目以降：「BGF」
+- 一般文脈：「国軍系勢力」
+禁止：上記以外の省略形（例：「国軍傘下BGF」「BGF部隊」「国軍系BGF」など）
+
+【武装組織名の訳語ルール（DKBA）】
+「DKBA」「D.K.B.A」「ဒီမိုကရေစီ အကျိုးပြု ကရင်တပ်မတော်」「ဒီမိုကရက်တစ်ကရင်အကျိုးပြုတပ်မတော်」が原文に出た場合：
+使用してよい訳語：「親国軍勢力DKBA」「DKBA」
+- 見出し：「親国軍勢力DKBA」を優先
+- 本文初出：「親国軍勢力DKBA」を優先
+- 2回目以降：文脈上明らかな場合のみ「DKBA」
+- 一般文脈：「親国軍勢力DKBA」
+禁止：「国軍傘下DKBA」「国軍傘下の民主カレン仏教徒軍（DKBA）」「国軍系DKBA」「DKBA部隊」「国軍傘下DKBA軍」など
+
+【武装組織名の訳語ルール（ピューソーティー）】
+「ピューソーティー」「ピュー・ソー・ティー」（同一語）が出た場合：
+- 見出し：「国軍民兵」
+- 本文初出：「国軍民兵ピューソーティー」
+- 本文2回目以降：「ピューソーティー」
+
+【中立的記述ルール（必ず守ること）】
+- 記者の地の文には政治的に偏った語・価値判断語・レッテル語を使用せず、中立語に置き換える。
+  ・残虐な攻撃 → 「攻撃」
+  ・不当な拘束 → 「拘束が行われた」
+  ・違法な政権 → 「違法と批判されている」（誰かの評価と分かる表現に言い換える）
+  ・不正な／偽りの／偽装選挙 → 「選挙」
+- 【国軍・親軍政権に付くレッテル】（ファシスト国軍・テロリスト軍・クーデター軍・テロリスト軍事政権・テロリスト軍事評議会・クーデター軍事評議会 等）
+  → 「国軍」「ミャンマー国軍」「親軍政権」のいずれかに統一。
+- 反政権側組織への国営系メディアのレッテル語も削除する。
+  テロ組織NUG → 「NUG」 / 違法武装組織PDF → 「PDF」 / 分離主義テロ組織○○ → 「○○武装組織」
+
+【引用・スローガン・発言部分の扱い】
+以下は原文を改変せず保持する（引用符内は絶対に書き換えない）：
+1) デモ参加者・団体・市民のスローガン / 2) 当事者の発言・声明 / 3) いずれかの側の主張・批判・要求
+要約ではこれらを「〜と述べた／〜と主張した／〜と訴えた」等の形式で紹介し、断定しない。
+判定：引用符（" " / 「 」 / 『 』）内・明確な発言 → 残す、それ以外 → 中立化。
+
+【選挙に関する特例】
+中立化ルールは「記者の地の文」にのみ適用。スローガン・団体声明・個人の主張（例：「偽りの選挙は不要」「不当な選挙だ」）は原文のニュアンスを保持する。
+
+【時制表現の禁止ルール（要約用）】
+「本日」「昨日」「明日」は使用禁止。必ず原文の具体的な日付を明記すること。
+
+【日付の扱いルール】
+- 原文に年が書かれていない日付に年を補わないこと（「12月4日」のように月日のみで表記）。
+- 「ယနေ့ (မေ ၉)」「May 9」「9 May」のように月日だけが書かれている場合は、「5月9日」のように月日のみで訳す。記事公開年・現在年・取得年・URL・メタデータから年を推測して補わない。
+- 「原文の別箇所に同じ年がある」ことは年付与の根拠にならない。
+  例）「March 2026」と「28 December」が混在しても、要約で「2026年12月28日」としてはならない。
+- 年を出力してよい条件：原文の同じ日付表現に年が結び付いている場合のみ。ただし、当年は要約内では年を省き、「5月9日」「3月」のように月日または月のみで表記する。
+- 当年は、この記事を処理している時点の年を指す。特定の年に固定しない。
+- 例：処理年が2026年なら「2026年5月9日」→「5月9日」、処理年が2027年なら「2027年5月9日」→「5月9日」とする。
+- 当年以外の年は、原文の同じ日付表現に年が結び付いている場合に限り年付きで表記してよい。
+- 英語・ビルマ語原文でも同様。
+
+【通貨換算ルール】
+ミャンマー通貨「チャット（Kyat、ကျပ်）」が出た場合は日本円に換算して併記する。
+- 換算レート：1チャット = 0.0360円（他レート禁止）
+- 形式：「◯チャット（約◯円）」、日本円は小数点以下四捨五入、兆・億・万に機械的に分解。
+- チャット以外（バーツ・米ドル等）には換算しない。
+- 見出しでは換算しない（タイトル・見出しではチャット建てのみを優先）。
+
+【金額分解ルール】
+日本円は桁の繰り上げ・概算・丸めをせず、機械的に兆・億・万に分解すること。
+- 21,060,000,000円 → 210億6000万円（「2兆1060億円」は誤り・桁がずれる）
+- 5,432,100,000円 → 54億3210万円（「543億2100万円」は誤り）
+- 1,234,567,890,000円 → 1兆2345億6789万円
+
+【ミャンマー語の数詞・単位ルール】
+数字と単位は前後どちらに置かれてもよく、スペースの有無も問わない（「၅၀ သိန်း」「သိန်း 50」「50သိန်း」等すべて同じ）。アラビア数字も同様に解釈する。
+
+■ 「သိန်း」= 10万チャット
+「N သိန်း」「သိန်း N」→ N × 10万チャット
+- 「သိန်း 50」「50 သိန်း」「50သိန်း」→ 500万チャット
+- 「သိန်း 3000」「3000 သိန်း」「3000သိန်း」→ 3億チャット
+※誤り：「30 သိန်း」を「30万チャット」とするのは禁止（正しくは300万チャット）
+円換算が必要な場合：まず正しいチャット建てを計算し、その後「約◯円」を併記すること。
+
+■ 「သန်း」= 100万チャット
+「N သန်း」「သန်း N」→ N × 100万チャット
+- 「1 သန်း」「သန်း 1」→ 100万チャット
+- 「50 သန်း」「သန်း 50」→ 5000万チャット
+※誤り：「50 သန်း」を「50万チャット」とするのは禁止（正しくは5000万チャット）
+円換算が必要な場合：まず正しいチャット建てを計算し、その後「約◯円」を併記すること。
+
+■ 「ဘီလီယံ」= 10億チャット（N ≥ 1000 の場合は「兆」が立つ）
+「N ဘီလီယံ」「ဘီလီယံ N」→ N × 10億チャット
+- 「ဘီလီယံ 5」「5 ဘီလီယံ」→ 50億チャット
+- 「ဘီလီယံ 540」「540 ဘီလီယံ」→ 5,400億チャット
+- 「ဘီလီယံ 1000」→ 1兆0億チャット / 「ဘီလီယံ 5329」→ 5兆3,290億チャット
+- 「1068 ဒသမ 66 ဘီလီယံ」→ 1兆686億6000万チャット
+※誤り：「N ဘီလီယံ」を「N億チャット」へ短縮するのは禁止（N × 10億チャットを保持する）
+円換算が必要な場合：まず正しいチャット建てを計算し、その後「約◯円」を併記すること。
+
+■ 語尾（လောက်：〜くらい / ကျော်：〜超 / ခန့်：およそ）が付く場合
+上記ルールで数値と単位を解釈し、語尾のニュアンスを日本語に反映する。
+例：「သိန်း 50 ကျော်」→ 500万チャット超 / 「သန်း 50 လောက်」→ 5000万チャットくらい
+
+■ ミャンマー語の概数金額表現
+「ရာချီ」= 数百単位、「ထောင်ချီ」= 数千単位、「သောင်းချီ」= 数万単位。
+これらが「သိန်း」「သန်း」「ဘီလီယံ」などの金額単位と結び付く場合、必ず前の単位を保持して解釈する。
+- 「သိန်းရာချီ」→ 数百 × 10万チャット = 数千万チャット規模
+- 「သိန်းထောင်ချီ」→ 数千 × 10万チャット = 数億チャット規模
+- 「သန်းရာချီ」→ 数百 × 100万チャット = 数億チャット規模
+- 「သန်းထောင်ချီ」→ 数千 × 100万チャット = 数十億チャット規模
+※「ရာချီ」だけを見て「数百チャット」と訳すのは禁止。
+※概数表現は正確な金額が不明なため、「数千万チャット規模」「数億チャット規模」のように表記し、日本円換算はしない。
+"""
 
 # プロンプト先頭に1回だけ載せる共通ルールブロック（見出し/本文要約/全文訳などに適用）
 COMMON_RULES_HEADER = "【共通ルール（最優先）】\n" + COMMON_TRANSLATION_RULES + "\n\n"
 
 # ============================================================
-# メディア別表記・DKBA表記の強制補正
+# メディア別表記・DKBA表記・国軍表記の強制補正
 # - prompt.js と同じ方針を Python 側にも適用する。
 # - LLM への指示だけでなく、生成後の文字列も機械的に補正する。
 # ============================================================
@@ -4200,6 +4351,7 @@ _OFFICIAL_STYLE_SOURCE_NAMES = {
     "gnlm",
 }
 
+
 def _normalize_source_name_for_style(source: str) -> str:
     s = str(source or "").strip()
     try:
@@ -4209,8 +4361,10 @@ def _normalize_source_name_for_style(source: str) -> str:
     s = re.sub(r"\s+", " ", s)
     return s.lower()
 
+
 def _is_official_style_source(source: str) -> bool:
     return _normalize_source_name_for_style(source) in _OFFICIAL_STYLE_SOURCE_NAMES
+
 
 def _build_source_specific_translation_rules(source: str) -> str:
     source_label = str(source or "").strip() or "不明"
@@ -4219,64 +4373,88 @@ def _build_source_specific_translation_rules(source: str) -> str:
             "【メディア別表記ルール（最優先）】\n"
             f"対象メディア: {source_label}\n"
             "このメディアが Popular Myanmar、News Eleven、Global New Light Of Myanmar のいずれかに該当する場合、以下を必ず守る。\n"
-            "- Min Aung Hlaing / ミンアウンフライン / ミン・アウン・フライン / ミン・アウン・ライン / ミンアウンライン / မင်းအောင်လှိုင် は、見出し・本文要約・全文翻訳とも必ず「ミンアウンフライン大統領」と表記する。\n"
-            "- 見出しで「総司令官、」「上級大将、」「国軍トップ、」のように肩書きだけで主語を省略しない。該当人物が Min Aung Hlaing の場合は必ず「ミンアウンフライン大統領、...」で始める。\n"
-            "- 「軍事政権」という表現は使用禁止。文脈上、組織・政権主体を示す必要がある場合は「政府」と表記する。\n"
-            "- 「軍事政権トップ・ミンアウンフライン」「軍事政権トップのミンアウンフライン」「国軍トップ・ミンアウンフライン」「ミンアウンフライン総司令官」などは使わない。\n"
-            "- DKBA は全メディア共通で「親国軍勢力DKBA」と表記し、「国軍傘下DKBA」は使わない。\n"
+            "- 本文要約（summary）・全文翻訳では、Min Aung Hlaing / ミンアウンフライン / ミン・アウン・フライン / ミン・アウン・ライン / ミンアウンライン / မင်းအောင်လှိုင် は、初出のみ「ミンアウンフライン大統領」と表記し、同一要約・同一記事内の2回目以降は「大統領」と表記する。\n"
+            "- 人物名の誤推定禁止：「တပ်မတော်ကာကွယ်ရေးဦးစီးချုပ်」「国軍総司令官」「Commander-in-Chief」などの役職名だけを根拠に、人物をミンアウンフラインと推定してはならない。原文に人物名が併記されている場合は、その人物名を必ず優先する。\n"
+            "- 「ရဲဝင်းဦး」「ဗိုလ်ချုပ်ကြီး ရဲဝင်းဦး」「Ye Win Oo」「General Ye Win Oo」が原文に出た場合は、本文要約・全文翻訳・見出しとも必ず「国軍総司令官イェ・ウィン・ウー」と表記する。\n"
+            "- Min Aung Hlaing / မင်းအောင်လှိုင် の表記ルールは、原文に Min Aung Hlaing 系の名前が明示されている場合に限って適用する。\n"
+            "- 見出し・タイトルでは、同人物は必ず「大統領」と表記する。「ミンアウンフライン大統領」「親軍政権トップ・ミンアウンフライン」「軍事政権トップ・ミンアウンフライン」「国軍トップ・ミンアウンフライン」「ミンアウンフライン総司令官」は使わない。\n"
+            "- 見出しで「総司令官、」「上級大将、」「国軍トップ、」のように肩書きだけで主語を省略しない。該当人物が Min Aung Hlaing の場合は必ず「大統領、...」で始める。\n"
+            "- 「軍事政権」「親軍政権」という表現は使用禁止。文脈上、組織・政権主体を示す必要がある場合は「政府」と表記する。\n"
+            "- DKBA は全メディア共通で、見出しと本文初出は「親国軍勢力DKBA」、本文2回目以降は文脈上明らかな場合「DKBA」と表記し、「国軍傘下DKBA」は使わない。\n"
         )
+
     return (
         "【メディア別表記ルール（最優先）】\n"
         f"対象メディア: {source_label}\n"
         "このメディアは Popular Myanmar、News Eleven、Global New Light Of Myanmar 以外として扱う。\n"
-        "- Min Aung Hlaing / ミンアウンフライン / ミン・アウン・フライン / ミン・アウン・ライン / ミンアウンライン / မင်းအောင်လှိုင် は、見出し・本文要約・全文翻訳とも必ず「軍事政権トップ・ミンアウンフライン」と表記する。\n"
-        "- 見出しで「総司令官、」「国軍トップ、」「国軍指導者、」のように肩書きだけで主語を省略しない。該当人物が Min Aung Hlaing の場合は必ず「軍事政権トップ・ミンアウンフライン、...」で始める。\n"
-        "- 「ミンアウンフライン大統領」「ミンアウンフライン総司令官」「国軍トップ・ミンアウンフライン」「国軍指導者ミンアウンフライン」などは使わない。\n"
-        "- DKBA は全メディア共通で「親国軍勢力DKBA」と表記し、「国軍傘下DKBA」は使わない。\n"
+        "- 本文要約（summary）・全文翻訳では、Min Aung Hlaing / ミンアウンフライン / ミン・アウン・フライン / ミン・アウン・ライン / ミンアウンライン / မင်းအောင်လှိုင် は、初出のみ「親軍政権トップ・ミンアウンフライン」と表記し、同一要約・同一記事内の2回目以降は「ミンアウンフライン」と表記する。\n"
+        "- 人物名の誤推定禁止：「တပ်မတော်ကာကွယ်ရေးဦးစီးချုပ်」「国軍総司令官」「Commander-in-Chief」などの役職名だけを根拠に、人物をミンアウンフラインと推定してはならない。原文に人物名が併記されている場合は、その人物名を必ず優先する。\n"
+        "- 「ရဲဝင်းဦး」「ဗိုလ်ချုပ်ကြီး ရဲဝင်းဦး」「Ye Win Oo」「General Ye Win Oo」が原文に出た場合は、本文要約・全文翻訳・見出しとも必ず「国軍総司令官イェ・ウィン・ウー」と表記する。\n"
+        "- Min Aung Hlaing / မင်းအောင်လှိုင် の表記ルールは、原文に Min Aung Hlaing 系の名前が明示されている場合に限って適用する。\n"
+        "- 見出し・タイトルでは、同人物は必ず「ミンアウンフライン」と表記する。「親軍政権トップ・ミンアウンフライン」「軍事政権トップ・ミンアウンフライン」「ミンアウンフライン大統領」「ミンアウンフライン総司令官」「国軍トップ・ミンアウンフライン」は使わない。\n"
+        "- 見出しで「総司令官、」「国軍トップ、」「国軍指導者、」のように肩書きだけで主語を省略しない。該当人物が Min Aung Hlaing の場合は必ず「ミンアウンフライン、...」で始める。\n"
+        "- DKBA は全メディア共通で、見出しと本文初出は「親国軍勢力DKBA」、本文2回目以降は文脈上明らかな場合「DKBA」と表記し、「国軍傘下DKBA」は使わない。\n"
     )
 
-def _normalize_dkba_terms(text: str) -> str:
+
+def _normalize_dkba_terms(text: str, *, short_after_first: bool = False) -> str:
     if text is None:
         return text
     s = str(text)
+    if s.startswith("ERROR:"):
+        return s
     placeholder = "__TERM_PLACEHOLDER_D__"
 
     s = re.sub(r"親国軍勢力\s*DKBA", placeholder, s, flags=re.IGNORECASE)
-
-    s = re.sub(
-        r"国軍傘下の民主カレン仏教徒軍[（(]\s*D\.?\s*K\.?\s*B\.?\s*A\.?\s*[）)]",
-        placeholder,
-        s,
-        flags=re.IGNORECASE,
-    )
-    s = re.sub(
-        r"民主カレン仏教徒軍[（(]\s*D\.?\s*K\.?\s*B\.?\s*A\.?\s*[）)]",
-        placeholder,
-        s,
-        flags=re.IGNORECASE,
-    )
-    s = re.sub(
-        r"国軍傘下(?:の)?\s*D\.?\s*K\.?\s*B\.?\s*A\.?軍?",
-        placeholder,
-        s,
-        flags=re.IGNORECASE,
-    )
-    s = re.sub(
-        r"国軍系(?:勢力)?\s*D\.?\s*K\.?\s*B\.?\s*A\.?",
-        placeholder,
-        s,
-        flags=re.IGNORECASE,
-    )
-
-    # 単独 DKBA / D.K.B.A も、今回方針では「親国軍勢力DKBA」へ統一する。
-    s = re.sub(r"D\.?\s*K\.?\s*B\.?\s*A\.?", placeholder, s, flags=re.IGNORECASE)
-
-    # ビルマ語名が出力に漏れた場合の保険。
+    s = re.sub(r"国軍傘下の民主カレン仏教徒軍[（(]\s*D\.?\s*K\.?\s*B\.?\s*A\.?\s*[）)]", placeholder, s, flags=re.IGNORECASE)
+    s = re.sub(r"民主カレン仏教徒軍[（(]\s*D\.?\s*K\.?\s*B\.?\s*A\.?\s*[）)]", placeholder, s, flags=re.IGNORECASE)
+    s = re.sub(r"国軍傘下(?:の)?\s*D\.?\s*K\.?\s*B\.?\s*A\.?軍?", placeholder, s, flags=re.IGNORECASE)
+    s = re.sub(r"国軍系(?:勢力)?\s*D\.?\s*K\.?\s*B\.?\s*A\.?", placeholder, s, flags=re.IGNORECASE)
+    s = re.sub(r"D\.?\s*K\.?\s*B\.?\s*A\.?,?", placeholder, s, flags=re.IGNORECASE)
     s = re.sub(r"ဒီမိုကရေစီ\s*အကျိုးပြု\s*ကရင်တပ်မတော်", placeholder, s)
     s = re.sub(r"ဒီမိုကရက်တစ်ကရင်အကျိုးပြုတပ်မတော်", placeholder, s)
     s = re.sub(r"ဒီမိုကရေစီ\s*ကရင်\s*တပ်မတော်", placeholder, s)
 
-    return s.replace(placeholder, "親国軍勢力DKBA")
+    count = 0
+    def repl(_m):
+        nonlocal count
+        count += 1
+        if short_after_first and count >= 2:
+            return "DKBA"
+        return "親国軍勢力DKBA"
+
+    return re.sub(re.escape(placeholder), repl, s)
+
+
+def _normalize_tatmadaw_terms(text: str) -> str:
+    if text is None:
+        return text
+    s = str(text)
+    if s.startswith("ERROR:"):
+        return s
+
+    replacements = [
+        (r"親軍政権軍", "国軍"),
+        (r"軍事政権軍", "国軍"),
+        (r"軍政軍", "国軍"),
+        (r"親軍政権部隊", "国軍"),
+        (r"軍事政権部隊", "国軍"),
+        (r"親軍政権側部隊", "国軍"),
+        (r"軍事政権側部隊", "国軍"),
+        (r"親軍政権傘下(?:の)?部隊", "国軍"),
+        (r"軍事政権傘下(?:の)?部隊", "国軍"),
+        (r"親軍政権傘下(?:の)?軍", "国軍"),
+        (r"軍事政権傘下(?:の)?軍", "国軍"),
+        (r"(?:親軍政権|軍事政権)トップ・ミンアウンフライン(?:が率いる|の率いる|率いる)(?:国軍|軍|部隊|軍部隊)", "国軍"),
+        (r"ミンアウンフライン(?:が率いる|の率いる|率いる)(?:国軍|軍|部隊|軍部隊)", "国軍"),
+        (r"大統領(?:が率いる|の率いる|率いる)(?:国軍|軍|部隊|軍部隊)", "国軍"),
+        (r"国軍の部隊", "国軍"),
+        (r"国軍部隊", "国軍"),
+    ]
+    for pat, repl in replacements:
+        s = re.sub(pat, repl, s)
+    return s
+
 
 def _normalize_military_regime_for_official_source(text: str) -> str:
     if text is None:
@@ -4284,14 +4462,38 @@ def _normalize_military_regime_for_official_source(text: str) -> str:
     return (
         str(text)
         .replace("軍事政権下", "政府の下")
+        .replace("親軍政権下", "政府の下")
         .replace("軍事政権側", "政府側")
+        .replace("親軍政権側", "政府側")
         .replace("軍事政権当局", "政府当局")
+        .replace("親軍政権当局", "政府当局")
         .replace("軍事政権トップ", "政府トップ")
+        .replace("親軍政権トップ", "政府トップ")
         .replace("軍事政権指導者", "政府指導者")
+        .replace("親軍政権指導者", "政府指導者")
         .replace("軍事政権", "政府")
+        .replace("親軍政権", "政府")
     )
 
-def _normalize_min_aung_hlaing_term(text: str, official_style: bool) -> str:
+
+def _normalize_military_regime_for_non_official_source(text: str) -> str:
+    if text is None:
+        return text
+    return str(text).replace("軍事政権", "親軍政権")
+
+
+def _replace_placeholder_with_short_after_first(text: str, placeholder: str, full_text: str, short_text: str, shorten_after_first: bool) -> str:
+    count = 0
+    def repl(_m):
+        nonlocal count
+        count += 1
+        if shorten_after_first and count >= 2:
+            return short_text
+        return full_text
+    return re.sub(re.escape(placeholder), repl, str(text or ""))
+
+
+def _normalize_min_aung_hlaing_term(text: str, official_style: bool, context: str = "body") -> str:
     if text is None:
         return text
     s = str(text)
@@ -4299,41 +4501,83 @@ def _normalize_min_aung_hlaing_term(text: str, official_style: bool) -> str:
         return s
 
     placeholder = "__TERM_PLACEHOLDER_M__"
-    target = "ミンアウンフライン大統領" if official_style else "軍事政権トップ・ミンアウンフライン"
+    context = str(context or "body").lower()
+    is_headline = context in {"headline", "title"}
+
+    if official_style:
+        full_target = "大統領" if is_headline else "ミンアウンフライン大統領"
+        short_target = "大統領"
+    else:
+        full_target = "ミンアウンフライン" if is_headline else "親軍政権トップ・ミンアウンフライン"
+        short_target = "ミンアウンフライン"
+    shorten_after_first = not is_headline
 
     mah_name = r"(?:ミン[・･]?アウン[・･]?(?:フライン|ライン)|Min\s+Aung\s+Hlaing|မင်းအောင်လှိုင်)"
     mah_title = r"(?:氏|大統領|国家大統領|暫定大統領|国軍大統領|上級大将|大将|総司令官|国軍司令官|国軍総司令官|元国軍司令官|元国軍総司令官|国家行政評議会議長|SAC議長)?"
-    leader_prefix = r"(?:(?:ミャンマー)?(?:軍事政権|国軍|軍事委員会|SAC)(?:の)?(?:トップ|指導者|最高指導者|リーダー)(?:である|としての|の|・)?\s*)"
+    leader_prefix = r"(?:(?:ミャンマー)?(?:親軍政権|軍事政権|国軍|軍事委員会|SAC)(?:の)?(?:トップ|指導者|最高指導者|リーダー)(?:である|としての|の|・)?\s*)"
     title_before = r"(?:(?:元)?国軍(?:総)?司令官|国軍総司令官|総司令官|上級大将|大将|暫定大統領|国家大統領|大統領)\s*"
 
-    if official_style:
-        s = re.sub(leader_prefix + mah_name + mah_title, target, s, flags=re.IGNORECASE)
-        s = re.sub(title_before + mah_name + mah_title, target, s, flags=re.IGNORECASE)
-        s = re.sub(mah_name + mah_title, target, s, flags=re.IGNORECASE)
-        return s
-
-    s = re.sub(r"軍事政権トップ・" + mah_name + mah_title, placeholder, s, flags=re.IGNORECASE)
+    s = re.sub(r"(?:親軍政権|軍事政権)トップ・ミンアウンフライン(?:大統領)?", placeholder, s)
+    s = re.sub(r"ミンアウンフライン大統領", placeholder, s)
     s = re.sub(leader_prefix + mah_name + mah_title, placeholder, s, flags=re.IGNORECASE)
     s = re.sub(title_before + mah_name + mah_title, placeholder, s, flags=re.IGNORECASE)
     s = re.sub(mah_name + mah_title, placeholder, s, flags=re.IGNORECASE)
-    return s.replace(placeholder, target)
 
-def normalize_output_terminology_by_source(text: str, source: str) -> str:
+    return _replace_placeholder_with_short_after_first(s, placeholder, full_target, short_target, shorten_after_first)
+
+
+def normalize_output_terminology_by_source(text: str, source: str, context: str = "body") -> str:
     if text is None:
         return text
     s = str(text)
     if s.startswith("ERROR:"):
         return s
 
-    s = _normalize_dkba_terms(s)
+    context = str(context or "body").lower()
+    is_headline = context in {"headline", "title"}
 
+    s = _normalize_dkba_terms(s, short_after_first=not is_headline)
     official_style = _is_official_style_source(source)
-    s = _normalize_min_aung_hlaing_term(s, official_style)
+    s = _normalize_min_aung_hlaing_term(s, official_style, context=context)
+    s = _normalize_tatmadaw_terms(s)
 
-    # 公式系3メディアでは、Min Aung Hlaing の表記補正を終えてから「軍事政権」を除去する。
     if official_style:
         s = _normalize_military_regime_for_official_source(s)
+    else:
+        s = _normalize_military_regime_for_non_official_source(s)
 
+    return s
+
+
+def strip_current_year_from_summary_dates(text: str) -> str:
+    """要約内の当年表記を、JS側ルールに合わせて月日／月のみへ寄せる。"""
+    if text is None:
+        return text
+    s = str(text)
+    if s.startswith("ERROR:"):
+        return s
+    try:
+        year = str(get_today_date_mmt().year)
+    except Exception:
+        year = str(datetime.now(MMT).year)
+
+    def _to_int_text(v: str) -> str:
+        table = str.maketrans("０１２３４５６７８９", "0123456789")
+        try:
+            return str(int(str(v).translate(table)))
+        except Exception:
+            return str(v).translate(table)
+
+    s = re.sub(
+        rf"{re.escape(year)}年([0-9０-９]{{1,2}})月([0-9０-９]{{1,2}})日",
+        lambda m: f"{_to_int_text(m.group(1))}月{_to_int_text(m.group(2))}日",
+        s,
+    )
+    s = re.sub(
+        rf"{re.escape(year)}年([0-9０-９]{{1,2}})月",
+        lambda m: f"{_to_int_text(m.group(1))}月",
+        s,
+    )
     return s
 
 
@@ -4932,8 +5176,9 @@ def process_translation_batches(batch_size=TRANSLATION_BATCH_SIZE, wait_seconds=
 
                 lines_summary = build_summary_lines(output_text, lines)
                 summary_text = "\n".join(lines_summary).strip()
-                translated_title = normalize_output_terminology_by_source(translated_title, item.get("source") or "")
-                summary_text = normalize_output_terminology_by_source(summary_text, item.get("source") or "")
+                translated_title = normalize_output_terminology_by_source(translated_title, item.get("source") or "", context="headline")
+                summary_text = normalize_output_terminology_by_source(summary_text, item.get("source") or "", context="body")
+                summary_text = strip_current_year_from_summary_dates(summary_text)
                 summary_html  = summary_text.replace("\n", "<br>")
 
                 norm_url = _norm_id(item.get("url") or "")
@@ -5351,8 +5596,7 @@ def translate_fulltexts_for_business(urls_in_order_or_items, url_to_source_title
                     if not bj:
                         continue
                     if _normalize_item_id(x.get("item_id")) == target_item_id:
-                        bj = normalize_output_terminology_by_source(bj, source)
-                        bj = normalize_output_terminology_by_source(bj, source)
+                        bj = normalize_output_terminology_by_source(bj, source, context="body")
                         bj = remove_yen_for_non_kyat(bj)
                         bj = fix_kyat_yen_in_text(bj)
                         return bj
@@ -5363,7 +5607,7 @@ def translate_fulltexts_for_business(urls_in_order_or_items, url_to_source_title
                     if not candidate_body:
                         candidate_body = bj
                 if candidate_body:
-                    candidate_body = normalize_output_terminology_by_source(candidate_body, source)
+                    candidate_body = normalize_output_terminology_by_source(candidate_body, source, context="body")
                     candidate_body = remove_yen_for_non_kyat(candidate_body)
                     candidate_body = fix_kyat_yen_in_text(candidate_body)
                     return candidate_body
@@ -5469,7 +5713,7 @@ def translate_fulltexts_for_business(urls_in_order_or_items, url_to_source_title
                     body_ja = raw_body_ja
 
                 body_ja = _apply_term_glossary_to_output(body_ja, src=body_src, prefer="body_ja")
-                body_ja = normalize_output_terminology_by_source(body_ja, b.get("source") or "")
+                body_ja = normalize_output_terminology_by_source(body_ja, b.get("source") or "", context="body")
 
                 # ★ まず「チャット以外」の（約◯◯円）を削除（ドル等の誤換算対策）
                 body_ja = remove_yen_for_non_kyat(body_ja)
@@ -5487,7 +5731,7 @@ def translate_fulltexts_for_business(urls_in_order_or_items, url_to_source_title
             print("🛑 fulltext batch failed:", e)
             for b in batch:
                 bj = _apply_term_glossary_to_output(b["body"], src=b["body"], prefer="body_ja")
-                bj = normalize_output_terminology_by_source(bj, b.get("source") or "")
+                bj = normalize_output_terminology_by_source(bj, b.get("source") or "", context="body")
                 bj = remove_yen_for_non_kyat(bj)
                 bj = fix_kyat_yen_in_text(bj)
                 # ★ バッチそのものが失敗したので、各URLは確実に単体再翻訳に回す
@@ -5532,7 +5776,7 @@ def translate_fulltexts_for_business(urls_in_order_or_items, url_to_source_title
                 )
                 if fixed and _contains_cjk(fixed):
                     repaired = _apply_term_glossary_to_output(fixed, src=raw_body, prefer="body_ja")
-                    repaired = normalize_output_terminology_by_source(repaired, source_raw)
+                    repaired = normalize_output_terminology_by_source(repaired, source_raw, context="body")
                     repaired = remove_yen_for_non_kyat(repaired)
                     repaired = fix_kyat_yen_in_text(repaired)
                     results[j]["body_ja"] = repaired
@@ -6384,8 +6628,8 @@ if __name__ == "__main__":
         meta = url_to_meta.get(u, {})
         source = meta.get("source", "") or ""
         translated_items.append({
-            "title_ja":      normalize_output_terminology_by_source(ft.get("title_ja", "") or "", source),
-            "body_ja":       normalize_output_terminology_by_source(ft.get("body_ja", "") or "", source),
+            "title_ja":      normalize_output_terminology_by_source(ft.get("title_ja", "") or "", source, context="headline"),
+            "body_ja":       normalize_output_terminology_by_source(ft.get("body_ja", "") or "", source, context="body"),
             "source":        source,
             "date":          meta.get("date", "") or "",   # ← 追加
             "url":           u,                            # ← 追加（PDF末尾に追記）
