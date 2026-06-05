@@ -6,14 +6,14 @@
 const COMMON_TRANSLATION_RULES = `
 【翻訳時の用語統一ルール（必ず従うこと）】
 このルールは記事タイトルと本文の翻訳に必ず適用してください。
-軍事評議会・軍事委員会 → 軍事政権
+軍事評議会・軍事委員会 → 親軍政権
 徴用 → 徴兵
 軍事評議会軍 → 国軍
 軍政軍 → 国軍
-軍事政権部隊 → 国軍
-軍事政権側部隊 → 国軍
+親軍政権部隊 → 国軍
+親軍政権側部隊 → 国軍
 ミンアウンフライン率いる国軍 → 国軍
-軍事政権トップ・ミンアウンフライン率いる国軍 → 国軍
+親軍政権トップ・ミンアウンフライン率いる国軍 → 国軍
 アジア道路 → アジアハイウェイ
 来客登録 → 宿泊登録 / 来客登録者 → 宿泊登録者
 タウンシップ → 郡区
@@ -25,7 +25,7 @@ const COMMON_TRANSLATION_RULES = `
 
 【国軍表記の強制ルール】
 「စစ်တပ်」「စစ်ကောင်စီတပ်」「စစ်အာဏာရှင်တပ်」「အကြမ်းဖက် စစ်တပ်」「junta troops」「regime forces」「military column」が国軍・国軍部隊を指す文脈では、本文要約・見出しとも「国軍」と表記する。
-「軍事政権軍」「軍政軍」「軍事政権部隊」「軍事政権トップ・ミンアウンフライン率いる国軍」「ミンアウンフライン率いる国軍」は使用禁止。必ず「国軍」に置き換える。
+「親軍政権軍」「軍事政権軍」「軍政軍」「親軍政権部隊」「軍事政権部隊」「親軍政権トップ・ミンアウンフライン率いる国軍」「軍事政権トップ・ミンアウンフライン率いる国軍」「ミンアウンフライン率いる国軍」は使用禁止。必ず「国軍」に置き換える。
 原文に Min Aung Hlaing / မင်းအောင်လှိုင် が明示されていない場合、国軍の行動主体に「ミンアウンフライン」を補ってはならない。
 
 【ミャンマー情勢の用語置き換えルール】（反政権側の運動・組織を指す文脈のみ）
@@ -79,8 +79,8 @@ const COMMON_TRANSLATION_RULES = `
   ・違法な政権 → 「違法と批判されている」（誰かの評価と分かる表現に言い換える）
   ・不正な／偽りの／偽装選挙 → 「選挙」
 
-- 【国軍・軍事政権に付くレッテル】（ファシスト国軍・テロリスト軍・クーデター軍・テロリスト軍事政権・テロリスト軍事評議会・クーデター軍事評議会 等）
-  → 「国軍」「ミャンマー国軍」「軍事政権」のいずれかに統一。
+- 【国軍・親軍政権に付くレッテル】（ファシスト国軍・テロリスト軍・クーデター軍・テロリスト軍事政権・テロリスト軍事評議会・クーデター軍事評議会 等）
+  → 「国軍」「ミャンマー国軍」「親軍政権」のいずれかに統一。
 
 - 反政権側組織への国営系メディアのレッテル語も削除する。
   テロ組織NUG → 「NUG」 / 違法武装組織PDF → 「PDF」 / 分離主義テロ組織○○ → 「○○武装組織」
@@ -102,7 +102,10 @@ const COMMON_TRANSLATION_RULES = `
 - 「ယနေ့ (မေ ၉)」「May 9」「9 May」のように月日だけが書かれている場合は、「5月9日」のように月日のみで訳す。記事公開年・現在年・取得年・URL・メタデータから年を推測して補わない。
 - 「原文の別箇所に同じ年がある」ことは年付与の根拠にならない。
   例）「March 2026」と「28 December」が混在しても、要約で「2026年12月28日」としてはならない。
-- 年を出力してよい条件：原文の同じ日付表現に年が結び付いている場合のみ（例：2026年3月、March 2026、၂၀၂၆ ခုနှစ် မတ်လ）。
+- 年を出力してよい条件：原文の同じ日付表現に年が結び付いている場合のみ。ただし、当年は要約内では年を省き、「5月9日」「3月」のように月日または月のみで表記する。
+- 当年は、この記事を処理している時点の年を指す。特定の年に固定しない。
+- 例：処理年が2026年なら「2026年5月9日」→「5月9日」、処理年が2027年なら「2027年5月9日」→「5月9日」とする。
+- 当年以外の年は、原文の同じ日付表現に年が結び付いている場合に限り年付きで表記してよい。
 - 英語・ビルマ語原文でも同様。
 
 【通貨換算ルール】
@@ -147,6 +150,18 @@ const COMMON_TRANSLATION_RULES = `
 ■ 語尾（လောက်：〜くらい / ကျော်：〜超 / ခန့်：およそ）が付く場合
 上記ルールで数値と単位を解釈し、語尾のニュアンスを日本語に反映する。
 例：「သိန်း ၅၀ ကျော်」→ 500万チャット超 / 「သန်း ၅၀ လောက်」→ 5000万チャットくらい
+
+■ ミャンマー語の概数金額表現
+「ရာချီ」= 数百単位、「ထောင်ချီ」= 数千単位、「သောင်းချီ」= 数万単位。
+これらが「သိန်း」「သန်း」「ဘီလီယံ」などの金額単位と結び付く場合、必ず前の単位を保持して解釈する。
+
+- 「သိန်းရာချီ」→ 数百 × 10万チャット = 数千万チャット規模
+- 「သိန်းထောင်ချီ」→ 数千 × 10万チャット = 数億チャット規模
+- 「သန်းရာချီ」→ 数百 × 100万チャット = 数億チャット規模
+- 「သန်းထောင်ချီ」→ 数千 × 100万チャット = 数十億チャット規模
+
+※「ရာချီ」だけを見て「数百チャット」と訳すのは禁止。
+※概数表現は正確な金額が不明なため、「数千万チャット規模」「数億チャット規模」のように表記し、日本円換算はしない。
 `;
 
 // セルフチェック用ルール
@@ -385,7 +400,7 @@ const HEADLINE_STRUCTURE_RULES = `
 - 体言止め（名詞・名詞句で終わる）を原則とする
 
 【用語の優先ルール】
-- 「軍事政権」より「国軍」を使う
+- 「親軍政権」より「国軍」を使う
 - 「会談」より「協議」を優先する
 - 略語（NUG、SAC、PDF、ASEAN、KIA など）はそのまま使い、日本語訳しない（ただし CBM は「中央銀行」とする）
 - 数字は半角アラビア数字で記載する
@@ -477,7 +492,7 @@ const SUMMARY_TASK = `
 【細かい情報の扱い】
 - ビル名・支店名・通り名・部屋番号などの詳細な住所情報は、事件の特定に不可欠な場合を除き省略する。
 - 「対話への参加を呼びかけた」「協力強化を強調した」「連帯を表明した」など同趣旨の外交的一般表現は、重要度が低い場合は削ってよい。
-- 国軍・軍事政権傘下の組織は、上下関係を要約に1回だけ明示する。
+- 国軍・親軍政権傘下の組織は、上下関係を要約に1回だけ明示する。
 
 【主体の書き方】
 - 組織声明や会見では、個人名より「KNUは〜」「欧州議会は〜」など組織名を主語にする。
@@ -543,6 +558,7 @@ function buildMultiTaskPromptForRow_(params) {
     headlineGlossaryRules,
   } = params;
 
+  const amountFactsPrompt = buildMyanmarAmountFactsPrompt_(titleRaw, bodyRaw);
   const archiveTeacherSection = buildArchiveTeacherSection_();
   const effectiveHeadlineGlossaryRules =
     headlineGlossaryRules ||
@@ -564,6 +580,8 @@ ${titleRaw || ""}
 
 [記事本文]
 ${bodyRaw || ""}
+
+${amountFactsPrompt || ""}
 
 ====================
 [Task1: 見出しA（タイトル翻訳ベース）]
@@ -639,6 +657,7 @@ ${HEADLINE_OUTPUT_SELF_CHECK_RULE}
 // 分割後 1回目：本文要約だけを生成するプロンプト
 function buildSummaryOnlyPromptForRow_(params) {
   const { titleRaw, bodyRaw, bodyGlossaryRules, sourceVal } = params;
+  const amountFactsPrompt = buildMyanmarAmountFactsPrompt_(titleRaw, bodyRaw);
 
   return `
 【共通ルール（要約に適用・最優先）】
@@ -656,6 +675,8 @@ ${titleRaw || ""}
 
 [記事本文]
 ${bodyRaw || ""}
+
+${amountFactsPrompt || ""}
 
 --- SUMMARY_TASK ---
 ${SUMMARY_TASK}
@@ -1159,7 +1180,7 @@ function shouldSkipGeminiForGnlmEmptyBody_(sourceRaw, bodyRaw) {
 // ============================================================
 // メディア別の表記ルール
 // - 国営紙・国軍系メディアでは本文は「ミンアウンフライン大統領」、見出しは「大統領」、政権主体は「政府」表記を優先
-// - それ以外では本文は「軍事政権トップ・ミンアウンフライン」、見出しは「ミンアウンフライン」表記を優先
+// - それ以外では本文は「親軍政権トップ・ミンアウンフライン」、見出しは「ミンアウンフライン」表記を優先
 // - DKBA は全メディアで「親国軍勢力DKBA」に統一
 // ============================================================
 const OFFICIAL_STYLE_SOURCE_NAMES = {
@@ -1186,41 +1207,42 @@ function buildSourceSpecificTranslationRules_(sourceRaw) {
     return `【メディア別表記ルール（最優先）】
 対象メディア: ${sourceLabel}
 このメディアが Popular Myanmar、News Eleven、Global New Light Of Myanmar のいずれかに該当する場合、以下を必ず守る。
-- 本文要約（summary）では、Min Aung Hlaing / ミンアウンフライン / ミン・アウン・フライン / ミン・アウン・ライン / ミンアウンライン / မင်းအောင်လှိုင် は必ず「ミンアウンフライン大統領」と表記する。
+- 本文要約（summary）では、Min Aung Hlaing / ミンアウンフライン / ミン・アウン・フライン / ミン・アウン・ライン / ミンアウンライン / မင်းအောင်လှိုင် は、初出のみ「ミンアウンフライン大統領」と表記し、同一要約内の2回目以降は「大統領」と表記する。
 - 人物名の誤推定禁止：「တပ်မတော်ကာကွယ်ရေးဦးစီးချုပ်」「国軍総司令官」「Commander-in-Chief」などの役職名だけを根拠に、人物をミンアウンフラインと推定してはならない。原文に人物名が併記されている場合は、その人物名を必ず優先する。
 - 「ရဲဝင်းဦး」「ဗိုလ်ချုပ်ကြီး ရဲဝင်းဦး」「Ye Win Oo」「General Ye Win Oo」が原文に出た場合は、本文要約（summary）・見出し（headlineA / headlineBPrime / headlineBPrimeFewShot）とも必ず「国軍総司令官イェ・ウィン・ウー」と表記する。
 - Min Aung Hlaing / မင်းအောင်လှိုင် の表記ルールは、原文に Min Aung Hlaing 系の名前が明示されている場合に限って適用する。
-- 見出し（headlineA / headlineBPrime / headlineBPrimeFewShot）では、同人物は必ず「大統領」と表記する。「ミンアウンフライン大統領」「軍事政権トップ・ミンアウンフライン」「国軍トップ・ミンアウンフライン」「ミンアウンフライン総司令官」は使わない。
+- 見出し（headlineA / headlineBPrime / headlineBPrimeFewShot）では、同人物は必ず「大統領」と表記する。「ミンアウンフライン大統領」「親軍政権トップ・ミンアウンフライン」「軍事政権トップ・ミンアウンフライン」「国軍トップ・ミンアウンフライン」「ミンアウンフライン総司令官」は使わない。
 - 見出しで「総司令官、」「上級大将、」「国軍トップ、」のように肩書きだけで主語を省略しない。該当人物が Min Aung Hlaing の場合は必ず「大統領、...」で始める。
-- 「軍事政権」という表現は使用禁止。文脈上、組織・政権主体を示す必要がある場合は「政府」と表記する。
-- DKBA は全メディア共通で「親国軍勢力DKBA」と表記し、「国軍傘下DKBA」は使わない。
+- 「軍事政権」「親軍政権」という表現は使用禁止。文脈上、組織・政権主体を示す必要がある場合は「政府」と表記する。
+- DKBA は全メディア共通で、見出しと本文初出は「親国軍勢力DKBA」、本文2回目以降は文脈上明らかな場合「DKBA」と表記し、「国軍傘下DKBA」は使わない。
 `;
   }
 
   return `【メディア別表記ルール（最優先）】
 対象メディア: ${sourceLabel}
 このメディアは Popular Myanmar、News Eleven、Global New Light Of Myanmar 以外として扱う。
-- 本文要約（summary）では、Min Aung Hlaing / ミンアウンフライン / ミン・アウン・フライン / ミン・アウン・ライン / ミンアウンライン / မင်းအောင်လှိုင် は必ず「軍事政権トップ・ミンアウンフライン」と表記する。
+- 本文要約（summary）では、Min Aung Hlaing / ミンアウンフライン / ミン・アウン・フライン / ミン・アウン・ライン / ミンアウンライン / မင်းအောင်လှိုင် は、初出のみ「親軍政権トップ・ミンアウンフライン」と表記し、同一要約内の2回目以降は「ミンアウンフライン」と表記する。
 - 人物名の誤推定禁止：「တပ်မတော်ကာကွယ်ရေးဦးစီးချုပ်」「国軍総司令官」「Commander-in-Chief」などの役職名だけを根拠に、人物をミンアウンフラインと推定してはならない。原文に人物名が併記されている場合は、その人物名を必ず優先する。
 - 「ရဲဝင်းဦး」「ဗိုလ်ချုပ်ကြီး ရဲဝင်းဦး」「Ye Win Oo」「General Ye Win Oo」が原文に出た場合は、本文要約（summary）・見出し（headlineA / headlineBPrime / headlineBPrimeFewShot）とも必ず「国軍総司令官イェ・ウィン・ウー」と表記する。
 - Min Aung Hlaing / မင်းအောင်လှိုင် の表記ルールは、原文に Min Aung Hlaing 系の名前が明示されている場合に限って適用する。
-- 見出し（headlineA / headlineBPrime / headlineBPrimeFewShot）では、同人物は必ず「ミンアウンフライン」と表記する。「軍事政権トップ・ミンアウンフライン」「ミンアウンフライン大統領」「ミンアウンフライン総司令官」「国軍トップ・ミンアウンフライン」は使わない。
+- 見出し（headlineA / headlineBPrime / headlineBPrimeFewShot）では、同人物は必ず「ミンアウンフライン」と表記する。「親軍政権トップ・ミンアウンフライン」「軍事政権トップ・ミンアウンフライン」「ミンアウンフライン大統領」「ミンアウンフライン総司令官」「国軍トップ・ミンアウンフライン」は使わない。
 - 見出しで「総司令官、」「国軍トップ、」「国軍指導者、」のように肩書きだけで主語を省略しない。該当人物が Min Aung Hlaing の場合は必ず「ミンアウンフライン、...」で始める。
-- DKBA は全メディア共通で「親国軍勢力DKBA」と表記し、「国軍傘下DKBA」は使わない。
+- DKBA は全メディア共通で、見出しと本文初出は「親国軍勢力DKBA」、本文2回目以降は文脈上明らかな場合「DKBA」と表記し、「国軍傘下DKBA」は使わない。
 `;
 }
 
-function normalizeDkbaTerms_(text) {
+function normalizeDkbaTerms_(text, options) {
   if (text == null) return text;
   let s = String(text);
+  if (s.indexOf("ERROR:") === 0) return s;
 
-  // 置換後の「親国軍勢力DKBA」が再度 DKBA として拾われないよう、
-  // DKBA を含まないプレースホルダへ一時退避する。
+  const shortAfterFirst = options && options.shortAfterFirst === true;
   const placeholder = "__TERM_PLACEHOLDER_D__";
 
+  // 既に正しい正式表記になっているものを退避
   s = s.replace(/親国軍勢力\s*DKBA/g, placeholder);
 
-  // 旧表記・表記ゆれをすべて新表記へ寄せる。
+  // 旧表記・表記ゆれをすべてDKBAトークンとして退避
   s = s.replace(
     /国軍傘下の民主カレン仏教徒軍[（(]\s*D\.?\s*K\.?\s*B\.?\s*A\.?\s*[）)]/gi,
     placeholder,
@@ -1235,14 +1257,24 @@ function normalizeDkbaTerms_(text) {
   );
   s = s.replace(/国軍系(?:勢力)?\s*D\.?\s*K\.?\s*B\.?\s*A\.?/gi, placeholder);
 
-  // 単独の DKBA / D.K.B.A も、今回の方針では「親国軍勢力DKBA」へ統一する。
+  // 単独の DKBA / D.K.B.A
   s = s.replace(/D\.?\s*K\.?\s*B\.?\s*A\.?/gi, placeholder);
 
-  // ビルマ語名が出力に漏れた場合の保険。
+  // ビルマ語名が出力に漏れた場合
   s = s.replace(/ဒီမိုကရေစီ\s*အကျိုးပြု\s*ကရင်တပ်မတော်/g, placeholder);
   s = s.replace(/ဒီမိုကရက်တစ်ကရင်အကျိုးပြုတပ်မတော်/g, placeholder);
 
-  return s.replace(new RegExp(placeholder, "g"), "親国軍勢力DKBA");
+  let count = 0;
+  return s.replace(new RegExp(placeholder, "g"), function () {
+    count += 1;
+
+    // 要約・本文では、初出だけ正式表記、2回目以降はDKBA
+    if (shortAfterFirst && count >= 2) {
+      return "DKBA";
+    }
+
+    return "親国軍勢力DKBA";
+  });
 }
 
 function normalizeTatmadawTerms_(text) {
@@ -1250,17 +1282,22 @@ function normalizeTatmadawTerms_(text) {
   let s = String(text);
   if (s.indexOf("ERROR:") === 0) return s;
 
-  // 「軍事政権軍」系は、国軍部隊を指す場合はすべて「国軍」へ寄せる。
+  // 「親軍政権軍」「軍事政権軍」系は、国軍部隊を指す場合はすべて「国軍」へ寄せる。
+  s = s.replace(/親軍政権軍/g, "国軍");
   s = s.replace(/軍事政権軍/g, "国軍");
   s = s.replace(/軍政軍/g, "国軍");
+  s = s.replace(/親軍政権部隊/g, "国軍");
   s = s.replace(/軍事政権部隊/g, "国軍");
+  s = s.replace(/親軍政権側部隊/g, "国軍");
   s = s.replace(/軍事政権側部隊/g, "国軍");
+  s = s.replace(/親軍政権傘下(?:の)?部隊/g, "国軍");
   s = s.replace(/軍事政権傘下(?:の)?部隊/g, "国軍");
+  s = s.replace(/親軍政権傘下(?:の)?軍/g, "国軍");
   s = s.replace(/軍事政権傘下(?:の)?軍/g, "国軍");
 
   // 「ミンアウンフライン率いる国軍」系は、人物名を補わず「国軍」に統一する。
   s = s.replace(
-    /軍事政権トップ・ミンアウンフライン(?:が率いる|の率いる|率いる)(?:国軍|軍|部隊|軍部隊)/g,
+    /(?:親軍政権|軍事政権)トップ・ミンアウンフライン(?:が率いる|の率いる|率いる)(?:国軍|軍|部隊|軍部隊)/g,
     "国軍",
   );
   s = s.replace(
@@ -1282,15 +1319,41 @@ function normalizeTatmadawTerms_(text) {
 function normalizeMilitaryRegimeForOfficialSource_(text) {
   if (text == null) return text;
 
-  // 公式系3メディアでは「軍事政権」を禁止し、必要に応じて「政府」へ寄せる。
-  // 先に複合語を処理し、最後に単独の「軍事政権」を処理する。
+  // 公式系3メディアでは「軍事政権」「親軍政権」を禁止し、必要に応じて「政府」へ寄せる。
+  // 先に複合語を処理し、最後に単独の「軍事政権」「親軍政権」を処理する。
   return String(text)
-    .replace(/軍事政権下/g, "政府の下")
-    .replace(/軍事政権側/g, "政府側")
-    .replace(/軍事政権当局/g, "政府当局")
-    .replace(/軍事政権トップ/g, "政府トップ")
-    .replace(/軍事政権指導者/g, "政府指導者")
-    .replace(/軍事政権/g, "政府");
+    .replace(/(?:軍事政権|親軍政権)下/g, "政府の下")
+    .replace(/(?:軍事政権|親軍政権)側/g, "政府側")
+    .replace(/(?:軍事政権|親軍政権)当局/g, "政府当局")
+    .replace(/(?:軍事政権|親軍政権)トップ/g, "政府トップ")
+    .replace(/(?:軍事政権|親軍政権)指導者/g, "政府指導者")
+    .replace(/(?:軍事政権|親軍政権)/g, "政府");
+}
+
+function normalizeMilitaryRegimeForNonOfficialSource_(text) {
+  if (text == null) return text;
+
+  // 非公式系メディアでは、出力に残った旧表記「軍事政権」を「親軍政権」に統一する。
+  // 国軍部隊表現は normalizeTatmadawTerms_ で先に「国軍」へ寄せる。
+  return String(text).replace(/軍事政権/g, "親軍政権");
+}
+
+function _replacePlaceholderWithShortAfterFirst_(
+  text,
+  placeholder,
+  fullText,
+  shortText,
+  shortenAfterFirst,
+) {
+  let count = 0;
+  return String(text || "").replace(
+    new RegExp(escapeRegExp_(placeholder), "g"),
+    function () {
+      count += 1;
+      if (shortenAfterFirst && count >= 2) return shortText;
+      return fullText;
+    },
+  );
 }
 
 function normalizeMinAungHlaingTerm_(text, officialStyle, contextOpt) {
@@ -1301,13 +1364,17 @@ function normalizeMinAungHlaingTerm_(text, officialStyle, contextOpt) {
   const placeholder = "__TERM_PLACEHOLDER_M__";
   const context = String(contextOpt || "body").toLowerCase();
   const isHeadline = context === "headline" || context === "title";
-  const target = officialStyle
+
+  const fullTarget = officialStyle
     ? isHeadline
       ? "大統領"
       : "ミンアウンフライン大統領"
     : isHeadline
       ? "ミンアウンフライン"
-      : "軍事政権トップ・ミンアウンフライン";
+      : "親軍政権トップ・ミンアウンフライン";
+
+  const shortTarget = officialStyle ? "大統領" : "ミンアウンフライン";
+  const shortenAfterFirst = !isHeadline;
 
   // アーカイブで確認された表記ゆれ：
   // ミン・アウン・フライン / ミンアウンフライン / ミン・アウン・ライン / ミンアウンライン
@@ -1319,12 +1386,15 @@ function normalizeMinAungHlaingTerm_(text, officialStyle, contextOpt) {
     "(?:氏|大統領|国家大統領|暫定大統領|国軍大統領|上級大将|大将|総司令官|国軍司令官|国軍総司令官|元国軍司令官|元国軍総司令官|国家行政評議会議長|SAC議長)?";
 
   // 例：
+  // 親軍政権トップのミン・アウン・フライン
   // 軍事政権トップのミン・アウン・フライン
+  // 親軍政権のトップであるミンアウンフライン
   // 軍事政権のトップであるミンアウンフライン
+  // 親軍政権指導者ミン・アウン・フライン
   // 軍事政権指導者ミン・アウン・フライン
   // 国軍指導者ミン・アウン・フライン
   const leaderPrefix =
-    "(?:(?:ミャンマー)?(?:軍事政権|国軍|軍事委員会|SAC)(?:の)?(?:トップ|指導者|最高指導者|リーダー)(?:である|としての|の|・)?\\s*)";
+    "(?:(?:ミャンマー)?(?:親軍政権|軍事政権|国軍|軍事委員会|SAC)(?:の)?(?:トップ|指導者|最高指導者|リーダー)(?:である|としての|の|・)?\\s*)";
 
   // 例：
   // 元国軍司令官ミン・アウン・ライン
@@ -1333,19 +1403,12 @@ function normalizeMinAungHlaingTerm_(text, officialStyle, contextOpt) {
   const titleBefore =
     "(?:(?:元)?国軍(?:総)?司令官|国軍総司令官|総司令官|上級大将|大将|暫定大統領|国家大統領|大統領)\\s*";
 
-  if (officialStyle) {
-    s = s.replace(new RegExp(leaderPrefix + mahName + mahTitle, "gi"), target);
-    s = s.replace(new RegExp(titleBefore + mahName + mahTitle, "gi"), target);
-    s = s.replace(new RegExp(mahName + mahTitle, "gi"), target);
-    return s;
-  }
-
-  // 公式系以外では「軍事政権トップ・ミンアウンフライン」を正規表現で再度拾って
-  // 二重化しないよう、先にプレースホルダへ退避する。
+  // 既に正規化済みの表記も、同一要約内で2回目以降を短縮できるように退避する。
   s = s.replace(
-    new RegExp("軍事政権トップ・" + mahName + mahTitle, "gi"),
+    /(?:親軍政権|軍事政権)トップ・ミンアウンフライン(?:大統領)?/g,
     placeholder,
   );
+  s = s.replace(/ミンアウンフライン大統領/g, placeholder);
 
   s = s.replace(
     new RegExp(leaderPrefix + mahName + mahTitle, "gi"),
@@ -1357,8 +1420,13 @@ function normalizeMinAungHlaingTerm_(text, officialStyle, contextOpt) {
   );
   s = s.replace(new RegExp(mahName + mahTitle, "gi"), placeholder);
 
-  s = s.replace(new RegExp(placeholder, "g"), target);
-  return s;
+  return _replacePlaceholderWithShortAfterFirst_(
+    s,
+    placeholder,
+    fullTarget,
+    shortTarget,
+    shortenAfterFirst,
+  );
 }
 
 function normalizeOutputTerminologyBySource_(text, sourceRaw, contextOpt) {
@@ -1367,7 +1435,11 @@ function normalizeOutputTerminologyBySource_(text, sourceRaw, contextOpt) {
   if (s.indexOf("ERROR:") === 0) return s;
 
   // 1. DKBA は全メディア共通で先に統一
-  s = normalizeDkbaTerms_(s);
+  const context = String(contextOpt || "body").toLowerCase();
+  const isHeadline = context === "headline" || context === "title";
+
+  // 見出しでは正式表記を維持。要約・本文では2回目以降をDKBAにする。
+  s = normalizeDkbaTerms_(s, { shortAfterFirst: !isHeadline });
 
   // 2. メディア別にミンアウンフライン表記を統一
   //    contextOpt="headline" の場合だけ、見出し専用表記へ寄せる。
@@ -1376,13 +1448,15 @@ function normalizeOutputTerminologyBySource_(text, sourceRaw, contextOpt) {
 
   // 2.5. 国軍部隊の不自然な表記を「国軍」へ統一
   //      normalizeMinAungHlaingTerm_ により
-  //      「軍事政権トップ・ミンアウンフライン率いる国軍」が生成される場合があるため、必ずこの後で実行する。
+  //      「親軍政権トップ・ミンアウンフライン率いる国軍」や旧表記「軍事政権トップ・ミンアウンフライン率いる国軍」が生成される場合があるため、必ずこの後で実行する。
   s = normalizeTatmadawTerms_(s);
 
-  // 3. 公式系3メディアでは「軍事政権」を最後に除去
-  //    Min Aung Hlaing の「軍事政権トップ...」表現を先に処理するため、この順番が重要。
+  // 3. 政権表記を最後に統一
+  //    Min Aung Hlaing の「親軍政権トップ...」「軍事政権トップ...」表現を先に処理するため、この順番が重要。
   if (officialStyle) {
     s = normalizeMilitaryRegimeForOfficialSource_(s);
+  } else {
+    s = normalizeMilitaryRegimeForNonOfficialSource_(s);
   }
 
   return s;
@@ -3644,6 +3718,148 @@ function zenkakuDigitsToAscii_(s) {
   );
 }
 
+// 原文中のミャンマー語チャット金額を安全に機械解釈し、要約プロンプトへ補助情報として渡す。
+// ログ出力はしない。要約に金額を必ず入れさせるのではなく、金額に触れる場合の誤訳防止に使う。
+function normalizeMyanmarAmountText_(s) {
+  return String(s || "")
+    .replace(/[၀-၉]/g, function (ch) {
+      return String(ch.charCodeAt(0) - 0x1040);
+    })
+    .replace(/[０-９]/g, function (ch) {
+      return String.fromCharCode(ch.charCodeAt(0) - 0xfee0);
+    })
+    .replace(/ဒသမ/g, ".")
+    .replace(/\s*\.\s*/g, ".")
+    .replace(/[\u200B-\u200D\uFEFF]/g, "")
+    .replace(/\u00A0/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function hasKyatMarkerNear_(src, start, end) {
+  const left = Math.max(0, start - 30);
+  const right = Math.min(src.length, end + 30);
+  const around = src.slice(left, right);
+  return /(?:ငွေ\s*)?ကျပ်|kyat|ks\.?|mmk/i.test(around);
+}
+
+function formatKyatAmountJa_(kyatValue) {
+  let n = Math.round(Number(kyatValue) || 0);
+  if (!Number.isFinite(n) || n <= 0) return "";
+
+  const cho = Math.floor(n / 1000000000000);
+  n = n % 1000000000000;
+
+  const oku = Math.floor(n / 100000000);
+  n = n % 100000000;
+
+  const man = Math.floor(n / 10000);
+  const rest = n % 10000;
+
+  let out = "";
+  if (cho) out += cho + "兆";
+  if (oku) out += oku + "億";
+  if (man) out += man + "万";
+  if (!out && rest) out += rest;
+  if (!out) out = "0";
+
+  return out + "チャット";
+}
+
+function extractMyanmarKyatAmountFacts_(titleRaw, bodyRaw) {
+  const src = normalizeMyanmarAmountText_(
+    String(titleRaw || "") + "\n" + String(bodyRaw || ""),
+  );
+
+  const facts = [];
+  const seen = {};
+
+  function addFact(raw, ja) {
+    raw = String(raw || "").trim();
+    ja = String(ja || "").trim();
+    if (!raw || !ja) return;
+
+    const key = raw + "|" + ja;
+    if (seen[key]) return;
+
+    seen[key] = true;
+    facts.push({ raw: raw, ja: ja });
+  }
+
+  function addApproxFacts(re, ja) {
+    let m;
+    while ((m = re.exec(src)) !== null) {
+      if (hasKyatMarkerNear_(src, m.index, m.index + m[0].length)) {
+        addFact(m[0], ja);
+      }
+    }
+  }
+
+  function addNumericFacts(re, multiplier) {
+    let m;
+    while ((m = re.exec(src)) !== null) {
+      if (!hasKyatMarkerNear_(src, m.index, m.index + m[0].length)) continue;
+
+      const numMatch = String(m[0]).match(/\d+(?:\.\d+)?/);
+      if (!numMatch) continue;
+
+      const num = Number(numMatch[0]);
+      if (!Number.isFinite(num)) continue;
+
+      const ja = formatKyatAmountJa_(num * multiplier);
+      addFact(m[0], ja);
+    }
+  }
+
+  // 概数表現：ကျပ် / Kyat / Ks / MMK が近くにある場合だけ採用
+  addApproxFacts(/သိန်း\s*ရာ\s*ချီ/g, "数千万チャット規模");
+  addApproxFacts(/သိန်း\s*ထောင်\s*ချီ/g, "数億チャット規模");
+  addApproxFacts(/သိန်း\s*သောင်း\s*ချီ/g, "数十億チャット規模");
+
+  addApproxFacts(/သန်း\s*ရာ\s*ချီ/g, "数億チャット規模");
+  addApproxFacts(/သန်း\s*ထောင်\s*ချီ/g, "数十億チャット規模");
+  addApproxFacts(/သန်း\s*သောင်း\s*ချီ/g, "数百億チャット規模");
+
+  // 数値表現：N သိန်း / သိန်း N
+  addNumericFacts(
+    /(?:\d+(?:\.\d+)?\s*သိန်း|သိန်း\s*\d+(?:\.\d+)?)(?:\s*(?:လောက်|ကျော်|ခန့်|ခန့္))?/g,
+    100000,
+  );
+
+  // 数値表現：N သန်း / သန်း N
+  addNumericFacts(
+    /(?:\d+(?:\.\d+)?\s*သန်း|သန်း\s*\d+(?:\.\d+)?)(?:\s*(?:လောက်|ကျော်|ခန့်|ခန့္))?/g,
+    1000000,
+  );
+
+  // 数値表現：N ဘီလီယံ / ဘီလီယံ N
+  addNumericFacts(
+    /(?:\d+(?:\.\d+)?\s*ဘီလီယံ|ဘီလီယံ\s*\d+(?:\.\d+)?)(?:\s*(?:လောက်|ကျော်|ခန့်|ခန့္))?/g,
+    1000000000,
+  );
+
+  return facts;
+}
+
+function buildMyanmarAmountFactsPrompt_(titleRaw, bodyRaw) {
+  const facts = extractMyanmarKyatAmountFacts_(titleRaw, bodyRaw);
+  if (!facts.length) return "";
+
+  return [
+    "【原文中の金額表現の機械解釈】",
+    "以下は、原文で ကျပ် / Kyat / Ks / MMK が近くにある金額表現だけを機械的に抽出したものです。",
+    "要約でこの金額に触れる場合のみ、必ずこの解釈に従ってください。要約に必ず入れる必要はありません。",
+    "概数表現は「規模」として表記し、日本円換算はしないでください。",
+    "単位を落として「数百チャット」「数千チャット」などと訳すことは禁止です。",
+  ]
+    .concat(
+      facts.map(function (f) {
+        return "- 「" + f.raw + "」= " + f.ja;
+      }),
+    )
+    .join("\n");
+}
+
 // ============================================================
 // 日付の年補完を機械的に補正
 // - 要約に「2024年5月9日」のような年付き日付が出た場合、
@@ -3759,13 +3975,33 @@ function sourceHasSameDateWithYear_(sourceText, year, month, day) {
   });
 }
 
+// 要約では当年を省略する。
+// 例：2026年中は「2026年5月9日」→「5月9日」、2027年中は「2027年5月9日」→「5月9日」。
+// 通常は実行時点の年を使う。バックフィル等で固定したい場合だけ "2026" のように設定する。
+const SUMMARY_OMIT_YEAR_OVERRIDE = "";
+
+function getSummaryOmitYear_() {
+  const override = String(SUMMARY_OMIT_YEAR_OVERRIDE || "").trim();
+  if (/^(?:19|20)\d{2}$/.test(override)) return override;
+
+  const tz = Session.getScriptTimeZone() || "Asia/Yangon";
+  return Utilities.formatDate(new Date(), tz, "yyyy");
+}
+
 function stripUnjustifiedYearsFromSummaryDates_(summaryJa, titleRaw, bodyRaw) {
   const sourceText = String(titleRaw || "") + "\n" + String(bodyRaw || "");
-  return String(summaryJa || "").replace(
+  const omitYear = String(getSummaryOmitYear_());
+
+  let out = String(summaryJa || "").replace(
     /((?:19|20)\d{2})年([0-9０-９]{1,2})月([0-9０-９]{1,2})日/g,
     function (match, year, monthRaw, dayRaw) {
       const month = Number(zenkakuDigitsToAscii_(monthRaw));
       const day = Number(zenkakuDigitsToAscii_(dayRaw));
+
+      // 当年は、原文に年が明示されていても要約では年を省く。
+      if (String(year) === omitYear) {
+        return month + "月" + day + "日";
+      }
 
       if (sourceHasSameDateWithYear_(sourceText, year, month, day)) {
         return match;
@@ -3774,6 +4010,17 @@ function stripUnjustifiedYearsFromSummaryDates_(summaryJa, titleRaw, bodyRaw) {
       return month + "月" + day + "日";
     },
   );
+
+  // 「2026年5月」のような月のみの表記も、当年だけ「5月」にする。
+  out = out.replace(
+    new RegExp(omitYear + "年([0-9０-９]{1,2})月", "g"),
+    function (_match, monthRaw) {
+      const month = Number(zenkakuDigitsToAscii_(monthRaw));
+      return month + "月";
+    },
+  );
+
+  return out;
 }
 
 // 例: "5400億チャット" / "1兆2345億6789万チャット" -> 整数チャット
@@ -3931,6 +4178,10 @@ function buildMultiTaskPromptForRows_(items) {
 
   const blocks = items
     .map(function (it, idx) {
+      const amountFactsPrompt = buildMyanmarAmountFactsPrompt_(
+        it.titleRaw,
+        it.bodyRaw,
+      );
       const effectiveHeadlineGlossaryRules =
         it.headlineGlossaryRules ||
         buildRegionRulesForHeadlineTexts_([
@@ -3952,6 +4203,8 @@ ${it.titleRaw || ""}
 
 [記事本文]
 ${it.bodyRaw || ""}
+
+${amountFactsPrompt || ""}
 
 --- Task1 見出しAルール ---
 ${HEADLINE_PROMPT_1}
@@ -4027,6 +4280,11 @@ ${blocks}
 function buildSummaryOnlyPromptForRows_(items) {
   const blocks = items
     .map(function (it, idx) {
+      const amountFactsPrompt = buildMyanmarAmountFactsPrompt_(
+        it.titleRaw,
+        it.bodyRaw,
+      );
+
       return `
 ====================
 [ARTICLE ${idx + 1}]
@@ -4040,6 +4298,8 @@ ${it.titleRaw || ""}
 
 [記事本文]
 ${it.bodyRaw || ""}
+
+${amountFactsPrompt || ""}
 
 --- Task 本文要約ルール ---
 ${SUMMARY_TASK}
