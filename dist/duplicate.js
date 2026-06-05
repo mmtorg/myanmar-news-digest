@@ -8,7 +8,7 @@
  *
  * 2. checkDuplicateTopicsProd() / checkDuplicateTopicsDev()
  *    - O列が空、かつ必要列が埋まっている行だけを対象に、
- *      Gemini で同一トピック数を O列へ、
+ *      Gemini で同一トピック状態（0/1/2）を O列へ、
  *      一致した archive 記事一覧を P列へ書き込む（定期トリガー）
  *
  * 3. 必要なら updateArchive() / checkDuplicateTopics() で prod/dev をまとめて実行可能
@@ -56,7 +56,7 @@ const _DIDX_J = 9; // J: URL
 const _DIDX_K = 10; // K: 採用フラグ
 const _DIDX_M = 12; // M: 原文タイトル
 const _DIDX_N = 13; // N: 原文本文
-const _DIDX_O = 14; // O: 同一トピック数（COL_O_DUPLICATE_COUNT - 1）
+const _DIDX_O = 14; // O: 同一トピック状態（0/1/2）（COL_O_DUPLICATE_COUNT - 1）
 
 // ====================================================
 // 1. アーカイブ更新
@@ -334,14 +334,14 @@ function _isArchivableRow_(row) {
 // ====================================================
 
 /**
- * prod シートの判定対象行に同一トピック数を O列へ書き込む。
+ * prod シートの判定対象行に同一トピック状態（0/1/2）を O列へ書き込む。
  */
 function checkDuplicateTopicsProd() {
   _checkDuplicateTopicsBySheetName_("prod");
 }
 
 /**
- * dev シートの判定対象行に同一トピック数を O列へ書き込む。
+ * dev シートの判定対象行に同一トピック状態（0/1/2）を O列へ書き込む。
  */
 function checkDuplicateTopicsDev() {
   _checkDuplicateTopicsBySheetName_("dev");
@@ -385,13 +385,30 @@ function _checkDuplicateTopicsBySheetName_(sheetName) {
 }
 
 /**
+ * K列の値に採用フラグ `a` が含まれるかを判定する。
+ *
+ * @param {any} value
+ * @returns {boolean}
+ */
+function _hasArchiveKFlagA_(value) {
+  return (
+    String(value || "")
+      .trim()
+      .toLowerCase()
+      .indexOf("a") !== -1
+  );
+}
+
+/**
  * archive 側の同一トピック判定候補行を選別する。
  *
  * ルール:
  * - E/F/G のいずれかに値がある行だけを対象にする
  * - J列(URL)が空の行はそのまま残す
  * - J列(URL)が重複していない行はそのまま残す
- * - J列(URL)が重複している場合は、K列(採用フラグ)='a' の行だけ残す
+ * - J列(URL)が重複している場合は、K列に `a` が含まれる行を優先して残す
+ * - J列(URL)が重複していて、K列に `a` が含まれる行が無い場合は、
+ *   同一トピックの存在判定を落とさないため代表1行を残す
  *
  * @param {any[][]} rows archive シートのデータ行（ヘッダー除く）
  * @returns {{row:any[], sheetRowIndex:number}[]}
@@ -434,16 +451,17 @@ function _selectArchiveRowsForDuplicateCheck_(rows) {
     }
 
     const adopted = group.filter(function (item) {
-      return (
-        String(item.row[_DIDX_K] || "")
-          .trim()
-          .toLowerCase() === "a"
-      );
+      return _hasArchiveKFlagA_(item.row[_DIDX_K]);
     });
 
-    adopted.forEach(function (item) {
-      selected.push(item);
-    });
+    if (adopted.length > 0) {
+      adopted.forEach(function (item) {
+        selected.push(item);
+      });
+      return;
+    }
+
+    selected.push(group[0]);
   });
 
   return selected;
@@ -478,6 +496,8 @@ function _processTopicCheckForSheet_(sheet, archiveSheet, sheetName) {
     return {
       archiveIndex: idx + 1,
       sheetRowIndex: item.sheetRowIndex,
+      k: String(row[_DIDX_K] || "").trim(),
+      kContainsA: _hasArchiveKFlagA_(row[_DIDX_K]),
       e: e,
       f: f,
       g: g,
@@ -637,18 +657,23 @@ function _processTopicCheckForSheet_(sheet, archiveSheet, sheetName) {
     }
   });
 
-  const countWriteValues = targets.map(function (target) {
+  const statusWriteValues = targets.map(function (target) {
     const rowIndex = target.rowIndex;
     const result = resultsByRowTotal[rowIndex] || { count: 0, matched: [] };
+    const duplicateStatus = _calculateDuplicateTopicStatus_(
+      result,
+      archiveArticleMapById,
+    );
 
     Logger.log(
-      "[checkDuplicateTopics] row=%s media=%s → O列=%s",
+      "[checkDuplicateTopics] row=%s media=%s → O列=%s (sameTopicCount=%s)",
       rowIndex,
       target.media,
+      duplicateStatus,
       result.count,
     );
 
-    return [result.count];
+    return [duplicateStatus];
   });
 
   const matchWriteValues = targets.map(function (target) {
@@ -688,10 +713,10 @@ function _processTopicCheckForSheet_(sheet, archiveSheet, sheetName) {
       .getRange(
         rowIndexes[0],
         COL_O_DUPLICATE_COUNT,
-        countWriteValues.length,
+        statusWriteValues.length,
         1,
       )
-      .setValues(countWriteValues);
+      .setValues(statusWriteValues);
 
     sheet
       .getRange(
@@ -705,13 +730,41 @@ function _processTopicCheckForSheet_(sheet, archiveSheet, sheetName) {
     for (let i = 0; i < targets.length; i++) {
       sheet
         .getRange(targets[i].rowIndex, COL_O_DUPLICATE_COUNT)
-        .setValue(countWriteValues[i][0]);
+        .setValue(statusWriteValues[i][0]);
 
       sheet
         .getRange(targets[i].rowIndex, COL_P_DUPLICATE_MATCHES)
         .setValue(matchWriteValues[i][0]);
     }
   }
+}
+
+/**
+ * O列に書き込む同一トピック状態を算出する。
+ *
+ * 0: 過去2日間に同一トピックの記事が存在しない
+ * 1: 同一トピックの記事は存在するが、該当 archive 行のK列に `a` が含まれない
+ * 2: 同一トピックの記事が存在し、該当 archive 行のいずれかのK列に `a` が含まれる
+ *
+ * @param {{count:number, matched:string[]}} result
+ * @param {Object<string, {kContainsA:boolean}>} archiveArticleMapById
+ * @returns {number}
+ */
+function _calculateDuplicateTopicStatus_(result, archiveArticleMapById) {
+  const uniqueMatched = Array.from(
+    new Set(((result && result.matched) || []).map(String)),
+  );
+  const count = parseInt(result && result.count, 10);
+  const hasSameTopic = uniqueMatched.length > 0 || (!isNaN(count) && count > 0);
+
+  if (!hasSameTopic) return 0;
+
+  const hasAdoptedMatchedArticle = uniqueMatched.some(function (id) {
+    const article = archiveArticleMapById[String(id)];
+    return !!(article && article.kContainsA);
+  });
+
+  return hasAdoptedMatchedArticle ? 2 : 1;
 }
 
 /**
