@@ -7,13 +7,15 @@
  * - GITHUB_TOKEN
  * - SELECTION_ML_GITHUB_WORKFLOW_FILE (default: selection-ml.yml)
  * - ARCHIVE_DRIVE_FOLDER_ID
- * - SELECTION_ML_TARGET_HOUR (default: 1)
- * - SELECTION_ML_TARGET_MINUTE (default: 30)
+ * - SELECTION_ML_TARGET_HOUR (default: 2)
+ * - SELECTION_ML_TARGET_MINUTE (default: 0)
  */
 
 const SELECTION_ML_TIMEZONE = "Asia/Yangon";
 const SELECTION_ML_WATCH_WINDOW_MINUTES = 10;
 const SELECTION_ML_LAST_RUN_PROP = "SELECTION_ML_LAST_RUN_YMD";
+const SELECTION_ML_DEFAULT_TARGET_HOUR = 2;
+const SELECTION_ML_DEFAULT_TARGET_MINUTE = 0;
 
 /**
  * 既存のwatcherトリガーを置き換え、5分おきに実行する。
@@ -29,6 +31,22 @@ function installSelectionMlWatcherTrigger() {
     .timeBased()
     .everyMinutes(5)
     .create();
+}
+
+/**
+ * prod用Selection MLの実行時刻を午前2時に固定する。
+ * 既にScript Propertiesに1:30が残っている場合は、この関数を1回実行する。
+ */
+function setSelectionMlScheduleTo2AM() {
+  const props = PropertiesService.getScriptProperties();
+  props.setProperty(
+    "SELECTION_ML_TARGET_HOUR",
+    String(SELECTION_ML_DEFAULT_TARGET_HOUR),
+  );
+  props.setProperty(
+    "SELECTION_ML_TARGET_MINUTE",
+    String(SELECTION_ML_DEFAULT_TARGET_MINUTE),
+  );
 }
 
 /**
@@ -50,11 +68,15 @@ function selectionMlWatcher() {
       return;
     }
 
-    const targetHour = _selectionMlIntegerProp_(props, "SELECTION_ML_TARGET_HOUR", 1);
+    const targetHour = _selectionMlIntegerProp_(
+      props,
+      "SELECTION_ML_TARGET_HOUR",
+      SELECTION_ML_DEFAULT_TARGET_HOUR,
+    );
     const targetMinute = _selectionMlIntegerProp_(
       props,
       "SELECTION_ML_TARGET_MINUTE",
-      30,
+      SELECTION_ML_DEFAULT_TARGET_MINUTE,
     );
     const currentMinutes =
       Number(Utilities.formatDate(now, SELECTION_ML_TIMEZONE, "H")) * 60 +

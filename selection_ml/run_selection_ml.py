@@ -28,6 +28,8 @@ ARCHIVE_FILE_PREFIX = "prod_"
 ARCHIVE_SHEET_NAME = "prod"
 MODEL_VERSION = "selection-ml-v2-structured-flags-recency-prevday"
 OUTPUT_HEADERS = ["ML採用確率スコア", "ML判定補足", "MLモデルバージョン"]
+OUTPUT_START_COLUMN = "R"
+OUTPUT_END_COLUMN = "T"
 MIN_COLUMNS = 32
 
 COL_DATE = 0       # A
@@ -1260,14 +1262,14 @@ def write_predictions(
 ) -> None:
     data = [
         {
-            "range": f"{sheet_name}!AA1:AC1",
+            "range": f"{sheet_name}!{OUTPUT_START_COLUMN}1:{OUTPUT_END_COLUMN}1",
             "values": [OUTPUT_HEADERS],
         }
     ]
     if values:
         data.append(
             {
-                "range": f"{sheet_name}!AA2:AC{len(values) + 1}",
+                "range": f"{sheet_name}!{OUTPUT_START_COLUMN}2:{OUTPUT_END_COLUMN}{len(values) + 1}",
                 "values": values,
             }
         )
