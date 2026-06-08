@@ -25,7 +25,6 @@ ARCHIVE_DRIVE_FOLDER_ID
 SELECTION_ML_GITHUB_WORKFLOW_FILE=selection-ml.yml
 SELECTION_ML_TARGET_HOUR=1
 SELECTION_ML_TARGET_MINUTE=30
-SELECTION_ML_TARGET_SHEETS=prod,dev
 ```
 
 GitHubの `production` Environmentには `GOOGLE_SERVICE_ACCOUNT_JSON` secretが必要です。
@@ -33,7 +32,19 @@ GitHubの `production` Environmentには `GOOGLE_SERVICE_ACCOUNT_JSON` secretが
 編集権限を付与します。
 
 Apps Scriptで `installSelectionMlWatcherTrigger()` を一度実行すると5分おきのwatcherが
-作成され、標準では毎日ミャンマー時間01:30から10分以内に1日1回
-`.github/workflows/selection-ml.yml` を起動します。即時確認には
-`triggerSelectionMlGitHubActionsNow()` を使用します。このテスト実行は時刻制限を受けず、
-通常の当日実行済み判定にも影響しません。
+作成され、毎日ミャンマー時間01:30から10分以内にprodだけを1日1回処理します。
+
+prodを任意の時刻に手動実行する場合:
+
+```javascript
+triggerSelectionMlProdNow()
+```
+
+devを手動実行する場合:
+
+```javascript
+triggerSelectionMlDevNow()
+```
+
+devには定時実行がありません。どちらの手動実行も通常のprod定時実行済み判定には
+影響しません。

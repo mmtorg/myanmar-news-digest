@@ -5,7 +5,7 @@ from selection_ml.run_selection_ml import (
     build_output_values,
     is_archive_spreadsheet,
     model_text,
-    parse_target_sheets,
+    parse_target_sheet,
 )
 
 
@@ -18,12 +18,15 @@ class SelectionMlTest(unittest.TestCase):
         row[8] = "I"
         self.assertEqual(model_text(row), "E\nF\nG\nI")
 
-    def test_parse_target_sheets_deduplicates(self):
-        self.assertEqual(parse_target_sheets("prod, dev,prod"), ["prod", "dev"])
+    def test_parse_target_sheet_accepts_prod_and_dev(self):
+        self.assertEqual(parse_target_sheet("prod"), "prod")
+        self.assertEqual(parse_target_sheet(" dev "), "dev")
 
-    def test_parse_target_sheets_rejects_unknown_sheet(self):
+    def test_parse_target_sheet_rejects_multiple_or_unknown_sheets(self):
         with self.assertRaises(RuntimeError):
-            parse_target_sheets("prod,archive_prod")
+            parse_target_sheet("prod,dev")
+        with self.assertRaises(RuntimeError):
+            parse_target_sheet("archive_prod")
 
     def test_archive_file_name_must_start_with_prod_prefix(self):
         self.assertTrue(is_archive_spreadsheet({"name": "prod_2026-05"}))

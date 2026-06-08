@@ -18,17 +18,20 @@ on:
         description: "Drive folder containing monthly archive spreadsheets"
         required: true
         type: string
-      target_sheets:
-        description: "Comma-separated target sheets (prod,dev)"
-        required: false
-        default: "prod,dev"
-        type: string
+      target_sheet:
+        description: "Output sheet"
+        required: true
+        default: "dev"
+        type: choice
+        options:
+          - prod
+          - dev
 
 permissions:
   contents: read
 
 concurrency:
-  group: selection-ml-${{ inputs.spreadsheet_id }}
+  group: selection-ml-${{ inputs.spreadsheet_id }}-${{ inputs.target_sheet }}
   cancel-in-progress: false
 
 jobs:
@@ -60,6 +63,6 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           SPREADSHEET_ID: ${{ inputs.spreadsheet_id }}
           ARCHIVE_FOLDER_ID: ${{ inputs.archive_folder_id }}
-          TARGET_SHEETS: ${{ inputs.target_sheets }}
+          TARGET_SHEET: ${{ inputs.target_sheet }}
           MODE: ${{ inputs.mode }}
         run: python -m selection_ml.run_selection_ml

@@ -59,14 +59,11 @@ def required_env(name: str) -> str:
     return value
 
 
-def parse_target_sheets(value: str) -> list[str]:
-    sheets = [part.strip() for part in value.split(",") if part.strip()]
-    invalid = sorted(set(sheets) - {"prod", "dev"})
-    if invalid:
-        raise RuntimeError(f"Unsupported TARGET_SHEETS value: {', '.join(invalid)}")
-    if not sheets:
-        raise RuntimeError("TARGET_SHEETS must contain prod and/or dev")
-    return list(dict.fromkeys(sheets))
+def parse_target_sheet(value: str) -> str:
+    sheet_name = value.strip()
+    if sheet_name not in {"prod", "dev"}:
+        raise RuntimeError("TARGET_SHEET must be prod or dev")
+    return sheet_name
 
 
 def is_archive_spreadsheet(file: dict[str, str]) -> bool:
@@ -318,7 +315,7 @@ def run() -> None:
 
     spreadsheet_id = required_env("SPREADSHEET_ID")
     archive_folder_id = required_env("ARCHIVE_FOLDER_ID")
-    target_sheets = parse_target_sheets(os.environ.get("TARGET_SHEETS", "prod,dev"))
+    target_sheet = parse_target_sheet(required_env("TARGET_SHEET"))
     drive, sheets = get_services()
 
     training_rows, archive_file_count = load_all_training_rows(
@@ -333,21 +330,20 @@ def run() -> None:
     )
     model = train_model(training_rows)
 
-    for sheet_name in target_sheets:
-        current_rows, row_count = load_current_rows(sheets, spreadsheet_id, sheet_name)
-        probabilities = model.positive_probabilities([row.text for row in current_rows])
-        output_values = build_output_values(
-            current_rows,
-            row_count,
-            probabilities,
-            positive_count,
-            len(training_rows),
-        )
-        write_predictions(sheets, spreadsheet_id, sheet_name, output_values)
-        print(
-            f"[selection-ml] sheet={sheet_name} "
-            f"sheet_rows={row_count} scored_rows={len(current_rows)}"
-        )
+    current_rows, row_count = load_current_rows(sheets, spreadsheet_id, target_sheet)
+    probabilities = model.positive_probabilities([row.text for row in current_rows])
+    output_values = build_output_values(
+        current_rows,
+        row_count,
+        probabilities,
+        positive_count,
+        len(training_rows),
+    )
+    write_predictions(sheets, spreadsheet_id, target_sheet, output_values)
+    print(
+        f"[selection-ml] sheet={target_sheet} "
+        f"sheet_rows={row_count} scored_rows={len(current_rows)}"
+    )
 
 
 if __name__ == "__main__":

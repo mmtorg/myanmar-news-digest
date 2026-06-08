@@ -9,7 +9,6 @@
  * - ARCHIVE_DRIVE_FOLDER_ID
  * - SELECTION_ML_TARGET_HOUR (default: 1)
  * - SELECTION_ML_TARGET_MINUTE (default: 30)
- * - SELECTION_ML_TARGET_SHEETS (default: prod,dev)
  */
 
 const SELECTION_ML_TIMEZONE = "Asia/Yangon";
@@ -33,7 +32,7 @@ function installSelectionMlWatcherTrigger() {
 }
 
 /**
- * 指定時刻から10分間の範囲で、1日1回だけSelection MLを起動する。
+ * 指定時刻から10分間の範囲で、1日1回だけprod用Selection MLを起動する。
  */
 function selectionMlWatcher() {
   const lock = LockService.getScriptLock();
@@ -69,23 +68,34 @@ function selectionMlWatcher() {
       return;
     }
 
-    triggerSelectionMlGitHubActions_();
+    triggerSelectionMlGitHubActions_("prod");
     props.setProperty(SELECTION_ML_LAST_RUN_PROP, ymd);
-    Logger.log("[selection-ml] dispatched for " + ymd);
+    Logger.log("[selection-ml] prod dispatched for " + ymd);
   } finally {
     lock.releaseLock();
   }
 }
 
 /**
- * テスト用。時刻・当日実行済み判定を無視して即時起動する。
+ * prod手動実行用。時刻・当日実行済み判定を無視して即時起動する。
  * SELECTION_ML_LAST_RUN_YMD は更新しないため、通常の定時実行には影響しない。
  */
-function triggerSelectionMlGitHubActionsNow() {
-  triggerSelectionMlGitHubActions_();
+function triggerSelectionMlProdNow() {
+  triggerSelectionMlGitHubActions_("prod");
 }
 
-function triggerSelectionMlGitHubActions_() {
+/**
+ * dev手動実行用。devは定時実行しない。
+ */
+function triggerSelectionMlDevNow() {
+  triggerSelectionMlGitHubActions_("dev");
+}
+
+function triggerSelectionMlGitHubActions_(targetSheet) {
+  if (targetSheet !== "prod" && targetSheet !== "dev") {
+    throw new Error("Selection ML target sheet must be prod or dev.");
+  }
+
   const props = PropertiesService.getScriptProperties();
   const owner = mustGetProp_(props, "GITHUB_OWNER");
   const repo = mustGetProp_(props, "GITHUB_REPO");
@@ -94,8 +104,6 @@ function triggerSelectionMlGitHubActions_() {
     props.getProperty("SELECTION_ML_GITHUB_WORKFLOW_FILE") ||
     "selection-ml.yml";
   const archiveFolderId = mustGetProp_(props, "ARCHIVE_DRIVE_FOLDER_ID");
-  const targetSheets =
-    props.getProperty("SELECTION_ML_TARGET_SHEETS") || "prod,dev";
   const spreadsheetId = SpreadsheetApp.getActive().getId();
 
   const url =
@@ -121,7 +129,7 @@ function triggerSelectionMlGitHubActions_() {
         mode: "predict",
         spreadsheet_id: spreadsheetId,
         archive_folder_id: archiveFolderId,
-        target_sheets: targetSheets,
+        target_sheet: targetSheet,
       },
     }),
     muteHttpExceptions: true,
