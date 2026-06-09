@@ -22,9 +22,13 @@ Applied changes:
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
+import random
 import re
+import socket
+import ssl
 import sys
 import time
 import unicodedata
@@ -58,6 +62,12 @@ OUTPUT_START_COLUMN = "R"
 OUTPUT_END_COLUMN = "AC"
 MAX_REASON_FEATURES = 8
 MIN_COLUMNS = 32
+
+SHEETS_WRITE_CHUNK_ROWS_DEFAULT = 25
+SHEETS_WRITE_MAX_PAYLOAD_BYTES_DEFAULT = 1_800_000
+SHEETS_WRITE_MAX_RETRIES_DEFAULT = 6
+SHEETS_WRITE_RETRY_BASE_SECONDS_DEFAULT = 2.0
+SHEETS_WRITE_RETRY_MAX_SECONDS_DEFAULT = 32.0
 
 # Gemini reranking is enabled by default in code.
 # GEMINI_API_KEY must be supplied from GitHub Actions Secrets or another environment variable.
@@ -1463,38 +1473,154 @@ def build_output_values(
     return [by_row_index.get(row_index, blank) for row_index in range(2, row_count + 2)]
 
 
+def approximate_json_bytes(value: Any) -> int:
+    return len(json.dumps(value, ensure_ascii=False).encode("utf-8"))
+
+
+def split_sheet_write_chunks(values: list[list[Any]]) -> list[tuple[int, list[list[Any]]]]:
+    """Split output rows to keep each Sheets write request small and retryable."""
+    if not values:
+        return []
+
+    max_rows = env_int("SHEETS_WRITE_CHUNK_ROWS", SHEETS_WRITE_CHUNK_ROWS_DEFAULT, 1, 500)
+    max_payload_bytes = env_int(
+        "SHEETS_WRITE_MAX_PAYLOAD_BYTES",
+        SHEETS_WRITE_MAX_PAYLOAD_BYTES_DEFAULT,
+        100_000,
+        5_000_000,
+    )
+
+    chunks: list[tuple[int, list[list[Any]]]] = []
+    current_start_row = 2
+    current_rows: list[list[Any]] = []
+    current_bytes = 0
+
+    for sheet_row_index, row_values in enumerate(values, start=2):
+        row_bytes = approximate_json_bytes(row_values)
+        should_flush = bool(current_rows) and (
+            len(current_rows) >= max_rows
+            or current_bytes + row_bytes > max_payload_bytes
+        )
+        if should_flush:
+            chunks.append((current_start_row, current_rows))
+            current_start_row = sheet_row_index
+            current_rows = []
+            current_bytes = 0
+
+        current_rows.append(row_values)
+        current_bytes += row_bytes
+
+    if current_rows:
+        chunks.append((current_start_row, current_rows))
+
+    return chunks
+
+
+def is_retryable_sheets_exception(exc: Exception) -> bool:
+    from googleapiclient.errors import HttpError
+
+    if isinstance(exc, HttpError):
+        status = int(getattr(exc.resp, "status", 0) or 0)
+        return status in {408, 429, 500, 502, 503, 504}
+
+    return isinstance(
+        exc,
+        (
+            ssl.SSLError,
+            socket.timeout,
+            TimeoutError,
+            ConnectionError,
+            ConnectionResetError,
+            BrokenPipeError,
+            http.client.RemoteDisconnected,
+            http.client.IncompleteRead,
+            http.client.CannotSendRequest,
+            http.client.ResponseNotReady,
+        ),
+    )
+
+
+def execute_sheets_write_with_retry(request_factory: Any, description: str) -> Any:
+    max_retries = env_int("SHEETS_WRITE_MAX_RETRIES", SHEETS_WRITE_MAX_RETRIES_DEFAULT, 0, 10)
+    base_sleep = env_float("SHEETS_WRITE_RETRY_BASE_SECONDS", SHEETS_WRITE_RETRY_BASE_SECONDS_DEFAULT, 0.0, 60.0)
+    max_sleep = env_float("SHEETS_WRITE_RETRY_MAX_SECONDS", SHEETS_WRITE_RETRY_MAX_SECONDS_DEFAULT, 1.0, 120.0)
+
+    for attempt in range(max_retries + 1):
+        try:
+            # num_retries handles retryable HTTP responses inside google-api-python-client.
+            # The outer loop also catches transport-level failures such as SSLEOFError.
+            return request_factory().execute(num_retries=2)
+        except Exception as exc:
+            retryable = is_retryable_sheets_exception(exc)
+            if not retryable or attempt >= max_retries:
+                print(
+                    f"[selection-ml-classifier] sheets_write_failed "
+                    f"target={description} attempt={attempt + 1}/{max_retries + 1} "
+                    f"retryable={retryable} error={exc}",
+                    file=sys.stderr,
+                )
+                raise
+
+            wait_seconds = min(max_sleep, base_sleep * (2 ** attempt)) + random.random()
+            print(
+                f"[selection-ml-classifier] sheets_write_retry "
+                f"target={description} attempt={attempt + 1}/{max_retries + 1} "
+                f"sleep={wait_seconds:.1f}s error={exc}",
+                file=sys.stderr,
+            )
+            time.sleep(wait_seconds)
+
+    raise RuntimeError(f"Sheets write retry loop unexpectedly ended: {description}")
+
+
+def update_sheet_range_with_retry(
+    sheets: Any,
+    spreadsheet_id: str,
+    range_name: str,
+    values: list[list[Any]],
+) -> None:
+    execute_sheets_write_with_retry(
+        lambda: sheets.spreadsheets()
+        .values()
+        .update(
+            spreadsheetId=spreadsheet_id,
+            range=range_name,
+            valueInputOption="RAW",
+            body={"values": values},
+        ),
+        range_name,
+    )
+
+
 def write_predictions(
     sheets: Any,
     spreadsheet_id: str,
     sheet_name: str,
     values: list[list[Any]],
 ) -> None:
-    data = [
-        {
-            "range": f"{sheet_name}!{OUTPUT_START_COLUMN}1:{OUTPUT_END_COLUMN}1",
-            "values": [OUTPUT_HEADERS],
-        }
-    ]
-    if values:
-        data.append(
-            {
-                "range": f"{sheet_name}!{OUTPUT_START_COLUMN}2:{OUTPUT_END_COLUMN}{len(values) + 1}",
-                "values": values,
-            }
-        )
-
-    (
-        sheets.spreadsheets()
-        .values()
-        .batchUpdate(
-            spreadsheetId=spreadsheet_id,
-            body={
-                "valueInputOption": "RAW",
-                "data": data,
-            },
-        )
-        .execute()
+    update_sheet_range_with_retry(
+        sheets,
+        spreadsheet_id,
+        f"{sheet_name}!{OUTPUT_START_COLUMN}1:{OUTPUT_END_COLUMN}1",
+        [OUTPUT_HEADERS],
     )
+
+    chunks = split_sheet_write_chunks(values)
+    total_payload_bytes = approximate_json_bytes(values) if values else 0
+    print(
+        f"[selection-ml-classifier] sheets_write rows={len(values)} "
+        f"chunks={len(chunks)} approx_payload_bytes={total_payload_bytes}"
+    )
+
+    for start_row, chunk_values in chunks:
+        end_row = start_row + len(chunk_values) - 1
+        range_name = f"{sheet_name}!{OUTPUT_START_COLUMN}{start_row}:{OUTPUT_END_COLUMN}{end_row}"
+        update_sheet_range_with_retry(
+            sheets,
+            spreadsheet_id,
+            range_name,
+            chunk_values,
+        )
 
 
 def run() -> None:
