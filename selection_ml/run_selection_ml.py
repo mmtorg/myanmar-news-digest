@@ -43,7 +43,7 @@ SCOPES = [
 
 ARCHIVE_FILE_PREFIX = "prod_"
 ARCHIVE_SHEET_NAME = "prod"
-MODEL_VERSION = "selection-ml-v11-hybrid-ml-gemini-weighted-score-secret-on"
+MODEL_VERSION = "selection-ml-v12-hybrid-ml-gemini-js-criteria-prompt"
 OUTPUT_HEADERS = [
     "MLスコア",
     "ML判定補足",
@@ -72,7 +72,9 @@ SHEETS_WRITE_RETRY_MAX_SECONDS_DEFAULT = 32.0
 # Gemini reranking is enabled by default in code.
 # GEMINI_API_KEY must be supplied from GitHub Actions Secrets or another environment variable.
 ENABLE_GEMINI_RERANK = True
-DEFAULT_GEMINI_MODEL = "gemini-2.5-flash-lite"
+DEFAULT_GEMINI_MODEL = "gemini-3.1-flash-lite"
+DEFAULT_GEMINI_FALLBACK_MODEL = "gemini-2.5-flash"
+GEMINI_MODEL_FALLBACK_WAIT_SECONDS_DEFAULT = 2.0
 GEMINI_DEFAULT_MIN_ML_SCORE = 0
 GEMINI_DEFAULT_MAX_ARTICLES = 150
 GEMINI_DEFAULT_BATCH_SIZE = 20
@@ -1041,25 +1043,67 @@ def gemini_system_prompt() -> str:
 各記事について、MLでは拾いにくい意味判断を行い、0〜100のGeminiスコアを返してください。
 
 重要な前提:
-- 添付JSの選定思想を参考にしますが、JSの具体的なキーワード辞書・固定スコア・個別配点は再現しません。
 - Geminiスコアは単独の最終判定ではありません。最終スコアは Python 側で 0.55×ML + 0.45×Gemini として計算します。
-- 媒体名は参考情報に過ぎず、媒体の好みで点を上げ下げしません。
+- 媒体名は参考情報に過ぎません。媒体名に Myanmar / ミャンマー が含まれていても、それだけで直接関連・高評価にしません。
+- 判定に使う本文情報は、原則として E/F/G/I列相当の headline_e / headline_f / headline_g / summary です。URLや媒体名だけを根拠にしません。
+- O/P列の過去2日同一トピック情報は主判定に使いません。重複・続編・別観点の判定は adopted_archive_context と Q列 duplicate_key_q を優先します。
 
-評価方針:
-- ミャンマーへの直接関係が明確な記事を高く評価します。媒体名にMyanmar等が含まれるだけでは直接関連としません。
-- 読者への実務影響・社会影響がある記事を高く評価します。
-- 公的機関による政策・制度・規制・金融・貿易・労働・出入国・物流・電力・品質基準などは、実務影響が明確な場合に高く評価します。
-- 紛争・空爆・攻撃は、被害対象、市民被害、支配地域・補給路・国境・主要都市などの戦略的意味、新規性を見て評価します。
-- 国名・外交・会談だけで高くしすぎません。ミャンマーへの具体的影響がある場合だけ高くします。
-- 国内地域名は単独の高評価理由ではなく、同一事象内の代表性・読者関心の補助として扱います。
-- O/P列やadopted_archive_contextに過去・同日類似情報がある場合、同じ内容の繰り返しなら低くし、明確な続報・新情報・別観点なら高くします。
+最重要の採点方針:
+1. ミャンマー直接関連
+- E/F/G/I列相当の入力から、ミャンマーへの直接関係が確認できる記事を高く評価します。
+- ミャンマーに直接関係ない海外一般ニュースは、話題性・国名・政府機関・法改正・選挙・芸能・スポーツなどがあっても低くします。
+- 直接関連が低い場合は、原則 0〜34、明確に無関係なら 0〜20 を目安にします。
+- 「ミャンマー」という語がなくても、ミャンマー固有の地名、機関、制度、通貨、経済・行政用語から直接関連が判断できる場合は直接関連ありとします。
+
+2. 国名・外交の扱い
+- 中国・米国・日本は最上位国、タイ・インド・マレーシア・バングラデシュ・ASEAN周辺国は次点、韓国は補助的に扱います。
+- ただし、国名・外交会談・訪問・表敬・声明だけでは高評価にしません。
+- 貿易、投資、安全保障、制裁、援助、国境、物流、企業活動、労働、制度変更など、ミャンマーへの具体的影響がある場合だけ評価します。
+- 国名・外交だけで具体的影響が薄い記事は、中位以上に張り付かせないでください。
+
+3. 紛争・空爆・攻撃
+- 市民、住民、子ども、避難民など民間人被害が中心なら高く評価します。
+- 補給路、主要都市、国境、港湾、空港、経済回廊、支配地域、選挙、停戦、行政支配など戦略的意味がある場合も高く評価します。
+- 国軍兵士・治安部隊側の死傷だけが中心で、市民被害や戦略的意味が弱い場合は低めにします。
+- 抵抗勢力・民族武装勢力側の被害は中程度に扱い、単独では過大評価しません。
+
+4. 国内地域
+- ヤンゴン、エーヤワディー、バゴーなどの地域名は、同じ事象の代表記事選びの補助です。
+- 地域名だけで記事単体のGeminiスコアを大きく上げません。
+
+5. JSから反映する優先トピック
+以下は、ミャンマーへの直接関連と実務影響が明確な場合に高評価します。
+- 公的機関による政策・制度・規制・法改正・許認可・行政手続き・税制・関税・輸出入・出入国・労働・企業活動に関わる発表、通達、告示、承認、決定、開始、停止、廃止。
+- 物価、燃料価格、為替、外貨規制、価格統制、外貨使用制限。
+- 中央銀行・CBMによる外貨売却、外貨配分、外貨供給、輸入決済、食用油・燃料・医薬品・生活必需品輸入向けの外貨配分。
+- 税・関税・貿易規制、投資認可、事業許可、企業登録、輸出入実務、通関、国境物流、港湾・コンテナ船・海上物流。
+- 行政システム、オンライン申請、手続き変更、出入国、旅券、ビザ、海外就労者関連。
+- 雇用、労働政策、労働組合、賃金、労使関係。
+- 政府・省庁・当局・公的機関が関わる開発計画、インフラ、電力需要・電力供給計画。
+- ビジネス環境、中小企業、企業支援、融資、商工業者、企業活動に影響する制度や政策。
+- ミンアウンフライン、国軍総司令官、ミャンマー政府・省庁などによる、読者に影響する政策・制度・税制・燃料・物価・環境・防災・経済・労働・電力・インフラ・貿易などの提案、発表、声明、指示、承認、決定。
+- 法案提出、議会提出、上程、審議入り、可決、成立、法改正、罰則強化。
+- 通信規制、監視、インターネット制限、情報統制。
+- 食品・医薬品・品質基準、衛生基準、認証、検査、流通規制。
+
+除外・抑制:
+- 単なる表敬訪問、視察、式典、会合、挨拶、PR、芸能、慈善、イベント紹介は、公的機関や有名人物が関与していても高評価にしません。
+- チャット/ドル等の金額表示だけで、物価・為替・外貨トピックにしません。
+- 開発・インフラ・電力・港湾などの単語だけでは高評価にせず、公的発表・実務影響・数量的更新があるかを見ます。
+
+archive採用済み記事候補の扱い:
+- adopted_archive_context は、過去にK列=aで採用済みの記事候補です。日付制限なしで、Q列一致・URL一致・見出し/要約類似度から抽出されています。
+- 現在記事と過去採用済み記事の「いつ・誰が・どこで・何を」がほぼ同じで、新しい進展・数字・反応・被害情報・制度変更・観点がなければ、既出に近い記事として低くします。
+- 同じトピックでも、数字更新、被害拡大、新制度、関係者反応、実務影響の拡大など明確な続報なら高く評価します。
+- 同じ大きなテーマでも、焦点・当事者・地域・政策面・経済面・市民被害面など観点が異なる場合は、単純重複ではなく別観点として評価します。
+- Q列が完全一致、URL一致、見出し・要約の中核が同じ場合は、重複リスクを強く見ます。
 
 Geminiスコアの目安:
 - 85〜100: 手動採用上位に入り得る非常に強い候補。
 - 70〜84: 採用候補として強い。
 - 55〜69: 候補にはなるが、他記事との比較が必要。
 - 35〜54: 参考・バックアップ程度。
-- 0〜34: 原則低優先。ミャンマー直接関連が薄い、既出に近い、実務影響が薄い等。
+- 0〜34: 原則低優先。直接関連が薄い、既出に近い、実務影響が薄い等。
 
 必ずJSONのみを返してください。説明文やMarkdownは不要です。
 """.strip()
@@ -1076,18 +1120,70 @@ def build_gemini_rerank_prompt(payloads: list[dict[str, Any]]) -> str:
                         "decision": "強い採用候補 | 採用候補 | 比較候補 | 低優先",
                         "rank_group": "A | B | C | D",
                         "direct_myanmar_relevance": "高 | 中 | 低",
+                        "country_weight_tier": "none | top_china_us_japan | neighbor_country | korea_country",
+                        "domestic_region_tier": "none | yangon | ayeyarwady | bago | other_myanmar_region",
+                        "conflict_damage_target": "none | civilian | military | resistance | mixed | unclear",
+                        "priority_topic_tags": [
+                            "official_policy_regulation_announcement",
+                            "prices_fuel_forex",
+                            "central_bank_forex_sale_allocation",
+                            "tax_tariff_trade_regulation",
+                            "investment_business_permit",
+                            "import_export_border_logistics",
+                            "port_container_shipping_logistics",
+                            "administrative_system_procedure",
+                            "migration_passport_visa",
+                            "labor_policy_relations",
+                            "development_infrastructure",
+                            "power_demand_project_plan",
+                            "business_sme",
+                            "government_personnel_statement",
+                            "myanmar_leadership_policy_statement",
+                            "law_revision",
+                            "telecom_surveillance_information_control",
+                            "food_medicine_quality_standard",
+                        ],
+                        "adopted_archive_relation": "no_archive_adopted | duplicate_same_content | continuation_update | different_angle | related_but_different | unrelated | unknown",
+                        "adopted_archive_diff_ja": "string: difference from adopted archive article, empty if none",
                         "novelty_vs_archive_or_same_topic": "新規 | 重要続報 | 別観点 | 既出に近い | 不明",
+                        "topic_key": "short stable topic key based on the event, not media or URL",
                         "editorial_axes": [
                             "direct_myanmar_relevance",
+                            "js_priority_topic",
                             "public_policy_or_economic_impact",
                             "conflict_humanitarian_or_strategic_impact",
                             "international_relation_with_practical_impact",
-                            "duplicate_or_continuation_check",
+                            "archive_duplicate_or_continuation_check",
                         ],
                         "reasons": ["string: 1-4 short Japanese reasons"],
                         "risk_flags": ["string: 0-4 short Japanese caution flags"],
                     }
                 ]
+            },
+            "selection_criteria_from_js": {
+                "use_input_columns": "Evaluate headline_e, headline_f, headline_g, and summary. Do not rely on media name or URL alone.",
+                "direct_myanmar_relevance": "If direct Myanmar relevance is low, keep the Gemini score low even when country names or public institutions appear.",
+                "country_weight": "China/US/Japan > neighboring or related countries > South Korea, but only as a supporting criterion when concrete Myanmar impact exists.",
+                "diplomacy_cap": "Diplomatic meetings, visits, courtesy calls, statements, ceremonies, guest books, awards, and greetings should not be high-scored unless practical Myanmar impact is clear.",
+                "conflict": "Prioritize civilian harm and strategic meaning; down-rank military-side casualties alone; treat resistance casualties as mixed unless strategic or civilian impact is clear.",
+                "domestic_region": "Use domestic regions mainly as representative/tie-break signals, not as strong article-level importance by themselves.",
+                "priority_topics": [
+                    "official policy/regulation/law/procedure announcement by Myanmar public bodies",
+                    "prices, fuel, forex, foreign-currency controls",
+                    "central bank foreign-currency sale/allocation for imports and essential goods",
+                    "tax, tariff, trade regulation, investment/business permits",
+                    "import/export, border logistics, port/container/shipping logistics",
+                    "administrative systems, migration/passport/visa, overseas workers",
+                    "labor policy and labor relations",
+                    "government-backed development/infrastructure and power supply plans",
+                    "business/SME support with practical impact",
+                    "Myanmar leadership or ministries making policy statements with public/economic impact",
+                    "law revision or bill submission",
+                    "telecom, surveillance, information control",
+                    "food, medicine, quality and hygiene standards",
+                ],
+                "archive": "Use adopted_archive_context to classify duplicate_same_content, continuation_update, different_angle, related_but_different, unrelated, or unknown.",
+                "avoid_overfitting": "Do not copy exact JS keyword dictionaries or fixed score formulas. Apply the criteria semantically.",
             },
             "scoring_guide": {
                 "85_to_100": "手動採用上位に入り得る非常に強い候補",
@@ -1095,8 +1191,10 @@ def build_gemini_rerank_prompt(payloads: list[dict[str, Any]]) -> str:
                 "55_to_69": "候補にはなるが他記事との比較が必要",
                 "35_to_54": "参考・バックアップ程度",
                 "0_to_34": "原則低優先。直接関連薄い、既出、実務影響薄い等",
+                "non_myanmar_cap": "ミャンマー直接関連が明確に低い場合は原則0〜20",
+                "diplomacy_country_only_cap": "国名・外交だけで具体的影響が薄い場合は高得点にしない",
             },
-            "important_instruction": "具体的キーワードや固定スコア表を再現せず、編集基準を抽象的に適用してください。MLスコアに引きずられすぎず、意味判断として0〜100のGeminiスコアを付けてください。ただし最終判定はPython側の加重平均で行うため、Geminiだけで採否を決めないでください。",
+            "important_instruction": "MLスコアに引きずられすぎず、JSの指定5基準を抽象化した意味判断としてGeminiスコアを付けてください。ただし最終判定はPython側の加重平均で行うため、Geminiだけで採否を決めないでください。",
             "articles": payloads,
         },
         ensure_ascii=False,
@@ -1116,7 +1214,14 @@ GEMINI_RERANK_RESPONSE_SCHEMA: dict[str, Any] = {
                     "decision": {"type": "string"},
                     "rank_group": {"type": "string"},
                     "direct_myanmar_relevance": {"type": "string"},
+                    "country_weight_tier": {"type": "string"},
+                    "domestic_region_tier": {"type": "string"},
+                    "conflict_damage_target": {"type": "string"},
+                    "priority_topic_tags": {"type": "array", "items": {"type": "string"}},
+                    "adopted_archive_relation": {"type": "string"},
+                    "adopted_archive_diff_ja": {"type": "string"},
                     "novelty_vs_archive_or_same_topic": {"type": "string"},
+                    "topic_key": {"type": "string"},
                     "editorial_axes": {"type": "array", "items": {"type": "string"}},
                     "reasons": {"type": "array", "items": {"type": "string"}},
                     "risk_flags": {"type": "array", "items": {"type": "string"}},
@@ -1126,6 +1231,8 @@ GEMINI_RERANK_RESPONSE_SCHEMA: dict[str, Any] = {
                     "gemini_score",
                     "decision",
                     "rank_group",
+                    "direct_myanmar_relevance",
+                    "adopted_archive_relation",
                     "reasons",
                     "risk_flags",
                 ],
@@ -1148,24 +1255,187 @@ def parse_gemini_json_response(text_value: str) -> dict[str, Any]:
     return {"articles": []}
 
 
+
+def gemini_exception_text(exc: Exception) -> str:
+    """Return a compact text blob for Gemini transient-error detection."""
+    parts: list[str] = [str(exc)]
+
+    for attr_name in ("code", "status_code", "status", "message"):
+        value = getattr(exc, attr_name, None)
+        if value not in (None, ""):
+            parts.append(str(value))
+
+    for response_attr in ("response", "http_response"):
+        response = getattr(exc, response_attr, None)
+        if response is None:
+            continue
+        for attr_name in ("status_code", "status", "text", "content"):
+            value = getattr(response, attr_name, None)
+            if callable(value):
+                try:
+                    value = value()
+                except Exception:
+                    value = None
+            if value not in (None, ""):
+                if isinstance(value, bytes):
+                    value = value.decode("utf-8", errors="replace")
+                parts.append(str(value))
+
+    return "\n".join(parts)
+
+
+def gemini_error_code(exc: Exception) -> int | None:
+    """Extract HTTP-like status code from google-genai exceptions when possible."""
+    for attr_name in ("code", "status_code"):
+        value = getattr(exc, attr_name, None)
+        try:
+            if value is not None:
+                return int(value)
+        except Exception:
+            pass
+
+    for response_attr in ("response", "http_response"):
+        response = getattr(exc, response_attr, None)
+        if response is None:
+            continue
+        for attr_name in ("status_code", "status"):
+            value = getattr(response, attr_name, None)
+            try:
+                if value is not None:
+                    return int(value)
+            except Exception:
+                pass
+
+    text_value = gemini_exception_text(exc)
+    for pattern in (
+        r'"code"\s*:\s*(\d{3})',
+        r"\bHTTP\s+(\d{3})\b",
+        r"\bstatus_code\s*[=:]\s*(\d{3})\b",
+    ):
+        match = re.search(pattern, text_value, flags=re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+
+    return None
+
+
+def should_fallback_to_gemini_model(exc: Exception) -> bool:
+    """Mirror selection.js: fallback only for 429/503/high-demand style errors."""
+    code = gemini_error_code(exc)
+    if code in {429, 503}:
+        return True
+
+    text_value = gemini_exception_text(exc).lower()
+    fallback_signals = [
+        '"code": 429',
+        '"code": 503',
+        "high demand",
+        "currently experiencing high demand",
+        "rate limit",
+        "resource_exhausted",
+        "unavailable",
+    ]
+    return any(signal in text_value for signal in fallback_signals)
+
+
+def generate_gemini_content_once(
+    client: Any,
+    types: Any,
+    model_name: str,
+    contents: list[str],
+) -> Any:
+    """Call one Gemini model once, keeping schema support as a best-effort option."""
+    try:
+        return client.models.generate_content(
+            model=model_name,
+            contents=contents,
+            config=types.GenerateContentConfig(
+                temperature=0,
+                response_mime_type="application/json",
+                response_schema=GEMINI_RERANK_RESPONSE_SCHEMA,
+            ),
+        )
+    except TypeError:
+        # Older google-genai versions may not accept response_schema.
+        return client.models.generate_content(
+            model=model_name,
+            contents=contents,
+            config=types.GenerateContentConfig(
+                temperature=0,
+                response_mime_type="application/json",
+            ),
+        )
+
+
+def generate_gemini_content_with_model_fallback(
+    client: Any,
+    types: Any,
+    primary_model_name: str,
+    fallback_model_name: str,
+    contents: list[str],
+    fallback_wait_seconds: float,
+) -> tuple[Any, str]:
+    """Try the primary Gemini model, then fallback model for transient capacity errors."""
+    try:
+        return generate_gemini_content_once(client, types, primary_model_name, contents), primary_model_name
+    except Exception as primary_exc:
+        should_fallback = should_fallback_to_gemini_model(primary_exc)
+        print(
+            f"[selection-ml-classifier] gemini_primary_failed "
+            f"model={primary_model_name} code={gemini_error_code(primary_exc)} "
+            f"fallback={should_fallback} error={str(primary_exc)[:300]}",
+            file=sys.stderr,
+        )
+        if not should_fallback or fallback_model_name == primary_model_name:
+            raise
+
+        if fallback_wait_seconds > 0:
+            time.sleep(fallback_wait_seconds)
+
+        try:
+            response = generate_gemini_content_once(client, types, fallback_model_name, contents)
+            print(
+                f"[selection-ml-classifier] gemini_fallback_succeeded "
+                f"model={fallback_model_name}",
+                file=sys.stderr,
+            )
+            return response, fallback_model_name
+        except Exception as fallback_exc:
+            raise RuntimeError(
+                "Gemini primary and fallback models failed: "
+                f"primary_model={primary_model_name} primary_error={str(primary_exc)[:300]} / "
+                f"fallback_model={fallback_model_name} fallback_error={str(fallback_exc)[:300]}"
+            ) from fallback_exc
+
 def normalize_gemini_result(item: dict[str, Any]) -> dict[str, Any]:
     reasons = item.get("reasons", [])
     risk_flags = item.get("risk_flags", [])
     axes = item.get("editorial_axes", [])
+    priority_tags = item.get("priority_topic_tags", [])
+
     if not isinstance(reasons, list):
         reasons = [cell_text(reasons)] if reasons else []
     if not isinstance(risk_flags, list):
         risk_flags = [cell_text(risk_flags)] if risk_flags else []
     if not isinstance(axes, list):
         axes = [cell_text(axes)] if axes else []
+    if not isinstance(priority_tags, list):
+        priority_tags = [cell_text(priority_tags)] if priority_tags else []
 
     return {
         "gemini_score": clamp_score(item.get("gemini_score"), 0),
         "decision": truncate_text(cell_text(item.get("decision")), 40),
         "rank_group": truncate_text(cell_text(item.get("rank_group")), 10),
         "direct_myanmar_relevance": truncate_text(cell_text(item.get("direct_myanmar_relevance")), 20),
+        "country_weight_tier": truncate_text(cell_text(item.get("country_weight_tier")), 40),
+        "domestic_region_tier": truncate_text(cell_text(item.get("domestic_region_tier")), 40),
+        "conflict_damage_target": truncate_text(cell_text(item.get("conflict_damage_target")), 40),
+        "priority_topic_tags": [truncate_text(str(tag), 80) for tag in priority_tags if cell_text(tag)][:8],
+        "adopted_archive_relation": truncate_text(cell_text(item.get("adopted_archive_relation")), 40),
+        "adopted_archive_diff_ja": truncate_text(cell_text(item.get("adopted_archive_diff_ja")), 220),
         "novelty_vs_archive_or_same_topic": truncate_text(cell_text(item.get("novelty_vs_archive_or_same_topic")), 40),
-        "editorial_axes": [truncate_text(str(axis), 80) for axis in axes if cell_text(axis)][:5],
+        "topic_key": truncate_text(cell_text(item.get("topic_key")), 120),
+        "editorial_axes": [truncate_text(str(axis), 80) for axis in axes if cell_text(axis)][:6],
         "reasons": [truncate_text(str(reason), 90) for reason in reasons if cell_text(reason)][:4],
         "risk_flags": [truncate_text(str(flag), 90) for flag in risk_flags if cell_text(flag)][:4],
     }
@@ -1192,15 +1462,26 @@ def run_gemini_rerank(
         return {}
 
     model_name = os.environ.get("GEMINI_MODEL", DEFAULT_GEMINI_MODEL).strip() or DEFAULT_GEMINI_MODEL
+    fallback_model_name = (
+        os.environ.get("GEMINI_FALLBACK_MODEL", DEFAULT_GEMINI_FALLBACK_MODEL).strip()
+        or DEFAULT_GEMINI_FALLBACK_MODEL
+    )
     batch_size = env_int("GEMINI_RERANK_BATCH_SIZE", GEMINI_DEFAULT_BATCH_SIZE, 1, 50)
     retry_count = env_int("GEMINI_RERANK_RETRIES", 2, 0, 5)
     sleep_seconds = env_float("GEMINI_RERANK_RETRY_SLEEP_SECONDS", 3.0, 0.0, 60.0)
+    fallback_wait_seconds = env_float(
+        "GEMINI_MODEL_FALLBACK_WAIT_SECONDS",
+        GEMINI_MODEL_FALLBACK_WAIT_SECONDS_DEFAULT,
+        0.0,
+        60.0,
+    )
 
     from google import genai
     from google.genai import types
 
     client = genai.Client(api_key=api_key)
     results: dict[int, dict[str, Any]] = {}
+    model_usage_counts: dict[str, int] = {}
     archive_context_map = build_archive_adopted_context_map(rows, archive_records or [])
 
     for start in range(0, len(candidates), batch_size):
@@ -1215,25 +1496,15 @@ def run_gemini_rerank(
         last_error: Exception | None = None
         for attempt in range(retry_count + 1):
             try:
-                try:
-                    response = client.models.generate_content(
-                        model=model_name,
-                        contents=contents,
-                        config=types.GenerateContentConfig(
-                            temperature=0,
-                            response_mime_type="application/json",
-                            response_schema=GEMINI_RERANK_RESPONSE_SCHEMA,
-                        ),
-                    )
-                except TypeError:
-                    response = client.models.generate_content(
-                        model=model_name,
-                        contents=contents,
-                        config=types.GenerateContentConfig(
-                            temperature=0,
-                            response_mime_type="application/json",
-                        ),
-                    )
+                response, used_model_name = generate_gemini_content_with_model_fallback(
+                    client,
+                    types,
+                    model_name,
+                    fallback_model_name,
+                    contents,
+                    fallback_wait_seconds,
+                )
+                model_usage_counts[used_model_name] = model_usage_counts.get(used_model_name, 0) + len(batch)
                 parsed = parse_gemini_json_response(response.text)
                 for item in parsed.get("articles", []):
                     if not isinstance(item, dict):
@@ -1257,7 +1528,8 @@ def run_gemini_rerank(
 
     print(
         f"[selection-ml-classifier] gemini_rerank=done model={model_name} "
-        f"candidates={len(candidates)} results={len(results)}"
+        f"fallback_model={fallback_model_name} candidates={len(candidates)} "
+        f"results={len(results)} model_usage={json.dumps(model_usage_counts, ensure_ascii=False)}"
     )
     return results
 
@@ -1283,6 +1555,7 @@ def format_gemini_reason(result: dict[str, Any] | None) -> str:
     reasons = result.get("reasons", []) or []
     risks = result.get("risk_flags", []) or []
     axes = result.get("editorial_axes", []) or []
+    priority_tags = result.get("priority_topic_tags", []) or []
     parts = []
     if reasons:
         parts.append("理由: " + " / ".join(reasons))
@@ -1290,11 +1563,23 @@ def format_gemini_reason(result: dict[str, Any] | None) -> str:
         parts.append("注意: " + " / ".join(risks))
     if axes:
         parts.append("軸: " + " / ".join(axes))
+    if priority_tags:
+        parts.append("JS優先トピック: " + " / ".join(priority_tags))
     if result.get("direct_myanmar_relevance"):
         parts.append(f"直接関連: {result['direct_myanmar_relevance']}")
+    if result.get("country_weight_tier"):
+        parts.append(f"国名階層: {result['country_weight_tier']}")
+    if result.get("conflict_damage_target"):
+        parts.append(f"紛争被害対象: {result['conflict_damage_target']}")
+    if result.get("adopted_archive_relation"):
+        parts.append(f"過去採用との差分判定: {result['adopted_archive_relation']}")
+    if result.get("adopted_archive_diff_ja"):
+        parts.append(f"差分: {result['adopted_archive_diff_ja']}")
     novelty = result.get("novelty_vs_archive_or_same_topic") or result.get("novelty_vs_same_topic")
     if novelty:
         parts.append(f"新規性: {novelty}")
+    if result.get("topic_key"):
+        parts.append(f"トピックキー: {result['topic_key']}")
     return " / ".join(parts)[:3000]
 
 
