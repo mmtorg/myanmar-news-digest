@@ -39,7 +39,7 @@ SCOPES = [
 
 ARCHIVE_FILE_PREFIX = "prod_"
 ARCHIVE_SHEET_NAME = "prod"
-MODEL_VERSION = "selection-ml-v10-hybrid-ml-gemini-weighted-score-no-media"
+MODEL_VERSION = "selection-ml-v11-hybrid-ml-gemini-weighted-score-secret-on"
 OUTPUT_HEADERS = [
     "MLスコア",
     "ML判定補足",
@@ -59,9 +59,10 @@ OUTPUT_END_COLUMN = "AC"
 MAX_REASON_FEATURES = 8
 MIN_COLUMNS = 32
 
-# Gemini reranking is intentionally optional. If disabled or no API key exists,
-# the script writes ML-only final scores and keeps the existing workflow stable.
-DEFAULT_GEMINI_MODEL = "gemini-3.1-flash-lite"
+# Gemini reranking is enabled by default in code.
+# GEMINI_API_KEY must be supplied from GitHub Actions Secrets or another environment variable.
+ENABLE_GEMINI_RERANK = True
+DEFAULT_GEMINI_MODEL = "gemini-2.5-flash-lite"
 GEMINI_DEFAULT_MIN_ML_SCORE = 0
 GEMINI_DEFAULT_MAX_ARTICLES = 150
 GEMINI_DEFAULT_BATCH_SIZE = 20
@@ -1164,17 +1165,16 @@ def run_gemini_rerank(
     prediction_details: list[dict[str, Any]],
     archive_records: list[ArticleRecord] | None = None,
 ) -> dict[int, dict[str, Any]]:
-    if not env_bool("ENABLE_GEMINI_RERANK", False):
-        print("[selection-ml-classifier] gemini_rerank=disabled")
+    if not ENABLE_GEMINI_RERANK:
+        # This branch is kept only as a code-level emergency switch.
+        print("[selection-ml-classifier] gemini_rerank=disabled_by_code")
         return {}
 
-    api_key = os.environ.get("GEMINI_API_KEY", "").strip() or os.environ.get("GOOGLE_API_KEY", "").strip()
-    if not api_key:
-        print(
-            "[selection-ml-classifier] gemini_rerank=skipped reason=no_GEMINI_API_KEY_or_GOOGLE_API_KEY",
-            file=sys.stderr,
-        )
-        return {}
+    # Gemini reranking is intentionally always-on for this workflow.
+    # Store the API key in GitHub Actions Secrets as GEMINI_API_KEY and expose it
+    # to the job environment. Missing key should fail loudly instead of silently
+    # producing ML-only output.
+    api_key = required_env("GEMINI_API_KEY")
 
     candidates = select_gemini_rerank_candidates(rows, prediction_details)
     if not candidates:
