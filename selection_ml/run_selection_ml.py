@@ -13,6 +13,11 @@ Applied changes:
 - Hand-written topic rules remain removed:
   no priority-topic feature extraction, no direct-Myanmar-relevance feature,
   no previous-day duplicate/continuation adjustment, no recency weighting.
+- Media-name features are also removed. Column C may still be read for records,
+  but media names are not used as model features.
+- Optional Gemini reranking is added as a second-stage evaluator.
+  It returns a 0-100 Gemini score using abstract editorial criteria, then
+  final_score is calculated as a weighted average of ML and Gemini scores.
 """
 
 from __future__ import annotations
@@ -21,6 +26,7 @@ import json
 import os
 import re
 import sys
+import time
 import unicodedata
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
@@ -33,7 +39,7 @@ SCOPES = [
 
 ARCHIVE_FILE_PREFIX = "prod_"
 ARCHIVE_SHEET_NAME = "prod"
-MODEL_VERSION = "selection-ml-v6-ja-pure-classifier-manual-order-weight-explain"
+MODEL_VERSION = "selection-ml-v10-hybrid-ml-gemini-weighted-score-no-media"
 OUTPUT_HEADERS = [
     "MLスコア",
     "ML判定補足",
@@ -41,11 +47,28 @@ OUTPUT_HEADERS = [
     "MLスコア上昇要因",
     "MLスコア低下要因",
     "ML寄与詳細JSON",
+    "Geminiスコア",
+    "Gemini判定",
+    "Gemini理由",
+    "最終スコア",
+    "最終判定補足",
+    "Gemini詳細JSON",
 ]
 OUTPUT_START_COLUMN = "R"
-OUTPUT_END_COLUMN = "W"
+OUTPUT_END_COLUMN = "AC"
 MAX_REASON_FEATURES = 8
 MIN_COLUMNS = 32
+
+# Gemini reranking is intentionally optional. If disabled or no API key exists,
+# the script writes ML-only final scores and keeps the existing workflow stable.
+DEFAULT_GEMINI_MODEL = "gemini-3.1-flash-lite"
+GEMINI_DEFAULT_MIN_ML_SCORE = 0
+GEMINI_DEFAULT_MAX_ARTICLES = 150
+GEMINI_DEFAULT_BATCH_SIZE = 20
+DEFAULT_FINAL_SCORE_ML_WEIGHT = 0.55
+DEFAULT_FINAL_SCORE_GEMINI_WEIGHT = 0.45
+ARCHIVE_ADOPTED_CONTEXT_MAX_ITEMS = 6
+ARCHIVE_ADOPTED_CONTEXT_MAX_CHARS = 2600
 
 COL_DATE = 0       # A
 COL_MEDIA = 2      # C
@@ -55,6 +78,8 @@ COL_G = 6          # G
 COL_I = 8          # I
 COL_URL = 9        # J
 COL_ADOPTED = 10   # K
+COL_SAME_TOPIC_FLAG = 14  # O
+COL_SAME_TOPIC_NOTE = 15  # P
 COL_Q_KEY = 16     # Q
 
 
@@ -69,6 +94,8 @@ class ArticleRecord:
     headline_body: str
     summary: str
     url: str
+    same_topic_flag: str
+    same_topic_note: str
     duplicate_key: str
     label: int | None = None
     manual_rank: int | None = None
@@ -372,6 +399,8 @@ def make_article_record(
         headline_body=normalize_japanese_input_text(values[COL_G]),
         summary=normalize_japanese_input_text(values[COL_I]),
         url=cell_text(values[COL_URL]),
+        same_topic_flag=cell_text(values[COL_SAME_TOPIC_FLAG]),
+        same_topic_note=normalize_japanese_input_text(values[COL_SAME_TOPIC_NOTE]),
         duplicate_key=cell_text(values[COL_Q_KEY]),
         label=label,
         manual_rank=manual_rank,
@@ -536,7 +565,7 @@ def extract_summary(rows: list[ArticleRecord]) -> list[str]:
 
 
 def generic_feature_dicts(rows: list[ArticleRecord]) -> list[dict[str, float | str]]:
-    """Generic non-topic metadata only. No hand-written topic flags."""
+    """Generic non-topic metadata only. No media-name or hand-written topic flags."""
     features: list[dict[str, float | str]] = []
     for row in rows:
         item: dict[str, float | str] = {
@@ -546,7 +575,6 @@ def generic_feature_dicts(rows: list[ArticleRecord]) -> list[dict[str, float | s
             "headline_final_len_bin": min(len(row.headline_final) // 20, 10),
             "headline_body_len_bin": min(len(row.headline_body) // 20, 10),
             "summary_len_bin": min(len(row.summary) // 80, 10),
-            f"media={row.media[:80]}": 1.0,
         }
         features.append(item)
     return features
@@ -749,6 +777,534 @@ def build_detail_json(detail: dict[str, Any]) -> str:
     # Google Sheets cell limit is 50,000 chars. Keep enough margin.
     return json.dumps(payload, ensure_ascii=False)[:45000]
 
+
+
+def env_bool(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None or value == "":
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on", "y"}
+
+
+def env_int(name: str, default: int, min_value: int | None = None, max_value: int | None = None) -> int:
+    raw_value = os.environ.get(name, "").strip()
+    if not raw_value:
+        return default
+    try:
+        value = int(raw_value)
+    except ValueError:
+        return default
+    if min_value is not None:
+        value = max(min_value, value)
+    if max_value is not None:
+        value = min(max_value, value)
+    return value
+
+
+def env_float(name: str, default: float, min_value: float | None = None, max_value: float | None = None) -> float:
+    raw_value = os.environ.get(name, "").strip()
+    if not raw_value:
+        return default
+    try:
+        value = float(raw_value)
+    except ValueError:
+        return default
+    if min_value is not None:
+        value = max(min_value, value)
+    if max_value is not None:
+        value = min(max_value, value)
+    return value
+
+
+def truncate_text(value: str, limit: int) -> str:
+    value = WHITESPACE_RE.sub(" ", cell_text(value)).strip()
+    if len(value) <= limit:
+        return value
+    return value[:limit] + "…"
+
+
+def safe_int(value: Any, default: int = 0) -> int:
+    try:
+        if value is None or value == "":
+            return default
+        return int(round(float(value)))
+    except Exception:
+        return default
+
+
+def clamp_score(value: Any, default: int = 0) -> int:
+    return max(0, min(100, safe_int(value, default)))
+
+
+def should_send_all_rows_to_gemini(rows: list[ArticleRecord], max_articles: int) -> bool:
+    """Default to broad Gemini review when the daily row count fits the cap.
+
+    This avoids hard-coding current-news keywords for low-score rescue. Gemini is
+    still a second-stage reviewer because the final score is a weighted average
+    of ML and Gemini scores.
+    """
+    if not env_bool("GEMINI_RERANK_ALL_CURRENT_ROWS_WHEN_POSSIBLE", True):
+        return False
+    return len(rows) <= max_articles
+
+
+def select_gemini_rerank_candidates(
+    rows: list[ArticleRecord],
+    prediction_details: list[dict[str, Any]],
+) -> list[tuple[ArticleRecord, dict[str, Any]]]:
+    min_ml_score = env_int("GEMINI_RERANK_MIN_ML_SCORE", GEMINI_DEFAULT_MIN_ML_SCORE, 0, 100)
+    max_articles = env_int("GEMINI_RERANK_MAX_ARTICLES", GEMINI_DEFAULT_MAX_ARTICLES, 1, 500)
+
+    if should_send_all_rows_to_gemini(rows, max_articles):
+        return list(zip(rows, prediction_details, strict=True))[:max_articles]
+
+    candidates: list[tuple[ArticleRecord, dict[str, Any], int]] = []
+    for row, detail in zip(rows, prediction_details, strict=True):
+        ml_score = clamp_score(detail.get("score"), 0)
+        same_topic_signal = bool(cell_text(row.same_topic_flag) or cell_text(row.same_topic_note))
+        duplicate_signal = bool(cell_text(row.duplicate_key))
+
+        if ml_score < min_ml_score and not same_topic_signal and not duplicate_signal:
+            continue
+
+        # Generic priority only. Do not hard-code topic keywords here.
+        if ml_score >= 80:
+            priority = 5
+        elif same_topic_signal:
+            priority = 4
+        elif duplicate_signal:
+            priority = 3
+        elif ml_score >= 40:
+            priority = 2
+        else:
+            priority = 1
+        candidates.append((row, detail, priority))
+
+    candidates.sort(
+        key=lambda item: (
+            -item[2],
+            -clamp_score(item[1].get("score"), 0),
+            item[0].row_index,
+        )
+    )
+    return [(row, detail) for row, detail, _priority in candidates[:max_articles]]
+
+def compact_ml_reasons(detail: dict[str, Any], key: str) -> list[str]:
+    values: list[str] = []
+    for item in detail.get(key, [])[:5]:
+        feature = cell_text(item.get("feature"))
+        contribution = item.get("contribution")
+        if feature:
+            values.append(f"{feature}({contribution:+.3f})" if isinstance(contribution, (int, float)) else feature)
+    return values
+
+
+def article_short_title(row: ArticleRecord) -> str:
+    return row.headline_final or row.headline_a or row.headline_body or row.summary[:80]
+
+
+def archive_candidate_text(row: ArticleRecord) -> str:
+    return "\n".join(
+        [row.headline_a, row.headline_final, row.headline_body, row.summary, row.duplicate_key]
+    )
+
+
+def similarity_tokens(value: str) -> set[str]:
+    s = normalize_key_text(value)
+    if not s:
+        return set()
+    # Character n-grams work reasonably for Japanese without maintaining a keyword list.
+    tokens: set[str] = set()
+    for n in (3, 4, 5):
+        for i in range(0, max(0, len(s) - n + 1)):
+            token = s[i : i + n]
+            if token:
+                tokens.add(token)
+    return tokens
+
+
+def generic_similarity_score(a: str, b: str) -> float:
+    tokens_a = similarity_tokens(a)
+    tokens_b = similarity_tokens(b)
+    if not tokens_a or not tokens_b:
+        return 0.0
+    overlap = len(tokens_a & tokens_b)
+    denom = max(1, min(len(tokens_a), len(tokens_b)))
+    return overlap / denom
+
+
+def build_archive_adopted_context_map(
+    current_rows: list[ArticleRecord],
+    archive_rows: list[ArticleRecord],
+) -> dict[int, list[dict[str, Any]]]:
+    """Find already-adopted archive articles that may be duplicates/continuations.
+
+    The matching is intentionally generic: URL, Q duplicate key, normalized title,
+    and text similarity. It does not copy selection.js's topic keyword rules.
+    """
+    adopted = [row for row in archive_rows if int(row.label or 0) == 1]
+    out: dict[int, list[dict[str, Any]]] = {}
+    if not adopted:
+        return out
+
+    for current in current_rows:
+        current_title_key = normalize_key_text(" ".join([current.headline_a, current.headline_final, current.headline_body]))
+        current_text = archive_candidate_text(current)
+        scored: list[tuple[float, ArticleRecord, str]] = []
+        for past in adopted:
+            reasons: list[str] = []
+            score = 0.0
+            if current.url and past.url and current.url == past.url:
+                score += 100.0
+                reasons.append("url_exact")
+            if current.duplicate_key and past.duplicate_key and current.duplicate_key == past.duplicate_key:
+                score += 80.0
+                reasons.append("duplicate_key_exact")
+
+            past_title_key = normalize_key_text(" ".join([past.headline_a, past.headline_final, past.headline_body]))
+            if current_title_key and past_title_key and current_title_key == past_title_key:
+                score += 60.0
+                reasons.append("title_exact")
+
+            sim = generic_similarity_score(current_text, archive_candidate_text(past))
+            if sim >= 0.18:
+                score += sim * 40.0
+                reasons.append(f"text_similarity={sim:.2f}")
+
+            if score > 0:
+                scored.append((score, past, ",".join(reasons)))
+
+        scored.sort(key=lambda item: (-item[0], item[1].row_index))
+        items: list[dict[str, Any]] = []
+        total_chars = 0
+        for score, past, reason in scored[:ARCHIVE_ADOPTED_CONTEXT_MAX_ITEMS]:
+            item = {
+                "archive_row_index": past.row_index,
+                "date_key": past.date_key,
+                "media": past.media,
+                "headline": truncate_text(article_short_title(past), 180),
+                "summary": truncate_text(past.summary, 320),
+                "duplicate_key_q": truncate_text(past.duplicate_key, 160),
+                "match_reason": reason,
+                "match_score": round(score, 2),
+                "url": truncate_text(past.url, 220),
+            }
+            serialized = json.dumps(item, ensure_ascii=False)
+            if items and total_chars + len(serialized) > ARCHIVE_ADOPTED_CONTEXT_MAX_CHARS:
+                break
+            items.append(item)
+            total_chars += len(serialized)
+        if items:
+            out[current.row_index] = items
+    return out
+
+
+def build_gemini_article_payload(
+    row: ArticleRecord,
+    detail: dict[str, Any],
+    archive_context: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    return {
+        "row_index": row.row_index,
+        "ml_score": clamp_score(detail.get("score"), 0),
+        "media_reference_only": row.media,
+        "date_key": row.date_key,
+        "headline_e": truncate_text(row.headline_a, 140),
+        "headline_f": truncate_text(row.headline_final, 140),
+        "headline_g": truncate_text(row.headline_body, 140),
+        "summary": truncate_text(row.summary, 850),
+        "same_topic_flag_o": row.same_topic_flag,
+        "same_topic_note_p": truncate_text(row.same_topic_note, 260),
+        "duplicate_key_q": truncate_text(row.duplicate_key, 180),
+        "adopted_archive_context": archive_context or [],
+        "url": truncate_text(row.url, 240),
+        "ml_positive_reasons": compact_ml_reasons(detail, "positive_reasons"),
+        "ml_negative_reasons": compact_ml_reasons(detail, "negative_reasons"),
+    }
+
+
+def gemini_system_prompt() -> str:
+    return """
+あなたはミャンマー関連ニュースの日本語ダイジェスト編集者です。
+この処理は、純MLの一次スコアを補助するGemini再ランキングです。
+各記事について、MLでは拾いにくい意味判断を行い、0〜100のGeminiスコアを返してください。
+
+重要な前提:
+- 添付JSの選定思想を参考にしますが、JSの具体的なキーワード辞書・固定スコア・個別配点は再現しません。
+- Geminiスコアは単独の最終判定ではありません。最終スコアは Python 側で 0.55×ML + 0.45×Gemini として計算します。
+- 媒体名は参考情報に過ぎず、媒体の好みで点を上げ下げしません。
+
+評価方針:
+- ミャンマーへの直接関係が明確な記事を高く評価します。媒体名にMyanmar等が含まれるだけでは直接関連としません。
+- 読者への実務影響・社会影響がある記事を高く評価します。
+- 公的機関による政策・制度・規制・金融・貿易・労働・出入国・物流・電力・品質基準などは、実務影響が明確な場合に高く評価します。
+- 紛争・空爆・攻撃は、被害対象、市民被害、支配地域・補給路・国境・主要都市などの戦略的意味、新規性を見て評価します。
+- 国名・外交・会談だけで高くしすぎません。ミャンマーへの具体的影響がある場合だけ高くします。
+- 国内地域名は単独の高評価理由ではなく、同一事象内の代表性・読者関心の補助として扱います。
+- O/P列やadopted_archive_contextに過去・同日類似情報がある場合、同じ内容の繰り返しなら低くし、明確な続報・新情報・別観点なら高くします。
+
+Geminiスコアの目安:
+- 85〜100: 手動採用上位に入り得る非常に強い候補。
+- 70〜84: 採用候補として強い。
+- 55〜69: 候補にはなるが、他記事との比較が必要。
+- 35〜54: 参考・バックアップ程度。
+- 0〜34: 原則低優先。ミャンマー直接関連が薄い、既出に近い、実務影響が薄い等。
+
+必ずJSONのみを返してください。説明文やMarkdownは不要です。
+""".strip()
+
+def build_gemini_rerank_prompt(payloads: list[dict[str, Any]]) -> str:
+    return json.dumps(
+        {
+            "task": "semantic_gemini_score_for_hybrid_article_selection",
+            "output_schema": {
+                "articles": [
+                    {
+                        "row_index": "int: input row_index",
+                        "gemini_score": "int 0..100: editorial score judged by Gemini",
+                        "decision": "強い採用候補 | 採用候補 | 比較候補 | 低優先",
+                        "rank_group": "A | B | C | D",
+                        "direct_myanmar_relevance": "高 | 中 | 低",
+                        "novelty_vs_archive_or_same_topic": "新規 | 重要続報 | 別観点 | 既出に近い | 不明",
+                        "editorial_axes": [
+                            "direct_myanmar_relevance",
+                            "public_policy_or_economic_impact",
+                            "conflict_humanitarian_or_strategic_impact",
+                            "international_relation_with_practical_impact",
+                            "duplicate_or_continuation_check",
+                        ],
+                        "reasons": ["string: 1-4 short Japanese reasons"],
+                        "risk_flags": ["string: 0-4 short Japanese caution flags"],
+                    }
+                ]
+            },
+            "scoring_guide": {
+                "85_to_100": "手動採用上位に入り得る非常に強い候補",
+                "70_to_84": "採用候補として強い",
+                "55_to_69": "候補にはなるが他記事との比較が必要",
+                "35_to_54": "参考・バックアップ程度",
+                "0_to_34": "原則低優先。直接関連薄い、既出、実務影響薄い等",
+            },
+            "important_instruction": "具体的キーワードや固定スコア表を再現せず、編集基準を抽象的に適用してください。MLスコアに引きずられすぎず、意味判断として0〜100のGeminiスコアを付けてください。ただし最終判定はPython側の加重平均で行うため、Geminiだけで採否を決めないでください。",
+            "articles": payloads,
+        },
+        ensure_ascii=False,
+    )
+
+
+GEMINI_RERANK_RESPONSE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "articles": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "row_index": {"type": "integer"},
+                    "gemini_score": {"type": "integer"},
+                    "decision": {"type": "string"},
+                    "rank_group": {"type": "string"},
+                    "direct_myanmar_relevance": {"type": "string"},
+                    "novelty_vs_archive_or_same_topic": {"type": "string"},
+                    "editorial_axes": {"type": "array", "items": {"type": "string"}},
+                    "reasons": {"type": "array", "items": {"type": "string"}},
+                    "risk_flags": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": [
+                    "row_index",
+                    "gemini_score",
+                    "decision",
+                    "rank_group",
+                    "reasons",
+                    "risk_flags",
+                ],
+            },
+        }
+    },
+    "required": ["articles"],
+}
+
+def parse_gemini_json_response(text_value: str) -> dict[str, Any]:
+    text_value = cell_text(text_value)
+    if text_value.startswith("```"):
+        text_value = re.sub(r"^```(?:json)?\s*", "", text_value)
+        text_value = re.sub(r"\s*```$", "", text_value)
+    parsed = json.loads(text_value)
+    if isinstance(parsed, list):
+        return {"articles": parsed}
+    if isinstance(parsed, dict):
+        return parsed
+    return {"articles": []}
+
+
+def normalize_gemini_result(item: dict[str, Any]) -> dict[str, Any]:
+    reasons = item.get("reasons", [])
+    risk_flags = item.get("risk_flags", [])
+    axes = item.get("editorial_axes", [])
+    if not isinstance(reasons, list):
+        reasons = [cell_text(reasons)] if reasons else []
+    if not isinstance(risk_flags, list):
+        risk_flags = [cell_text(risk_flags)] if risk_flags else []
+    if not isinstance(axes, list):
+        axes = [cell_text(axes)] if axes else []
+
+    return {
+        "gemini_score": clamp_score(item.get("gemini_score"), 0),
+        "decision": truncate_text(cell_text(item.get("decision")), 40),
+        "rank_group": truncate_text(cell_text(item.get("rank_group")), 10),
+        "direct_myanmar_relevance": truncate_text(cell_text(item.get("direct_myanmar_relevance")), 20),
+        "novelty_vs_archive_or_same_topic": truncate_text(cell_text(item.get("novelty_vs_archive_or_same_topic")), 40),
+        "editorial_axes": [truncate_text(str(axis), 80) for axis in axes if cell_text(axis)][:5],
+        "reasons": [truncate_text(str(reason), 90) for reason in reasons if cell_text(reason)][:4],
+        "risk_flags": [truncate_text(str(flag), 90) for flag in risk_flags if cell_text(flag)][:4],
+    }
+
+def run_gemini_rerank(
+    rows: list[ArticleRecord],
+    prediction_details: list[dict[str, Any]],
+    archive_records: list[ArticleRecord] | None = None,
+) -> dict[int, dict[str, Any]]:
+    if not env_bool("ENABLE_GEMINI_RERANK", False):
+        print("[selection-ml-classifier] gemini_rerank=disabled")
+        return {}
+
+    api_key = os.environ.get("GEMINI_API_KEY", "").strip() or os.environ.get("GOOGLE_API_KEY", "").strip()
+    if not api_key:
+        print(
+            "[selection-ml-classifier] gemini_rerank=skipped reason=no_GEMINI_API_KEY_or_GOOGLE_API_KEY",
+            file=sys.stderr,
+        )
+        return {}
+
+    candidates = select_gemini_rerank_candidates(rows, prediction_details)
+    if not candidates:
+        print("[selection-ml-classifier] gemini_rerank=skipped reason=no_candidates")
+        return {}
+
+    model_name = os.environ.get("GEMINI_MODEL", DEFAULT_GEMINI_MODEL).strip() or DEFAULT_GEMINI_MODEL
+    batch_size = env_int("GEMINI_RERANK_BATCH_SIZE", GEMINI_DEFAULT_BATCH_SIZE, 1, 50)
+    retry_count = env_int("GEMINI_RERANK_RETRIES", 2, 0, 5)
+    sleep_seconds = env_float("GEMINI_RERANK_RETRY_SLEEP_SECONDS", 3.0, 0.0, 60.0)
+
+    from google import genai
+    from google.genai import types
+
+    client = genai.Client(api_key=api_key)
+    results: dict[int, dict[str, Any]] = {}
+    archive_context_map = build_archive_adopted_context_map(rows, archive_records or [])
+
+    for start in range(0, len(candidates), batch_size):
+        batch = candidates[start : start + batch_size]
+        payloads = [
+            build_gemini_article_payload(row, detail, archive_context_map.get(row.row_index, []))
+            for row, detail in batch
+        ]
+        prompt = build_gemini_rerank_prompt(payloads)
+        contents = [gemini_system_prompt(), prompt]
+
+        last_error: Exception | None = None
+        for attempt in range(retry_count + 1):
+            try:
+                try:
+                    response = client.models.generate_content(
+                        model=model_name,
+                        contents=contents,
+                        config=types.GenerateContentConfig(
+                            temperature=0,
+                            response_mime_type="application/json",
+                            response_schema=GEMINI_RERANK_RESPONSE_SCHEMA,
+                        ),
+                    )
+                except TypeError:
+                    response = client.models.generate_content(
+                        model=model_name,
+                        contents=contents,
+                        config=types.GenerateContentConfig(
+                            temperature=0,
+                            response_mime_type="application/json",
+                        ),
+                    )
+                parsed = parse_gemini_json_response(response.text)
+                for item in parsed.get("articles", []):
+                    if not isinstance(item, dict):
+                        continue
+                    row_index = safe_int(item.get("row_index"), -1)
+                    if row_index > 0:
+                        results[row_index] = normalize_gemini_result(item)
+                break
+            except Exception as exc:
+                last_error = exc
+                if attempt < retry_count:
+                    time.sleep(sleep_seconds)
+                else:
+                    print(
+                        f"[selection-ml-classifier] gemini_rerank_batch_failed "
+                        f"start={start} size={len(batch)} error={exc}",
+                        file=sys.stderr,
+                    )
+        if last_error is None:
+            pass
+
+    print(
+        f"[selection-ml-classifier] gemini_rerank=done model={model_name} "
+        f"candidates={len(candidates)} results={len(results)}"
+    )
+    return results
+
+
+def final_score_weights() -> tuple[float, float]:
+    ml_weight = env_float("FINAL_SCORE_ML_WEIGHT", DEFAULT_FINAL_SCORE_ML_WEIGHT, 0.0, 1.0)
+    gemini_weight = env_float("FINAL_SCORE_GEMINI_WEIGHT", DEFAULT_FINAL_SCORE_GEMINI_WEIGHT, 0.0, 1.0)
+    total = ml_weight + gemini_weight
+    if total <= 0:
+        return DEFAULT_FINAL_SCORE_ML_WEIGHT, DEFAULT_FINAL_SCORE_GEMINI_WEIGHT
+    return ml_weight / total, gemini_weight / total
+
+
+def calculate_final_score(ml_score: int, gemini_score: int | None) -> int:
+    if gemini_score is None:
+        return ml_score
+    ml_weight, gemini_weight = final_score_weights()
+    return clamp_score(ml_score * ml_weight + gemini_score * gemini_weight, ml_score)
+
+def format_gemini_reason(result: dict[str, Any] | None) -> str:
+    if not result:
+        return ""
+    reasons = result.get("reasons", []) or []
+    risks = result.get("risk_flags", []) or []
+    axes = result.get("editorial_axes", []) or []
+    parts = []
+    if reasons:
+        parts.append("理由: " + " / ".join(reasons))
+    if risks:
+        parts.append("注意: " + " / ".join(risks))
+    if axes:
+        parts.append("軸: " + " / ".join(axes))
+    if result.get("direct_myanmar_relevance"):
+        parts.append(f"直接関連: {result['direct_myanmar_relevance']}")
+    novelty = result.get("novelty_vs_archive_or_same_topic") or result.get("novelty_vs_same_topic")
+    if novelty:
+        parts.append(f"新規性: {novelty}")
+    return " / ".join(parts)[:3000]
+
+
+def build_final_reason(ml_score: int, gemini_result: dict[str, Any] | None, final_score: int) -> str:
+    if not gemini_result:
+        return f"Gemini再ランキングなし。MLスコア{ml_score}を最終スコアとして使用。"
+    gemini_score = safe_int(gemini_result.get("gemini_score"), 0)
+    decision = cell_text(gemini_result.get("decision")) or "判定なし"
+    rank_group = cell_text(gemini_result.get("rank_group")) or "-"
+    ml_weight, gemini_weight = final_score_weights()
+    return (
+        f"ML {ml_score}点×{ml_weight:.2f} + Gemini {gemini_score}点×{gemini_weight:.2f} "
+        f"→ 最終 {final_score}点。Gemini判定={decision} / ランク={rank_group}。"
+    )[:3000]
+
+def build_gemini_detail_json(result: dict[str, Any] | None) -> str:
+    if not result:
+        return ""
+    return json.dumps(result, ensure_ascii=False)[:45000]
+
 def selected_count_by_group(rows: list[ArticleRecord]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for row in rows:
@@ -863,7 +1419,7 @@ def score_reason(score: int, model_info: dict[str, Any]) -> str:
     return (
         f"{band}（純ML分類版: selected=1 / non-selected=0 / "
         f"手動順位は採用行の学習重みとして使用 / LogisticRegression / "
-        f"重要トピック特徴量なし / 前日続編・重複補正なし / "
+        f"重要トピック特徴量なし / 媒体特徴量なし / 前日続編・重複補正なし / "
         f"学習 {model_info.get('classification_training_rows', 0)}件 / "
         f"採用 {model_info.get('positive_count', 0)}件 / "
         f"非採用 {model_info.get('negative_count', 0)}件）"
@@ -875,17 +1431,32 @@ def build_output_values(
     row_count: int,
     prediction_details: list[dict[str, Any]],
     model_info: dict[str, Any],
+    gemini_results: dict[int, dict[str, Any]] | None = None,
 ) -> list[list[Any]]:
+    gemini_results = gemini_results or {}
     by_row_index: dict[int, list[Any]] = {}
     for row, detail in zip(rows, prediction_details, strict=True):
-        score = int(detail.get("score", 0))
+        ml_score = int(detail.get("score", 0))
+        gemini_result = gemini_results.get(row.row_index)
+        gemini_score = (
+            clamp_score(gemini_result.get("gemini_score"), 0)
+            if gemini_result is not None
+            else None
+        )
+        final_score = calculate_final_score(ml_score, gemini_score)
         by_row_index[row.row_index] = [
-            score,
-            score_reason(score, model_info),
+            ml_score,
+            score_reason(ml_score, model_info),
             MODEL_VERSION,
             format_contribution_list(detail.get("positive_reasons", [])),
             format_contribution_list(detail.get("negative_reasons", [])),
             build_detail_json(detail),
+            gemini_score if gemini_score is not None else "",
+            cell_text(gemini_result.get("decision")) if gemini_result else "",
+            format_gemini_reason(gemini_result),
+            final_score,
+            build_final_reason(ml_score, gemini_result, final_score),
+            build_gemini_detail_json(gemini_result),
         ]
 
     blank = [""] * len(OUTPUT_HEADERS)
@@ -946,7 +1517,7 @@ def run() -> None:
         f"[selection-ml-classifier] archive_files={archive_file_count} "
         f"archive_rows={len(archive_records)} "
         f"positives={sum(1 for row in archive_records if int(row.label or 0) > 0)} "
-        "rules=off priority_topics=off prev_day=off recency_weight=off "
+        "rules=off priority_topics=off media_feature=off prev_day=off recency_weight=off gemini=weighted_score "
         "model=logistic_regression_classifier manual_order_weight=on"
     )
 
@@ -954,18 +1525,21 @@ def run() -> None:
 
     current_rows, row_count = load_current_rows(sheets, spreadsheet_id, target_sheet)
     prediction_details = model.prediction_details(current_rows)
+    gemini_results = run_gemini_rerank(current_rows, prediction_details, archive_records)
     output_values = build_output_values(
         current_rows,
         row_count,
         prediction_details,
         model.info,
+        gemini_results,
     )
     write_predictions(sheets, spreadsheet_id, target_sheet, output_values)
     print(
         f"[selection-ml-classifier] sheet={target_sheet} "
         f"sheet_rows={row_count} scored_rows={len(current_rows)} "
         f"classification_training_rows={model.info.get('classification_training_rows', 0)} "
-        f"positives={model.info.get('positive_count', 0)}"
+        f"positives={model.info.get('positive_count', 0)} "
+        f"gemini_results={len(gemini_results)} output_columns={OUTPUT_START_COLUMN}:{OUTPUT_END_COLUMN}"
     )
 
 
