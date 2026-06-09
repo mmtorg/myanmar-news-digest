@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Train from monthly archive spreadsheets and score current sheet rows.
 
-v2 changes:
-- E/F/G/I are vectorized as separate fields instead of one joined text.
-- A compact subset of selection.js priority-topic logic is used as flag features.
-- Recent archive rows receive larger sample weights.
-- Current/training rows are compared with previous-day K=a adopted articles to
-  down-rank same-content duplicates and boost continuations/different angles.
+v3 changes:
+- E/F/G/I are treated as Japanese-only inputs and normalized before feature extraction.
+- Direct Myanmar relevance is judged with Japanese-first, context-aware rules to reduce
+  false positives from generic terms such as 中央銀行 or 港湾局.
+- Japanese character n-grams are widened slightly for better phrase matching.
+- Compact priority-topic flags, recent weighting, and previous-day relation handling remain.
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ import json
 import os
 import re
 import sys
+import unicodedata
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from typing import Any, Iterable
@@ -26,7 +27,7 @@ SCOPES = [
 
 ARCHIVE_FILE_PREFIX = "prod_"
 ARCHIVE_SHEET_NAME = "prod"
-MODEL_VERSION = "selection-ml-v2-structured-flags-recency-prevday"
+MODEL_VERSION = "selection-ml-v3-ja-structured-flags-recency-prevday"
 OUTPUT_HEADERS = ["ML採用確率スコア", "ML判定補足", "MLモデルバージョン"]
 OUTPUT_START_COLUMN = "R"
 OUTPUT_END_COLUMN = "T"
@@ -181,6 +182,34 @@ def cell_text(value: Any) -> str:
     return str(value).strip()
 
 
+CONTROL_CHAR_RE = re.compile(r"[\u0000-\u001f\u007f-\u009f]")
+WHITESPACE_RE = re.compile(r"\s+")
+JAPANESE_NORMALIZATION_REPLACEMENTS = {
+    # 表記ゆれを機械学習・重要トピック判定の前に寄せる。
+    "ミンアンフライイン": "ミンアウンフライン",
+    "ミンアウン・フライン": "ミンアウンフライン",
+    "アウン・サン・スー・チー": "アウンサンスーチー",
+    "アウン・サン・スーチー": "アウンサンスーチー",
+    "キヤット": "チャット",
+    "Kyat": "チャット",
+    "kyat": "チャット",
+    "Ｋ": "K",
+}
+
+
+def normalize_japanese_input_text(value: Any) -> str:
+    """Normalize E/F/G/I Japanese text before TF-IDF and rule features."""
+    s = cell_text(value)
+    if not s:
+        return ""
+    s = unicodedata.normalize("NFKC", s)
+    s = CONTROL_CHAR_RE.sub(" ", s)
+    s = WHITESPACE_RE.sub(" ", s).strip()
+    for src, dst in JAPANESE_NORMALIZATION_REPLACEMENTS.items():
+        s = s.replace(src, dst)
+    return s
+
+
 def sheets_serial_to_date(value: float) -> date | None:
     # Google Sheets serial date: 1899-12-30 origin.
     try:
@@ -240,10 +269,10 @@ def make_article_record(raw_row: Iterable[Any], row_index: int, label: int | Non
         row_index=row_index,
         date_key=date_key(values[COL_DATE]),
         media=cell_text(values[COL_MEDIA]),
-        headline_a=cell_text(values[COL_E]),
-        headline_final=cell_text(values[COL_F]),
-        headline_body=cell_text(values[COL_G]),
-        summary=cell_text(values[COL_I]),
+        headline_a=normalize_japanese_input_text(values[COL_E]),
+        headline_final=normalize_japanese_input_text(values[COL_F]),
+        headline_body=normalize_japanese_input_text(values[COL_G]),
+        summary=normalize_japanese_input_text(values[COL_I]),
         url=cell_text(values[COL_URL]),
         duplicate_key=cell_text(values[COL_Q_KEY]),
         label=label,
@@ -401,133 +430,157 @@ def has_latin_term(text: str, terms: list[str]) -> bool:
     return any(re.search(rf"(^|[^A-Za-z0-9_]){re.escape(term)}(?=$|[^A-Za-z0-9_])", text, re.I) for term in terms)
 
 
+MYANMAR_DIRECT_JA_TERMS = [
+    "ミャンマー",
+    "ビルマ",
+    "ヤンゴン",
+    "ネピドー",
+    "ネーピードー",
+    "ネピトー",
+    "マンダレー",
+    "エーヤワディ",
+    "バゴー",
+    "サガイン",
+    "ラカイン",
+    "アラカン",
+    "カレン",
+    "カイン",
+    "カチン",
+    "シャン",
+    "モン州",
+    "チン州",
+    "カヤー",
+    "マグウェー",
+    "タニンダーリ",
+    "ミャワディ",
+    "ムセ",
+    "タチレク",
+    "ダウェー",
+    "シットウェ",
+    "パアン",
+    "国軍",
+    "親軍政権",
+    "軍事政権",
+    "軍政",
+    "抵抗勢力",
+    "民主派",
+    "民族武装勢力",
+    "少数民族武装勢力",
+    "ミンアウンフライン",
+    "アウンサンスーチー",
+]
+
+MYANMAR_SPECIFIC_ABBREVIATIONS = [
+    "SAC",
+    "NUG",
+    "PDF",
+    "CBM",
+    "CMP",
+    "MIC",
+    "DICA",
+    "UMFCCI",
+    "OWIC",
+    "UID",
+    "YCDC",
+    "MCDC",
+    "MMK",
+]
+
+MYANMAR_INSTITUTION_JA_TERMS = [
+    "ミャンマー中央銀行",
+    "ミャンマー投資委員会",
+    "ミャンマー港湾局",
+    "連邦議会",
+    "人民代表院",
+    "民族代表院",
+    "商業省",
+    "電力省",
+    "建設省",
+    "運輸・通信省",
+]
+
+MYANMAR_CONTEXT_SYSTEM_TERMS = [
+    "中央銀行",
+    "チャット",
+    "外貨規制",
+    "外貨管理",
+    "外貨売却",
+    "外貨配分",
+    "外貨供給",
+    "ドル売却",
+    "ドル供給",
+    "輸入ライセンス",
+    "輸出ライセンス",
+    "国境貿易",
+    "燃料輸入",
+    "港湾局",
+    "港湾",
+    "コンテナ船",
+    "ヤンゴン港",
+    "ティラワ港",
+    "行政手続き",
+    "旅券申請",
+    "海外就労者証明書",
+]
+
+MYANMAR_CONTEXT_AUTHORITY_TERMS = [
+    "大統領",
+    "政府",
+    "当局",
+    "省",
+    "省庁",
+    "委員会",
+    "局",
+    "庁",
+    "議会",
+    "法案",
+    "規制",
+    "通達",
+    "告示",
+    "公告",
+    "国営紙",
+    "国営メディア",
+]
+
+
 def has_direct_myanmar_relevance(text: str) -> bool:
+    """Japanese-first direct relevance check.
+
+    E/F/G/I are already Japanese, so generic words are not treated as Myanmar
+    relevance by themselves.  For example, 中央銀行 or 港湾局 must appear with a
+    Myanmar-specific acronym/name or with a Myanmar-like system topic.
+    """
     s = text or ""
-    if has_any(
-        s,
-        [
-            "ミャンマー",
-            "ビルマ",
-            "Myanmar",
-            "Burma",
-            "Burmese",
-            "မြန်မာ",
-            "ဗမာ",
-            "ヤンゴン",
-            "Yangon",
-            "ရန်ကုန်",
-            "ネピドー",
-            "Naypyidaw",
-            "マンダレー",
-            "Mandalay",
-            "エーヤワディ",
-            "Ayeyarwady",
-            "バゴー",
-            "Bago",
-            "サガイン",
-            "Sagaing",
-            "ラカイン",
-            "Rakhine",
-            "カレン",
-            "Kayin",
-            "カチン",
-            "Kachin",
-            "シャン",
-            "Shan",
-            "モン",
-            "Mon",
-            "チン",
-            "Chin",
-            "カヤー",
-            "Kayah",
-            "マグウェー",
-            "Magway",
-            "タニンダーリ",
-            "Tanintharyi",
-            "ミャワディ",
-            "Myawaddy",
-            "ムセ",
-            "Muse",
-            "国軍",
-            "軍事政権",
-            "軍政",
-            "SAC",
-            "NUG",
-            "PDF",
-            "抵抗勢力",
-            "民主派",
-            "民族武装勢力",
-            "ミンアウンフライン",
-            "アウンサンスーチー",
-            "Aung San Suu Kyi",
-            "Min Aung Hlaing",
-            "အောင်ဆန်းစုကြည်",
-            "မင်းအောင်လှိုင်",
-        ],
-    ):
+    if has_any(s, MYANMAR_DIRECT_JA_TERMS):
         return True
 
-    if has_any(
-        s,
-        [
-            "CBM",
-            "中央銀行",
-            "ミャンマー中央銀行",
-            "チャット",
-            "キヤット",
-            "Kyat",
-            "MMK",
-            "CMP",
-            "MIC",
-            "DICA",
-            "UMFCCI",
-            "OWIC",
-            "UID",
-            "YCDC",
-            "MCDC",
-            "連邦議会",
-            "人民代表院",
-            "民族代表院",
-            "Pyidaungsu Hluttaw",
-            "Hluttaw",
-            "လွှတ်တော်",
-            "ミャンマー港湾局",
-            "港湾局",
-            "投資委員会",
-            "商業省",
-            "電力省",
-            "建設省",
-            "運輸・通信省",
-            "国営紙",
-            "国営メディア",
-        ],
-    ):
+    if has_any(s, MYANMAR_SPECIFIC_ABBREVIATIONS) or has_any(s, MYANMAR_INSTITUTION_JA_TERMS):
         return True
 
-    has_system = has_any(
+    has_system = has_any(s, MYANMAR_CONTEXT_SYSTEM_TERMS)
+    has_authority_context = has_any(s, MYANMAR_CONTEXT_AUTHORITY_TERMS)
+    has_trade_currency_context = has_any(
         s,
         [
-            "外貨規制",
-            "外貨管理",
-            "外貨売却",
-            "外貨配分",
-            "外貨供給",
-            "ドル売却",
-            "ドル供給",
-            "輸入ライセンス",
-            "輸出ライセンス",
-            "国境貿易",
-            "燃料輸入",
-            "行政手続き",
-            "旅券申請",
-            "海外就労者証明書",
+            "外貨",
+            "為替",
+            "ドル",
+            "通貨",
+            "燃料",
+            "食用油",
+            "輸入",
+            "輸出",
+            "貿易",
+            "物流",
+            "旅券",
+            "海外就労",
+            "ライセンス",
+            "コンテナ船",
+            "入港",
+            "港湾",
         ],
     )
-    has_context = has_any(
-        s,
-        ["大統領", "政府", "当局", "省", "省庁", "委員会", "局", "庁", "議会", "法案", "規制", "通達", "告示", "公告"],
-    )
-    return has_system and has_context
+    return has_system and (has_authority_context or has_trade_currency_context)
 
 
 def has_government_authority(text: str) -> bool:
@@ -732,7 +785,7 @@ def has_port_container_shipping(text: str) -> bool:
         return False
     has_port = has_any(text, ["ヤンゴン港", "ティラワ港", "港湾局", "ミャンマー港湾局", "港湾ターミナル", "港湾", "Yangon Port", "Thilawa Port", "Myanmar Port Authority", "MPA", "port terminal"])
     has_vessel = has_any(text, ["コンテナ船", "コンテナ貨物", "貨物船", "船舶", "大型船", "隻", "入港", "寄港", "着岸", "container vessel", "container ship", "cargo vessel", "vessel", "ship"])
-    has_context = has_any(text, ["入港予定", "寄港予定", "入港スケジュール", "船舶スケジュール", "航路", "海上貿易", "海上物流", "港湾能力", "浚渫", "輸入増加", "輸出促進", "輸出", "輸入", "貿易", "物流", "需要", "schedule", "shipping route", "maritime trade", "logistics", "port capacity", "dredging", "import", "export", "trade"])
+    has_context = has_any(text, ["入港予定", "寄港予定", "入港スケジュール", "船舶スケジュール", "入港", "寄港", "着岸", "航路", "海上貿易", "海上物流", "港湾能力", "浚渫", "輸入増加", "輸出促進", "輸出", "輸入", "貿易", "物流", "需要", "schedule", "shipping route", "maritime trade", "logistics", "port capacity", "dredging", "import", "export", "trade"])
     has_official_or_numeric = has_government_authority(text) or has_announcement_action(text) or has_quantitative_evidence(text)
     return has_port and has_vessel and has_context and has_official_or_numeric
 
@@ -835,7 +888,7 @@ def has_quantitative_evidence(text: str) -> bool:
 
 def normalize_comparable_text(value: str) -> str:
     return (
-        (value or "")
+        normalize_japanese_input_text(value)
         .lower()
         .replace("\u3000", " ")
         .translate(str.maketrans({c: " " for c in "|｜:：,，.。()（）[]「」『』、\"'’‘“”!?！？/\\"}))
@@ -844,35 +897,38 @@ def normalize_comparable_text(value: str) -> str:
 
 def similarity_tokens(value: str) -> set[str]:
     s = normalize_comparable_text(value)
-    words = re.findall(r"[A-Za-z0-9_]{2,}|[\u1000-\u109F]{2,}|[\u3040-\u30ff\u3400-\u9fff]{2,}", s)
+    chunks = re.findall(r"[A-Za-z0-9_]{2,}|[\u3040-\u30ff\u3400-\u9fffー々ヶ]{2,}", s)
     stop = {
         "ミャンマー",
         "ビルマ",
-        "myanmar",
-        "burma",
         "記事",
         "発表",
+        "公表",
         "報道",
         "述べ",
+        "説明",
         "した",
         "する",
         "される",
         "について",
         "など",
-        "news",
-        "report",
-        "update",
+        "これ",
+        "ため",
+        "として",
+        "より",
+        "から",
     }
     tokens: set[str] = set()
-    for word in words:
-        if word in stop:
+    for chunk in chunks:
+        if chunk in stop:
             continue
-        tokens.add(word)
-        # Japanese/Myanmar chunks often have no spaces; char n-grams improve recall.
-        if re.search(r"[\u1000-\u109F\u3040-\u30ff\u3400-\u9fff]", word) and len(word) >= 4:
-            for n in (2, 3):
-                for i in range(0, max(0, len(word) - n + 1)):
-                    tokens.add(word[i : i + n])
+        tokens.add(chunk)
+        # Japanese has no reliable spaces; character n-grams capture topic overlap.
+        if re.search(r"[\u3040-\u30ff\u3400-\u9fff]", chunk) and len(chunk) >= 4:
+            compact = "".join(part for part in re.split("|".join(map(re.escape, stop)), chunk) if part)
+            for n in (2, 3, 4):
+                for i in range(0, max(0, len(compact) - n + 1)):
+                    tokens.add(compact[i : i + n])
     return tokens
 
 
@@ -1106,7 +1162,7 @@ def train_model(rows: list[ArticleRecord]) -> ConstantProbabilityModel | Sklearn
 
     char_kwargs = dict(
         analyzer="char",
-        ngram_range=(2, 5),
+        ngram_range=(2, 6),
         min_df=2,
         sublinear_tf=True,
     )
@@ -1158,7 +1214,14 @@ def train_model(rows: list[ArticleRecord]) -> ConstantProbabilityModel | Sklearn
                     ]
                 ),
             ),
-        ]
+        ],
+        transformer_weights={
+            "headline_a": 1.2,
+            "headline_final": 1.3,
+            "headline_body": 1.2,
+            "summary": 1.0,
+            "flags": 1.4,
+        },
     )
 
     pipeline = Pipeline(
