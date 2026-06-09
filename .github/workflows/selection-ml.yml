@@ -67,4 +67,9 @@ jobs:
           TARGET_SHEET: ${{ inputs.target_sheet }}
           MODE: ${{ inputs.mode }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          SHEETS_WRITE_CHUNK_ROWS: "25"
+          SHEETS_WRITE_MAX_PAYLOAD_BYTES: "1800000"
+          SHEETS_WRITE_MAX_RETRIES: "6"
+          SHEETS_WRITE_RETRY_BASE_SECONDS: "2"
+          SHEETS_WRITE_RETRY_MAX_SECONDS: "32"
         run: python -m selection_ml.run_selection_ml
