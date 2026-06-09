@@ -33,10 +33,18 @@ SCOPES = [
 
 ARCHIVE_FILE_PREFIX = "prod_"
 ARCHIVE_SHEET_NAME = "prod"
-MODEL_VERSION = "selection-ml-v5-ja-pure-classifier-manual-order-weight"
-OUTPUT_HEADERS = ["MLスコア", "ML判定補足", "MLモデルバージョン"]
+MODEL_VERSION = "selection-ml-v6-ja-pure-classifier-manual-order-weight-explain"
+OUTPUT_HEADERS = [
+    "MLスコア",
+    "ML判定補足",
+    "MLモデルバージョン",
+    "MLスコア上昇要因",
+    "MLスコア低下要因",
+    "ML寄与詳細JSON",
+]
 OUTPUT_START_COLUMN = "R"
-OUTPUT_END_COLUMN = "T"
+OUTPUT_END_COLUMN = "W"
+MAX_REASON_FEATURES = 8
 MIN_COLUMNS = 32
 
 COL_DATE = 0       # A
@@ -82,12 +90,32 @@ class ConstantClassificationModel:
     def probabilities(self, rows: list[ArticleRecord]) -> list[float]:
         return [self.probability] * len(rows)
 
+    def prediction_details(
+        self,
+        rows: list[ArticleRecord],
+        top_n: int = MAX_REASON_FEATURES,
+    ) -> list[dict[str, Any]]:
+        score = normalize_probability_scores([self.probability])[0]
+        return [
+            {
+                "score": score,
+                "probability": float(self.probability),
+                "decision_value": None,
+                "intercept": None,
+                "positive_reasons": [],
+                "negative_reasons": [],
+                "note": "学習データが2クラス分類に不足したため、全記事に一定確率を出力しました。",
+            }
+            for _ in rows
+        ]
+
 
 class SklearnClassificationModel:
     def __init__(self, feature_pipeline: Any, classifier: Any, info: dict[str, Any]):
         self.feature_pipeline = feature_pipeline
         self.classifier = classifier
         self.info = info
+        self.feature_names = feature_names_from_pipeline(feature_pipeline)
 
     def probabilities(self, rows: list[ArticleRecord]) -> list[float]:
         features = self.feature_pipeline.transform(rows)
@@ -95,6 +123,72 @@ class SklearnClassificationModel:
             return [float(v) for v in self.classifier.predict_proba(features)[:, 1]]
         # Defensive fallback for estimators without predict_proba.
         return [float(v) for v in self.classifier.predict(features)]
+
+    def prediction_details(
+        self,
+        rows: list[ArticleRecord],
+        top_n: int = MAX_REASON_FEATURES,
+    ) -> list[dict[str, Any]]:
+        """Return per-row score explanations based on linear-model contributions.
+
+        LogisticRegression is a linear model. For each article, the contribution
+        of a feature is roughly: transformed_feature_value * learned_coefficient.
+        Positive values raise the selected-class log-odds; negative values lower it.
+        """
+        features = self.feature_pipeline.transform(rows)
+        probabilities = self.probabilities(rows)
+        scores = normalize_probability_scores(probabilities)
+        coef = self.classifier.coef_[0]
+        intercept = float(self.classifier.intercept_[0]) if hasattr(self.classifier, "intercept_") else 0.0
+
+        if hasattr(self.classifier, "decision_function"):
+            decision_values = [float(v) for v in self.classifier.decision_function(features)]
+        else:
+            decision_values = [None] * len(rows)
+
+        details: list[dict[str, Any]] = []
+        for idx, (score, probability) in enumerate(zip(scores, probabilities, strict=True)):
+            row_vector = features.getrow(idx)
+            contributions_matrix = row_vector.multiply(coef).tocoo()
+            contributions: list[tuple[int, float]] = [
+                (int(col), float(value))
+                for col, value in zip(
+                    contributions_matrix.col,
+                    contributions_matrix.data,
+                    strict=True,
+                )
+                if abs(float(value)) > 1e-12
+            ]
+
+            positive_items = sorted(
+                [(col, value) for col, value in contributions if value > 0],
+                key=lambda item: item[1],
+                reverse=True,
+            )[:top_n]
+            negative_items = sorted(
+                [(col, value) for col, value in contributions if value < 0],
+                key=lambda item: item[1],
+            )[:top_n]
+
+            details.append(
+                {
+                    "score": score,
+                    "probability": float(probability),
+                    "decision_value": decision_values[idx],
+                    "intercept": intercept,
+                    "positive_reasons": [
+                        build_feature_contribution_dict(col, value, self.feature_names)
+                        for col, value in positive_items
+                    ],
+                    "negative_reasons": [
+                        build_feature_contribution_dict(col, value, self.feature_names)
+                        for col, value in negative_items
+                    ],
+                    "note": "係数×TF-IDF/メタ特徴量の寄与。正の値はスコア上昇、負の値はスコア低下。",
+                }
+            )
+
+        return details
 
 
 def required_env(name: str) -> str:
@@ -529,6 +623,132 @@ def build_feature_pipeline() -> Any:
     )
 
 
+
+
+def feature_names_from_pipeline(feature_pipeline: Any) -> list[str]:
+    """Collect feature names in the same order as FeatureUnion output columns."""
+    names: list[str] = []
+    transformer_weights = getattr(feature_pipeline, "transformer_weights", None) or {}
+
+    for union_name, transformer in getattr(feature_pipeline, "transformer_list", []):
+        if transformer == "drop" or transformer is None:
+            continue
+
+        raw_names: list[str]
+        try:
+            if hasattr(transformer, "steps") and transformer.steps:
+                last_step = transformer.steps[-1][1]
+                if hasattr(last_step, "get_feature_names_out"):
+                    raw_names = [str(v) for v in last_step.get_feature_names_out()]
+                elif hasattr(last_step, "get_feature_names"):
+                    raw_names = [str(v) for v in last_step.get_feature_names()]
+                else:
+                    raw_names = []
+            elif hasattr(transformer, "get_feature_names_out"):
+                raw_names = [str(v) for v in transformer.get_feature_names_out()]
+            elif hasattr(transformer, "get_feature_names"):
+                raw_names = [str(v) for v in transformer.get_feature_names()]
+            else:
+                raw_names = []
+        except Exception:
+            raw_names = []
+
+        weight = float(transformer_weights.get(union_name, 1.0))
+        for raw_name in raw_names:
+            names.append(f"{union_name}:{raw_name}:weight={weight:g}")
+
+    return names
+
+
+def split_feature_name(feature_name: str) -> tuple[str, str, float | None]:
+    if not feature_name:
+        return "unknown", "unknown", None
+
+    weight: float | None = None
+    if ":weight=" in feature_name:
+        feature_name, weight_text = feature_name.rsplit(":weight=", 1)
+        try:
+            weight = float(weight_text)
+        except ValueError:
+            weight = None
+
+    if ":" not in feature_name:
+        return "unknown", feature_name, weight
+
+    source, raw = feature_name.split(":", 1)
+    return source, raw, weight
+
+
+def source_label(source: str) -> str:
+    labels = {
+        "headline_a": "E列",
+        "headline_final": "F列",
+        "headline_body": "G列",
+        "summary": "I列",
+        "generic_metadata": "メタ情報",
+    }
+    return labels.get(source, source or "不明")
+
+
+def display_feature_name(feature_name: str) -> str:
+    source, raw, _weight = split_feature_name(feature_name)
+    raw = raw.replace("\n", "\\n").replace("\r", "\\r").strip()
+    raw = WHITESPACE_RE.sub(" ", raw)
+    if len(raw) > 45:
+        raw = raw[:45] + "…"
+    return f"{source_label(source)}:{raw}"
+
+
+def build_feature_contribution_dict(
+    column_index: int,
+    contribution: float,
+    feature_names: list[str],
+) -> dict[str, Any]:
+    feature_name = (
+        feature_names[column_index]
+        if 0 <= column_index < len(feature_names)
+        else f"feature_{column_index}"
+    )
+    source, raw, branch_weight = split_feature_name(feature_name)
+    return {
+        "feature": display_feature_name(feature_name),
+        "source": source_label(source),
+        "raw_feature": raw,
+        "branch_weight": branch_weight,
+        "contribution": round(float(contribution), 6),
+    }
+
+
+def format_contribution_list(items: list[dict[str, Any]]) -> str:
+    if not items:
+        return "該当なし"
+    return " / ".join(
+        f"{item['feature']}({float(item['contribution']):+.3f})"
+        for item in items
+    )[:3000]
+
+
+def build_detail_json(detail: dict[str, Any]) -> str:
+    payload = {
+        "score": detail.get("score"),
+        "probability": round(float(detail.get("probability", 0.0)), 6),
+        "decision_value": (
+            round(float(detail["decision_value"]), 6)
+            if detail.get("decision_value") is not None
+            else None
+        ),
+        "intercept": (
+            round(float(detail["intercept"]), 6)
+            if detail.get("intercept") is not None
+            else None
+        ),
+        "positive_reasons": detail.get("positive_reasons", []),
+        "negative_reasons": detail.get("negative_reasons", []),
+        "note": detail.get("note", ""),
+    }
+    # Google Sheets cell limit is 50,000 chars. Keep enough margin.
+    return json.dumps(payload, ensure_ascii=False)[:45000]
+
 def selected_count_by_group(rows: list[ArticleRecord]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for row in rows:
@@ -653,18 +873,23 @@ def score_reason(score: int, model_info: dict[str, Any]) -> str:
 def build_output_values(
     rows: list[ArticleRecord],
     row_count: int,
-    scores: list[int],
+    prediction_details: list[dict[str, Any]],
     model_info: dict[str, Any],
 ) -> list[list[Any]]:
     by_row_index: dict[int, list[Any]] = {}
-    for row, score in zip(rows, scores, strict=True):
+    for row, detail in zip(rows, prediction_details, strict=True):
+        score = int(detail.get("score", 0))
         by_row_index[row.row_index] = [
             score,
             score_reason(score, model_info),
             MODEL_VERSION,
+            format_contribution_list(detail.get("positive_reasons", [])),
+            format_contribution_list(detail.get("negative_reasons", [])),
+            build_detail_json(detail),
         ]
 
-    return [by_row_index.get(row_index, ["", "", ""]) for row_index in range(2, row_count + 2)]
+    blank = [""] * len(OUTPUT_HEADERS)
+    return [by_row_index.get(row_index, blank) for row_index in range(2, row_count + 2)]
 
 
 def write_predictions(
@@ -728,12 +953,11 @@ def run() -> None:
     model = train_model(archive_records)
 
     current_rows, row_count = load_current_rows(sheets, spreadsheet_id, target_sheet)
-    probabilities = model.probabilities(current_rows)
-    scores = normalize_probability_scores(probabilities)
+    prediction_details = model.prediction_details(current_rows)
     output_values = build_output_values(
         current_rows,
         row_count,
-        scores,
+        prediction_details,
         model.info,
     )
     write_predictions(sheets, spreadsheet_id, target_sheet, output_values)
