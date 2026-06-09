@@ -25,3 +25,4 @@ openai>=1.0.0
 googlenewsdecoder
 playwright>=1.40.0
 PyMuPDF>=1.24.0
+lightgbm>=4.0.0
