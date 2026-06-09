@@ -1,21 +1,18 @@
 #!/usr/bin/env python3
 """Train from monthly archive spreadsheets and score current sheet rows.
 
-Pure ML ranking version.
+Pure ML classification version.
 
 Applied changes:
-- Manual order is used as graded relevance. Within each date/sheet group,
-  K=a rows are read in their sheet order and converted to relevance scores.
-  Example: if 24 rows were manually selected, the first selected row gets 24,
-  the second gets 23, ..., the last gets 1, non-selected rows get 0.
-- The model is changed from binary classification to ranking.
-  It uses LightGBM's LGBMRanker with LambdaRank.
+- The model is binary classification again, not ranking.
+  It predicts whether each row is likely to be manually selected.
+- Manual order is kept as training weight only. Within each date/sheet group,
+  K=a rows are read in their sheet order, and higher-priority manual rows get
+  a larger positive sample weight. Labels are still binary: selected=1,
+  non-selected=0.
 - Hand-written topic rules remain removed:
   no priority-topic feature extraction, no direct-Myanmar-relevance feature,
   no previous-day duplicate/continuation adjustment, no recency weighting.
-
-Required extra dependency:
-    lightgbm>=4.0.0
 """
 
 from __future__ import annotations
@@ -36,8 +33,8 @@ SCOPES = [
 
 ARCHIVE_FILE_PREFIX = "prod_"
 ARCHIVE_SHEET_NAME = "prod"
-MODEL_VERSION = "selection-ml-v5-ja-pure-lightgbm-ranker-manual-order"
-OUTPUT_HEADERS = ["MLランキングスコア", "ML判定補足", "MLモデルバージョン"]
+MODEL_VERSION = "selection-ml-v5-ja-pure-classifier-manual-order-weight"
+OUTPUT_HEADERS = ["MLスコア", "ML判定補足", "MLモデルバージョン"]
 OUTPUT_START_COLUMN = "R"
 OUTPUT_END_COLUMN = "T"
 MIN_COLUMNS = 32
@@ -75,26 +72,29 @@ class ArticleRecord:
         ).strip()
 
 
-class ConstantRankingModel:
-    """Fallback used when ranking training data is not usable."""
+class ConstantClassificationModel:
+    """Fallback used when classification training data is not usable."""
 
-    def __init__(self, score: float, info: dict[str, Any]):
-        self.score = score
+    def __init__(self, probability: float, info: dict[str, Any]):
+        self.probability = probability
         self.info = info
 
-    def raw_scores(self, rows: list[ArticleRecord]) -> list[float]:
-        return [self.score] * len(rows)
+    def probabilities(self, rows: list[ArticleRecord]) -> list[float]:
+        return [self.probability] * len(rows)
 
 
-class LightGbmRankingModel:
-    def __init__(self, feature_pipeline: Any, ranker: Any, info: dict[str, Any]):
+class SklearnClassificationModel:
+    def __init__(self, feature_pipeline: Any, classifier: Any, info: dict[str, Any]):
         self.feature_pipeline = feature_pipeline
-        self.ranker = ranker
+        self.classifier = classifier
         self.info = info
 
-    def raw_scores(self, rows: list[ArticleRecord]) -> list[float]:
+    def probabilities(self, rows: list[ArticleRecord]) -> list[float]:
         features = self.feature_pipeline.transform(rows)
-        return [float(v) for v in self.ranker.predict(features)]
+        if hasattr(self.classifier, "predict_proba"):
+            return [float(v) for v in self.classifier.predict_proba(features)[:, 1]]
+        # Defensive fallback for estimators without predict_proba.
+        return [float(v) for v in self.classifier.predict(features)]
 
 
 def required_env(name: str) -> str:
@@ -302,16 +302,19 @@ def record_identity_key(record: ArticleRecord) -> str:
     return ""
 
 
-def build_rank_training_records_from_sheet(
+def build_classification_training_records_from_sheet(
     values: list[list[Any]],
     source_group_prefix: str,
 ) -> list[ArticleRecord]:
     """Build one deduped training set from an archive sheet.
 
-    K=a rows are interpreted as manual order.  If an archive sheet contains
+    K=a rows are interpreted as selected articles. If an archive sheet contains
     duplicate manual rows appended below the candidate list, this function maps
     their order back to the original candidate rows by URL/Q/title and dedupes
     repeated candidates within the same date/source group.
+
+    The model itself remains binary classification. Manual order is stored in
+    manual_rank and later used as sample_weight for positive examples.
     """
     raw_records: list[ArticleRecord] = []
     for row_index, raw_row in enumerate(values[1:], start=2):
@@ -341,12 +344,10 @@ def build_rank_training_records_from_sheet(
         group_seen.add(key)
         manual_keys_by_group.setdefault(record.group_key, []).append(key)
 
-    relevance_by_group_key: dict[tuple[str, str], tuple[int, int]] = {}
+    manual_order_by_group_key: dict[tuple[str, str], int] = {}
     for group_key, keys in manual_keys_by_group.items():
-        selected_count = len(keys)
         for order_index, key in enumerate(keys, start=1):
-            relevance = selected_count - order_index + 1
-            relevance_by_group_key[(group_key, key)] = (relevance, order_index)
+            manual_order_by_group_key[(group_key, key)] = order_index
 
     deduped: list[ArticleRecord] = []
     seen_candidates_by_group: dict[str, set[str]] = {}
@@ -360,8 +361,9 @@ def build_rank_training_records_from_sheet(
             continue
         group_seen.add(key)
 
-        relevance, manual_rank = relevance_by_group_key.get((record.group_key, key), (0, None))
-        deduped.append(replace(record, label=relevance, manual_rank=manual_rank))
+        manual_rank = manual_order_by_group_key.get((record.group_key, key))
+        label = 1 if manual_rank is not None else 0
+        deduped.append(replace(record, label=label, manual_rank=manual_rank))
 
     return deduped
 
@@ -385,14 +387,14 @@ def load_archive_records(
             )
         except HttpError as exc:
             print(
-                f"[selection-ml-ranker] skip {archive_file['name']} / "
+                f"[selection-ml-classifier] skip {archive_file['name']} / "
                 f"{ARCHIVE_SHEET_NAME}: {exc}",
                 file=sys.stderr,
             )
             continue
 
         rows.extend(
-            build_rank_training_records_from_sheet(
+            build_classification_training_records_from_sheet(
                 values,
                 source_group_prefix=archive_file.get("name", archive_file["id"]),
             )
@@ -527,142 +529,135 @@ def build_feature_pipeline() -> Any:
     )
 
 
-def prepare_rank_training_groups(rows: list[ArticleRecord]) -> tuple[list[ArticleRecord], list[int], list[int]]:
-    grouped: dict[str, list[ArticleRecord]] = {}
+def selected_count_by_group(rows: list[ArticleRecord]) -> dict[str, int]:
+    counts: dict[str, int] = {}
     for row in rows:
-        grouped.setdefault(row.group_key or row.date_key or "unknown", []).append(row)
+        if int(row.label or 0) == 1:
+            counts[row.group_key or row.date_key or "unknown"] = (
+                counts.get(row.group_key or row.date_key or "unknown", 0) + 1
+            )
+    return counts
 
-    training_rows: list[ArticleRecord] = []
-    labels: list[int] = []
-    group_sizes: list[int] = []
 
-    for group_key in sorted(grouped):
-        group_rows = grouped[group_key]
-        group_labels = [int(row.label or 0) for row in group_rows]
-        # Ranking groups with no positive relevance do not teach order, so skip them.
-        if len(group_rows) < 2 or max(group_labels, default=0) <= 0 or len(set(group_labels)) < 2:
+def manual_order_sample_weights(rows: list[ArticleRecord]) -> list[float]:
+    """Return sample weights while keeping the task as binary classification.
+
+    Negative rows keep weight 1.0. For selected rows, earlier manual rows get
+    higher weight. If a group has 24 selected rows, the first selected row gets
+    about 3.0 and the last selected row gets about 1.08 before class balancing.
+    """
+    selected_counts = selected_count_by_group(rows)
+    weights: list[float] = []
+    for row in rows:
+        if int(row.label or 0) != 1:
+            weights.append(1.0)
             continue
-        training_rows.extend(group_rows)
-        labels.extend(group_labels)
-        group_sizes.append(len(group_rows))
 
-    return training_rows, labels, group_sizes
+        group_key = row.group_key or row.date_key or "unknown"
+        selected_count = max(1, selected_counts.get(group_key, 1))
+        rank = row.manual_rank if row.manual_rank is not None else selected_count
+        rank = max(1, min(rank, selected_count))
+        priority_ratio = (selected_count - rank + 1) / selected_count
+        weights.append(1.0 + 2.0 * priority_ratio)
+
+    return weights
 
 
-def train_model(rows: list[ArticleRecord]) -> ConstantRankingModel | LightGbmRankingModel:
+def train_model(rows: list[ArticleRecord]) -> ConstantClassificationModel | SklearnClassificationModel:
     if not rows:
         raise RuntimeError("No usable training rows were found in the archive folder")
 
-    training_rows, labels, group_sizes = prepare_rank_training_groups(rows)
-    positive_count = sum(1 for row in rows if int(row.label or 0) > 0)
-    max_relevance = max((int(row.label or 0) for row in rows), default=0)
+    training_rows = [row for row in rows if row.label is not None]
+    labels = [1 if int(row.label or 0) == 1 else 0 for row in training_rows]
+    positive_count = sum(labels)
+    negative_count = len(labels) - positive_count
+    sample_weights = manual_order_sample_weights(training_rows)
 
+    positive_weights = [
+        weight for row, weight in zip(training_rows, sample_weights, strict=True)
+        if int(row.label or 0) == 1
+    ]
     info = {
         "all_training_rows": len(rows),
-        "rank_training_rows": len(training_rows),
-        "rank_groups": len(group_sizes),
+        "classification_training_rows": len(training_rows),
         "positive_count": positive_count,
-        "max_relevance": max_relevance,
+        "negative_count": negative_count,
+        "manual_order_weighting": True,
+        "positive_weight_min": round(min(positive_weights), 3) if positive_weights else 0.0,
+        "positive_weight_max": round(max(positive_weights), 3) if positive_weights else 0.0,
     }
 
-    if not training_rows or not group_sizes or max(labels, default=0) <= 0:
+    if len(training_rows) < 2 or positive_count == 0 or negative_count == 0:
+        probability = positive_count / len(training_rows) if training_rows else 0.0
         print(
-            "[selection-ml-ranker] no usable ranking groups; using constant rank score",
+            "[selection-ml-classifier] no usable two-class training data; "
+            f"using constant probability score={probability:.4f}",
             file=sys.stderr,
         )
-        return ConstantRankingModel(0.0, info)
+        return ConstantClassificationModel(probability, info)
 
-    try:
-        from lightgbm import LGBMRanker
-    except ImportError as exc:
-        raise RuntimeError(
-            "LightGBM is required for ranking mode. Add `lightgbm>=4.0.0` "
-            "to requirements.txt or your GitHub Actions install step."
-        ) from exc
+    from sklearn.linear_model import LogisticRegression
 
     feature_pipeline = build_feature_pipeline()
     try:
         features = feature_pipeline.fit_transform(training_rows)
     except ValueError as exc:
+        probability = positive_count / len(training_rows)
         print(
-            "[selection-ml-ranker] feature training could not build a vocabulary; "
-            f"using constant rank score: {exc}",
+            "[selection-ml-classifier] feature training could not build a vocabulary; "
+            f"using constant probability score={probability:.4f}: {exc}",
             file=sys.stderr,
         )
-        return ConstantRankingModel(0.0, info)
+        return ConstantClassificationModel(probability, info)
 
-    ranker = LGBMRanker(
-        objective="lambdarank",
-        metric="ndcg",
-        boosting_type="gbdt",
-        n_estimators=250,
-        learning_rate=0.05,
-        num_leaves=31,
-        max_depth=-1,
-        min_child_samples=8,
-        subsample=0.9,
-        colsample_bytree=0.8,
-        reg_alpha=0.1,
-        reg_lambda=1.0,
+    classifier = LogisticRegression(
+        solver="liblinear",
+        class_weight="balanced",
+        max_iter=1000,
         random_state=42,
-        n_jobs=-1,
-        verbose=-1,
     )
-    ranker.fit(features, labels, group=group_sizes)
-    return LightGbmRankingModel(feature_pipeline, ranker, info)
+    classifier.fit(features, labels, sample_weight=sample_weights)
+    return SklearnClassificationModel(feature_pipeline, classifier, info)
 
 
-def normalize_ranking_scores(raw_scores: list[float]) -> list[int]:
-    """Convert arbitrary ranker outputs to a 0-100 within-sheet ranking score."""
-    if not raw_scores:
-        return []
-    n = len(raw_scores)
-    if n == 1:
-        return [100]
-
-    # Dense ranking by raw score.  Top row becomes 100, bottom row becomes 0.
-    order = sorted(range(n), key=lambda i: (-raw_scores[i], i))
-    scores = [0] * n
-    index = 0
-    while index < n:
-        end = index
-        while end + 1 < n and raw_scores[order[end + 1]] == raw_scores[order[index]]:
-            end += 1
-        avg_rank = (index + 1 + end + 1) / 2.0
-        normalized = round(100 * (n - avg_rank) / max(1, n - 1))
-        for pos in range(index, end + 1):
-            scores[order[pos]] = max(0, min(100, normalized))
-        index = end + 1
+def normalize_probability_scores(probabilities: list[float]) -> list[int]:
+    """Convert classifier probabilities to 0-100 scores."""
+    scores: list[int] = []
+    for probability in probabilities:
+        if probability != probability:  # NaN guard
+            probability = 0.0
+        scores.append(max(0, min(100, round(float(probability) * 100))))
     return scores
 
 
 def score_reason(score: int, model_info: dict[str, Any]) -> str:
     if score >= 80:
-        band = "ランキング上位候補"
+        band = "採用可能性が高い候補"
     elif score >= 60:
-        band = "上位寄り候補"
+        band = "採用可能性がやや高い候補"
     elif score >= 40:
         band = "中位候補"
     else:
-        band = "下位寄り候補"
+        band = "採用可能性が低めの候補"
 
     return (
-        f"{band}（純MLランキング版: 手動順位を教師ラベル化 / LightGBM Ranker / "
+        f"{band}（純ML分類版: selected=1 / non-selected=0 / "
+        f"手動順位は採用行の学習重みとして使用 / LogisticRegression / "
         f"重要トピック特徴量なし / 前日続編・重複補正なし / "
-        f"rank学習 {model_info.get('rank_training_rows', 0)}件 / "
-        f"日付グループ {model_info.get('rank_groups', 0)} / "
-        f"採用 {model_info.get('positive_count', 0)}件）"
+        f"学習 {model_info.get('classification_training_rows', 0)}件 / "
+        f"採用 {model_info.get('positive_count', 0)}件 / "
+        f"非採用 {model_info.get('negative_count', 0)}件）"
     )[:260]
 
 
 def build_output_values(
     rows: list[ArticleRecord],
     row_count: int,
-    ranking_scores: list[int],
+    scores: list[int],
     model_info: dict[str, Any],
 ) -> list[list[Any]]:
     by_row_index: dict[int, list[Any]] = {}
-    for row, score in zip(rows, ranking_scores, strict=True):
+    for row, score in zip(rows, scores, strict=True):
         by_row_index[row.row_index] = [
             score,
             score_reason(score, model_info),
@@ -723,30 +718,30 @@ def run() -> None:
     )
 
     print(
-        f"[selection-ml-ranker] archive_files={archive_file_count} "
+        f"[selection-ml-classifier] archive_files={archive_file_count} "
         f"archive_rows={len(archive_records)} "
         f"positives={sum(1 for row in archive_records if int(row.label or 0) > 0)} "
         "rules=off priority_topics=off prev_day=off recency_weight=off "
-        "model=lightgbm_ranker manual_order=on"
+        "model=logistic_regression_classifier manual_order_weight=on"
     )
 
     model = train_model(archive_records)
 
     current_rows, row_count = load_current_rows(sheets, spreadsheet_id, target_sheet)
-    raw_scores = model.raw_scores(current_rows)
-    ranking_scores = normalize_ranking_scores(raw_scores)
+    probabilities = model.probabilities(current_rows)
+    scores = normalize_probability_scores(probabilities)
     output_values = build_output_values(
         current_rows,
         row_count,
-        ranking_scores,
+        scores,
         model.info,
     )
     write_predictions(sheets, spreadsheet_id, target_sheet, output_values)
     print(
-        f"[selection-ml-ranker] sheet={target_sheet} "
+        f"[selection-ml-classifier] sheet={target_sheet} "
         f"sheet_rows={row_count} scored_rows={len(current_rows)} "
-        f"rank_training_rows={model.info.get('rank_training_rows', 0)} "
-        f"rank_groups={model.info.get('rank_groups', 0)}"
+        f"classification_training_rows={model.info.get('classification_training_rows', 0)} "
+        f"positives={model.info.get('positive_count', 0)}"
     )
 
 
