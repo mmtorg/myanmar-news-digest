@@ -65,4 +65,5 @@ jobs:
           ARCHIVE_FOLDER_ID: ${{ inputs.archive_folder_id }}
           TARGET_SHEET: ${{ inputs.target_sheet }}
           MODE: ${{ inputs.mode }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python -m selection_ml.run_selection_ml
