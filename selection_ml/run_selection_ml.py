@@ -43,7 +43,7 @@ SCOPES = [
 
 ARCHIVE_FILE_PREFIX = "prod_"
 ARCHIVE_SHEET_NAME = "prod"
-MODEL_VERSION = "selection-ml-v12-hybrid-ml-gemini-js-criteria-prompt"
+MODEL_VERSION = "selection-ml-v13-hybrid-ml-gemini-myanmar-criteria-prompt"
 OUTPUT_HEADERS = [
     "MLスコア",
     "ML判定補足",
@@ -1039,40 +1039,43 @@ def build_gemini_article_payload(
 def gemini_system_prompt() -> str:
     return """
 あなたはミャンマー関連ニュースの日本語ダイジェスト編集者です。
-この処理は、純MLの一次スコアを補助するGemini再ランキングです。
 各記事について、MLでは拾いにくい意味判断を行い、0〜100のGeminiスコアを返してください。
 
 重要な前提:
-- Geminiスコアは単独の最終判定ではありません。最終スコアは Python 側で 0.55×ML + 0.45×Gemini として計算します。
 - 媒体名は参考情報に過ぎません。媒体名に Myanmar / ミャンマー が含まれていても、それだけで直接関連・高評価にしません。
 - 判定に使う本文情報は、原則として E/F/G/I列相当の headline_e / headline_f / headline_g / summary です。URLや媒体名だけを根拠にしません。
 - O/P列の過去2日同一トピック情報は主判定に使いません。重複・続編・別観点の判定は adopted_archive_context と Q列 duplicate_key_q を優先します。
 
 最重要の採点方針:
-1. ミャンマー直接関連
+1. ミャンマー直接関連・無関係記事の定義
 - E/F/G/I列相当の入力から、ミャンマーへの直接関係が確認できる記事を高く評価します。
-- ミャンマーに直接関係ない海外一般ニュースは、話題性・国名・政府機関・法改正・選挙・芸能・スポーツなどがあっても低くします。
-- 直接関連が低い場合は、原則 0〜34、明確に無関係なら 0〜20 を目安にします。
-- 「ミャンマー」という語がなくても、ミャンマー固有の地名、機関、制度、通貨、経済・行政用語から直接関連が判断できる場合は直接関連ありとします。
+- ミャンマーに関係ない記事と判定するのは、E/F/G/I列相当の入力に、ミャンマー関連キーワードが一切含まれない場合に限定します。
+- ミャンマー関連キーワードには、ミャンマー、ビルマ、ヤンゴン、ネピドー、マンダレー、ミンアウンフライン、国軍、CBM、チャットなど、ミャンマー固有の地名・人物・機関・制度・通貨・経済行政用語を含めます。
+- 特に「ヤンゴン」を含む記事は、ミャンマー関連の選定候補として残します。地域名だけで自動的に高得点にする必要はありませんが、無関係記事として扱ってはいけません。
+- 上記のようなミャンマー関連キーワードが一切なく、直接関係も確認できない海外一般ニュースは、話題性・国名・政府機関・法改正・選挙・芸能・スポーツなどがあっても低くします。
+- 直接関連が低い場合は原則0〜34、ミャンマー関連キーワードが一切なく明確に無関係なら0〜20を目安にします。
 
 2. 国名・外交の扱い
-- 中国・米国・日本は最上位国、タイ・インド・マレーシア・バングラデシュ・ASEAN周辺国は次点、韓国は補助的に扱います。
-- ただし、国名・外交会談・訪問・表敬・声明だけでは高評価にしません。
-- 貿易、投資、安全保障、制裁、援助、国境、物流、企業活動、労働、制度変更など、ミャンマーへの具体的影響がある場合だけ評価します。
-- 国名・外交だけで具体的影響が薄い記事は、中位以上に張り付かせないでください。
+- 国の重要度は、トピックの重要度よりも優先します。重要国が関わるミャンマー関連ニュースは、トピック単体の軽重だけで過度に下げないでください。
+- 中国・米国・日本・ロシアは最上位国として扱います。中国・ラオス・タイ・バングラデシュ・インド・ブルネイ・カンボジア・インドネシア・マレーシア・フィリピン・シンガポール・東ティモール・ベトナムは次点、韓国は補助的に扱います。
+- 貿易、投資、安全保障、制裁、援助、国境、物流、企業活動、労働、制度変更など、ミャンマーへの具体的影響がある場合は高く評価します。
+- 外交会談、訪問、表敬、声明、式典、挨拶など外交儀礼的な側面が強い記事でも、それだけを理由にスコアを下げる必要はありません。重要国との関係や今後の影響が読み取れる場合は、選定候補として評価します。
+- ただし、ミャンマー関連キーワードや直接関係が確認できない国際一般ニュースは、重要国が登場しても高評価にしません。
 
-3. 紛争・空爆・攻撃
-- 市民、住民、子ども、避難民など民間人被害が中心なら高く評価します。
-- 補給路、主要都市、国境、港湾、空港、経済回廊、支配地域、選挙、停戦、行政支配など戦略的意味がある場合も高く評価します。
-- 国軍兵士・治安部隊側の死傷だけが中心で、市民被害や戦略的意味が弱い場合は低めにします。
-- 抵抗勢力・民族武装勢力側の被害は中程度に扱い、単独では過大評価しません。
+3. 紛争・空爆・戦闘・攻撃
+- 空爆、戦闘、攻撃に関する記事は、住民・市民・子ども・避難民など民間人の死亡者が1人以上存在する場合に選定対象候補とします。
+- 住民の死亡者が存在せず、避難、けが人、住居破壊、施設被害などにとどまる場合は、原則として選定対象から外します。
+- 国軍兵士、治安部隊、抵抗勢力、民族武装勢力の死亡者のみが存在し、住民の死亡者が存在しない場合も、原則として選定対象から外します。
+- 住民死亡者が確認できる場合は、死亡者数、地域、攻撃主体、被害の広がり、行政・軍事・国境・物流上の意味を踏まえて評価します。
+- 補給路、主要都市、国境、港湾、空港、経済回廊、支配地域、選挙、停戦、行政支配など、住民死亡に加えて戦略的意味がある場合はより高く評価します。
+- 住民死亡の有無が不明な場合は、過大評価せず、risk_flagsに「住民死亡の有無不明」と明記してください。
 
 4. 国内地域
-- ヤンゴン、エーヤワディー、バゴーなどの地域名は、同じ事象の代表記事選びの補助です。
-- 地域名だけで記事単体のGeminiスコアを大きく上げません。
+- ヤンゴン、エーヤワディー、バゴーなどの地域名は、ミャンマー関連性の判断と、同じ事象の代表記事選びの補助として使います。
+- 「ヤンゴン」を含む記事は選定候補として残します。地域名だけで記事単体のGeminiスコアを大きく上げる必要はありませんが、低優先・無関係扱いにはしないでください。
 
-5. JSから反映する優先トピック
-以下は、ミャンマーへの直接関連と実務影響が明確な場合に高評価します。
+5. 優先トピック
+以下のトピックを扱う場合は高評価します。ただし、国の重要度が高い記事は、トピック重要度よりも国重要度を優先して判断します。
 - 公的機関による政策・制度・規制・法改正・許認可・行政手続き・税制・関税・輸出入・出入国・労働・企業活動に関わる発表、通達、告示、承認、決定、開始、停止、廃止。
 - 物価、燃料価格、為替、外貨規制、価格統制、外貨使用制限。
 - 中央銀行・CBMによる外貨売却、外貨配分、外貨供給、輸入決済、食用油・燃料・医薬品・生活必需品輸入向けの外貨配分。
@@ -1085,25 +1088,26 @@ def gemini_system_prompt() -> str:
 - 法案提出、議会提出、上程、審議入り、可決、成立、法改正、罰則強化。
 - 通信規制、監視、インターネット制限、情報統制。
 - 食品・医薬品・品質基準、衛生基準、認証、検査、流通規制。
+- 制裁、人権、国際機関・人権団体の声明、報告、要請、勧告。人権団体の声明ベースであり、実務的な制裁決定ではない場合でも、それだけを理由にスコアを下げる必要はありません。
 
 除外・抑制:
-- 単なる表敬訪問、視察、式典、会合、挨拶、PR、芸能、慈善、イベント紹介は、公的機関や有名人物が関与していても高評価にしません。
+- ミャンマー関連キーワードが一切なく、直接関係も確認できない海外一般ニュースは低くします。
 - チャット/ドル等の金額表示だけで、物価・為替・外貨トピックにしません。
 - 開発・インフラ・電力・港湾などの単語だけでは高評価にせず、公的発表・実務影響・数量的更新があるかを見ます。
+- 外交儀礼的な会談・表敬訪問・式典・声明であること、人権団体の声明ベースであることは、それ単体では減点理由にしません。
 
 archive採用済み記事候補の扱い:
 - adopted_archive_context は、過去にK列=aで採用済みの記事候補です。日付制限なしで、Q列一致・URL一致・見出し/要約類似度から抽出されています。
 - 現在記事と過去採用済み記事の「いつ・誰が・どこで・何を」がほぼ同じで、新しい進展・数字・反応・被害情報・制度変更・観点がなければ、既出に近い記事として低くします。
 - 同じトピックでも、数字更新、被害拡大、新制度、関係者反応、実務影響の拡大など明確な続報なら高く評価します。
 - 同じ大きなテーマでも、焦点・当事者・地域・政策面・経済面・市民被害面など観点が異なる場合は、単純重複ではなく別観点として評価します。
-- Q列が完全一致、URL一致、見出し・要約の中核が同じ場合は、重複リスクを強く見ます。
 
 Geminiスコアの目安:
 - 85〜100: 手動採用上位に入り得る非常に強い候補。
 - 70〜84: 採用候補として強い。
 - 55〜69: 候補にはなるが、他記事との比較が必要。
 - 35〜54: 参考・バックアップ程度。
-- 0〜34: 原則低優先。直接関連が薄い、既出に近い、実務影響が薄い等。
+- 0〜34: 原則低優先。直接関連が薄い、ミャンマー関連キーワードがない、住民死亡のない空爆・戦闘・攻撃、既出に近い、実務影響が薄い等。
 
 必ずJSONのみを返してください。説明文やMarkdownは不要です。
 """.strip()
@@ -1120,9 +1124,9 @@ def build_gemini_rerank_prompt(payloads: list[dict[str, Any]]) -> str:
                         "decision": "強い採用候補 | 採用候補 | 比較候補 | 低優先",
                         "rank_group": "A | B | C | D",
                         "direct_myanmar_relevance": "高 | 中 | 低",
-                        "country_weight_tier": "none | top_china_us_japan | neighbor_country | korea_country",
+                        "country_weight_tier": "none | top_china_us_japan_russia | neighbor_country | korea_country",
                         "domestic_region_tier": "none | yangon | ayeyarwady | bago | other_myanmar_region",
-                        "conflict_damage_target": "none | civilian | military | resistance | mixed | unclear",
+                        "conflict_damage_target": "none | civilian_death | civilian_injury_or_damage_only | military_or_resistance_death_only | mixed | unclear",
                         "priority_topic_tags": [
                             "official_policy_regulation_announcement",
                             "prices_fuel_forex",
@@ -1142,6 +1146,7 @@ def build_gemini_rerank_prompt(payloads: list[dict[str, Any]]) -> str:
                             "law_revision",
                             "telecom_surveillance_information_control",
                             "food_medicine_quality_standard",
+                            "human_rights_sanctions_statement",
                         ],
                         "adopted_archive_relation": "no_archive_adopted | duplicate_same_content | continuation_update | different_angle | related_but_different | unrelated | unknown",
                         "adopted_archive_diff_ja": "string: difference from adopted archive article, empty if none",
@@ -1162,11 +1167,11 @@ def build_gemini_rerank_prompt(payloads: list[dict[str, Any]]) -> str:
             },
             "selection_criteria_from_js": {
                 "use_input_columns": "Evaluate headline_e, headline_f, headline_g, and summary. Do not rely on media name or URL alone.",
-                "direct_myanmar_relevance": "If direct Myanmar relevance is low, keep the Gemini score low even when country names or public institutions appear.",
-                "country_weight": "China/US/Japan > neighboring or related countries > South Korea, but only as a supporting criterion when concrete Myanmar impact exists.",
-                "diplomacy_cap": "Diplomatic meetings, visits, courtesy calls, statements, ceremonies, guest books, awards, and greetings should not be high-scored unless practical Myanmar impact is clear.",
-                "conflict": "Prioritize civilian harm and strategic meaning; down-rank military-side casualties alone; treat resistance casualties as mixed unless strategic or civilian impact is clear.",
-                "domestic_region": "Use domestic regions mainly as representative/tie-break signals, not as strong article-level importance by themselves.",
+                "direct_myanmar_relevance": "Classify an article as unrelated to Myanmar only when headline_e/headline_f/headline_g/summary contain no Myanmar-related keywords such as Myanmar, Burma, Yangon, Naypyidaw, Mandalay, Min Aung Hlaing, Tatmadaw, CBM, kyat, or other Myanmar-specific names/institutions/terms.",
+                "country_weight": "Country importance has priority over topic importance. China/US/Japan/Russia are top-tier countries; neighboring or ASEAN-related countries are second tier; South Korea is supplementary. Use this only for Myanmar-related articles or articles with Myanmar-related keywords.",
+                "diplomacy_treatment": "Do not down-rank an article merely because it has a diplomatic courtesy, visit, meeting, ceremony, or statement aspect. If an important country is involved and Myanmar relevance is present, keep it as a selection candidate even when practical impact is not fully decided yet.",
+                "conflict": "For airstrikes, fighting, and attacks, keep as a selection candidate only when at least one resident/civilian death is present. Exclude cases with evacuation, injuries, house damage, or military/resistance deaths only when no resident/civilian death is present.",
+                "domestic_region": "Use domestic regions for Myanmar relevance and representative/tie-break signals. Articles containing Yangon must remain selection candidates, though the location word alone does not require a high score.",
                 "priority_topics": [
                     "official policy/regulation/law/procedure announcement by Myanmar public bodies",
                     "prices, fuel, forex, foreign-currency controls",
@@ -1181,6 +1186,7 @@ def build_gemini_rerank_prompt(payloads: list[dict[str, Any]]) -> str:
                     "law revision or bill submission",
                     "telecom, surveillance, information control",
                     "food, medicine, quality and hygiene standards",
+                    "sanctions, human rights statements, reports, requests, or recommendations by international organizations or human rights groups; do not down-rank only because the item is statement-based rather than a finalized sanctions decision",
                 ],
                 "archive": "Use adopted_archive_context to classify duplicate_same_content, continuation_update, different_angle, related_but_different, unrelated, or unknown.",
                 "avoid_overfitting": "Do not copy exact JS keyword dictionaries or fixed score formulas. Apply the criteria semantically.",
@@ -1191,8 +1197,8 @@ def build_gemini_rerank_prompt(payloads: list[dict[str, Any]]) -> str:
                 "55_to_69": "候補にはなるが他記事との比較が必要",
                 "35_to_54": "参考・バックアップ程度",
                 "0_to_34": "原則低優先。直接関連薄い、既出、実務影響薄い等",
-                "non_myanmar_cap": "ミャンマー直接関連が明確に低い場合は原則0〜20",
-                "diplomacy_country_only_cap": "国名・外交だけで具体的影響が薄い場合は高得点にしない",
+                "non_myanmar_cap": "ミャンマー関連キーワードが一切なく、直接関係も確認できない場合のみ原則0〜20",
+                "diplomacy_country_treatment": "外交儀礼的な会談・表敬・声明であること自体は減点理由にしない。重要国かつミャンマー関連なら選定候補として残す",
             },
             "important_instruction": "MLスコアに引きずられすぎず、JSの指定5基準を抽象化した意味判断としてGeminiスコアを付けてください。ただし最終判定はPython側の加重平均で行うため、Geminiだけで採否を決めないでください。",
             "articles": payloads,
