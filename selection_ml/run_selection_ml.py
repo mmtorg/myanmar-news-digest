@@ -17,7 +17,7 @@ Applied changes:
   but media names are not used as model features.
 - Optional Gemini reranking is added as a second-stage evaluator.
   It returns a 0-100 Gemini score using abstract editorial criteria, then
-  final_score is calculated as a weighted average of ML and Gemini scores.
+  final_score is set to the higher of ML score and Gemini score.
 """
 
 from __future__ import annotations
@@ -43,7 +43,8 @@ SCOPES = [
 
 ARCHIVE_FILE_PREFIX = "prod_"
 ARCHIVE_SHEET_NAME = "prod"
-MODEL_VERSION = "selection-ml-v13-hybrid-ml-gemini-myanmar-criteria-prompt"
+LOCAL_ADOPTED_ARCHIVE_SHEET_BY_TARGET = {"prod": "archive_prod", "dev": "archive_dev"}
+MODEL_VERSION = "selection-ml-v17-max-ml-gemini-score"
 OUTPUT_HEADERS = [
     "MLスコア",
     "ML判定補足",
@@ -55,7 +56,7 @@ OUTPUT_HEADERS = [
     "Gemini判定",
     "Gemini理由",
     "最終スコア",
-    "最終判定補足",
+    "採用スコア種別",
     "Gemini詳細JSON",
 ]
 OUTPUT_START_COLUMN = "R"
@@ -78,10 +79,10 @@ GEMINI_MODEL_FALLBACK_WAIT_SECONDS_DEFAULT = 2.0
 GEMINI_DEFAULT_MIN_ML_SCORE = 0
 GEMINI_DEFAULT_MAX_ARTICLES = 150
 GEMINI_DEFAULT_BATCH_SIZE = 20
-DEFAULT_FINAL_SCORE_ML_WEIGHT = 0.55
-DEFAULT_FINAL_SCORE_GEMINI_WEIGHT = 0.45
 ARCHIVE_ADOPTED_CONTEXT_MAX_ITEMS = 6
 ARCHIVE_ADOPTED_CONTEXT_MAX_CHARS = 2600
+SAME_DAY_CONTEXT_MAX_ITEMS = 6
+SAME_DAY_CONTEXT_MAX_CHARS = 2600
 
 COL_DATE = 0       # A
 COL_MEDIA = 2      # C
@@ -446,8 +447,7 @@ def build_classification_training_records_from_sheet(
 
     K=a rows are interpreted as selected articles. If an archive sheet contains
     duplicate manual rows appended below the candidate list, this function maps
-    their order back to the original candidate rows by URL/Q/title and dedupes
-    repeated candidates within the same date/source group.
+    their order back to the original candidate rows by dedupes repeated candidates within the same date/source group.
 
     The model itself remains binary classification. Manual order is stored in
     manual_rank and later used as sample_weight for positive examples.
@@ -554,6 +554,83 @@ def load_current_rows(
             rows.append(record)
 
     return rows, sheet_row_count
+
+
+def build_local_adopted_records_from_sheet(
+    values: list[list[Any]],
+    source_sheet_name: str,
+) -> list[ArticleRecord]:
+    """Read K=a rows from archive_prod/archive_dev in the current spreadsheet.
+
+    These records are not used as additional ML training data. They are passed
+    to Gemini as adopted_archive_context so Gemini can judge whether a current
+    article is a duplicate of an already selected item or a meaningful follow-up.
+    """
+    rows: list[ArticleRecord] = []
+    for row_index, raw_row in enumerate(values[1:], start=2):
+        values_row = padded_row(raw_row)
+        if cell_text(values_row[COL_ADOPTED]).lower() != "a":
+            continue
+        record = make_article_record(
+            raw_row,
+            row_index,
+            label=1,
+            group_key=source_sheet_name,
+        )
+        if is_usable_article(record):
+            rows.append(
+                replace(
+                    record,
+                    group_key=record.date_key or source_sheet_name,
+                    label=1,
+                )
+            )
+    return rows
+
+
+def local_adopted_archive_sheet_name(target_sheet: str) -> str:
+    """Return the local archive sheet paired with the execution target sheet."""
+    try:
+        return LOCAL_ADOPTED_ARCHIVE_SHEET_BY_TARGET[target_sheet]
+    except KeyError as exc:
+        raise RuntimeError(
+            f"Unsupported TARGET_SHEET for local archive lookup: {target_sheet}"
+        ) from exc
+
+
+def load_local_adopted_archive_records(
+    sheets: Any,
+    spreadsheet_id: str,
+    target_sheet: str,
+) -> list[ArticleRecord]:
+    """Load K=a rows from the paired archive sheet in the same spreadsheet.
+
+    Pairing rule:
+    - TARGET_SHEET=prod -> archive_prod
+    - TARGET_SHEET=dev  -> archive_dev
+
+    These rows are not used as additional ML training data. They are passed to
+    Gemini as adopted_archive_context so Gemini can judge duplicate vs follow-up.
+    """
+    from googleapiclient.errors import HttpError
+
+    sheet_name = local_adopted_archive_sheet_name(target_sheet)
+    try:
+        values = read_sheet_values(sheets, spreadsheet_id, f"{sheet_name}!A:AF")
+    except HttpError as exc:
+        print(
+            f"[selection-ml-classifier] local_adopted_archive_skip "
+            f"target_sheet={target_sheet} sheet={sheet_name} error={exc}",
+            file=sys.stderr,
+        )
+        return []
+
+    rows = build_local_adopted_records_from_sheet(values, sheet_name)
+    print(
+        f"[selection-ml-classifier] local_adopted_archive_rows={len(rows)} "
+        f"target_sheet={target_sheet} sheet={sheet_name}"
+    )
+    return rows
 
 
 # ---------------------------------------------------------------------------
@@ -853,8 +930,8 @@ def should_send_all_rows_to_gemini(rows: list[ArticleRecord], max_articles: int)
     """Default to broad Gemini review when the daily row count fits the cap.
 
     This avoids hard-coding current-news keywords for low-score rescue. Gemini is
-    still a second-stage reviewer because the final score is a weighted average
-    of ML and Gemini scores.
+    still a second-stage reviewer because the final score uses the higher score
+    between ML and Gemini.
     """
     if not env_bool("GEMINI_RERANK_ALL_CURRENT_ROWS_WHEN_POSSIBLE", True):
         return False
@@ -1012,10 +1089,89 @@ def build_archive_adopted_context_map(
     return out
 
 
+def build_same_day_context_map(
+    current_rows: list[ArticleRecord],
+) -> dict[int, list[dict[str, Any]]]:
+    """Find same-day current-sheet articles that may describe the same event.
+
+    Gemini receives these candidates and decides whether the 4W elements
+    (when / who / where / what) are actually the same. Python only performs a
+    broad, generic pre-filter using Q key, title equality, URL, and text
+    similarity to keep the prompt compact.
+    """
+    out: dict[int, list[dict[str, Any]]] = {}
+    if len(current_rows) < 2:
+        return out
+
+    for current in current_rows:
+        current_date_key = current.date_key or "current"
+        current_title_key = normalize_key_text(
+            " ".join([current.headline_a, current.headline_final, current.headline_body])
+        )
+        current_text = archive_candidate_text(current)
+        scored: list[tuple[float, ArticleRecord, str]] = []
+
+        for other in current_rows:
+            if other.row_index == current.row_index:
+                continue
+            other_date_key = other.date_key or "current"
+            if current_date_key != other_date_key:
+                continue
+
+            reasons: list[str] = []
+            score = 0.0
+            if current.url and other.url and current.url == other.url:
+                score += 100.0
+                reasons.append("url_exact")
+            if current.duplicate_key and other.duplicate_key and current.duplicate_key == other.duplicate_key:
+                score += 80.0
+                reasons.append("duplicate_key_exact")
+
+            other_title_key = normalize_key_text(
+                " ".join([other.headline_a, other.headline_final, other.headline_body])
+            )
+            if current_title_key and other_title_key and current_title_key == other_title_key:
+                score += 60.0
+                reasons.append("title_exact")
+
+            sim = generic_similarity_score(current_text, archive_candidate_text(other))
+            if sim >= 0.18:
+                score += sim * 40.0
+                reasons.append(f"text_similarity={sim:.2f}")
+
+            if score > 0:
+                scored.append((score, other, ",".join(reasons)))
+
+        scored.sort(key=lambda item: (-item[0], item[1].row_index))
+        items: list[dict[str, Any]] = []
+        total_chars = 0
+        for score, other, reason in scored[:SAME_DAY_CONTEXT_MAX_ITEMS]:
+            item = {
+                "row_index": other.row_index,
+                "date_key": other.date_key,
+                "media": other.media,
+                "headline": truncate_text(article_short_title(other), 180),
+                "summary": truncate_text(other.summary, 320),
+                "duplicate_key_q": truncate_text(other.duplicate_key, 160),
+                "match_reason": reason,
+                "match_score": round(score, 2),
+                "url": truncate_text(other.url, 220),
+            }
+            serialized = json.dumps(item, ensure_ascii=False)
+            if items and total_chars + len(serialized) > SAME_DAY_CONTEXT_MAX_CHARS:
+                break
+            items.append(item)
+            total_chars += len(serialized)
+        if items:
+            out[current.row_index] = items
+    return out
+
+
 def build_gemini_article_payload(
     row: ArticleRecord,
     detail: dict[str, Any],
     archive_context: list[dict[str, Any]] | None = None,
+    same_day_context: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     return {
         "row_index": row.row_index,
@@ -1030,6 +1186,7 @@ def build_gemini_article_payload(
         "same_topic_note_p": truncate_text(row.same_topic_note, 260),
         "duplicate_key_q": truncate_text(row.duplicate_key, 180),
         "adopted_archive_context": archive_context or [],
+        "same_day_context": same_day_context or [],
         "url": truncate_text(row.url, 240),
         "ml_positive_reasons": compact_ml_reasons(detail, "positive_reasons"),
         "ml_negative_reasons": compact_ml_reasons(detail, "negative_reasons"),
@@ -1051,13 +1208,14 @@ def gemini_system_prompt() -> str:
 - E/F/G/I列相当の入力から、ミャンマーへの直接関係が確認できる記事を高く評価します。
 - ミャンマーに関係ない記事と判定するのは、E/F/G/I列相当の入力に、ミャンマー関連キーワードが一切含まれない場合に限定します。
 - ミャンマー関連キーワードには、ミャンマー、ビルマ、ヤンゴン、ネピドー、マンダレー、ミンアウンフライン、国軍、CBM、チャットなど、ミャンマー固有の地名・人物・機関・制度・通貨・経済行政用語を含めます。
-- 特に「ヤンゴン」を含む記事は、ミャンマー関連の選定候補として残します。地域名だけで自動的に高得点にする必要はありませんが、無関係記事として扱ってはいけません。
+- 特に「ヤンゴン」を含む記事は、ミャンマー国内地名のヒットとして扱い、ミャンマー関連の選定候補として残します。ヤンゴンのヒットはトピック内容よりも優先し、無関係記事・低優先記事として扱わないでください。
 - 上記のようなミャンマー関連キーワードが一切なく、直接関係も確認できない海外一般ニュースは、話題性・国名・政府機関・法改正・選挙・芸能・スポーツなどがあっても低くします。
-- 直接関連が低い場合は原則0〜34、ミャンマー関連キーワードが一切なく明確に無関係なら0〜20を目安にします。
+- ミャンマー関連キーワードが一切なく、直接関係も確認できない場合のみ、0〜20を目安にします。
 
 2. 国名・外交の扱い
-- 国の重要度は、トピックの重要度よりも優先します。重要国が関わるミャンマー関連ニュースは、トピック単体の軽重だけで過度に下げないでください。
+- 国の重要度は、トピックの重要度よりも優先します。既に選定基準として含まれている国名が E/F/G/I列相当の入力に含まれている場合は、その国名ヒット自体を選定候補化の根拠として扱い、トピック単体の軽重だけで低くしないでください。
 - 中国・米国・日本・ロシアは最上位国として扱います。中国・ラオス・タイ・バングラデシュ・インド・ブルネイ・カンボジア・インドネシア・マレーシア・フィリピン・シンガポール・東ティモール・ベトナムは次点、韓国は補助的に扱います。
+- 国名は、政府・当局・企業・団体・国民・国籍・人物・商品・制度・場所など、その国名自体が含まれていればヒットと判定して構いません。例: 中国政府、中国企業、中国人、中国籍、中国製、タイ国境、日本人、米国企業。
 - 貿易、投資、安全保障、制裁、援助、国境、物流、企業活動、労働、制度変更など、ミャンマーへの具体的影響がある場合は高く評価します。
 - 外交会談、訪問、表敬、声明、式典、挨拶など外交儀礼的な側面が強い記事でも、それだけを理由にスコアを下げる必要はありません。重要国との関係や今後の影響が読み取れる場合は、選定候補として評価します。
 - ただし、ミャンマー関連キーワードや直接関係が確認できない国際一般ニュースは、重要国が登場しても高評価にしません。
@@ -1072,10 +1230,10 @@ def gemini_system_prompt() -> str:
 
 4. 国内地域
 - ヤンゴン、エーヤワディー、バゴーなどの地域名は、ミャンマー関連性の判断と、同じ事象の代表記事選びの補助として使います。
-- 「ヤンゴン」を含む記事は選定候補として残します。地域名だけで記事単体のGeminiスコアを大きく上げる必要はありませんが、低優先・無関係扱いにはしないでください。
+- 「ヤンゴン」を含む記事は、ミャンマー国内地名のヒットとして選定候補に残します。ヤンゴンのヒットはトピック内容よりも優先し、低優先・無関係扱いにはしないでください。
 
 5. 優先トピック
-以下のトピックを扱う場合は高評価します。ただし、国の重要度が高い記事は、トピック重要度よりも国重要度を優先して判断します。
+以下のトピックを扱う場合は高評価します。ただし、既に選定基準として含まれている国名、またはミャンマー国内の「ヤンゴン」がヒットしている記事は、トピック重要度よりも国名・地名ヒットを優先して判断します。
 - 公的機関による政策・制度・規制・法改正・許認可・行政手続き・税制・関税・輸出入・出入国・労働・企業活動に関わる発表、通達、告示、承認、決定、開始、停止、廃止。
 - 物価、燃料価格、為替、外貨規制、価格統制、外貨使用制限。
 - 中央銀行・CBMによる外貨売却、外貨配分、外貨供給、輸入決済、食用油・燃料・医薬品・生活必需品輸入向けの外貨配分。
@@ -1096,9 +1254,16 @@ def gemini_system_prompt() -> str:
 - 開発・インフラ・電力・港湾などの単語だけでは高評価にせず、公的発表・実務影響・数量的更新があるかを見ます。
 - 外交儀礼的な会談・表敬訪問・式典・声明であること、人権団体の声明ベースであることは、それ単体では減点理由にしません。
 
+同日内の同一事象候補の扱い:
+- same_day_context は、同じスプレッドシート内の同日記事から、見出し/要約類似度で抽出された候補です。
+- same_day_context に候補がある場合は、現在記事と候補記事の「いつ・誰が・どこで・何を」を必ず比較してください。
+- 「いつ・誰が・どこで・何を」がほぼ同じなら same_day_event_relation を same_event_duplicate にし、同じ same_day_event_key を付けてください。Python側で同一キーの記事のGeminiスコアを、グループ内の最高Geminiスコアへ揃えます。
+- 同じ大テーマでも、日付、主体、場所、行為、結果、数字、制度、被害、反応、実務影響のいずれかが明確に異なる場合は、same_event_duplicate ではなく continuation_update / different_angle / related_but_different を選んでください。
+- 国名・地域名・一般トピックが似ているだけでは同一事象にしないでください。4W一致を必須条件にしてください。
+
 archive採用済み記事候補の扱い:
-- adopted_archive_context は、過去にK列=aで採用済みの記事候補です。日付制限なしで、Q列一致・URL一致・見出し/要約類似度から抽出されています。
-- 現在記事と過去採用済み記事の「いつ・誰が・どこで・何を」がほぼ同じで、新しい進展・数字・反応・被害情報・制度変更・観点がなければ、既出に近い記事として低くします。
+- adopted_archive_context は、同じスプレッドシート内で実行対象シートに対応するarchiveシート（prod実行時はarchive_prod、dev実行時はarchive_dev）のK列=a行、および月次アーカイブ内のK列=a行から抽出された過去採用済み記事候補です。
+- 現在記事と過去採用済み記事の「いつ・誰が・どこで・何を」がほぼ同じで、新しい進展・数字・反応・被害情報・制度変更・観点がなければ、過去採用済み記事との重複として低くします。
 - 同じトピックでも、数字更新、被害拡大、新制度、関係者反応、実務影響の拡大など明確な続報なら高く評価します。
 - 同じ大きなテーマでも、焦点・当事者・地域・政策面・経済面・市民被害面など観点が異なる場合は、単純重複ではなく別観点として評価します。
 
@@ -1107,7 +1272,7 @@ Geminiスコアの目安:
 - 70〜84: 採用候補として強い。
 - 55〜69: 候補にはなるが、他記事との比較が必要。
 - 35〜54: 参考・バックアップ程度。
-- 0〜34: 原則低優先。直接関連が薄い、ミャンマー関連キーワードがない、住民死亡のない空爆・戦闘・攻撃、既出に近い、実務影響が薄い等。
+- 0〜34: 原則低優先。ミャンマー関連キーワードがない、住民死亡のない空爆・戦闘・攻撃、既出に近い等。ただし、既に選定基準として含まれている国名、またはヤンゴンがヒットしている新規記事は、トピック内容だけを理由に0〜34へ落とさないでください。
 
 必ずJSONのみを返してください。説明文やMarkdownは不要です。
 """.strip()
@@ -1127,6 +1292,13 @@ def build_gemini_rerank_prompt(payloads: list[dict[str, Any]]) -> str:
                         "country_weight_tier": "none | top_china_us_japan_russia | neighbor_country | korea_country",
                         "domestic_region_tier": "none | yangon | ayeyarwady | bago | other_myanmar_region",
                         "conflict_damage_target": "none | civilian_death | civilian_injury_or_damage_only | military_or_resistance_death_only | mixed | unclear",
+                        "event_when": "string: extracted when/date/time of the event, empty if unclear",
+                        "event_who": "string: main actor/person/organization affected or acting, empty if unclear",
+                        "event_where": "string: main place/location, empty if unclear",
+                        "event_what": "string: main action/decision/incident, empty if unclear",
+                        "same_day_event_relation": "no_same_day_context | same_event_duplicate | continuation_update | different_angle | related_but_different | unrelated | unknown",
+                        "same_day_event_key": "string: stable key only when same_day_event_relation is same_event_duplicate; represent when|who|where|what",
+                        "same_day_diff_ja": "string: difference from same-day context article, empty if same event or no context",
                         "priority_topic_tags": [
                             "official_policy_regulation_announcement",
                             "prices_fuel_forex",
@@ -1159,6 +1331,7 @@ def build_gemini_rerank_prompt(payloads: list[dict[str, Any]]) -> str:
                             "conflict_humanitarian_or_strategic_impact",
                             "international_relation_with_practical_impact",
                             "archive_duplicate_or_continuation_check",
+                            "same_day_same_event_check",
                         ],
                         "reasons": ["string: 1-4 short Japanese reasons"],
                         "risk_flags": ["string: 0-4 short Japanese caution flags"],
@@ -1168,10 +1341,10 @@ def build_gemini_rerank_prompt(payloads: list[dict[str, Any]]) -> str:
             "selection_criteria_from_js": {
                 "use_input_columns": "Evaluate headline_e, headline_f, headline_g, and summary. Do not rely on media name or URL alone.",
                 "direct_myanmar_relevance": "Classify an article as unrelated to Myanmar only when headline_e/headline_f/headline_g/summary contain no Myanmar-related keywords such as Myanmar, Burma, Yangon, Naypyidaw, Mandalay, Min Aung Hlaing, Tatmadaw, CBM, kyat, or other Myanmar-specific names/institutions/terms.",
-                "country_weight": "Country importance has priority over topic importance. China/US/Japan/Russia are top-tier countries; neighboring or ASEAN-related countries are second tier; South Korea is supplementary. Use this only for Myanmar-related articles or articles with Myanmar-related keywords.",
+                "country_weight": "Country hits have priority over topic importance. China/US/Japan/Russia are top-tier countries; neighboring or ASEAN-related countries are second tier; South Korea is supplementary. If any listed country name appears in headline_e/headline_f/headline_g/summary in any form or context, treat it as a country hit and keep the article as a selection candidate when Myanmar relevance is present or a Myanmar domestic location such as Yangon appears.",
                 "diplomacy_treatment": "Do not down-rank an article merely because it has a diplomatic courtesy, visit, meeting, ceremony, or statement aspect. If an important country is involved and Myanmar relevance is present, keep it as a selection candidate even when practical impact is not fully decided yet.",
                 "conflict": "For airstrikes, fighting, and attacks, keep as a selection candidate only when at least one resident/civilian death is present. Exclude cases with evacuation, injuries, house damage, or military/resistance deaths only when no resident/civilian death is present.",
-                "domestic_region": "Use domestic regions for Myanmar relevance and representative/tie-break signals. Articles containing Yangon must remain selection candidates, though the location word alone does not require a high score.",
+                "domestic_region": "Use domestic regions for Myanmar relevance and representative/tie-break signals. Articles containing Yangon must remain selection candidates. A Yangon hit has priority over topic importance and must not be down-ranked to low priority merely because the topic is a general incident or not a policy/economic topic.",
                 "priority_topics": [
                     "official policy/regulation/law/procedure announcement by Myanmar public bodies",
                     "prices, fuel, forex, foreign-currency controls",
@@ -1188,7 +1361,8 @@ def build_gemini_rerank_prompt(payloads: list[dict[str, Any]]) -> str:
                     "food, medicine, quality and hygiene standards",
                     "sanctions, human rights statements, reports, requests, or recommendations by international organizations or human rights groups; do not down-rank only because the item is statement-based rather than a finalized sanctions decision",
                 ],
-                "archive": "Use adopted_archive_context to classify duplicate_same_content, continuation_update, different_angle, related_but_different, unrelated, or unknown.",
+                "same_day": "Use same_day_context to compare when/who/where/what. If all 4W elements are substantially the same, return same_day_event_relation=same_event_duplicate and the same same_day_event_key for the duplicate rows. These duplicate rows will later share the highest Gemini score in that same-day event group.",
+                "archive": "Use adopted_archive_context from the paired local archive sheet K=a rows (TARGET_SHEET=prod uses archive_prod; TARGET_SHEET=dev uses archive_dev) and monthly archive K=a rows to classify duplicate_same_content, continuation_update, different_angle, related_but_different, unrelated, or unknown.",
                 "avoid_overfitting": "Do not copy exact JS keyword dictionaries or fixed score formulas. Apply the criteria semantically.",
             },
             "scoring_guide": {
@@ -1200,7 +1374,7 @@ def build_gemini_rerank_prompt(payloads: list[dict[str, Any]]) -> str:
                 "non_myanmar_cap": "ミャンマー関連キーワードが一切なく、直接関係も確認できない場合のみ原則0〜20",
                 "diplomacy_country_treatment": "外交儀礼的な会談・表敬・声明であること自体は減点理由にしない。重要国かつミャンマー関連なら選定候補として残す",
             },
-            "important_instruction": "MLスコアに引きずられすぎず、JSの指定5基準を抽象化した意味判断としてGeminiスコアを付けてください。ただし最終判定はPython側の加重平均で行うため、Geminiだけで採否を決めないでください。",
+            "important_instruction": "MLスコアに引きずられすぎず、JSの指定5基準を抽象化した意味判断としてGeminiスコアを付けてください。同日内の4W一致判定と過去採用済み記事との差分判定は必ず行ってください。ただし最終スコアはPython側でMLスコアとGeminiスコアの高い方を採用します。Geminiだけで採否を決めないでください。",
             "articles": payloads,
         },
         ensure_ascii=False,
@@ -1223,6 +1397,15 @@ GEMINI_RERANK_RESPONSE_SCHEMA: dict[str, Any] = {
                     "country_weight_tier": {"type": "string"},
                     "domestic_region_tier": {"type": "string"},
                     "conflict_damage_target": {"type": "string"},
+                    "event_when": {"type": "string"},
+                    "event_who": {"type": "string"},
+                    "event_where": {"type": "string"},
+                    "event_what": {"type": "string"},
+                    "same_day_event_relation": {"type": "string"},
+                    "same_day_event_key": {"type": "string"},
+                    "same_day_diff_ja": {"type": "string"},
+                    "same_day_score_adjustment_ja": {"type": "string"},
+                    "same_day_score_source_rows": {"type": "array", "items": {"type": "integer"}},
                     "priority_topic_tags": {"type": "array", "items": {"type": "string"}},
                     "adopted_archive_relation": {"type": "string"},
                     "adopted_archive_diff_ja": {"type": "string"},
@@ -1238,6 +1421,7 @@ GEMINI_RERANK_RESPONSE_SCHEMA: dict[str, Any] = {
                     "decision",
                     "rank_group",
                     "direct_myanmar_relevance",
+                    "same_day_event_relation",
                     "adopted_archive_relation",
                     "reasons",
                     "risk_flags",
@@ -1418,6 +1602,7 @@ def normalize_gemini_result(item: dict[str, Any]) -> dict[str, Any]:
     risk_flags = item.get("risk_flags", [])
     axes = item.get("editorial_axes", [])
     priority_tags = item.get("priority_topic_tags", [])
+    same_day_source_rows = item.get("same_day_score_source_rows", [])
 
     if not isinstance(reasons, list):
         reasons = [cell_text(reasons)] if reasons else []
@@ -1427,6 +1612,14 @@ def normalize_gemini_result(item: dict[str, Any]) -> dict[str, Any]:
         axes = [cell_text(axes)] if axes else []
     if not isinstance(priority_tags, list):
         priority_tags = [cell_text(priority_tags)] if priority_tags else []
+    if not isinstance(same_day_source_rows, list):
+        same_day_source_rows = []
+
+    normalized_same_day_source_rows: list[int] = []
+    for value in same_day_source_rows:
+        row_index = safe_int(value, -1)
+        if row_index > 0:
+            normalized_same_day_source_rows.append(row_index)
 
     return {
         "gemini_score": clamp_score(item.get("gemini_score"), 0),
@@ -1436,6 +1629,15 @@ def normalize_gemini_result(item: dict[str, Any]) -> dict[str, Any]:
         "country_weight_tier": truncate_text(cell_text(item.get("country_weight_tier")), 40),
         "domestic_region_tier": truncate_text(cell_text(item.get("domestic_region_tier")), 40),
         "conflict_damage_target": truncate_text(cell_text(item.get("conflict_damage_target")), 40),
+        "event_when": truncate_text(cell_text(item.get("event_when")), 80),
+        "event_who": truncate_text(cell_text(item.get("event_who")), 120),
+        "event_where": truncate_text(cell_text(item.get("event_where")), 120),
+        "event_what": truncate_text(cell_text(item.get("event_what")), 160),
+        "same_day_event_relation": truncate_text(cell_text(item.get("same_day_event_relation")), 40),
+        "same_day_event_key": truncate_text(cell_text(item.get("same_day_event_key")), 180),
+        "same_day_diff_ja": truncate_text(cell_text(item.get("same_day_diff_ja")), 220),
+        "same_day_score_adjustment_ja": truncate_text(cell_text(item.get("same_day_score_adjustment_ja")), 220),
+        "same_day_score_source_rows": normalized_same_day_source_rows[:12],
         "priority_topic_tags": [truncate_text(str(tag), 80) for tag in priority_tags if cell_text(tag)][:8],
         "adopted_archive_relation": truncate_text(cell_text(item.get("adopted_archive_relation")), 40),
         "adopted_archive_diff_ja": truncate_text(cell_text(item.get("adopted_archive_diff_ja")), 220),
@@ -1445,6 +1647,86 @@ def normalize_gemini_result(item: dict[str, Any]) -> dict[str, Any]:
         "reasons": [truncate_text(str(reason), 90) for reason in reasons if cell_text(reason)][:4],
         "risk_flags": [truncate_text(str(flag), 90) for flag in risk_flags if cell_text(flag)][:4],
     }
+
+def same_day_score_share_group_key(
+    row: ArticleRecord,
+    result: dict[str, Any],
+) -> str:
+    relation = cell_text(result.get("same_day_event_relation"))
+    if relation != "same_event_duplicate":
+        return ""
+
+    raw_key = cell_text(result.get("same_day_event_key"))
+    if not raw_key:
+        raw_key = "|".join(
+            [
+                cell_text(result.get("event_when")),
+                cell_text(result.get("event_who")),
+                cell_text(result.get("event_where")),
+                cell_text(result.get("event_what")),
+            ]
+        )
+
+    normalized_key = normalize_key_text(raw_key)
+    if len(normalized_key) < 8:
+        return ""
+    return f"{row.date_key or 'current'}:{normalized_key}"
+
+
+def apply_same_day_score_sharing(
+    rows: list[ArticleRecord],
+    results: dict[int, dict[str, Any]],
+) -> dict[int, dict[str, Any]]:
+    """Set same-day duplicate-event Gemini scores to the group maximum.
+
+    Gemini decides the semantic 4W match and returns same_day_event_relation / key.
+    This deterministic post-process then enforces the user's rule: if multiple
+    same-day articles describe the same when/who/where/what event, their Gemini
+    score becomes the highest score in that same-event group.
+    """
+    if not results:
+        return results
+
+    row_by_index = {row.row_index: row for row in rows}
+    groups: dict[str, list[int]] = {}
+    for row_index, result in results.items():
+        row = row_by_index.get(row_index)
+        if row is None:
+            continue
+        group_key = same_day_score_share_group_key(row, result)
+        if not group_key:
+            continue
+        groups.setdefault(group_key, []).append(row_index)
+
+    adjusted_count = 0
+    for group_rows in groups.values():
+        unique_rows = sorted(set(group_rows))
+        if len(unique_rows) < 2:
+            continue
+        max_score = max(clamp_score(results[row_index].get("gemini_score"), 0) for row_index in unique_rows)
+        for row_index in unique_rows:
+            result = results[row_index]
+            original_score = clamp_score(result.get("gemini_score"), 0)
+            result["same_day_score_source_rows"] = unique_rows[:12]
+            if original_score < max_score:
+                result["gemini_score"] = max_score
+                result["same_day_score_adjustment_ja"] = (
+                    f"同日同一事象グループ{len(unique_rows)}件の最高Geminiスコア"
+                    f"{max_score}点に揃えました。元スコア: {original_score}点。"
+                )[:220]
+                adjusted_count += 1
+            elif not result.get("same_day_score_adjustment_ja"):
+                result["same_day_score_adjustment_ja"] = (
+                    f"同日同一事象グループ{len(unique_rows)}件の最高Geminiスコアとして使用。"
+                )[:220]
+
+    if adjusted_count:
+        print(
+            f"[selection-ml-classifier] same_day_score_sharing adjusted_rows={adjusted_count} "
+            f"groups={sum(1 for rows_ in groups.values() if len(set(rows_)) >= 2)}"
+        )
+    return results
+
 
 def run_gemini_rerank(
     rows: list[ArticleRecord],
@@ -1489,11 +1771,17 @@ def run_gemini_rerank(
     results: dict[int, dict[str, Any]] = {}
     model_usage_counts: dict[str, int] = {}
     archive_context_map = build_archive_adopted_context_map(rows, archive_records or [])
+    same_day_context_map = build_same_day_context_map(rows)
 
     for start in range(0, len(candidates), batch_size):
         batch = candidates[start : start + batch_size]
         payloads = [
-            build_gemini_article_payload(row, detail, archive_context_map.get(row.row_index, []))
+            build_gemini_article_payload(
+                row,
+                detail,
+                archive_context_map.get(row.row_index, []),
+                same_day_context_map.get(row.row_index, []),
+            )
             for row, detail in batch
         ]
         prompt = build_gemini_rerank_prompt(payloads)
@@ -1532,28 +1820,37 @@ def run_gemini_rerank(
         if last_error is None:
             pass
 
+    results = apply_same_day_score_sharing(rows, results)
     print(
         f"[selection-ml-classifier] gemini_rerank=done model={model_name} "
         f"fallback_model={fallback_model_name} candidates={len(candidates)} "
-        f"results={len(results)} model_usage={json.dumps(model_usage_counts, ensure_ascii=False)}"
+        f"results={len(results)} same_day_context_rows={len(same_day_context_map)} "
+        f"archive_context_rows={len(archive_context_map)} "
+        f"model_usage={json.dumps(model_usage_counts, ensure_ascii=False)}"
     )
     return results
 
 
-def final_score_weights() -> tuple[float, float]:
-    ml_weight = env_float("FINAL_SCORE_ML_WEIGHT", DEFAULT_FINAL_SCORE_ML_WEIGHT, 0.0, 1.0)
-    gemini_weight = env_float("FINAL_SCORE_GEMINI_WEIGHT", DEFAULT_FINAL_SCORE_GEMINI_WEIGHT, 0.0, 1.0)
-    total = ml_weight + gemini_weight
-    if total <= 0:
-        return DEFAULT_FINAL_SCORE_ML_WEIGHT, DEFAULT_FINAL_SCORE_GEMINI_WEIGHT
-    return ml_weight / total, gemini_weight / total
-
-
 def calculate_final_score(ml_score: int, gemini_score: int | None) -> int:
+    """Use the higher score between ML and Gemini for AA列（最終スコア）."""
+    ml_score = clamp_score(ml_score, 0)
     if gemini_score is None:
         return ml_score
-    ml_weight, gemini_weight = final_score_weights()
-    return clamp_score(ml_score * ml_weight + gemini_score * gemini_weight, ml_score)
+    return max(ml_score, clamp_score(gemini_score, 0))
+
+
+def selected_score_source(ml_score: int, gemini_score: int | None) -> str:
+    """Return which score source was adopted for AB列."""
+    ml_score = clamp_score(ml_score, 0)
+    if gemini_score is None:
+        return "ML採用（Geminiスコアなし）"
+
+    gemini_score = clamp_score(gemini_score, 0)
+    if gemini_score > ml_score:
+        return "Gemini採用"
+    if ml_score > gemini_score:
+        return "ML採用"
+    return "同点（ML/Gemini）"
 
 def format_gemini_reason(result: dict[str, Any] | None) -> str:
     if not result:
@@ -1577,6 +1874,20 @@ def format_gemini_reason(result: dict[str, Any] | None) -> str:
         parts.append(f"国名階層: {result['country_weight_tier']}")
     if result.get("conflict_damage_target"):
         parts.append(f"紛争被害対象: {result['conflict_damage_target']}")
+    event_parts = [
+        cell_text(result.get("event_when")),
+        cell_text(result.get("event_who")),
+        cell_text(result.get("event_where")),
+        cell_text(result.get("event_what")),
+    ]
+    if any(event_parts):
+        parts.append("4W: " + " / ".join(part or "-" for part in event_parts))
+    if result.get("same_day_event_relation"):
+        parts.append(f"同日内判定: {result['same_day_event_relation']}")
+    if result.get("same_day_diff_ja"):
+        parts.append(f"同日差分: {result['same_day_diff_ja']}")
+    if result.get("same_day_score_adjustment_ja"):
+        parts.append(f"同日スコア調整: {result['same_day_score_adjustment_ja']}")
     if result.get("adopted_archive_relation"):
         parts.append(f"過去採用との差分判定: {result['adopted_archive_relation']}")
     if result.get("adopted_archive_diff_ja"):
@@ -1590,16 +1901,12 @@ def format_gemini_reason(result: dict[str, Any] | None) -> str:
 
 
 def build_final_reason(ml_score: int, gemini_result: dict[str, Any] | None, final_score: int) -> str:
-    if not gemini_result:
-        return f"Gemini再ランキングなし。MLスコア{ml_score}を最終スコアとして使用。"
-    gemini_score = safe_int(gemini_result.get("gemini_score"), 0)
-    decision = cell_text(gemini_result.get("decision")) or "判定なし"
-    rank_group = cell_text(gemini_result.get("rank_group")) or "-"
-    ml_weight, gemini_weight = final_score_weights()
-    return (
-        f"ML {ml_score}点×{ml_weight:.2f} + Gemini {gemini_score}点×{gemini_weight:.2f} "
-        f"→ 最終 {final_score}点。Gemini判定={decision} / ランク={rank_group}。"
-    )[:3000]
+    gemini_score = (
+        clamp_score(gemini_result.get("gemini_score"), 0)
+        if gemini_result is not None
+        else None
+    )
+    return selected_score_source(ml_score, gemini_score)
 
 def build_gemini_detail_json(result: dict[str, Any] | None) -> str:
     if not result:
@@ -1929,12 +2236,19 @@ def run() -> None:
         sheets,
         archive_folder_id,
     )
+    local_adopted_archive_records = load_local_adopted_archive_records(
+        sheets,
+        spreadsheet_id,
+        target_sheet,
+    )
+    gemini_archive_context_records = archive_records + local_adopted_archive_records
 
     print(
         f"[selection-ml-classifier] archive_files={archive_file_count} "
         f"archive_rows={len(archive_records)} "
         f"positives={sum(1 for row in archive_records if int(row.label or 0) > 0)} "
-        "rules=off priority_topics=off media_feature=off prev_day=off recency_weight=off gemini=weighted_score "
+        f"local_adopted_archive_rows={len(local_adopted_archive_records)} "
+        "rules=off priority_topics=off media_feature=off prev_day=off recency_weight=off gemini=max_score "
         "model=logistic_regression_classifier manual_order_weight=on"
     )
 
@@ -1942,7 +2256,11 @@ def run() -> None:
 
     current_rows, row_count = load_current_rows(sheets, spreadsheet_id, target_sheet)
     prediction_details = model.prediction_details(current_rows)
-    gemini_results = run_gemini_rerank(current_rows, prediction_details, archive_records)
+    gemini_results = run_gemini_rerank(
+        current_rows,
+        prediction_details,
+        gemini_archive_context_records,
+    )
     output_values = build_output_values(
         current_rows,
         row_count,
