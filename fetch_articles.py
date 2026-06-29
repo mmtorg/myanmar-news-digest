@@ -4893,9 +4893,10 @@ def build_prompt(item: dict, *, skip_filters: bool, body_max: int) -> str:
     # terms シートのヒット語だけを固定する既存ルール（見出し=title_ja / 本文=body_ja）
     source_rules = _build_source_specific_translation_rules(item.get("source") or "")
     term_rules = _build_term_rules_prompt(title_src, body_src)
+    amount_facts = build_myanmar_amount_facts_prompt(title_src, body_src)
 
     # ルール → 入力、の順でプロンプトを構成
-    return header + COMMON_RULES_HEADER + source_rules + "\n" + pre + STEP3_TASK + rg_title + rg_body + term_rules + "\n" + input_block
+    return header + COMMON_RULES_HEADER + source_rules + "\n" + pre + STEP3_TASK + rg_title + rg_body + term_rules + amount_facts + "\n" + input_block
 
 # ============================================================
 # 通貨換算・金額分解（Python版・機械固定）
@@ -4953,7 +4954,8 @@ def parse_ja_kyat_to_int(text: str) -> int:
     '1兆2345億6789万チャット'
     -> int チャット
     """
-    t = re.sub(r"[,\s，]", "", text)
+    t = re.sub(r"[,\s，]", "", str(text or ""))
+    t = t.translate(str.maketrans("０１２３４５６７８９", "0123456789"))
     t = re.sub(r"チャット.*$", "", t)
 
     rest = t
@@ -4994,6 +4996,243 @@ def fix_kyat_yen_in_text(text: str) -> str:
         return f"{kyat_part}（約{yen_ja}）"
 
     return pattern.sub(repl, text)
+
+
+# ============================================================
+# ミャンマー語チャット金額の機械解釈・誤訳補正
+# - JS側の「ဘီလီယံ=10億チャット」補正と同じ方針をPythonにも適用。
+# - カンマ付き数値（例: ၂,၂၀၉ ဘီလီယံ）も正しく扱う。
+# ============================================================
+
+MYANMAR_AMOUNT_NUM_RE_SRC = r"\d+(?:[,，]\d{3})*(?:\.\d+)?"
+MYANMAR_AMOUNT_NUM_RE = re.compile(MYANMAR_AMOUNT_NUM_RE_SRC)
+
+
+def _normalize_myanmar_amount_text(text: str) -> str:
+    """ミャンマー数字・全角数字・ဒသမを数値抽出しやすい形へ正規化する。"""
+    s = str(text or "")
+    s = re.sub(r"[၀-၉]", lambda m: str(ord(m.group(0)) - 0x1040), s)
+    s = s.translate(str.maketrans("０１２３４５６７８９", "0123456789"))
+    s = s.replace("ဒသမ", ".")
+    s = re.sub(r"\s*\.\s*", ".", s)
+    s = re.sub(r"[\u200B-\u200D\uFEFF]", "", s)
+    s = s.replace("\u00A0", " ")
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def _parse_myanmar_amount_number(raw: str):
+    """2,209 / ၁,၀၇၂ / 1068.66 などを float として読む。"""
+    m = MYANMAR_AMOUNT_NUM_RE.search(_normalize_myanmar_amount_text(raw))
+    if not m:
+        return None
+    s = m.group(0).replace(",", "").replace("，", "")
+    try:
+        return float(s)
+    except Exception:
+        return None
+
+
+def _format_number_label(num: float) -> str:
+    """repair候補作成用。2209.0 -> '2209', 1068.66 -> '1068.66'。"""
+    try:
+        if float(num).is_integer():
+            return str(int(num))
+        return ("%f" % float(num)).rstrip("0").rstrip(".")
+    except Exception:
+        return str(num)
+
+
+def _build_myanmar_unit_amount_regex(unit: str) -> re.Pattern:
+    return re.compile(
+        rf"(?:{MYANMAR_AMOUNT_NUM_RE_SRC}\s*{re.escape(unit)}|{re.escape(unit)}\s*{MYANMAR_AMOUNT_NUM_RE_SRC})(?:\s*(?:လောက်|ကျော်|ခန့်|ခန့္))?"
+    )
+
+
+def _amount_qualifier_ja(raw: str) -> str:
+    s = str(raw or "")
+    if "ကျော်" in s:
+        return "超"
+    if "လောက်" in s or "ခန့်" in s or "ခန့္" in s:
+        return "程度"
+    return ""
+
+
+def _has_kyat_marker_near(src: str, start: int, end: int) -> bool:
+    left = max(0, start - 40)
+    right = min(len(src), end + 40)
+    around = src[left:right]
+    return re.search(r"(?:ငွေ\s*)?ကျပ်|kyat|ks\.?|mmk", around, flags=re.IGNORECASE) is not None
+
+
+def format_kyat_amount_ja(kyat_value) -> str:
+    """整数チャットを 兆・億・万 に機械分解して日本語表記する。"""
+    try:
+        n = int(round(float(kyat_value)))
+    except Exception:
+        return ""
+    if n <= 0:
+        return ""
+
+    cho = n // 1_000_000_000_000
+    n %= 1_000_000_000_000
+    oku = n // 100_000_000
+    n %= 100_000_000
+    man = n // 10_000
+    rest = n % 10_000
+
+    out = ""
+    if cho:
+        out += f"{cho}兆"
+    if oku:
+        out += f"{oku}億"
+    if man:
+        out += f"{man}万"
+    if not out and rest:
+        out += str(rest)
+    return (out or "0") + "チャット"
+
+
+def extract_myanmar_kyat_amount_facts(title_raw: str, body_raw: str) -> list[dict]:
+    """
+    原文中の ကျပ် / Kyat / Ks / MMK 近傍にある သိန်း/သန်း/ဘီလီယံ 金額を抽出し、
+    LLMプロンプトへ渡せる正規化済み表記を返す。
+    """
+    src = _normalize_myanmar_amount_text(f"{title_raw or ''}\n{body_raw or ''}")
+    facts: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add_fact(raw: str, ja: str):
+        raw = str(raw or "").strip()
+        ja = str(ja or "").strip()
+        if not raw or not ja:
+            return
+        key = (raw, ja)
+        if key in seen:
+            return
+        seen.add(key)
+        facts.append({"raw": raw, "ja": ja})
+
+    def add_approx_facts(pattern: str, ja: str):
+        for m in re.finditer(pattern, src):
+            if _has_kyat_marker_near(src, m.start(), m.end()):
+                add_fact(m.group(0), ja)
+
+    def add_numeric_facts(unit: str, multiplier: int):
+        re_unit = _build_myanmar_unit_amount_regex(unit)
+        for m in re_unit.finditer(src):
+            if not _has_kyat_marker_near(src, m.start(), m.end()):
+                continue
+            num = _parse_myanmar_amount_number(m.group(0))
+            if num is None:
+                continue
+            kyat_value = num * multiplier
+            qualifier = _amount_qualifier_ja(m.group(0))
+            kyat_ja = format_kyat_amount_ja(kyat_value) + qualifier
+            yen_ja = format_yen_ja(kyat_to_yen_int(int(round(kyat_value))))
+            add_fact(m.group(0), f"{kyat_ja}（約{yen_ja}）")
+
+    # 概数表現。金額単位と結び付いている場合のみ採用。
+    add_approx_facts(r"သိန်း\s*ရာ\s*ချီ", "数千万チャット規模")
+    add_approx_facts(r"သိန်း\s*ထောင်\s*ချီ", "数億チャット規模")
+    add_approx_facts(r"သိန်း\s*သောင်း\s*ချီ", "数十億チャット規模")
+    add_approx_facts(r"သန်း\s*ရာ\s*ချီ", "数億チャット規模")
+    add_approx_facts(r"သန်း\s*ထောင်\s*ချီ", "数十億チャット規模")
+    add_approx_facts(r"သန်း\s*သောင်း\s*ချီ", "数百億チャット規模")
+
+    add_numeric_facts("သိန်း", 100_000)
+    add_numeric_facts("သန်း", 1_000_000)
+    add_numeric_facts("ဘီလီယံ", 1_000_000_000)
+
+    return facts
+
+
+def build_myanmar_amount_facts_prompt(title_raw: str, body_raw: str) -> str:
+    facts = extract_myanmar_kyat_amount_facts(title_raw, body_raw)
+    if not facts:
+        return ""
+    lines = [
+        "【原文中の金額表現の機械解釈】",
+        "以下は、原文で ကျပ် / Kyat / Ks / MMK が近くにある金額表現だけを機械的に抽出したものです。",
+        "要約・翻訳でこの金額に触れる場合のみ、必ずこの解釈に従ってください。必ず本文に入れる必要はありません。",
+        "概数表現は「規模」として表記し、日本円換算はしないでください。",
+        "単位を落として「数百チャット」「数千チャット」などと訳すことは禁止です。",
+    ]
+    lines.extend(f"- 「{f['raw']}」= {f['ja']}" for f in facts)
+    return "\n".join(lines) + "\n"
+
+
+def extract_myanmar_billion_facts_for_repair(title_raw: str, body_raw: str) -> list[dict]:
+    """原文中の N ဘီလီယံ を、LLM出力の N億チャット誤訳補正用に抽出する。"""
+    src = _normalize_myanmar_amount_text(f"{title_raw or ''}\n{body_raw or ''}")
+    facts: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    re_unit = _build_myanmar_unit_amount_regex("ဘီလီယံ")
+
+    for m in re_unit.finditer(src):
+        if not _has_kyat_marker_near(src, m.start(), m.end()):
+            continue
+        num = _parse_myanmar_amount_number(m.group(0))
+        if num is None:
+            continue
+        qualifier = _amount_qualifier_ja(m.group(0))
+        kyat_value = num * 1_000_000_000
+        num_plain = _format_number_label(num)
+        try:
+            num_comma = f"{int(num):,}" if float(num).is_integer() else num_plain
+        except Exception:
+            num_comma = num_plain
+        correct_base = format_kyat_amount_ja(kyat_value)
+        correct_qualified = correct_base + qualifier
+        correct_yen = f"（約{format_yen_ja(kyat_to_yen_int(int(round(kyat_value))))}）"
+        key = (num_plain, correct_qualified)
+        if key in seen:
+            continue
+        seen.add(key)
+        facts.append(
+            {
+                "num_plain": num_plain,
+                "num_comma": num_comma,
+                "qualifier": qualifier,
+                "correct_base": correct_base,
+                "correct_qualified": correct_qualified,
+                "correct_yen": correct_yen,
+            }
+        )
+    return facts
+
+
+def fix_myanmar_billion_kyat_mistranslation(
+    text: str,
+    title_raw: str,
+    body_raw: str,
+    *,
+    include_yen: bool = True,
+) -> str:
+    """
+    原文に「N ဘီလီယံ」がある時、LLMが「N億チャット」と誤訳した箇所を
+    「N×10億チャット」に補正する。
+    """
+    if not text:
+        return text
+    s = str(text)
+    for f in extract_myanmar_billion_facts_for_repair(title_raw, body_raw):
+        candidates = {f["num_plain"], f["num_comma"]}
+        # 小数付き表記が「1,068.66億チャット」のように出た場合も軽く吸収
+        candidates = {c for c in candidates if c}
+        for nlabel in sorted(candidates, key=len, reverse=True):
+            wrong = re.escape(nlabel) + r"億チャット"
+            pat = re.compile(wrong + r"(?:超|程度|くらい|およそ)?(?:（約[^）]*円）)?")
+
+            def repl(m):
+                # 直後に「を超え」がある場合は、重複した「超」を避ける。
+                after = s[m.end(): m.end() + 4]
+                use_base = f.get("qualifier") == "超" and after.startswith("を超")
+                amount = f["correct_base"] if use_base else f["correct_qualified"]
+                return amount + (f["correct_yen"] if include_yen else "")
+
+            s = pat.sub(repl, s)
+    return s
 
 def remove_yen_for_non_kyat(text: str) -> str:
     """
@@ -5178,6 +5417,9 @@ def process_translation_batches(batch_size=TRANSLATION_BATCH_SIZE, wait_seconds=
                 summary_text = "\n".join(lines_summary).strip()
                 translated_title = normalize_output_terminology_by_source(translated_title, item.get("source") or "", context="headline")
                 summary_text = normalize_output_terminology_by_source(summary_text, item.get("source") or "", context="body")
+                summary_text = fix_myanmar_billion_kyat_mistranslation(summary_text, item.get("title") or "", item.get("body") or "")
+                summary_text = remove_yen_for_non_kyat(summary_text)
+                summary_text = fix_kyat_yen_in_text(summary_text)
                 summary_text = strip_current_year_from_summary_dates(summary_text)
                 summary_html  = summary_text.replace("\n", "<br>")
 
@@ -5505,6 +5747,14 @@ def translate_fulltexts_for_business(urls_in_order_or_items, url_to_source_title
             )
             for x in input_array
         )
+        amount_facts_rules = "\n".join(
+            (
+                f"【item_id={x.get('item_id','')} の原文中の金額表現の機械解釈】\n"
+                + build_myanmar_amount_facts_prompt(x.get("title") or "", x.get("body") or "")
+            )
+            for x in input_array
+            if build_myanmar_amount_facts_prompt(x.get("title") or "", x.get("body") or "")
+        )
         prompt_parts = (
             "次のニュース記事の【本文だけ】を**自然な日本語**に完全翻訳してください。\n"
             "・固有名詞は一般的な日本語表記に\n"
@@ -5516,6 +5766,7 @@ def translate_fulltexts_for_business(urls_in_order_or_items, url_to_source_title
             "・半角の()括弧はすべて全角の（ ）に統一すること\n\n"
             f"{COMMON_TRANSLATION_RULES}\n"
             f"{source_specific_rules}\n"
+            f"{amount_facts_rules}\n"
             f"{PROMPT_SELF_CHECK_RULE}\n"
             f"{_build_region_glossary_prompt_for(_select_region_entries_for_text(' '.join([x.get('body','') for x in input_array]), _load_regions_cached()), use_headline_ja=False)}\n"
             "【本文以外は必ず除外（この関数専用）】\n"
@@ -5597,10 +5848,12 @@ def translate_fulltexts_for_business(urls_in_order_or_items, url_to_source_title
                         continue
                     if _normalize_item_id(x.get("item_id")) == target_item_id:
                         bj = normalize_output_terminology_by_source(bj, source, context="body")
+                        bj = fix_myanmar_billion_kyat_mistranslation(bj, "", body_trim)
                         bj = remove_yen_for_non_kyat(bj)
                         bj = fix_kyat_yen_in_text(bj)
                         return bj
                     if _normalize_url_key(str(x.get("url") or "")) == target_url:
+                        bj = fix_myanmar_billion_kyat_mistranslation(bj, "", body_trim)
                         bj = remove_yen_for_non_kyat(bj)
                         bj = fix_kyat_yen_in_text(bj)
                         return bj
@@ -5608,6 +5861,7 @@ def translate_fulltexts_for_business(urls_in_order_or_items, url_to_source_title
                         candidate_body = bj
                 if candidate_body:
                     candidate_body = normalize_output_terminology_by_source(candidate_body, source, context="body")
+                    candidate_body = fix_myanmar_billion_kyat_mistranslation(candidate_body, "", body_trim)
                     candidate_body = remove_yen_for_non_kyat(candidate_body)
                     candidate_body = fix_kyat_yen_in_text(candidate_body)
                     return candidate_body
@@ -5664,7 +5918,7 @@ def translate_fulltexts_for_business(urls_in_order_or_items, url_to_source_title
                 batch = [current]
                 effective_batch_size = 1
 
-        input_array = [{"item_id": b["item_id"], "url": b["url"], "source": b.get("source", ""), "body": b["body"]} for b in batch]
+        input_array = [{"item_id": b["item_id"], "url": b["url"], "source": b.get("source", ""), "title": b.get("title", ""), "body": b["body"]} for b in batch]
         prompt = _build_fulltext_prompt(input_array)
 
         precheck_sleep(rough_token_estimate(prompt), tag="fulltext-batch")
@@ -5714,6 +5968,7 @@ def translate_fulltexts_for_business(urls_in_order_or_items, url_to_source_title
 
                 body_ja = _apply_term_glossary_to_output(body_ja, src=body_src, prefer="body_ja")
                 body_ja = normalize_output_terminology_by_source(body_ja, b.get("source") or "", context="body")
+                body_ja = fix_myanmar_billion_kyat_mistranslation(body_ja, b.get("title") or "", body_src)
 
                 # ★ まず「チャット以外」の（約◯◯円）を削除（ドル等の誤換算対策）
                 body_ja = remove_yen_for_non_kyat(body_ja)
@@ -5732,6 +5987,7 @@ def translate_fulltexts_for_business(urls_in_order_or_items, url_to_source_title
             for b in batch:
                 bj = _apply_term_glossary_to_output(b["body"], src=b["body"], prefer="body_ja")
                 bj = normalize_output_terminology_by_source(bj, b.get("source") or "", context="body")
+                bj = fix_myanmar_billion_kyat_mistranslation(bj, b.get("title") or "", b.get("body") or "")
                 bj = remove_yen_for_non_kyat(bj)
                 bj = fix_kyat_yen_in_text(bj)
                 # ★ バッチそのものが失敗したので、各URLは確実に単体再翻訳に回す
@@ -5777,6 +6033,7 @@ def translate_fulltexts_for_business(urls_in_order_or_items, url_to_source_title
                 if fixed and _contains_cjk(fixed):
                     repaired = _apply_term_glossary_to_output(fixed, src=raw_body, prefer="body_ja")
                     repaired = normalize_output_terminology_by_source(repaired, source_raw, context="body")
+                    repaired = fix_myanmar_billion_kyat_mistranslation(repaired, "", raw_body)
                     repaired = remove_yen_for_non_kyat(repaired)
                     repaired = fix_kyat_yen_in_text(repaired)
                     results[j]["body_ja"] = repaired

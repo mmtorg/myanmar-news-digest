@@ -3227,6 +3227,12 @@ function processRow_(sheet, row, prevStatus) {
 
         // ★ まず「クロー / crore」を日本語のルピー表記へ正規化
         summaryJa = normalizeRupeeCroreInText_(summaryJa);
+        // ★ 原文の「N ဘီလီယံ」を根拠に、LLMの「N億チャット」誤訳を補正
+        summaryJa = fixMyanmarBillionKyatMistranslation_(
+          summaryJa,
+          titleRaw,
+          bodyRaw,
+        );
         // ★ まず「チャット以外」の（約◯◯円）を削除（ドル等の誤換算対策）
         summaryJa = removeYenForNonKyat_(summaryJa);
         // ★ 次に「チャット」の（約◯◯円）だけを再計算で矯正
@@ -3255,6 +3261,11 @@ function processRow_(sheet, row, prevStatus) {
 
             // 圧縮後も円表記補正をかけ直す
             summaryJa = normalizeRupeeCroreInText_(summaryJa);
+            summaryJa = fixMyanmarBillionKyatMistranslation_(
+              summaryJa,
+              titleRaw,
+              bodyRaw,
+            );
             summaryJa = removeYenForNonKyat_(summaryJa);
             summaryJa = fixKyatYenInText_(summaryJa);
             // ★ 圧縮後もメディア別表記・DKBA表記を補正
@@ -3736,6 +3747,54 @@ function normalizeMyanmarAmountText_(s) {
     .trim();
 }
 
+// カンマ付き・小数付きの金額数値を許容する。
+// 例: 2,209 / 1,072 / 1068.66 / ၅,၃၂۹
+const MM_AMOUNT_NUM_SRC = "\\d+(?:[,，]\\d{3})*(?:\\.\\d+)?";
+
+function parseMyanmarAmountNumber_(raw) {
+  const s = normalizeMyanmarAmountText_(raw).replace(/[,，]/g, "").trim();
+
+  const n = Number(s);
+  return Number.isFinite(n) ? n : null;
+}
+
+function buildMyanmarUnitAmountRegex_(unit) {
+  return new RegExp(
+    "(?:" +
+      MM_AMOUNT_NUM_SRC +
+      "\\s*" +
+      unit +
+      "|" +
+      unit +
+      "\\s*" +
+      MM_AMOUNT_NUM_SRC +
+      ")" +
+      "(?:\\s*(?:လောက်|ကျော်|ခန့်|ခန့္))?",
+    "g",
+  );
+}
+
+function extractFirstMyanmarAmountNumber_(raw) {
+  const m = normalizeMyanmarAmountText_(raw).match(
+    new RegExp(MM_AMOUNT_NUM_SRC),
+  );
+  if (!m) return null;
+  return parseMyanmarAmountNumber_(m[0]);
+}
+
+function amountQualifierJa_(raw) {
+  const s = String(raw || "");
+  if (s.indexOf("ကျော်") !== -1) return "超";
+  if (
+    s.indexOf("လောက်") !== -1 ||
+    s.indexOf("ခန့်") !== -1 ||
+    s.indexOf("ခန့္") !== -1
+  ) {
+    return "程度";
+  }
+  return "";
+}
+
 function hasKyatMarkerNear_(src, start, end) {
   const left = Math.max(0, start - 30);
   const right = Math.min(src.length, end + 30);
@@ -3795,19 +3854,23 @@ function extractMyanmarKyatAmountFacts_(titleRaw, bodyRaw) {
     }
   }
 
-  function addNumericFacts(re, multiplier) {
+  function addNumericFacts(unit, multiplier) {
+    const re = buildMyanmarUnitAmountRegex_(unit);
+
     let m;
     while ((m = re.exec(src)) !== null) {
       if (!hasKyatMarkerNear_(src, m.index, m.index + m[0].length)) continue;
 
-      const numMatch = String(m[0]).match(/\d+(?:\.\d+)?/);
-      if (!numMatch) continue;
+      const num = extractFirstMyanmarAmountNumber_(m[0]);
+      if (num == null) continue;
 
-      const num = Number(numMatch[0]);
-      if (!Number.isFinite(num)) continue;
+      const kyatValue = num * multiplier;
+      const qualifier = amountQualifierJa_(m[0]);
 
-      const ja = formatKyatAmountJa_(num * multiplier);
-      addFact(m[0], ja);
+      const kyatJa = formatKyatAmountJa_(kyatValue) + qualifier;
+      const yenJa = formatYenJa_(kyatToYenInt_(kyatValue));
+
+      addFact(m[0], kyatJa + "（約" + yenJa + "）");
     }
   }
 
@@ -3821,24 +3884,89 @@ function extractMyanmarKyatAmountFacts_(titleRaw, bodyRaw) {
   addApproxFacts(/သန်း\s*သောင်း\s*ချီ/g, "数百億チャット規模");
 
   // 数値表現：N သိန်း / သိန်း N
-  addNumericFacts(
-    /(?:\d+(?:\.\d+)?\s*သိန်း|သိန်း\s*\d+(?:\.\d+)?)(?:\s*(?:လောက်|ကျော်|ခန့်|ခန့္))?/g,
-    100000,
-  );
+  addNumericFacts("သိန်း", 100000);
 
   // 数値表現：N သန်း / သန်း N
-  addNumericFacts(
-    /(?:\d+(?:\.\d+)?\s*သန်း|သန်း\s*\d+(?:\.\d+)?)(?:\s*(?:လောက်|ကျော်|ခန့်|ခန့္))?/g,
-    1000000,
-  );
+  addNumericFacts("သန်း", 1000000);
 
   // 数値表現：N ဘီလီယံ / ဘီလီယံ N
-  addNumericFacts(
-    /(?:\d+(?:\.\d+)?\s*ဘီလီယံ|ဘီလီယံ\s*\d+(?:\.\d+)?)(?:\s*(?:လောက်|ကျော်|ခန့်|ခန့္))?/g,
-    1000000000,
-  );
+  addNumericFacts("ဘီလီယံ", 1000000000);
 
   return facts;
+}
+
+function extractMyanmarBillionFactsForRepair_(titleRaw, bodyRaw) {
+  const src = normalizeMyanmarAmountText_(
+    String(titleRaw || "") + "\n" + String(bodyRaw || ""),
+  );
+
+  const facts = [];
+  const seen = {};
+  const re = buildMyanmarUnitAmountRegex_("ဘီလီယံ");
+
+  let m;
+  while ((m = re.exec(src)) !== null) {
+    if (!hasKyatMarkerNear_(src, m.index, m.index + m[0].length)) continue;
+
+    const num = extractFirstMyanmarAmountNumber_(m[0]);
+    if (num == null) continue;
+
+    const qualifier = amountQualifierJa_(m[0]);
+    const kyatValue = num * 1000000000;
+
+    const numPlain = String(num).replace(/\.0$/, "");
+    const numComma = Number.isInteger(num)
+      ? Math.round(num).toLocaleString("en-US")
+      : numPlain;
+
+    const correctKyat = formatKyatAmountJa_(kyatValue);
+    const correctYen = "（約" + formatYenJa_(kyatToYenInt_(kyatValue)) + "）";
+
+    const key = numPlain + "|" + correctKyat + "|" + qualifier;
+    if (seen[key]) continue;
+    seen[key] = true;
+
+    facts.push({
+      numPlain: numPlain,
+      numComma: numComma,
+      qualifier: qualifier,
+      correctNoQualifier: correctKyat + correctYen,
+      correctWithQualifier: correctKyat + qualifier + correctYen,
+    });
+  }
+
+  return facts;
+}
+
+function fixMyanmarBillionKyatMistranslation_(text, titleRaw, bodyRaw) {
+  if (!text) return text;
+
+  let s = String(text);
+  const facts = extractMyanmarBillionFactsForRepair_(titleRaw, bodyRaw);
+
+  facts.forEach(function (f) {
+    const candidates = [f.numPlain + "億チャット", f.numComma + "億チャット"];
+
+    candidates.forEach(function (wrong) {
+      // 例: 「2209億チャット（約79億5240万円）を超え」は、
+      // 「2兆2090億チャット（約795億2400万円）を超え」に補正する。
+      const reBeforeKoek = new RegExp(
+        escapeRegExp_(wrong) + "(?:（約[^）]*円）)?を超え",
+        "g",
+      );
+      s = s.replace(reBeforeKoek, f.correctNoQualifier + "を超え");
+
+      // 例: 「2209億チャット」「2209億チャット超」「2209億チャット（約...円）」は、
+      // 原文側の qualifier も含めた正しい表記へ補正する。
+      const rePlain = new RegExp(
+        escapeRegExp_(wrong) + "(?:超|程度)?(?:（約[^）]*円）)?",
+        "g",
+      );
+      s = s.replace(rePlain, f.correctWithQualifier);
+    });
+  });
+
+  return s;
 }
 
 function buildMyanmarAmountFactsPrompt_(titleRaw, bodyRaw) {
@@ -4483,6 +4611,12 @@ function _applyOutputsToRow_(
 
   // ★ まず「クロー / crore」を日本語のルピー表記へ正規化
   summaryJa = normalizeRupeeCroreInText_(summaryJa);
+  // ★ 原文の「N ဘီလီယံ」を根拠に、LLMの「N億チャット」誤訳を補正
+  summaryJa = fixMyanmarBillionKyatMistranslation_(
+    summaryJa,
+    titleRaw,
+    bodyRaw,
+  );
   // ★ まず「チャット以外」の（約◯◯円）を削除（ドル等の誤換算対策）
   summaryJa = removeYenForNonKyat_(summaryJa);
   // ★ 次に「チャット」の（約◯◯円）だけを再計算で矯正
@@ -4516,6 +4650,11 @@ function _applyOutputsToRow_(
 
         // 圧縮後も円表記補正をかけ直す
         summaryJa = normalizeRupeeCroreInText_(summaryJa);
+        summaryJa = fixMyanmarBillionKyatMistranslation_(
+          summaryJa,
+          titleRaw,
+          bodyRaw,
+        );
         summaryJa = removeYenForNonKyat_(summaryJa);
         summaryJa = fixKyatYenInText_(summaryJa);
         // ★ 圧縮後もメディア別表記・DKBA表記を補正
