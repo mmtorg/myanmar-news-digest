@@ -104,6 +104,10 @@ try:
         call_llm_with_fallback,   # Gemini→OpenAI フォールバック
         client_summary,
         deduplicate_by_url,
+        build_myanmar_amount_facts_prompt,
+        fix_myanmar_billion_kyat_mistranslation,
+        remove_yen_for_non_kyat,
+        fix_kyat_yen_in_text,
     )
 except Exception:
     MMT = timezone(timedelta(hours=6, minutes=30))
@@ -116,6 +120,14 @@ except Exception:
             if u and u not in seen:
                 out.append(it); seen.add(u)
         return out
+    def build_myanmar_amount_facts_prompt(title_raw: str, body_raw: str) -> str:
+        return ""
+    def fix_myanmar_billion_kyat_mistranslation(text: str, title_raw: str, body_raw: str, *, include_yen: bool = True) -> str:
+        return text
+    def remove_yen_for_non_kyat(text: str) -> str:
+        return text
+    def fix_kyat_yen_in_text(text: str) -> str:
+        return text
     
 # === fetch_articles.py の文字数制御に揃える（import できなければフォールバック） ===
 try:
@@ -1122,7 +1134,8 @@ def _build_summary_prompt(item: dict, *, body_max: int) -> str:
     rg_body  = _region_rules_for_body(body)
     source_rules = _build_source_specific_translation_rules(item.get("source") or "")
     term_rules = _build_term_rules_prompt(item.get("title") or "", body)
-    return header + COMMON_RULES_HEADER + source_rules + "\n" + pre + STEP3_TASK + (rg_title + rg_body) + term_rules + "\n" + input_block
+    amount_facts = build_myanmar_amount_facts_prompt(item.get("title") or "", body)
+    return header + COMMON_RULES_HEADER + source_rules + "\n" + pre + STEP3_TASK + (rg_title + rg_body) + term_rules + amount_facts + "\n" + input_block
 
 # ===== 用語集（A:Myanmar / B:English / C:本文訳 / D:見出し訳） =====
 _TERM_CACHE: list[dict] | None = None
@@ -1442,6 +1455,7 @@ def _headline_variants_ja(title: str, source: str, url: str, body: str = "") -> 
     v1 = _apply_region_glossary_to_text(v1); v1 = _apply_term_glossary_to_output(v1, src=title, prefer="title_ja"); v1 = normalize_output_terminology_by_source(v1, source, context="headline")
     v2 = _apply_region_glossary_to_text(v2); v2 = _apply_term_glossary_to_output(v2, src=title, prefer="title_ja"); v2 = normalize_output_terminology_by_source(v2, source, context="headline")
     v3 = _apply_region_glossary_to_text(v3); v3 = _apply_term_glossary_to_output(v3, src=title, prefer="title_ja"); v3 = normalize_output_terminology_by_source(v3, source, context="headline")
+    v3 = fix_myanmar_billion_kyat_mistranslation(v3, title, body, include_yen=False)
     return [v1, v2, v3]
 
 def _summary_ja(source: str, title: str, body: str, url: str) -> str:
@@ -1463,6 +1477,9 @@ def _summary_ja(source: str, title: str, body: str, url: str) -> str:
         text = _apply_region_glossary_to_text(text)
         text = _apply_term_glossary_to_output(text, src=body, prefer="body_ja")
         text = normalize_output_terminology_by_source(text, source, context="body")
+        text = fix_myanmar_billion_kyat_mistranslation(text, title, body)
+        text = remove_yen_for_non_kyat(text)
+        text = fix_kyat_yen_in_text(text)
         text = strip_current_year_from_summary_dates(text)
         return text
 
@@ -1488,6 +1505,9 @@ def _summary_ja(source: str, title: str, body: str, url: str) -> str:
         text = _apply_region_glossary_to_text(text)
         text = _apply_term_glossary_to_output(text, src=body, prefer="body_ja")
         text = normalize_output_terminology_by_source(text, source, context="body")
+        text = fix_myanmar_billion_kyat_mistranslation(text, title, body)
+        text = remove_yen_for_non_kyat(text)
+        text = fix_kyat_yen_in_text(text)
         text = strip_current_year_from_summary_dates(text)
         return text
     except Exception:
@@ -1495,6 +1515,9 @@ def _summary_ja(source: str, title: str, body: str, url: str) -> str:
         text = _apply_region_glossary_to_text(text)
         text = _apply_term_glossary_to_output(text, src=body, prefer="body_ja")
         text = normalize_output_terminology_by_source(text, source, context="body")
+        text = fix_myanmar_billion_kyat_mistranslation(text, title, body)
+        text = remove_yen_for_non_kyat(text)
+        text = fix_kyat_yen_in_text(text)
         text = strip_current_year_from_summary_dates(text)
         return text
 
@@ -2045,6 +2068,8 @@ def cmd_build_bundle_from_sheet(args):
             title_ja = normalize_output_terminology_by_source(title_ja, source, context="headline")
             body_ja  = _apply_region_glossary_to_text(it.get("body_ja", "") or "")
             body_ja  = normalize_output_terminology_by_source(body_ja, source, context="body")
+            body_ja  = remove_yen_for_non_kyat(body_ja)
+            body_ja  = fix_kyat_yen_in_text(body_ja)
             translated_items.append({
                 "item_id": item_id,
                 "url": meta.get("url", ""),
