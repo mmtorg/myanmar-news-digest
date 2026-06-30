@@ -328,8 +328,8 @@ jobs:
       #     CSV_EMAIL_RECIPIENTS: ${{ secrets.CSV_EMAIL_RECIPIENTS }}
 
   schedule-watch-build-send:
-    # 02:05 MMT（= 19:35 UTC 前日）以降に監視ループ開始
-    # GitHub Actions の schedule ではなく、GAS から workflow_dispatch で起動する。
+    # GAS側で 02:05〜11:00 MMT にK列を監視し、条件成立時だけ workflow_dispatch で起動する。
+    # GitHub Actions側では長時間監視せず、K列を1回だけ再チェックしてから build-bundle する。
     if: >-
       github.event_name == 'workflow_dispatch' &&
       github.event.inputs.mode == 'watch-build-send'
@@ -388,9 +388,7 @@ jobs:
       TRIGGER_COLUMN_RANGE: "K:K"
       # 送信済み日付を記録するセル（同一日の重複実行防止）
       SENT_MARK_CELL: "config!A1"
-      POLL_INTERVAL_SEC: "1200" # 20分
-      MAX_WATCH_SEC: "18000" # 5時間（GitHub Actions 実行上限を考慮）
-      BUILD_FAIL_RETRY_LIMIT: "2" # build-bundle 失敗後、監視ループに戻る回数（最大2回）
+      BUILD_FAIL_RETRY_LIMIT: "2" # build-bundle 失敗時のリトライ回数（最大2回）
       MAIL_RETRY_LIMIT: "2" # メール送信リトライ回数（最大2回）
       MAIL_RETRY_WAIT_SEC: "600" # メール送信リトライ間隔（秒）
 
@@ -428,7 +426,7 @@ jobs:
           echo "PDF_FONT_PATH=$GITHUB_WORKSPACE/fonts/NotoSansJP-Regular.ttf" >> "$GITHUB_ENV"
           echo "PDF_FONT_BOLD_PATH=$GITHUB_WORKSPACE/fonts/NotoSansJP-Bold.ttf" >> "$GITHUB_ENV"
 
-      - name: Watch K column -> build-bundle (same-day guard in config!A1)
+      - name: Check K column once -> build-bundle (same-day guard in config!A1)
         id: watch_build
         env:
           MNA_LOG_LEVEL: INFO
@@ -452,7 +450,6 @@ jobs:
           SENT_MARK_CELL = os.environ.get('SENT_MARK_CELL', 'config!A1')
           WATCH_TZ = os.environ.get('WATCH_TZ', 'Asia/Yangon')
 
-          creds = None
           sa_json = os.environ.get('GOOGLE_SERVICE_ACCOUNT_JSON', '')
           if os.environ.get('GOOGLE_APPLICATION_CREDENTIALS'):
             creds = Credentials.from_service_account_file(
@@ -460,11 +457,14 @@ jobs:
               scopes=['https://www.googleapis.com/auth/spreadsheets']
             )
           elif sa_json:
-            import json, tempfile
+            import tempfile
             fd, p = tempfile.mkstemp(suffix='.json')
             with os.fdopen(fd, 'w') as f:
               f.write(sa_json)
-            creds = Credentials.from_service_account_file(p, scopes=['https://www.googleapis.com/auth/spreadsheets'])
+            creds = Credentials.from_service_account_file(
+              p,
+              scopes=['https://www.googleapis.com/auth/spreadsheets']
+            )
           else:
             print('missing service account json', file=sys.stderr)
             sys.exit(2)
@@ -473,65 +473,77 @@ jobs:
           sheets = service.spreadsheets().values()
 
           # same-day guard: if config!A1 == today(Asia/Yangon) => exit 20
-          mark = sheets.get(spreadsheetId=SHEET_ID, range=SENT_MARK_CELL).execute().get('values', [])
+          mark = sheets.get(
+            spreadsheetId=SHEET_ID,
+            range=SENT_MARK_CELL,
+          ).execute().get('values', [])
           mark_val = (mark[0][0] if mark and mark[0] else '').strip()
+
           try:
             import zoneinfo
             tz = zoneinfo.ZoneInfo(WATCH_TZ)
             today = datetime.now(tz).strftime('%Y-%m-%d')
           except Exception:
             today = datetime.utcnow().strftime('%Y-%m-%d')
+
           if mark_val == today:
             sys.exit(20)
 
           # trigger check: any cell in K:K == 'a' (exact match, trim)
           rng = f"{SHEET_NAME}!{TRIGGER_RANGE}"
-          vals = sheets.get(spreadsheetId=SHEET_ID, range=rng).execute().get('values', [])
-          flat = [v[0].strip() for v in vals if v and isinstance(v[0], str)]
+          vals = sheets.get(
+            spreadsheetId=SHEET_ID,
+            range=rng,
+          ).execute().get('values', [])
+          flat = [str(v[0]).strip() for v in vals if v and v[0] is not None]
+
           if any(x == TRIGGER_VALUE for x in flat):
             sys.exit(10)
+
           sys.exit(0)
           PY
           }
 
-          POLL=${POLL_INTERVAL_SEC:-600}
-          MAX=${MAX_WATCH_SEC:-18000}
+          set +e
+          check_sheet
+          code=$?
+          set -e
+
+          if [ "$code" -eq 20 ]; then
+            echo "Already sent today; stop."
+            exit 0
+          fi
+
+          if [ "$code" -eq 0 ]; then
+            echo "No trigger; stop. Dispatcher.js owns the 02:05-11:00 MMT watch window."
+            exit 0
+          fi
+
+          if [ "$code" -ne 10 ]; then
+            echo "K-column check failed with exit code ${code}." >&2
+            exit "$code"
+          fi
+
+          echo "Trigger found; run build-bundle."
+
           FAIL_LIMIT=${BUILD_FAIL_RETRY_LIMIT:-2}
-          started=$(date +%s)
           fails=0
 
           while true; do
-            set +e
-            check_sheet
-            code=$?
-            set -e
-
-            if [ "$code" -eq 20 ]; then
-              echo "Already sent today; stop."
+            if python sheet_pipeline.py build-bundle --bundle-dir bundle; then
+              echo "built=true" >> "$GITHUB_OUTPUT"
               exit 0
-            elif [ "$code" -eq 10 ]; then
-              echo "Trigger found; run build-bundle."
-              if python sheet_pipeline.py build-bundle --bundle-dir bundle; then
-                echo "built=true" >> "$GITHUB_OUTPUT"
-                exit 0
-              else
-                fails=$((fails+1))
-                echo "build-bundle failed (count=${fails})."
-                if [ "$fails" -gt "$FAIL_LIMIT" ]; then
-                  echo "build-bundle failures exceeded limit; stop."
-                  exit 1
-                fi
-              fi
-            else
-              now=$(date +%s)
-              elapsed=$((now-started))
-              if [ "$elapsed" -ge "$MAX" ]; then
-                echo "No trigger within max watch window; stop."
-                exit 0
-              fi
-              echo "No trigger; sleep ${POLL}s (elapsed ${elapsed}s)."
-              sleep "$POLL"
             fi
+
+            fails=$((fails+1))
+            echo "build-bundle failed (count=${fails})."
+
+            if [ "$fails" -gt "$FAIL_LIMIT" ]; then
+              echo "build-bundle failures exceeded limit; stop." >&2
+              exit 1
+            fi
+
+            sleep 60
           done
 
       - name: Prepare bundle artifact layout (preserve bundle directory)
