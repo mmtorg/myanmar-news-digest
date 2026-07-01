@@ -11,7 +11,8 @@
  * - prodはarchive_prod、devはarchive_devのK列=a採用済み記事を参照（日付制限なし）
  *
  * 出力:
- * - R〜Y列に最終採用確率スコアと補助情報を左詰めで出力
+ * - R〜Y列に最終採用確率スコアと補助情報を左詰めで出力（旧selection.js出力）
+ * - 現在のML/Gemini列構成では、同日同一内容判定はAA列・AD列だけを更新
  *
  * 重要:
  * - K列には一切書き込まない
@@ -106,6 +107,14 @@ const SELECT_COL_Y_RECOMMEND_FLAG = 25; // Y: AI採用判定
 
 const SELECT_OUTPUT_LAST_COL = SELECT_COL_Y_RECOMMEND_FLAG;
 
+// 現在のSelection ML/Gemini出力列（0701.xlsxの列構成に合わせる）
+// R〜AC列は既存のML/Gemini出力領域として扱い、同日同一内容判定ではAA列とAD列だけを書き換える。
+const SELECT_COL_AA_FINAL_SCORE = 27; // AA: 最終スコア
+const SELECT_COL_AC_GEMINI_DETAIL_JSON = 29; // AC: Gemini詳細JSON
+const SELECT_COL_AD_DUPLICATE_GROUP = 30; // AD: 同日重複グループ
+const SELECT_DUPLICATE_GROUP_HEADER = "同日重複グループ";
+const SELECT_DUPLICATE_GROUP_PREFIX = "重複";
+
 const SELECT_MAX_ROWS_PER_RUN = 150;
 
 // v4: 指定5基準のみのランキング仕様。
@@ -140,6 +149,85 @@ function runArticleSelectionScoreBatch() {
 }
 
 /**
+ * 1分おきトリガー用。
+ * 23:00 / 0:00 / 1:00 の分だけ prod の選定スコア処理を実行する。
+ *
+ * 使い方:
+ * - GASのトリガーで、この関数を「分ベースのタイマー」「1分おき」に設定する。
+ * - runArticleSelectionScoreProdBatch を23時台/0時台/1時台で直接起動する既存トリガーがある場合は削除する。
+ *
+ * 注意:
+ * - GASの時間主導型トリガー自体は秒単位の厳密実行を保証しない。
+ * - この関数は、GAS内で可能な範囲で 23:00 / 0:00 / 1:00 の分だけ本処理を通すための監視入口。
+ */
+function runArticleSelectionScoreProdBatchMinuteWatcher() {
+  const tz = Session.getScriptTimeZone();
+  const now = new Date();
+
+  const hour = Number(Utilities.formatDate(now, tz, "H"));
+  const minute = Number(Utilities.formatDate(now, tz, "m"));
+  const dateKey = Utilities.formatDate(now, tz, "yyyyMMdd");
+
+  const targetHours = {
+    23: true,
+    0: true,
+    1: true,
+  };
+
+  // 対象時刻以外は何もしない。
+  if (!targetHours[hour]) return;
+
+  // 23:00 / 0:00 / 1:00 の「0分」のときだけ実行する。
+  if (minute !== 0) return;
+
+  const props = PropertiesService.getScriptProperties();
+  const runKey =
+    "ARTICLE_SELECTION_PROD_BATCH_RAN_" +
+    dateKey +
+    "_" +
+    _zeroPadSelectionNumber_(hour, 2);
+
+  const lock = LockService.getScriptLock();
+
+  try {
+    if (!lock.tryLock(10000)) {
+      Logger.log("[selection-minute-watcher] lock busy -> skip");
+      return;
+    }
+
+    // 同じ日付・同じ対象時刻で二重実行しない。
+    if (props.getProperty(runKey) === "DONE") {
+      Logger.log("[selection-minute-watcher] already done: " + runKey);
+      return;
+    }
+
+    // 本処理が長時間化しても、同じ対象時刻の重複起動を避けるため先に記録する。
+    props.setProperty(runKey, "DONE");
+
+    Logger.log(
+      "[selection-minute-watcher] run prod batch at " +
+        dateKey +
+        " " +
+        _zeroPadSelectionNumber_(hour, 2) +
+        ":00",
+    );
+
+    runArticleSelectionScoreProdBatch();
+  } catch (e) {
+    Logger.log("[selection-minute-watcher] error: " + e);
+
+    // エラー時はDONEを戻し、同じ分内に再実行機会があれば再試行できるようにする。
+    props.deleteProperty(runKey);
+
+    throw e;
+  } finally {
+    try {
+      lock.releaseLock();
+    } catch (e2) {}
+  }
+}
+
+/**
  * prodのAI選定列をリセットする
  * K列・P列・Q列は触らない
  */
@@ -163,22 +251,17 @@ function resetArticleSelectionScoreDev() {
  * R〜Y列のヘッダー整備
  */
 function _ensureSelectionScoreHeaders_(sheet) {
-  // v4.5.3: R列は、作業者が降順で確認するための最終採用優先度スコア。
-  // 同日トピック内順位・日次順位による補正は行わず、基礎採用スコアを中心に使う。
-  const headers = [
-    [SELECT_COL_R_SCORE, "AI最終採用優先度スコア"],
-    [SELECT_COL_S_RATIONALE, "AI説明・補足"],
-    [SELECT_COL_T_SAME_DAY_TOPIC_KEY, "同日トピックキー"],
-    [SELECT_COL_U_STATUS, "AI選定ステータス"],
-    [SELECT_COL_V_TOPIC_IMPORTANCE, "基礎採用スコア"],
-    [SELECT_COL_W_REPRESENTATIVE, "代表記事スコア"],
-    [SELECT_COL_X_TOPIC_RANK, "同日トピック内順位（未使用）"],
-    [SELECT_COL_Y_RECOMMEND_FLAG, "AI採用判定"],
-  ];
+  // 現在のシートではR〜AC列がML/Gemini出力領域として使われているため、
+  // この関数ではR〜AC列のヘッダーを上書きしない。
+  // 同日同一内容判定で新たに使うAD列だけを整備する。
+  _ensureSameDayDuplicateGroupHeader_(sheet);
+}
 
-  headers.forEach(function (pair) {
-    sheet.getRange(1, pair[0]).setValue(pair[1]);
-  });
+function _ensureSameDayDuplicateGroupHeader_(sheet) {
+  if (!sheet) return;
+  sheet
+    .getRange(1, SELECT_COL_AD_DUPLICATE_GROUP)
+    .setValue(SELECT_DUPLICATE_GROUP_HEADER);
 }
 
 /**
@@ -202,13 +285,11 @@ function _resetArticleSelectionScoreColumnsBySheetName_(sheetName) {
 function _clearSelectionUsedColumns_(sheet, startRow, rowCount) {
   if (!sheet || !rowCount || rowCount <= 0) return;
 
+  // 現在の列構成ではR〜AC列が既存のML/Gemini出力領域のため、
+  // reset系関数でもR〜AC列は消さない。
+  // 同日同一内容判定の出力先であるAD列だけをクリアする。
   sheet
-    .getRange(
-      startRow,
-      SELECT_COL_R_SCORE,
-      rowCount,
-      SELECT_OUTPUT_LAST_COL - SELECT_COL_R_SCORE + 1,
-    )
+    .getRange(startRow, SELECT_COL_AD_DUPLICATE_GROUP, rowCount, 1)
     .clearContent();
 }
 
@@ -334,8 +415,9 @@ function _runArticleSelectionScoreBatchBySheetName_(sheetName) {
     }
 
     // 全対象行のスコア判定が完了した最後の実行回だけ、
-    // Q列完全一致・sameDayTopicKey一致のR列同点化と採用判定フラグ付けを行う。
-    // 同日トピック内順位補正・日次順位補正は行わない。
+    // 同日同一内容判定を一番最後に実行する。
+    // 現在の列構成ではT列ではなくAC列のGemini詳細JSONを参照し、
+    // AA列（最終スコア）とAD列（重複グループ）だけを書き換える。
     _assignDailySelectionRecommendations_(sheet);
 
     Logger.log(
@@ -5050,154 +5132,422 @@ function _hasOfficialAnnouncementDecisionSignalForSelection_(text) {
 }
 
 function _assignDailySelectionRecommendations_(sheet) {
+  // 現在のExcel列構成では、同日同一内容判定に使えるキーは
+  // T列ではなくAC列（Gemini詳細JSON）内の same_day_event_key です。
+  // そのため、この後処理ではR〜Y列を更新せず、AA列・AD列だけを更新します。
+  _applySameDayDuplicateGroupsFromGeminiDetailJson_(sheet);
+}
+
+/**
+ * prod用: AC列のGemini詳細JSONを使って、AA列・AD列だけを更新する。
+ * 既存スコア処理とは別トリガーで動かす場合はこの関数を設定する。
+ */
+function runSameDayDuplicateGroupingProd() {
+  _runSameDayDuplicateGroupingBySheetName_("prod");
+}
+
+/**
+ * dev用: AC列のGemini詳細JSONを使って、AA列・AD列だけを更新する。
+ * 既存スコア処理とは別トリガーで動かす場合はこの関数を設定する。
+ */
+function runSameDayDuplicateGroupingDev() {
+  _runSameDayDuplicateGroupingBySheetName_("dev");
+}
+
+/**
+ * prod/devまとめて、AC列のGemini詳細JSONを使ってAA列・AD列だけを更新する。
+ */
+function runSameDayDuplicateGroupingBatch() {
+  ["prod", "dev"].forEach(function (sheetName) {
+    _runSameDayDuplicateGroupingBySheetName_(sheetName);
+  });
+}
+
+function _runSameDayDuplicateGroupingBySheetName_(sheetName) {
+  const lock = LockService.getDocumentLock();
+
+  try {
+    if (!lock.tryLock(5000)) {
+      Logger.log("[same-day-duplicate] lock busy -> skip");
+      return;
+    }
+
+    const ss = SpreadsheetApp.getActive();
+    const sheet = ss.getSheetByName(sheetName);
+    if (!sheet) return;
+
+    const count = _applySameDayDuplicateGroupsFromGeminiDetailJson_(sheet);
+    Logger.log("[same-day-duplicate] %s duplicateGroups=%s", sheetName, count);
+  } catch (e) {
+    Logger.log("[same-day-duplicate] error: " + e);
+  } finally {
+    try {
+      lock.releaseLock();
+    } catch (e2) {}
+  }
+}
+
+/**
+ * 現在のExcel列構成に合わせた同日同一内容判定。
+ *
+ * 入力:
+ * - A列: 日付
+ * - C列: メディア
+ * - AA列: 最終スコア
+ * - AC列: Gemini詳細JSON
+ *
+ * 出力:
+ * - AA列: 同じADグループ内の最大スコアに上書き
+ * - AD列: 重複001、重複002... のグループID
+ *
+ * 仕様:
+ * - T列はMLモデルバージョンなので使わない。
+ * - Q列一致は起きない前提のため、同日同一内容判定には使わない。
+ * - AD列は毎回全行クリアしてから再生成する。
+ * - AC列の same_day_event_key が同じ同日記事を同一内容グループとして扱う。
+ */
+function _applySameDayDuplicateGroupsFromGeminiDetailJson_(sheet) {
+  if (!sheet) return 0;
+
+  _ensureSameDayDuplicateGroupHeader_(sheet);
+
   const lastRow = sheet.getLastRow();
-  if (lastRow < 2) return;
+  if (lastRow < 2) return 0;
 
-  const lastCol = Math.max(SELECT_OUTPUT_LAST_COL, sheet.getLastColumn());
-  const values = sheet.getRange(2, 1, lastRow - 1, lastCol).getValues();
+  const rowCount = lastRow - 1;
+  const lastCol = Math.max(
+    SELECT_COL_AD_DUPLICATE_GROUP,
+    sheet.getLastColumn(),
+  );
+  const values = sheet.getRange(2, 1, rowCount, lastCol).getValues();
 
-  // R列は、同日トピック内順位・日次順位では補正しない。
-  // V列の基礎採用スコアをベースにし、以下だけを後処理として反映する。
-  // - sameDayTopicKey一致のR列同点化
-  // - Q列完全一致のR列同点化
-  // - ミャンマー直接関連なしの20点上限
   const finalScoreOutputs = values.map(function (row) {
-    const base =
-      row[SELECT_COL_V_TOPIC_IMPORTANCE - 1] !== "" &&
-      row[SELECT_COL_V_TOPIC_IMPORTANCE - 1] !== null &&
-      row[SELECT_COL_V_TOPIC_IMPORTANCE - 1] !== undefined
-        ? row[SELECT_COL_V_TOPIC_IMPORTANCE - 1]
-        : row[SELECT_COL_R_SCORE - 1];
-
-    return [base === "" || base === null || base === undefined ? "" : base];
+    return [row[SELECT_COL_AA_FINAL_SCORE - 1]];
   });
 
-  const rationaleOutputs = values.map(function (row) {
-    return [row[SELECT_COL_S_RATIONALE - 1] || ""];
-  });
-
-  const flagOutputs = values.map(function () {
+  // 1日複数回動かす前提のため、AD列は毎回作り直す。
+  const duplicateGroupOutputs = values.map(function () {
     return [""];
   });
 
-  const dateGroups = {};
+  const groups = {};
 
   values.forEach(function (row, i) {
-    const dateVal = row[0];
-    const media = String(row[2] || "").trim();
-    const rawBaseScore =
-      row[SELECT_COL_V_TOPIC_IMPORTANCE - 1] !== "" &&
-      row[SELECT_COL_V_TOPIC_IMPORTANCE - 1] !== null &&
-      row[SELECT_COL_V_TOPIC_IMPORTANCE - 1] !== undefined
-        ? row[SELECT_COL_V_TOPIC_IMPORTANCE - 1]
-        : row[SELECT_COL_R_SCORE - 1];
-    const baseScore = Number(rawBaseScore || 0);
-    const representative = Number(row[SELECT_COL_W_REPRESENTATIVE - 1] || 0);
-    const status = String(row[SELECT_COL_U_STATUS - 1] || "").trim();
-    const dateKey = _selectionDateKey_(dateVal);
-
+    const dateKey = _selectionDateKey_(row[0]); // A
+    const media = String(row[2] || "").trim(); // C
     if (!dateKey || !media) return;
     if (media === "(Businessプラン限定)") return;
-    if (!_isSelectionOkStatusForRanking_(status)) return;
 
-    if (!dateGroups[dateKey]) dateGroups[dateKey] = { items: [] };
+    const detail = _parseGeminiDetailJsonForSameDayDuplicate_(
+      row[SELECT_COL_AC_GEMINI_DETAIL_JSON - 1],
+    );
+    if (!detail) return;
 
-    dateGroups[dateKey].items.push({
+    const eventKeyRaw = _sameDayEventKeyFromGeminiDetail_(detail);
+    const eventKey = _normalizeSameDayEventKeyForDuplicateGroup_(eventKeyRaw);
+    if (_looksLikeWeakSameDayEventKeyForDuplicateGroup_(eventKey)) return;
+
+    if (!_isSameDayDuplicateCandidateFromGeminiDetail_(detail)) return;
+
+    const groupKey = dateKey + "||" + eventKey;
+    if (!groups[groupKey]) groups[groupKey] = [];
+
+    groups[groupKey].push({
       index: i,
       rowIndex: i + 2,
-      row: row,
-      media: media,
-      baseScore: baseScore,
-      score: baseScore,
-      representative: representative,
-      topicKey: _normalizeSelectionTopicKey_(
-        String(row[SELECT_COL_T_SAME_DAY_TOPIC_KEY - 1] || ""),
-      ),
-
-      // Q列は正規化しない。
-      // 同じ日付で完全一致した場合だけ、同一内容グループとしてR列を同点にする。
-      duplicateKey: _selectionExactDuplicateKeyFromQ_(
-        row[SELECT_COL_Q_DUPLICATE_KEY - 1],
+      dateKey: dateKey,
+      eventKey: eventKey,
+      score: _scoreNumberForSameDayDuplicate_(
+        row[SELECT_COL_AA_FINAL_SCORE - 1],
       ),
     });
   });
 
-  Object.keys(dateGroups).forEach(function (dateKey) {
-    const items = dateGroups[dateKey].items;
+  const duplicateGroups = Object.keys(groups)
+    .map(function (key) {
+      const items = groups[key] || [];
+      if (items.length <= 1) return null;
 
-    items.forEach(function (item) {
-      const finalScore = _finalAdoptionProbabilityScore_(item);
-      finalScoreOutputs[item.index] = [finalScore];
+      let maxScore = null;
+      items.forEach(function (item) {
+        if (item.score === null || item.score === undefined) return;
+        if (maxScore === null || item.score > maxScore) maxScore = item.score;
+      });
 
-      rationaleOutputs[item.index] = [
-        _appendSelectionNote_(
-          String(item.row[SELECT_COL_S_RATIONALE - 1] || ""),
-          "R列は同日トピック内順位・日次順位による補正なし。",
-        ),
-      ];
+      if (maxScore === null) return null;
+
+      const firstRowIndex = Math.min.apply(
+        null,
+        items.map(function (item) {
+          return item.rowIndex;
+        }),
+      );
+
+      return {
+        key: key,
+        items: items,
+        maxScore: maxScore,
+        firstRowIndex: firstRowIndex,
+      };
+    })
+    .filter(function (x) {
+      return !!x;
+    })
+    .sort(function (a, b) {
+      return a.firstRowIndex - b.firstRowIndex;
     });
 
-    // 「いつ・誰が・どこで・何を」が一致する同一出来事グループは、R列を同点にする。
-    _equalizeSameDayTopicFinalScoresForDate_(
-      items,
-      finalScoreOutputs,
-      rationaleOutputs,
-    );
+  duplicateGroups.forEach(function (group, groupIndex) {
+    const groupId =
+      SELECT_DUPLICATE_GROUP_PREFIX +
+      _zeroPadSelectionNumber_(groupIndex + 1, 3);
 
-    // Q列完全一致は同一内容グループとして、最終的に必ずR列を同点にする。
-    _equalizeExactDuplicateFinalScoresForDate_(
-      items,
-      finalScoreOutputs,
-      rationaleOutputs,
-    );
-
-    // 同点化後にも、ミャンマー直接関連なしの最終上限を再適用する。
-    // これにより、同点化で非ミャンマー記事が高得点側へ戻ることを防ぐ。
-    _enforceNoDirectMyanmarFinalScoreCapForDate_(
-      items,
-      finalScoreOutputs,
-      rationaleOutputs,
-    );
-
-    // 空爆・衝突・戦闘・砲撃系で市民等の死亡被害がない記事は、同点化後にも候補外上限を再適用する。
-    _enforceConflictWithoutCivilianDeathFinalScoreCapForDate_(
-      items,
-      finalScoreOutputs,
-      rationaleOutputs,
-    );
-
-    // R列スコアでY列の候補判定を更新する。
-    // 日次順位は使わない。
-    _refreshFinalScoreFlagsForOrderedItems_(
-      items,
-      finalScoreOutputs,
-      flagOutputs,
-    );
+    group.items.forEach(function (item) {
+      finalScoreOutputs[item.index] = [group.maxScore];
+      duplicateGroupOutputs[item.index] = [groupId];
+    });
   });
 
   sheet
-    .getRange(2, SELECT_COL_R_SCORE, finalScoreOutputs.length, 1)
+    .getRange(2, SELECT_COL_AA_FINAL_SCORE, rowCount, 1)
     .setValues(finalScoreOutputs);
   sheet
-    .getRange(2, SELECT_COL_S_RATIONALE, rationaleOutputs.length, 1)
-    .setValues(rationaleOutputs);
-  sheet
-    .getRange(2, SELECT_COL_Y_RECOMMEND_FLAG, flagOutputs.length, 1)
-    .setValues(flagOutputs);
+    .getRange(2, SELECT_COL_AD_DUPLICATE_GROUP, rowCount, 1)
+    .setValues(duplicateGroupOutputs);
 
-  values.forEach(function (row, i) {
-    const status = String(row[SELECT_COL_U_STATUS - 1] || "").trim();
-    const hasFinalScore =
-      finalScoreOutputs[i] &&
-      finalScoreOutputs[i][0] !== "" &&
-      finalScoreOutputs[i][0] !== null &&
-      finalScoreOutputs[i][0] !== undefined;
-    if (hasFinalScore && _isSelectionOkStatusForRanking_(status)) {
-      sheet
-        .getRange(i + 2, SELECT_COL_U_STATUS)
-        .setValue("OK(ADOPTION_SCORED)");
-    }
-  });
+  return duplicateGroups.length;
+}
+
+function _parseGeminiDetailJsonForSameDayDuplicate_(value) {
+  if (value === null || value === undefined || value === "") return null;
+
+  if (typeof value === "object") return value;
+
+  let text = String(value || "").trim();
+  if (!text) return null;
+
+  text = text
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/```\s*$/i, "")
+    .trim();
+
+  try {
+    return JSON.parse(text);
+  } catch (e1) {}
+
+  const jsonText = _extractFirstBalancedSelectionJsonObject_(text);
+  if (!jsonText) return null;
+
+  try {
+    return JSON.parse(jsonText);
+  } catch (e2) {
+    return null;
+  }
+}
+
+function _sameDayEventKeyFromGeminiDetail_(detail) {
+  detail = detail || {};
+
+  const directCandidates = [
+    detail.same_day_event_key,
+    detail.sameDayEventKey,
+    detail.same_day_topic_key,
+    detail.sameDayTopicKey,
+    detail.sameDayTopicKeyForSelection,
+    detail.same_day_key,
+    detail.event_key,
+    detail.eventKey,
+  ];
+
+  for (let i = 0; i < directCandidates.length; i++) {
+    const v = String(directCandidates[i] || "").trim();
+    if (v) return v;
+  }
+
+  const nestedCandidates = [
+    detail.same_day_event,
+    detail.sameDayEvent,
+    detail.same_day,
+    detail.sameDay,
+    detail.duplicate,
+    detail.same_day_duplicate,
+  ];
+
+  for (let j = 0; j < nestedCandidates.length; j++) {
+    const obj = nestedCandidates[j];
+    if (!obj || typeof obj !== "object") continue;
+
+    const v = String(
+      obj.same_day_event_key ||
+        obj.sameDayEventKey ||
+        obj.same_day_topic_key ||
+        obj.sameDayTopicKey ||
+        obj.event_key ||
+        obj.eventKey ||
+        obj.key ||
+        "",
+    ).trim();
+
+    if (v) return v;
+  }
+
+  return "";
+}
+
+function _sameDayEventRelationFromGeminiDetail_(detail) {
+  detail = detail || {};
+
+  const directCandidates = [
+    detail.same_day_event_relation,
+    detail.sameDayEventRelation,
+    detail.same_day_relation,
+    detail.sameDayRelation,
+    detail.duplicate_relation,
+    detail.duplicateRelation,
+  ];
+
+  for (let i = 0; i < directCandidates.length; i++) {
+    const v = String(directCandidates[i] || "").trim();
+    if (v) return v;
+  }
+
+  const nestedCandidates = [
+    detail.same_day_event,
+    detail.sameDayEvent,
+    detail.same_day,
+    detail.sameDay,
+    detail.duplicate,
+    detail.same_day_duplicate,
+  ];
+
+  for (let j = 0; j < nestedCandidates.length; j++) {
+    const obj = nestedCandidates[j];
+    if (!obj || typeof obj !== "object") continue;
+
+    const v = String(
+      obj.same_day_event_relation ||
+        obj.sameDayEventRelation ||
+        obj.relation ||
+        obj.type ||
+        "",
+    ).trim();
+
+    if (v) return v;
+  }
+
+  return "";
+}
+
+function _isSameDayDuplicateCandidateFromGeminiDetail_(detail) {
+  detail = detail || {};
+
+  const boolCandidates = [
+    detail.same_day_duplicate_candidate,
+    detail.sameDayDuplicateCandidate,
+    detail.is_same_day_duplicate,
+    detail.isSameDayDuplicate,
+  ];
+
+  for (let i = 0; i < boolCandidates.length; i++) {
+    if (boolCandidates[i] === true) return true;
+  }
+
+  const relation = _sameDayEventRelationFromGeminiDetail_(detail);
+  const s = String(relation || "")
+    .trim()
+    .toLowerCase();
+
+  if (!s) {
+    // relationがない場合でも、same_day_event_keyが同じ行が複数あれば重複扱いできるよう候補に残す。
+    return true;
+  }
+
+  const positive = [
+    "same_event_duplicate",
+    "duplicate_same_content",
+    "same_day_duplicate",
+    "same_event",
+    "same_content",
+    "duplicate",
+    "duplicated",
+  ];
+
+  for (let j = 0; j < positive.length; j++) {
+    if (s.indexOf(positive[j]) !== -1) return true;
+  }
+
+  const negative = [
+    "different_event",
+    "related_but_different",
+    "different_angle",
+    "unrelated",
+    "not_duplicate",
+    "no_duplicate",
+    "no_same_event",
+    "unique",
+    "none",
+  ];
+
+  for (let k = 0; k < negative.length; k++) {
+    if (s === negative[k] || s.indexOf(negative[k]) !== -1) return false;
+  }
+
+  // 未知のrelationでも、同じevent_keyが複数行で一致する場合は拾えるよう候補に残す。
+  return true;
+}
+
+function _normalizeSameDayEventKeyForDuplicateGroup_(value) {
+  return String(value || "")
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(/[\s　]+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function _looksLikeWeakSameDayEventKeyForDuplicateGroup_(key) {
+  const s = String(key || "")
+    .trim()
+    .toLowerCase();
+  if (!s) return true;
+  if (s.length < 6) return true;
+
+  const weak = {
+    none: true,
+    null: true,
+    undefined: true,
+    unknown: true,
+    other: true,
+    misc: true,
+    topic: true,
+    news: true,
+    article: true,
+    update: true,
+    general: true,
+    一般: true,
+    その他: true,
+    不明: true,
+  };
+
+  if (weak[s]) return true;
+  if (/^\d+$/.test(s)) return true;
+  if (/^\d{8}\|?$/.test(s)) return true;
+
+  return false;
+}
+
+function _scoreNumberForSameDayDuplicate_(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const n = Number(String(value).replace(/,/g, "").trim());
+  if (isNaN(n)) return null;
+  return n;
+}
+
+function _zeroPadSelectionNumber_(value, width) {
+  const s = String(Math.max(0, Number(value || 0)));
+  const w = Number(width || 0);
+  if (!w || s.length >= w) return s;
+  return new Array(w - s.length + 1).join("0") + s;
 }
 
 function _finalAdoptionProbabilityScore_(item) {
