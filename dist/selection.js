@@ -1,7 +1,7 @@
 ﻿/************************************************************
  * selection.js
  *
- * 記事選定スコア処理 v4.5.7-efgi-archive-adopted
+ * 記事選定スコア処理 v4.5.8-country-yangon-company-civilian-death
  *
  * 前提:
  * - processRowsBatch() 済み
@@ -43,20 +43,25 @@ const SELECT_GEMINI_RATE_LAST_CALL_PROP = "GEMINI_SELECTION_LAST_CALL_AT_MS";
 const SELECT_MODEL_FALLBACK_WAIT_MS = 2000;
 const SELECT_MAX_OUTPUT_TOKENS = 8192;
 
-// 国名重みの調整
-// 国名・外交だけで高得点に張り付かないように、補助基準としてさらに弱める。
-const SELECT_TOP_COUNTRY_WEIGHT_SCORE = 6;
+// 国名・地域名重みの調整
+// 優先度1の国・地域、ヤンゴン、ミャンマー個別企業名は強い採用候補として扱う。
+const SELECT_TOP_COUNTRY_WEIGHT_SCORE = 10;
+const SELECT_SECOND_PRIORITY_COUNTRY_ORG_WEIGHT_SCORE = 7;
 const SELECT_NEIGHBOR_COUNTRY_WEIGHT_SCORE = 4;
-const SELECT_KOREA_COUNTRY_WEIGHT_SCORE = 3;
-const SELECT_TOP_COUNTRY_SCORE_FLOOR = 58;
+const SELECT_KOREA_COUNTRY_WEIGHT_SCORE =
+  SELECT_SECOND_PRIORITY_COUNTRY_ORG_WEIGHT_SCORE; // 後方互換用
+const SELECT_TOP_COUNTRY_SCORE_FLOOR = 75;
+const SELECT_SECOND_PRIORITY_COUNTRY_ORG_SCORE_FLOOR = 60;
 const SELECT_NEIGHBOR_COUNTRY_SCORE_FLOOR = 48;
-const SELECT_KOREA_COUNTRY_SCORE_FLOOR = 42;
+const SELECT_KOREA_COUNTRY_SCORE_FLOOR =
+  SELECT_SECOND_PRIORITY_COUNTRY_ORG_SCORE_FLOOR; // 後方互換用
+const SELECT_YANGON_SCORE_FLOOR = SELECT_TOP_COUNTRY_SCORE_FLOOR;
+const SELECT_MYANMAR_INDIVIDUAL_COMPANY_SCORE_FLOOR = 75;
+const SELECT_CONFLICT_CIVILIAN_DEATH_SCORE_FLOOR = 68;
+const SELECT_CONFLICT_WITHOUT_CIVILIAN_DEATH_SCORE_CAP = 34;
 
 // 重要トピックの基礎スコア係数
 const SELECT_PRIORITY_TOPIC_WEIGHT = 3.2;
-
-// 国名・外交だけの記事が上位に張り付きすぎないようにする上限
-const SELECT_DIPLOMACY_COUNTRY_ONLY_SCORE_CAP = 58;
 
 // ミャンマー直接関連が確認できない記事は、R列の最終スコアでも必ず抑える。
 // 基礎スコア段階だけでなく、同日トピック・Q列重複の同点化後にも再適用する。
@@ -86,7 +91,7 @@ const SELECT_ARCHIVE_ADOPTED_RELATED_DIFFERENT_BONUS = 3;
  * 列定義
  ************************************************************/
 
-const SELECT_COL_O_PAST_TOPIC_COUNT = 15; // O: 過去2日同一TOPIC数。selection.jsでは未使用
+const SELECT_COL_O_PAST_TOPIC_COUNT = 15; // O: 過去2日同一TOPIC数。過去採用記事との差分判定の実行条件にのみ使用
 const SELECT_COL_P_PAST_TOPIC_TITLES = 16; // P: 過去2日同一トピック記事タイトル。selection.jsでは未使用
 const SELECT_COL_Q_DUPLICATE_KEY = 17; // Q: 記事重複判定キー。読み取り専用
 
@@ -104,7 +109,8 @@ const SELECT_OUTPUT_LAST_COL = SELECT_COL_Y_RECOMMEND_FLAG;
 const SELECT_MAX_ROWS_PER_RUN = 150;
 
 // v4: 指定5基準のみのランキング仕様。
-const SELECT_RANKING_MODE_VERSION = "v4.5.7-efgi-archive-adopted";
+const SELECT_RANKING_MODE_VERSION =
+  "v4.5.8-country-yangon-company-civilian-death";
 
 /************************************************************
  * 実行入口
@@ -382,10 +388,14 @@ function _articleFromSelectionScoreRow_(
   rowIndex,
   allAdoptedArchiveArticles,
 ) {
-  const adoptedArchiveCandidates = _selectAdoptedArchiveCandidatesForSelection_(
-    row,
-    allAdoptedArchiveArticles || [],
-  );
+  const shouldCompareAdoptedArchive =
+    _shouldCompareAdoptedArchiveForSelection_(row);
+  const adoptedArchiveCandidates = shouldCompareAdoptedArchive
+    ? _selectAdoptedArchiveCandidatesForSelection_(
+        row,
+        allAdoptedArchiveArticles || [],
+      )
+    : [];
 
   return {
     rowIndex: rowIndex,
@@ -400,13 +410,29 @@ function _articleFromSelectionScoreRow_(
 
     // selection.js の評価入力は E/F/G/I 列を使う。
     // M列の原文タイトル・N列の原文本文は使わない。
-    // O列・P列の「過去2日同一トピック」情報は使わない。
+    // O列は、過去採用記事との差分判定を行うかどうかのゲートとしてのみ使う。
+    // P列の「過去2日同一トピック記事タイトル」は使わない。
+    pastTwoDaysSameTopicCount: String(
+      row[SELECT_COL_O_PAST_TOPIC_COUNT - 1] || "",
+    ).trim(), // O
+    shouldCompareAdoptedArchive: shouldCompareAdoptedArchive,
     duplicateKey: String(row[SELECT_COL_Q_DUPLICATE_KEY - 1] || "").trim(), // Q
 
     // archive_prod/archive_devでK列=aとして手動採用済みだった記事。
-    // 日付では絞らず、Q列一致・見出し/要約類似度で候補を絞って比較入力にする。
+    // 同行O列が2の場合だけ、日付では絞らず、Q列一致・見出し/要約類似度で候補を絞って比較入力にする。
+    // O列が2以外の場合は空配列にし、過去採用記事との差分判定・スコア補正を行わない。
     adoptedArchiveArticles: adoptedArchiveCandidates,
   };
+}
+
+function _shouldCompareAdoptedArchiveForSelection_(row) {
+  if (!row) return false;
+
+  const raw = row[SELECT_COL_O_PAST_TOPIC_COUNT - 1];
+  if (raw === null || raw === undefined || raw === "") return false;
+
+  const n = Number(raw);
+  return !isNaN(n) && n === 2;
 }
 
 /************************************************************
@@ -1109,25 +1135,11 @@ function _hasOtherMyanmarDomesticRegionSignal_(text) {
 function _civilianCasualtyFocusScoreForSelection_(text) {
   const s = String(text || "");
   if (!_hasConflictDamageSignalForSelection_(s)) return 0;
-  if (!_hasCivilianActorSignalForSelection_(s)) return 0;
 
-  if (_hasAny_(s, ["死亡", "殺害", "死者", "犠牲", "遺体", "killed", "dead"])) {
-    return _hasAny_(s, [
-      "空爆",
-      "砲撃",
-      "攻撃",
-      "爆撃",
-      "airstrike",
-      "shelling",
-    ])
-      ? 10
-      : 9;
-  }
-
-  if (
-    _hasAny_(s, ["負傷", "けが", "被害", "被災", "避難", "injured", "wounded"])
-  ) {
-    return 7;
+  // 空爆・衝突・戦闘・砲撃系は、市民・民間人・住民・子ども・避難民などの
+  // 死亡被害が確認できる場合だけ選定候補側のスコアにする。
+  if (_hasCivilianDeathVictimSignalForSelection_(s)) {
+    return _hasAirstrikeOrClashSignalForSelection_(s) ? 10 : 9;
   }
 
   return 0;
@@ -1163,6 +1175,171 @@ function _resistanceCasualtyFocusScoreForSelection_(text) {
   }
 
   return 0;
+}
+
+function _hasAirstrikeOrClashSignalForSelection_(text) {
+  const s = String(text || "");
+
+  if (
+    _hasAny_(s, [
+      "空爆",
+      "爆撃",
+      "砲撃",
+      "衝突",
+      "戦闘",
+      "交戦",
+      "掃討作戦",
+      "airstrike",
+      "bombing",
+      "shelling",
+      "clash",
+      "clashes",
+      "battle",
+      "fighting",
+    ])
+  ) {
+    return true;
+  }
+
+  return (
+    _hasAny_(s, ["攻撃", "襲撃", "attack", "attacked"]) &&
+    _hasAny_(s, [
+      "国軍",
+      "軍",
+      "PDF",
+      "抵抗勢力",
+      "民族武装勢力",
+      "住民",
+      "村",
+      "民間人",
+      "junta",
+      "troops",
+      "civilian",
+      "village",
+    ])
+  );
+}
+
+function _hasCivilianDeathVictimSignalForSelection_(text) {
+  const s = String(text || "");
+  if (!_hasConflictDamageSignalForSelection_(s)) return false;
+
+  const civilianActorPattern =
+    "(?:市民|民間人|住民|村民|子ども|子供|児童|女性|高齢者|避難民|難民|農民|労働者|患者|civilian|civilians|resident|residents|villager|villagers|child|children|displaced|refugee|refugees)";
+  const deathPattern =
+    "(?:死亡|殺害|死者|犠牲|遺体|命を落と|亡くな|killed|dead|died|death|fatalit(?:y|ies))";
+
+  const actorThenDeath = new RegExp(
+    civilianActorPattern + ".{0,45}" + deathPattern,
+    "i",
+  );
+  const deathThenActor = new RegExp(
+    deathPattern + ".{0,45}" + civilianActorPattern,
+    "i",
+  );
+
+  if (actorThenDeath.test(s) || deathThenActor.test(s)) return true;
+
+  // 「子どもを含む8人死亡」「避難民キャンプで10人死亡」のような表現を拾う。
+  if (
+    _hasCivilianActorSignalForSelection_(s) &&
+    _hasAny_(s, [
+      "死亡",
+      "殺害",
+      "死者",
+      "犠牲",
+      "命を落と",
+      "亡くな",
+      "killed",
+      "dead",
+      "died",
+    ]) &&
+    /[0-9０-９]+\s*(?:人|名|people|persons)?/i.test(s)
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function _isConflictWithoutCivilianDeathExclusionForSelection_(text) {
+  const s = String(text || "");
+  return (
+    _hasAirstrikeOrClashSignalForSelection_(s) &&
+    !_hasCivilianDeathVictimSignalForSelection_(s)
+  );
+}
+
+function _hasKnownMyanmarCompanyNameSignalForSelection_(text) {
+  const s = String(text || "");
+
+  return _hasAny_(s, [
+    "KBZ",
+    "Kanbawza",
+    "カンボーザ",
+    "CB Bank",
+    "AYA Bank",
+    "Yoma Bank",
+    "ヨマ銀行",
+    "Yoma Strategic",
+    "Max Myanmar",
+    "Shwe Taung",
+    "Shwe Thanlwin",
+    "City Mart",
+    "MPT",
+    "Mytel",
+    "Wave Money",
+    "uab Bank",
+    "UAB Bank",
+    "AGD Bank",
+    "MAB",
+    "Myanmar Apex Bank",
+    "MAI",
+    "Myanmar Airways International",
+    "Air KBZ",
+    "FMI",
+    "First Myanmar Investment",
+    "Myanmar Brewery",
+    "Dagon Beverages",
+    "Htoo Group",
+    "Eden Group",
+    "IGE",
+    "Asia World",
+    "Shwe Byain Phyu",
+    "Denko",
+  ]);
+}
+
+function _hasMyanmarIndividualCompanySignalForSelection_(text) {
+  const s = String(text || "");
+
+  if (_hasKnownMyanmarCompanyNameSignalForSelection_(s)) return true;
+
+  // ミャンマー直接関連がある文脈で、個別社名らしい固有名詞＋会社・銀行・グループ等を拾う。
+  // 「企業」「会社」という一般語だけでは真にしない。
+  if (!_hasDirectMyanmarRelevanceForSelection_(s)) return false;
+
+  const latinCompanyPattern =
+    /\b[A-Z][A-Za-z0-9&.,'’\- ]{2,}\s+(?:Co\.?\s*,?\s*Ltd\.?|Company|Ltd\.?|Limited|Group|Holdings?|Corporation|Corp\.?|PLC|Pte\.?\s*Ltd\.?)\b/;
+  if (latinCompanyPattern.test(s)) return true;
+
+  const japaneseCompanyPattern =
+    /[一-龥々ァ-ヶA-Za-z0-9・ー＆&（）()]{2,}(?:社|会社|銀行|商社|工業|製造|物流|建設|ホテル|航空|通信|電力|鉱業|石油|ガス|グループ)/;
+  if (japaneseCompanyPattern.test(s)) {
+    if (
+      !_hasAny_(s, [
+        "中央銀行",
+        "国営紙",
+        "国営メディア",
+        "人民銀行",
+        "世界銀行",
+      ])
+    ) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 function _hasConflictDamageSignalForSelection_(text) {
@@ -2080,7 +2257,10 @@ ${article.summary || ""}
 Q列 記事重複判定キー:
 ${article.duplicateKey || "なし"}
 
-archive採用済み記事候補（prodはarchive_prod、devはarchive_dev。K列=a、日付制限なし。Q列一致・見出し/要約類似度で最大30件）:
+同行O列（過去2日同一TOPIC判定）:
+${article.pastTwoDaysSameTopicCount || ""}
+
+archive採用済み記事候補（prodはarchive_prod、devはarchive_dev。K列=a。同行O列が2の場合のみ、日付制限なしでQ列一致・見出し/要約類似度により最大30件を渡す）:
 ${_adoptedArchiveArticlesForPrompt_(article)}
 
 URL:
@@ -2095,7 +2275,7 @@ ${article.url}
     {
       "rowIndex": 0,
       "countryWeightScore": 0,
-      "countryWeightTier": "none | top_china_us_japan | neighbor_country | korea_country",
+      "countryWeightTier": "none | top_priority_country_region | second_priority_country_org | other_neighbor_country",
       "domesticRegionPriorityScore": 0,
       "domesticRegionTier": "none | yangon | ayeyarwady | bago | other_myanmar_region",
       "civilianCasualtyFocusScore": 0,
@@ -2117,7 +2297,7 @@ ${article.url}
 }`
     : `{
   "countryWeightScore": 0,
-  "countryWeightTier": "none | top_china_us_japan | neighbor_country | korea_country",
+  "countryWeightTier": "none | top_priority_country_region | second_priority_country_org | other_neighbor_country",
   "domesticRegionPriorityScore": 0,
   "domesticRegionTier": "none | yangon | ayeyarwady | bago | other_myanmar_region",
   "civilianCasualtyFocusScore": 0,
@@ -2146,17 +2326,19 @@ ${article.url}
 - E/F/G/I列からミャンマーとの直接関係が確認できない記事は、原則として採用しません。
 - ミャンマーに直接関係ない海外一般ニュースは、どれだけ話題性があっても低スコアにします。
 - メディア名に Myanmar / ミャンマー が含まれていても、それだけではミャンマー関連とは判定しません。
-- 中国、米国、日本、タイ、インド、韓国などの国名が含まれていても、ミャンマーとの関係が入力情報上確認できない場合は countryWeightScore を高くしません。
+- 中国、米国、日本、タイ、インド、ロシア、ASEAN、欧州/EU、バングラデシュ、韓国、国連、UNHCR、世界銀行、UNDP、UNFPAなどが含まれていても、ミャンマーとの関係が入力情報上確認できない場合は countryWeightScore を高くしません。
 - 海外政府の人事、海外の法改正、海外の紙幣・通貨・選挙・芸能・スポーツなどは、ミャンマーへの直接影響が書かれていない限り、優先トピックにしません。
 
 変更しない重要事項:
 - K列には何も書きません。
-- O列・P列の過去2日同一トピック情報は、このselection.jsでは使いません。
+- O列の過去2日同一TOPIC判定は、過去採用記事との差分判定を行うかどうかの実行条件としてのみ使います。
+- 過去採用記事との差分判定は、同行O列の値が2の記事だけで行います。O列が2以外の記事では、archive採用済み記事候補を渡さず、adoptedArchiveRelation は no_archive_adopted として扱います。
+- P列の過去2日同一トピック記事タイトルは、このselection.jsでは使いません。
 - 重複・続編・別観点の判定は、下記のarchive採用済み記事候補だけを使います。
 
 archive採用済み記事候補の扱い:
 - prodシートの判定ではarchive_prod、devシートの判定ではarchive_devを参照します。
-- 「archive採用済み記事候補」には、archive側でK列に a が入っている採用済み記事を日付制限なしで走査し、Q列一致・見出し/要約の類似度で絞った候補だけが渡されています。
+- 「archive採用済み記事候補」には、同行O列の値が2の場合だけ、archive側でK列に a が入っている採用済み記事を日付制限なしで走査し、Q列一致・見出し/要約の類似度で絞った候補だけが渡されています。
 - この入力が「なし」の場合、adoptedArchiveRelation は no_archive_adopted にします。
 - 現在記事とarchive採用済み記事候補の「いつ・誰が・どこで・何を」がほぼ同じで、新しい進展・新しい数字・新しい反応・新しい被害情報・新しい制度変更・新しい観点がなければ adoptedArchiveRelation は duplicate_same_content にします。これは過去に採用済みの同内容を繰り返し選ばないため、選定確率を下げる前提です。
 - 同じトピックでも、過去採用済み記事から進展がある、数字が更新された、被害や政策に新情報がある、関係者の反応が追加された、実務上の影響が広がった場合は continuation_update にし、adoptedArchiveDiffJa に差分を書きます。これは過去採用済み記事の続編として選定確率を上げる前提です。
@@ -2166,25 +2348,27 @@ archive採用済み記事候補の扱い:
 
 自動選定の基準:
 
-1. 国名による重みづけ
-- 中国、アメリカ/米国、日本を含む記事は countryWeightTier を top_china_us_japan とし、countryWeightScore は6前後を基本にします。ただし、国名だけで自動的に最上位候補にしません。貿易、投資、外交、安全保障、制裁、援助、国境、企業活動など、ミャンマーへの具体的な影響がある場合に高く評価します。
-- タイ、インド、マレーシア、バングラデシュ、ラオス、カンボジア、ベトナム、シンガポール、インドネシアなどミャンマー周辺国・関係国を含む記事は neighbor_country とし、countryWeightScore は4前後を基本にします。国名だけでは高評価にせず、ミャンマーへの直接的な影響や実務上の重要性がある場合に加点します。
-- 韓国を含む記事は korea_country とし、countryWeightScore は3前後を基本にします。1位の中国・米国・日本、2位のミャンマー周辺国よりは弱く扱いますが、貿易、投資、外交、援助、企業活動、労働・技術協力など、ミャンマーへの具体的な影響がある場合に補助的に評価します。国名だけでは高評価にしません。
+1. 国名・国際機関による重みづけ
+- 優先度1: 中国、アメリカ/米国、日本、タイ、インド、ロシア、ASEAN、欧州/EU、バングラデシュを含むミャンマー関連記事は countryWeightTier を top_priority_country_region とし、countryWeightScore は10前後を基本にします。これらを含む記事は強い選定候補です。
+- 優先度2: 韓国、国連、UNHCR、世界銀行、UNDP、UNFPAを含むミャンマー関連記事は countryWeightTier を second_priority_country_org とし、countryWeightScore は7前後を基本にします。これらを含む記事は選定候補です。
+- その他の周辺国・関係国（マレーシア、ラオス、カンボジア、ベトナム、シンガポール、インドネシア、フィリピン等）を含むミャンマー関連記事は other_neighbor_country とし、countryWeightScore は4前後を基本にします。
 - ただし、人名・地名・商品名などの一部に偶然「インド」「タイ」等の文字列が含まれるだけの場合は、国名による重みづけに入れません。
-- 国名による重みづけは重要な補助基準ですが、国名・外交会談・訪問だけで採用確率を大きく上げすぎません。優先トピック、具体的な政策・制度変更、被害対象、戦略的意味合い、過去記事との差分と組み合わせて評価します。
-- ミャンマーとの関係が薄い海外一般ニュースは、国名だけで過大評価しません。
+- 国名・国際機関・地域名の優先度にヒットしたこと自体を理由に減点しません。外交会談・表敬訪問・訪問などの外交儀礼的側面が強いという判断だけでスコアを下げません。
+- ミャンマーとの関係が薄い海外一般ニュースは、国名・国際機関だけで過大評価しません。
 
-2. 紛争・空爆・攻撃の被害対象
-- 市民、民間人、住民、子ども、避難民などの死亡被害が中心なら civilianCasualtyFocusScore を高くします。
-- 国軍兵士、軍側、治安部隊の死傷・損害が中心なら militaryCasualtyFocusScore を高くします。これは選定確率を極めて低くする要因です。
-- PDF、抵抗勢力、民族武装勢力側の死傷が中心なら resistanceCasualtyFocusScore を中程度から高めにします。これは五分五分の要因です。
+2. 紛争・空爆・衝突の被害対象
+- 空爆、衝突、戦闘、砲撃などに関する記事で、市民、民間人、住民、子ども、避難民などの死亡被害が含まれている場合は civilianCasualtyFocusScore を高くし、選定候補にします。
+- 空爆、衝突、戦闘、砲撃などに関する記事でも、市民、民間人、住民、子ども、避難民などの死亡被害が確認できない場合は選定候補から外す前提で評価します。避難、負傷、住宅破壊だけの場合は civilianCasualtyFocusScore を高くしません。
+- 国軍兵士、軍側、治安部隊の死傷・損害だけが中心なら militaryCasualtyFocusScore を高くします。これは選定確率を極めて低くする要因です。
+- PDF、抵抗勢力、民族武装勢力側の死傷だけが中心なら resistanceCasualtyFocusScore を中程度から高めにします。これは五分五分の要因です。
 
-3. ミャンマー国内の地域による重みづけ
-- これは記事単体の重要度を高める基準ではなく、同じ事象・出来事を複数記事が報じている場合の代表記事スコア用の補助基準です。
-- 地域名が含まれているだけで、topicImportanceScore や最終選定スコアを大きく上げてはいけません。
-- 全体の優先順位では、国名による重みづけ、選定確率が高いトピック、戦略的意味合い、被害対象より低く扱います。
+3. ミャンマー国内の地域・企業による重みづけ
+- ヤンゴンを含むミャンマー関連記事は、国名優先度1位と同列の強い選定候補です。domesticRegionTier を yangon、domesticRegionPriorityScore を10前後にします。
+- ミャンマーの個別企業名を含む記事は、強い選定候補です。会社名・銀行名・グループ名・企業名が具体的に示されている場合は高く評価します。
+- エーヤワディー、バゴー、それ以外のミャンマー国内地域は、同じ事象・出来事を複数記事が報じている場合の代表記事スコア用の補助基準として扱います。
+- 国名・地域名の優先度にヒットしたこと自体を理由に減点しません。ただし、ミャンマーに直接関係がない記事は既存仕様通り採用候補から外します。
 - 同一事象内の地域優先順位は、1. ヤンゴン、2. エーヤワディー、3. バゴー、4. それ以外です。
-- domesticRegionPriorityScore はこの同一事象内の優先順位を示す補助スコアとして使います。
+- domesticRegionPriorityScore はこの同一事象内の優先順位も示す補助スコアとして使います。
 
 4. 戦略的な意味合い
 - 軍または抵抗勢力側の戦略的な意味合いがある記事は strategicMeaningScore を高くします。
@@ -2193,9 +2377,9 @@ archive採用済み記事候補の扱い:
 5. 選定確率が高いトピック
 以下に該当する記事は priorityTopicScore を高くし、priorityTopicTags に該当タグを入れます。
 特に、ミャンマー政府、省庁、地方当局、委員会、局・庁、国営機関などの公的機関が、政策・施策、計画、規制、制度変更、法改正、法案提出、議会提出、上程、審議入り、可決、成立、許認可、行政手続き、税制・関税、輸出入・出入国・労働・企業活動に関わる変更を発表・公表・通達・告示・承認・決定・提出・上程・開始・導入・停止・廃止した記事は、重要トピックとして扱い、priorityTopicTags に official_policy_regulation_announcement を入れます。
-ただし、単なる表敬訪問、視察、式典、会合、一般的な挨拶、成果の宣伝、芸能・慈善・イベント紹介だけの記事は、公的機関が関与していてもこのタグで高評価にしません。読者に影響する政策・制度・規制・計画の中身がある場合だけ対象にします。
+ただし、読者に影響する政策・制度・規制・計画の中身がある場合だけ official_policy_regulation_announcement の対象にします。外交儀礼的側面が強いこと自体を理由に減点はしません。
 ただし「開発計画・インフラ・地域開発」は例外です。このトピックは、単に開発・インフラ関連語があるだけでは高評価にしません。ミャンマー政府、省庁、地方当局、公的機関、国営機関などが発表・公表・承認・決定・開始・入札公告・説明した内容である場合だけ、選定確率が高いトピックとして扱います。
-- 公的機関による政策・制度・規制発表: ミャンマー政府、省庁、当局、委員会、局・庁、国営機関などが、施策、計画、規制、法改正、法案提出、議会提出、上程、審議入り、可決、成立、規則改定、制度変更、許認可、行政手続き、税制、関税、貿易・出入国・労働・企業活動に関わる変更を発表・公表・通達・告示・承認・決定・提出・上程・開始・導入・停止・廃止した記事。該当する場合は priorityTopicTags に official_policy_regulation_announcement を入れます。単なる会合・視察・式典・挨拶・PRだけの記事は除外します。
+- 公的機関による政策・制度・規制発表: ミャンマー政府、省庁、当局、委員会、局・庁、国営機関などが、施策、計画、規制、法改正、法案提出、議会提出、上程、審議入り、可決、成立、規則改定、制度変更、許認可、行政手続き、税制、関税、貿易・出入国・労働・企業活動に関わる変更を発表・公表・通達・告示・承認・決定・提出・上程・開始・導入・停止・廃止した記事。該当する場合は priorityTopicTags に official_policy_regulation_announcement を入れます。政策・制度・規制・計画の中身が確認できない場合はこのタグの対象外ですが、外交儀礼的側面だけを理由に減点はしません。
 - 物価・燃料・為替・外貨管理: 物価、燃料価格、為替、外貨規制、価格統制、外貨使用制限。チャット/ドルなどの通貨単位が出ていても、寄付額・支援額・賞金・売上など単なる金額表示なら、このトピックには入れません。
 - 中央銀行による外貨売却・外貨配分: 中央銀行、CBM、ミャンマー中央銀行などが、CMP企業・輸出企業・市場などから買い取った外貨を、食用油、燃料、医薬品、輸入業者、生活必需品輸入、輸入決済などへ売却・配分・供給する記事。これは選定確率が高い重要トピックとして扱い、priorityTopicTags に central_bank_forex_sale_allocation を入れます。単なる寄付額・売上額・賞金額などの金額表示は対象外です。
 - 税・関税・貿易規制: 税制、関税、輸出入規制、貿易許認可、輸入制限、輸出制限
@@ -2207,10 +2391,10 @@ archive採用済み記事候補の扱い:
 - 雇用・労働政策・労使関係: 雇用創出、職業訓練、労働者支援、労働組合、ストライキ、賃金・労働条件、労使紛争、労働力不足
 - 開発計画・インフラ・地域開発: 国家開発計画、都市開発、工業団地、インフラ整備、地域開発、経済特区、公共事業。ただし、政府・省庁・当局・公的機関などによる発表、決定、承認、着工・開始、入札公告、説明がある場合のみ priorityTopicTags に development_infrastructure を入れ、priorityTopicScore を高くします。民間企業の一般的な開発案件や、開発・道路・橋・電力などの単語が出るだけの記事は、このタグで高評価にしません。
 - 電力需要増対応・電力供給計画: 電力需要増、電力不足への対応、発電所、送電網、変電所、配電網、電力供給拡大、電力プロジェクト、発電・送配電設備の増強、電力計画。ただし、政府・省庁・電力省・当局・公的機関などによる発表、決定、承認、開始、入札公告、説明がある場合のみ priorityTopicTags に power_demand_project_plan を入れ、priorityTopicScore を高くします。単に電力、停電、発電などの単語が出るだけの記事や、民間企業の一般的な案件は、このタグで高評価にしません。
-- ビジネス・中小企業・企業支援: ビジネス環境、中小企業、零細企業、MSME/SME、小規模事業者、商工業者、企業支援、事業支援、融資・資金繰り、起業・スタートアップ、商工会議所、企業活動に影響する制度や政策。単なる企業名の登場、個別企業の宣伝、慈善活動、芸能・イベント性だけの記事は、このタグで過大評価しません。
+- ビジネス・中小企業・企業支援: ビジネス環境、中小企業、零細企業、MSME/SME、小規模事業者、商工業者、企業支援、事業支援、融資・資金繰り、起業・スタートアップ、商工会議所、企業活動に影響する制度や政策。ミャンマーの個別企業名が具体的に含まれる記事は強い選定候補です。ただし、個別企業の宣伝、慈善活動、芸能・イベント性だけで実務影響が薄い場合は business_sme タグでは過大評価しません。
 - ビジネス促進・展示会・イベント: 博覧会、展示会、商談会、投資フォーラム、ビジネスマッチング、産業振興イベント
 - 政府・政権運営・人事・声明: 政権人事、就任、異動、解任、役職任命、軍事政権トップ・大統領・政府機関による声明
-- ミャンマー指導部・政府・省庁による政策提案・発表・声明: ミンアウンフライン、ミンアウンフライン大統領、国軍総司令官、ミャンマー政府、ミャンマー省庁、省庁、政府機関が、政策・制度・税制・燃料・物価・環境・森林・防災・経済・労働・電力・インフラ・貿易など読者に影響する内容を提案・発表・声明・表明・指示・提出・承認・決定した記事は priorityTopicTags に myanmar_leadership_policy_statement を入れ、通常の単なる声明より高く評価します。単なる視察・式典・表敬訪問・挨拶だけの記事は除外します。
+- ミャンマー指導部・政府・省庁による政策提案・発表・声明: ミンアウンフライン、ミンアウンフライン大統領、国軍総司令官、ミャンマー政府、ミャンマー省庁、省庁、政府機関が、政策・制度・税制・燃料・物価・環境・森林・防災・経済・労働・電力・インフラ・貿易など読者に影響する内容を提案・発表・声明・表明・指示・提出・承認・決定した記事は priorityTopicTags に myanmar_leadership_policy_statement を入れ、通常の単なる声明より高く評価します。政策・制度・経済・実務影響の中身が確認できる記事を対象にします。外交儀礼的側面だけを理由に減点はしません。
 - 法制度・法改正・法案提出: 法案、法律案、改正案、法案提出、議会提出、上程、審議入り、可決、成立、法律改正、規則改定、制度変更、厳罰化、罰則強化
 - 通信・監視・情報統制: 通信規制、監視、インターネット制限、SNS規制、情報統制
 - 食品・医薬品・品質基準: 食品、医薬品、品質基準、衛生基準、認証、検査、流通規制
@@ -2252,6 +2436,12 @@ function _selectionCriteriaFeatureVector_(obj, article) {
     _hasPortContainerShippingLogisticsSignalForSelection_(text);
   const myanmarLeadershipPolicyStatement =
     _hasMyanmarLeadershipPolicyProposalAnnouncementSignalForSelection_(text);
+  const myanmarIndividualCompany =
+    _hasMyanmarIndividualCompanySignalForSelection_(text);
+  const conflictWithoutCivilianDeath =
+    _isConflictWithoutCivilianDeathExclusionForSelection_(text);
+  const conflictWithCivilianDeath =
+    _hasCivilianDeathVictimSignalForSelection_(text);
 
   const detectedCountryTier = _criteriaCountryWeightTierForSelection_(text);
   const detectedCountryScore = _criteriaCountryWeightScoreForSelection_(text);
@@ -2301,137 +2491,13 @@ function _selectionCriteriaFeatureVector_(obj, article) {
     officialBillSubmission: officialBillSubmission,
     portContainerShippingLogistics: portContainerShippingLogistics,
     myanmarLeadershipPolicyStatement: myanmarLeadershipPolicyStatement,
+    myanmarIndividualCompany: myanmarIndividualCompany,
+    conflictWithoutCivilianDeath: conflictWithoutCivilianDeath,
+    conflictWithCivilianDeath: conflictWithCivilianDeath,
     hasAdoptedArchive: _hasAdoptedArchiveArticlesForSelection_(article),
     adoptedArchiveRelation: _adoptedArchiveRelationFromModel_(obj, article),
     hasDirectMyanmarRelevance: hasDirectMyanmarRelevance,
   };
-}
-
-function _isDiplomacyCountryOnlyArticleForSelection_(text, feature) {
-  const s = String(text || "");
-  feature = feature || {};
-
-  const country = _safeNumber_(feature.countryWeight);
-  if (country <= 0) return false;
-
-  const priorityTags = Array.isArray(feature.priorityTopicTags)
-    ? feature.priorityTopicTags
-    : [];
-
-  const hasStrongNonDiplomacySignal =
-    _safeNumber_(feature.civilianCasualtyFocus) >= 7 ||
-    _safeNumber_(feature.resistanceCasualtyFocus) >= 7 ||
-    _safeNumber_(feature.strategicMeaning) >= 7 ||
-    priorityTags.some(function (tag) {
-      return (
-        [
-          "prices_fuel_forex",
-          "central_bank_forex_sale_allocation",
-          "tax_tariff_trade_regulation",
-          "investment_business_permit",
-          "import_export_border_logistics",
-          "port_container_shipping_logistics",
-          "administrative_system_procedure",
-          "migration_passport_visa",
-          "labor_policy_relations",
-          "development_infrastructure",
-          "power_demand_project_plan",
-          "business_sme",
-          "law_revision",
-          "telecom_surveillance_information_control",
-          "food_medicine_quality_standard",
-        ].indexOf(_canonicalPriorityTopicTagForSelection_(tag)) !== -1
-      );
-    });
-
-  if (hasStrongNonDiplomacySignal) return false;
-  if (!_hasDiplomacyMeetingVisitSignalForSelection_(s)) return false;
-
-  return !_hasConcretePracticalMyanmarImpactSignalForSelection_(s);
-}
-
-function _hasDiplomacyMeetingVisitSignalForSelection_(text) {
-  return _hasAny_(text, [
-    "会談",
-    "協議",
-    "表敬訪問",
-    "訪問",
-    "首脳会談",
-    "外相会談",
-    "大統領と会談",
-    "首相と会談",
-    "声明",
-    "歓迎",
-    "祝意",
-    "芳名録",
-    "報奨金",
-    "meeting",
-    "visited",
-    "visit",
-    "talks",
-    "courtesy call",
-    "statement",
-  ]);
-}
-
-function _hasConcretePracticalMyanmarImpactSignalForSelection_(text) {
-  return _hasAny_(text, [
-    "制裁",
-    "援助",
-    "支援",
-    "投資",
-    "貿易",
-    "輸出",
-    "輸入",
-    "関税",
-    "税制",
-    "外貨",
-    "外貨売却",
-    "外貨配分",
-    "外貨供給",
-    "ドル売却",
-    "為替",
-    "燃料",
-    "物価",
-    "雇用",
-    "労働",
-    "労働者",
-    "労働組合",
-    "出国",
-    "入国",
-    "旅券",
-    "ビザ",
-    "国境",
-    "物流",
-    "港湾",
-    "コンテナ船",
-    "法案",
-    "法律改正",
-    "規制",
-    "制度変更",
-    "許認可",
-    "行政手続き",
-    "電力",
-    "インフラ",
-    "中小企業",
-    "企業支援",
-    "事業許可",
-    "品質基準",
-    "通信規制",
-    "監視",
-    "investment",
-    "trade",
-    "export",
-    "import",
-    "sanction",
-    "aid",
-    "border",
-    "logistics",
-    "visa",
-    "passport",
-    "regulation",
-    "law",
-  ]);
 }
 
 function _calculateSelectionCriteriaScore_(feature, obj, article) {
@@ -2451,10 +2517,24 @@ function _calculateSelectionCriteriaScore_(feature, obj, article) {
   const myanmarLeadershipPolicyStatement =
     feature.myanmarLeadershipPolicyStatement === true;
 
-  const countryTier = String(feature.countryTier || "none");
-  const isTopCountry = countryTier === "top_china_us_japan" || country >= 9;
-  const isNeighborCountry = countryTier === "neighbor_country" || country >= 7;
-  const isKoreaCountry = countryTier === "korea_country" || country >= 5;
+  const countryTier = _canonicalCountryWeightTierForSelection_(
+    feature.countryTier,
+  );
+  const isTopCountry =
+    countryTier === "top_priority_country_region" ||
+    country >= SELECT_TOP_COUNTRY_WEIGHT_SCORE;
+  const isSecondPriorityCountryOrg =
+    countryTier === "second_priority_country_org" ||
+    country >= SELECT_SECOND_PRIORITY_COUNTRY_ORG_WEIGHT_SCORE;
+  const isOtherNeighborCountry =
+    countryTier === "other_neighbor_country" ||
+    country >= SELECT_NEIGHBOR_COUNTRY_WEIGHT_SCORE;
+  const isYangonRegion =
+    String(feature.domesticRegionTier || "") === "yangon" || region >= 10;
+  const hasMyanmarIndividualCompany = feature.myanmarIndividualCompany === true;
+  const conflictWithoutCivilianDeath =
+    feature.conflictWithoutCivilianDeath === true;
+  const conflictWithCivilianDeath = feature.conflictWithCivilianDeath === true;
   const hasDirectMyanmarRelevance = feature.hasDirectMyanmarRelevance === true;
 
   // 国名重みは重要な補助基準だが、国名だけで高得点に張り付かないようにする。
@@ -2496,19 +2576,35 @@ function _calculateSelectionCriteriaScore_(feature, obj, article) {
     score = Math.min(score, 62);
   }
 
-  // 国名だけで上位に張り付きすぎないよう、下限補正を弱める。
+  // 優先度1の国・地域、ヤンゴン、ミャンマー個別企業名は強い選定候補として下限を設ける。
+  // 国名・地域名の優先度にヒットしたこと自体を理由に減点しない。
   if (isTopCountry) {
     score = Math.max(score, SELECT_TOP_COUNTRY_SCORE_FLOOR);
-  } else if (isNeighborCountry) {
+  } else if (isSecondPriorityCountryOrg) {
+    score = Math.max(score, SELECT_SECOND_PRIORITY_COUNTRY_ORG_SCORE_FLOOR);
+  } else if (isOtherNeighborCountry) {
     score = Math.max(score, SELECT_NEIGHBOR_COUNTRY_SCORE_FLOOR);
-  } else if (isKoreaCountry) {
-    score = Math.max(score, SELECT_KOREA_COUNTRY_SCORE_FLOOR);
+  }
+
+  if (isYangonRegion) {
+    score = Math.max(score, SELECT_YANGON_SCORE_FLOOR);
+  }
+
+  if (hasMyanmarIndividualCompany) {
+    score = Math.max(score, SELECT_MYANMAR_INDIVIDUAL_COMPANY_SCORE_FLOOR);
+  }
+
+  if (conflictWithCivilianDeath) {
+    score = Math.max(score, SELECT_CONFLICT_CIVILIAN_DEATH_SCORE_FLOOR);
   }
 
   const anyPositiveCriterion =
     isTopCountry ||
-    isNeighborCountry ||
-    isKoreaCountry ||
+    isSecondPriorityCountryOrg ||
+    isOtherNeighborCountry ||
+    isYangonRegion ||
+    hasMyanmarIndividualCompany ||
+    conflictWithCivilianDeath ||
     priority >= 7 ||
     civilian >= 7 ||
     strategic >= 7 ||
@@ -2524,8 +2620,8 @@ function _calculateSelectionCriteriaScore_(feature, obj, article) {
     score = Math.min(score, 20);
   }
 
-  if (_isDiplomacyCountryOnlyArticleForSelection_(text, feature)) {
-    score = Math.min(score, SELECT_DIPLOMACY_COUNTRY_ONLY_SCORE_CAP);
+  if (conflictWithoutCivilianDeath) {
+    score = Math.min(score, SELECT_CONFLICT_WITHOUT_CIVILIAN_DEATH_SCORE_CAP);
   }
 
   return _clampRound_(score, 0, 100);
@@ -2537,25 +2633,54 @@ function _applySelectionPostCriteriaAdjustment_(score, feature, obj, article) {
   obj = obj || {};
 
   const country = _safeNumber_(feature.countryWeight);
-  const countryTier = String(feature.countryTier || "none");
+  const countryTier = _canonicalCountryWeightTierForSelection_(
+    feature.countryTier,
+  );
   const myanmarLeadershipPolicyStatement =
     feature.myanmarLeadershipPolicyStatement === true;
   const text = _selectionInputText_(article);
-  const isTopCountry = countryTier === "top_china_us_japan" || country >= 9;
-  const isNeighborCountry = countryTier === "neighbor_country" || country >= 7;
-  const isKoreaCountry = countryTier === "korea_country" || country >= 5;
+  const isTopCountry =
+    countryTier === "top_priority_country_region" ||
+    country >= SELECT_TOP_COUNTRY_WEIGHT_SCORE;
+  const isSecondPriorityCountryOrg =
+    countryTier === "second_priority_country_org" ||
+    country >= SELECT_SECOND_PRIORITY_COUNTRY_ORG_WEIGHT_SCORE;
+  const isOtherNeighborCountry =
+    countryTier === "other_neighbor_country" ||
+    country >= SELECT_NEIGHBOR_COUNTRY_WEIGHT_SCORE;
+  const isYangonRegion =
+    String(feature.domesticRegionTier || "") === "yangon" ||
+    _safeNumber_(feature.domesticRegionPriority) >= 10;
+  const hasMyanmarIndividualCompany = feature.myanmarIndividualCompany === true;
+  const conflictWithoutCivilianDeath =
+    feature.conflictWithoutCivilianDeath === true;
+  const conflictWithCivilianDeath = feature.conflictWithCivilianDeath === true;
   const hasDirectMyanmarRelevance = feature.hasDirectMyanmarRelevance === true;
 
   // O列・P列の過去2日同一トピック補正は使わない。
-  // 重複/続編/別観点の判定は、archive_prod/archive_dev の K列=a 採用済み記事だけで行う。
+  // ただし、過去採用記事との差分判定は、同行O列が2の記事だけで行う。
+  // O列が2以外の場合は article.adoptedArchiveArticles が空になり、ここではスコア補正されない。
 
   if (hasDirectMyanmarRelevance) {
     if (isTopCountry)
       adjusted = Math.max(adjusted, SELECT_TOP_COUNTRY_SCORE_FLOOR);
-    else if (isNeighborCountry)
+    else if (isSecondPriorityCountryOrg)
+      adjusted = Math.max(
+        adjusted,
+        SELECT_SECOND_PRIORITY_COUNTRY_ORG_SCORE_FLOOR,
+      );
+    else if (isOtherNeighborCountry)
       adjusted = Math.max(adjusted, SELECT_NEIGHBOR_COUNTRY_SCORE_FLOOR);
-    else if (isKoreaCountry)
-      adjusted = Math.max(adjusted, SELECT_KOREA_COUNTRY_SCORE_FLOOR);
+
+    if (isYangonRegion)
+      adjusted = Math.max(adjusted, SELECT_YANGON_SCORE_FLOOR);
+    if (hasMyanmarIndividualCompany)
+      adjusted = Math.max(
+        adjusted,
+        SELECT_MYANMAR_INDIVIDUAL_COMPANY_SCORE_FLOOR,
+      );
+    if (conflictWithCivilianDeath)
+      adjusted = Math.max(adjusted, SELECT_CONFLICT_CIVILIAN_DEATH_SCORE_FLOOR);
   } else {
     adjusted = Math.min(adjusted, 20);
   }
@@ -2580,8 +2705,11 @@ function _applySelectionPostCriteriaAdjustment_(score, feature, obj, article) {
     adjusted = Math.min(adjusted, 20);
   }
 
-  if (_isDiplomacyCountryOnlyArticleForSelection_(text, feature)) {
-    adjusted = Math.min(adjusted, SELECT_DIPLOMACY_COUNTRY_ONLY_SCORE_CAP);
+  if (conflictWithoutCivilianDeath) {
+    adjusted = Math.min(
+      adjusted,
+      SELECT_CONFLICT_WITHOUT_CIVILIAN_DEATH_SCORE_CAP,
+    );
   }
 
   return _clampRound_(adjusted, 0, 100);
@@ -2615,21 +2743,38 @@ function _criteriaReasonTags_(feature, obj, article) {
   const countryWeight = _safeNumber_(feature.countryWeight);
   const countryTier = String(feature.countryTier || "none");
 
-  if (countryTier === "top_china_us_japan" || countryWeight >= 9)
-    tags.push("criteria_country_top_china_us_japan");
-  else if (countryTier === "neighbor_country" || countryWeight >= 7)
-    tags.push("criteria_country_neighbor");
-  else if (countryTier === "korea_country" || countryWeight >= 5)
-    tags.push("criteria_country_korea");
+  const canonicalCountryTier =
+    _canonicalCountryWeightTierForSelection_(countryTier);
+  if (
+    canonicalCountryTier === "top_priority_country_region" ||
+    countryWeight >= SELECT_TOP_COUNTRY_WEIGHT_SCORE
+  )
+    tags.push("criteria_country_priority_1");
+  else if (
+    canonicalCountryTier === "second_priority_country_org" ||
+    countryWeight >= SELECT_SECOND_PRIORITY_COUNTRY_ORG_WEIGHT_SCORE
+  )
+    tags.push("criteria_country_org_priority_2");
+  else if (
+    canonicalCountryTier === "other_neighbor_country" ||
+    countryWeight >= SELECT_NEIGHBOR_COUNTRY_WEIGHT_SCORE
+  )
+    tags.push("criteria_country_other_neighbor");
 
   // 地域は記事単体の重要度ではなく、同一事象内の代表記事選びの補助として記録する。
   if (_safeNumber_(feature.domesticRegionPriority) >= 9)
-    tags.push("tie_break_region_yangon");
+    tags.push("criteria_region_yangon_priority_1");
   else if (_safeNumber_(feature.domesticRegionPriority) >= 7)
     tags.push("tie_break_region_ayeyarwady");
   else if (_safeNumber_(feature.domesticRegionPriority) >= 5)
     tags.push("tie_break_region_bago");
 
+  if (feature.myanmarIndividualCompany === true)
+    tags.push("criteria_myanmar_individual_company");
+  if (feature.conflictWithoutCivilianDeath === true)
+    tags.push("conflict_without_civilian_death_cap");
+  if (feature.conflictWithCivilianDeath === true)
+    tags.push("criteria_conflict_civilian_death");
   if (_safeNumber_(feature.civilianCasualtyFocus) >= 7)
     tags.push("criteria_civilian_death_focus");
   if (_safeNumber_(feature.resistanceCasualtyFocus) >= 7)
@@ -2820,7 +2965,9 @@ function _hasDirectMyanmarRelevanceForSelection_(text) {
     return true;
   }
 
-  // 「ミャンマー」という語がなくても、ミャンマー固有の機関・制度・経済語があれば直接関連とみなす。
+  // 「ミャンマー」という語がなくても、ミャンマー固有の企業・機関・制度・経済語があれば直接関連とみなす。
+  if (_hasKnownMyanmarCompanyNameSignalForSelection_(s)) return true;
+
   return _hasMyanmarSpecificInstitutionSystemEconomicSignalForSelection_(s);
 }
 
@@ -2986,46 +3133,60 @@ function _priorityTopicRequiresMyanmarRelevanceForSelection_(tag) {
   );
 }
 
-function _strongerCountryWeightTierForSelection_(modelTier, detectedTier) {
+function _canonicalCountryWeightTierForSelection_(tier) {
+  const t = String(tier || "none").trim();
+
+  const aliases = {
+    none: "none",
+    top_china_us_japan: "top_priority_country_region",
+    top_priority_country: "top_priority_country_region",
+    top_priority_country_region: "top_priority_country_region",
+    priority_1_country_region: "top_priority_country_region",
+    neighbor_country: "other_neighbor_country",
+    other_neighbor_country: "other_neighbor_country",
+    korea_country: "second_priority_country_org",
+    second_priority_country: "second_priority_country_org",
+    second_priority_org: "second_priority_country_org",
+    second_priority_country_org: "second_priority_country_org",
+    priority_2_country_org: "second_priority_country_org",
+  };
+
+  return aliases[t] || "none";
+}
+
+function _countryWeightTierRankForSelection_(tier) {
+  const t = _canonicalCountryWeightTierForSelection_(tier);
   const rank = {
     none: 0,
-    korea_country: 1,
-    neighbor_country: 2,
-    top_china_us_japan: 3,
+    other_neighbor_country: 1,
+    second_priority_country_org: 2,
+    top_priority_country_region: 3,
   };
-  const model = String(modelTier || "none").trim() || "none";
-  const detected = String(detectedTier || "none").trim() || "none";
-  return (rank[detected] || 0) > (rank[model] || 0) ? detected : model;
+  return rank[t] || 0;
+}
+
+function _strongerCountryWeightTierForSelection_(modelTier, detectedTier) {
+  const model = _canonicalCountryWeightTierForSelection_(modelTier);
+  const detected = _canonicalCountryWeightTierForSelection_(detectedTier);
+  return _countryWeightTierRankForSelection_(detected) >
+    _countryWeightTierRankForSelection_(model)
+    ? detected
+    : model;
 }
 
 function _validatedModelCountryWeightTierForSelection_(obj, text) {
   obj = obj || {};
-  const modelTier = String(obj.countryWeightTier || "none").trim() || "none";
+  const modelTier = _canonicalCountryWeightTierForSelection_(
+    obj.countryWeightTier || "none",
+  );
   const detectedTier = _criteriaCountryWeightTierForSelection_(text);
 
-  // E・F・G・I列から明示国名を確認できない場合、モデルの国名判定だけでは下限補正を発火させない。
+  // E・F・G・I列から明示国名・国際機関を確認できない場合、モデルの国名判定だけでは下限補正を発火させない。
   if (detectedTier === "none") return "none";
 
   if (
-    modelTier === "top_china_us_japan" &&
-    detectedTier === "top_china_us_japan"
-  ) {
-    return modelTier;
-  }
-
-  if (
-    modelTier === "neighbor_country" &&
-    (detectedTier === "neighbor_country" ||
-      detectedTier === "top_china_us_japan")
-  ) {
-    return modelTier;
-  }
-
-  if (
-    modelTier === "korea_country" &&
-    (detectedTier === "korea_country" ||
-      detectedTier === "neighbor_country" ||
-      detectedTier === "top_china_us_japan")
+    _countryWeightTierRankForSelection_(modelTier) <=
+    _countryWeightTierRankForSelection_(detectedTier)
   ) {
     return modelTier;
   }
@@ -3040,25 +3201,35 @@ function _validatedModelCountryWeightScoreForSelection_(obj, text) {
 
   const modelScore = _coalesceSelectionScore_(obj.countryWeightScore);
 
-  // 韓国は第3階層として扱うため、モデルが高めに返しても周辺国以上の重みにしない。
-  if (detectedTier === "korea_country") {
-    return Math.min(modelScore, SELECT_KOREA_COUNTRY_WEIGHT_SCORE);
+  if (detectedTier === "top_priority_country_region") {
+    return Math.min(modelScore, SELECT_TOP_COUNTRY_WEIGHT_SCORE);
   }
 
-  return modelScore;
+  if (detectedTier === "second_priority_country_org") {
+    return Math.min(
+      modelScore,
+      SELECT_SECOND_PRIORITY_COUNTRY_ORG_WEIGHT_SCORE,
+    );
+  }
+
+  if (detectedTier === "other_neighbor_country") {
+    return Math.min(modelScore, SELECT_NEIGHBOR_COUNTRY_WEIGHT_SCORE);
+  }
+
+  return 0;
 }
 
 function _criteriaCountryWeightTierForSelection_(text) {
-  if (_hasTopCountrySignalForSelection_(text)) {
-    return "top_china_us_japan";
+  if (_hasTopPriorityCountryRegionSignalForSelection_(text)) {
+    return "top_priority_country_region";
   }
 
-  if (_hasNeighborCountrySignalForSelection_(text)) {
-    return "neighbor_country";
+  if (_hasSecondPriorityCountryOrgSignalForSelection_(text)) {
+    return "second_priority_country_org";
   }
 
-  if (_hasKoreaCountrySignalForSelection_(text)) {
-    return "korea_country";
+  if (_hasOtherNeighborCountrySignalForSelection_(text)) {
+    return "other_neighbor_country";
   }
 
   return "none";
@@ -3090,7 +3261,40 @@ function _hasKoreaCountrySignalForSelection_(text) {
   ]);
 }
 
-function _hasTopCountrySignalForSelection_(text) {
+function _hasSecondPriorityCountryOrgSignalForSelection_(text) {
+  const s = String(text || "");
+
+  if (_hasKoreaCountrySignalForSelection_(s)) return true;
+
+  if (
+    _hasAny_(s, [
+      "国連",
+      "国際連合",
+      "国連機関",
+      "UNHCR",
+      "国連難民高等弁務官事務所",
+      "世界銀行",
+      "世銀",
+      "UNDP",
+      "国連開発計画",
+      "UNFPA",
+      "国連人口基金",
+    ])
+  ) {
+    return true;
+  }
+
+  return _hasAnyLatinCountryTermForSelection_(s, [
+    "United Nations",
+    "UN",
+    "UNHCR",
+    "World Bank",
+    "UNDP",
+    "UNFPA",
+  ]);
+}
+
+function _hasTopPriorityCountryRegionSignalForSelection_(text) {
   const s = String(text || "");
 
   if (
@@ -3109,8 +3313,33 @@ function _hasTopCountrySignalForSelection_(text) {
       "日本政府",
       "東京",
       "日本大使館",
+      "ロシア",
+      "ロシア政府",
+      "モスクワ",
+      "ASEAN",
+      "東南アジア諸国連合",
+      "欧州",
+      "ヨーロッパ",
+      "欧州連合",
+      "EU",
+      "欧州委員会",
+      "ブリュッセル",
+      "バングラデシュ",
+      "ダッカ",
+      "コックスバザール",
+      "バンコク",
+      "メーソット",
+      "ターク県",
+      "チェンマイ",
+      "ニューデリー",
+      "ミゾラム",
+      "マニプール",
     ])
   ) {
+    return true;
+  }
+
+  if (_hasAnyStandaloneKatakanaTermForSelection_(s, ["タイ", "インド"])) {
     return true;
   }
 
@@ -3125,18 +3354,38 @@ function _hasTopCountrySignalForSelection_(text) {
     "Japan",
     "Tokyo",
     "JICA",
+    "Thailand",
+    "Thai",
+    "Bangkok",
+    "Mae Sot",
+    "India",
+    "New Delhi",
+    "Mizoram",
+    "Manipur",
+    "Russia",
+    "Moscow",
+    "ASEAN",
+    "European Union",
+    "Europe",
+    "EU",
+    "European Commission",
+    "Bangladesh",
+    "Dhaka",
+    "Cox's Bazar",
   ]);
 }
 
-function _hasNeighborCountrySignalForSelection_(text) {
+// 後方互換用。旧関数名で参照されても優先度1の判定を返す。
+function _hasTopCountrySignalForSelection_(text) {
+  return _hasTopPriorityCountryRegionSignalForSelection_(text);
+}
+
+function _hasOtherNeighborCountrySignalForSelection_(text) {
   const s = String(text || "");
 
   if (
     _hasAnyStandaloneKatakanaTermForSelection_(s, [
-      "タイ",
-      "インド",
       "マレーシア",
-      "バングラデシュ",
       "ラオス",
       "カンボジア",
       "ベトナム",
@@ -3148,60 +3397,39 @@ function _hasNeighborCountrySignalForSelection_(text) {
     return true;
   }
 
-  if (
-    _hasAny_(s, [
-      "バンコク",
-      "メーソット",
-      "ターク県",
-      "チェンマイ",
-      "ニューデリー",
-      "ミゾラム",
-      "マニプール",
-      "クアラルンプール",
-      "ダッカ",
-      "コックスバザール",
-      "ASEAN加盟国",
-      "周辺国",
-      "隣国",
-    ])
-  ) {
+  if (_hasAny_(s, ["クアラルンプール", "ASEAN加盟国", "周辺国", "隣国"])) {
     return true;
   }
 
   return _hasAnyLatinCountryTermForSelection_(s, [
-    "Thailand",
-    "Thai",
-    "Bangkok",
-    "Mae Sot",
-    "India",
-    "New Delhi",
-    "Mizoram",
-    "Manipur",
     "Malaysia",
-    "Bangladesh",
     "Laos",
     "Cambodia",
     "Vietnam",
     "Singapore",
     "Indonesia",
     "Philippines",
-    "ASEAN",
   ]);
+}
+
+// 後方互換用。旧関数名で参照されてもその他周辺国の判定を返す。
+function _hasNeighborCountrySignalForSelection_(text) {
+  return _hasOtherNeighborCountrySignalForSelection_(text);
 }
 
 function _criteriaCountryWeightScoreForSelection_(text) {
   const tier = _criteriaCountryWeightTierForSelection_(text);
 
-  if (tier === "top_china_us_japan") {
+  if (tier === "top_priority_country_region") {
     return SELECT_TOP_COUNTRY_WEIGHT_SCORE;
   }
 
-  if (tier === "neighbor_country") {
-    return SELECT_NEIGHBOR_COUNTRY_WEIGHT_SCORE;
+  if (tier === "second_priority_country_org") {
+    return SELECT_SECOND_PRIORITY_COUNTRY_ORG_WEIGHT_SCORE;
   }
 
-  if (tier === "korea_country") {
-    return SELECT_KOREA_COUNTRY_WEIGHT_SCORE;
+  if (tier === "other_neighbor_country") {
+    return SELECT_NEIGHBOR_COUNTRY_WEIGHT_SCORE;
   }
 
   return 0;
@@ -4931,6 +5159,13 @@ function _assignDailySelectionRecommendations_(sheet) {
       rationaleOutputs,
     );
 
+    // 空爆・衝突・戦闘・砲撃系で市民等の死亡被害がない記事は、同点化後にも候補外上限を再適用する。
+    _enforceConflictWithoutCivilianDeathFinalScoreCapForDate_(
+      items,
+      finalScoreOutputs,
+      rationaleOutputs,
+    );
+
     // R列スコアでY列の候補判定を更新する。
     // 日次順位は使わない。
     _refreshFinalScoreFlagsForOrderedItems_(
@@ -4973,13 +5208,17 @@ function _finalAdoptionProbabilityScore_(item) {
 
   // R列の最終スコア計算直前でも、E/F/G/I列からミャンマー直接関連を再確認する。
   // 基礎スコア側で誤って高くなっていても、ここで20点以下へ抑える。
+  const rowText = item.row ? _selectionInputTextFromSheetRow_(item.row) : "";
+
+  if (item.row && !_hasDirectMyanmarRelevanceForSelection_(rowText)) {
+    score = Math.min(score, SELECT_NON_MYANMAR_FINAL_SCORE_CAP);
+  }
+
   if (
     item.row &&
-    !_hasDirectMyanmarRelevanceForSelection_(
-      _selectionInputTextFromSheetRow_(item.row),
-    )
+    _isConflictWithoutCivilianDeathExclusionForSelection_(rowText)
   ) {
-    score = Math.min(score, SELECT_NON_MYANMAR_FINAL_SCORE_CAP);
+    score = Math.min(score, SELECT_CONFLICT_WITHOUT_CIVILIAN_DEATH_SCORE_CAP);
   }
 
   return _clampRound_(score, 0, 100);
@@ -5023,6 +5262,39 @@ function _enforceNoDirectMyanmarFinalScoreCapForDate_(
             "",
         ),
         "ミャンマー直接関連なしのためR列を20点以下に強制。",
+      ),
+    ];
+  });
+}
+
+function _enforceConflictWithoutCivilianDeathFinalScoreCapForDate_(
+  items,
+  finalScoreOutputs,
+  rationaleOutputs,
+) {
+  (items || []).forEach(function (item) {
+    if (!item || !item.row) return;
+
+    const text = _selectionInputTextFromSheetRow_(item.row);
+    if (!_isConflictWithoutCivilianDeathExclusionForSelection_(text)) return;
+
+    const current = Number(
+      (finalScoreOutputs[item.index] && finalScoreOutputs[item.index][0]) || 0,
+    );
+    const capped = _clampRound_(
+      Math.min(current, SELECT_CONFLICT_WITHOUT_CIVILIAN_DEATH_SCORE_CAP),
+      0,
+      100,
+    );
+
+    finalScoreOutputs[item.index] = [capped];
+    rationaleOutputs[item.index] = [
+      _prependSelectionNote_(
+        String(
+          (rationaleOutputs[item.index] && rationaleOutputs[item.index][0]) ||
+            "",
+        ),
+        "空爆・衝突等で市民等の死亡被害が確認できないためR列を34点以下に強制。",
       ),
     ];
   });
