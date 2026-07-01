@@ -1,24 +1,43 @@
 /**
  * Selection ML GitHub Actions dispatcher.
  *
+ * 目的:
+ * - selectionMlWatcher を5分おきに実行するGASトリガーに設定する。
+ * - コード側で 23:00 / 00:00 / 01:00 の各10分間だけ検知し、
+ *   各スロットにつき1回だけ prod 用 Selection ML を起動する。
+ *
  * Script Properties:
  * - GITHUB_OWNER
  * - GITHUB_REPO
  * - GITHUB_TOKEN
- * - SELECTION_ML_GITHUB_WORKFLOW_FILE (default: selection-ml.yml)
+ * - SELECTION_ML_GITHUB_WORKFLOW_FILE optional, default: selection-ml.yml
  * - ARCHIVE_DRIVE_FOLDER_ID
- * - SELECTION_ML_TARGET_HOUR (default: 2)
- * - SELECTION_ML_TARGET_MINUTE (default: 0)
  */
 
 const SELECTION_ML_TIMEZONE = "Asia/Yangon";
 const SELECTION_ML_WATCH_WINDOW_MINUTES = 10;
-const SELECTION_ML_LAST_RUN_PROP = "SELECTION_ML_LAST_RUN_YMD";
-const SELECTION_ML_DEFAULT_TARGET_HOUR = 2;
-const SELECTION_ML_DEFAULT_TARGET_MINUTE = 0;
+const SELECTION_ML_LAST_RUN_PREFIX = "SELECTION_ML_LAST_RUN_SLOT_";
 
 /**
- * 既存のwatcherトリガーを置き換え、5分おきに実行する。
+ * 実行したい時刻。
+ * selectionMlWatcher が5分おきに起動され、各時刻から10分間の範囲に入った場合だけ
+ * GitHub Actions の selection-ml.yml を dispatch する。
+ */
+const SELECTION_ML_TARGET_SLOTS = [
+  { hour: 23, minute: 0 },
+  { hour: 0, minute: 0 },
+  { hour: 1, minute: 0 },
+];
+
+/**
+ * 既存の selectionMlWatcher トリガーを置き換え、5分おきに実行する。
+ *
+ * GASの画面から手動でトリガー設定する場合、この関数は実行不要。
+ * 手動設定する場合は、以下の内容で設定する。
+ * - 実行する関数: selectionMlWatcher
+ * - イベントのソース: 時間主導型
+ * - 時間ベースのトリガーのタイプ: 分ベースのタイマー
+ * - 間隔: 5分おき
  */
 function installSelectionMlWatcherTrigger() {
   ScriptApp.getProjectTriggers().forEach(function (trigger) {
@@ -34,23 +53,8 @@ function installSelectionMlWatcherTrigger() {
 }
 
 /**
- * prod用Selection MLの実行時刻を午前2時に固定する。
- * 既にScript Propertiesに1:30が残っている場合は、この関数を1回実行する。
- */
-function setSelectionMlScheduleTo2AM() {
-  const props = PropertiesService.getScriptProperties();
-  props.setProperty(
-    "SELECTION_ML_TARGET_HOUR",
-    String(SELECTION_ML_DEFAULT_TARGET_HOUR),
-  );
-  props.setProperty(
-    "SELECTION_ML_TARGET_MINUTE",
-    String(SELECTION_ML_DEFAULT_TARGET_MINUTE),
-  );
-}
-
-/**
- * 指定時刻から10分間の範囲で、1日1回だけprod用Selection MLを起動する。
+ * 23:00 / 00:00 / 01:00 の各10分間に入ったら、
+ * 各スロットにつき1回だけ prod 用 Selection ML を起動する。
  */
 function selectionMlWatcher() {
   const lock = LockService.getScriptLock();
@@ -63,51 +67,47 @@ function selectionMlWatcher() {
     const props = PropertiesService.getScriptProperties();
     const now = new Date();
     const ymd = Utilities.formatDate(now, SELECTION_ML_TIMEZONE, "yyyyMMdd");
-
-    if (props.getProperty(SELECTION_ML_LAST_RUN_PROP) === ymd) {
-      return;
-    }
-
-    const targetHour = _selectionMlIntegerProp_(
-      props,
-      "SELECTION_ML_TARGET_HOUR",
-      SELECTION_ML_DEFAULT_TARGET_HOUR,
-    );
-    const targetMinute = _selectionMlIntegerProp_(
-      props,
-      "SELECTION_ML_TARGET_MINUTE",
-      SELECTION_ML_DEFAULT_TARGET_MINUTE,
-    );
     const currentMinutes =
       Number(Utilities.formatDate(now, SELECTION_ML_TIMEZONE, "H")) * 60 +
       Number(Utilities.formatDate(now, SELECTION_ML_TIMEZONE, "m"));
-    const targetMinutes = targetHour * 60 + targetMinute;
 
-    if (
-      currentMinutes < targetMinutes ||
-      currentMinutes >= targetMinutes + SELECTION_ML_WATCH_WINDOW_MINUTES
-    ) {
+    for (const slot of SELECTION_ML_TARGET_SLOTS) {
+      const targetMinutes = slot.hour * 60 + slot.minute;
+
+      if (!isSelectionMlCurrentSlot_(currentMinutes, targetMinutes)) {
+        continue;
+      }
+
+      const slotKey = buildSelectionMlSlotKey_(ymd, slot);
+      const lastRunPropKey = SELECTION_ML_LAST_RUN_PREFIX + slotKey;
+
+      if (props.getProperty(lastRunPropKey) === "done") {
+        Logger.log("[selection-ml] already dispatched for slot " + slotKey);
+        return;
+      }
+
+      triggerSelectionMlGitHubActions_("prod");
+      props.setProperty(lastRunPropKey, "done");
+      Logger.log("[selection-ml] prod dispatched for slot " + slotKey);
       return;
     }
-
-    triggerSelectionMlGitHubActions_("prod");
-    props.setProperty(SELECTION_ML_LAST_RUN_PROP, ymd);
-    Logger.log("[selection-ml] prod dispatched for " + ymd);
   } finally {
     lock.releaseLock();
   }
 }
 
 /**
- * prod手動実行用。時刻・当日実行済み判定を無視して即時起動する。
- * SELECTION_ML_LAST_RUN_YMD は更新しないため、通常の定時実行には影響しない。
+ * prod手動実行用。
+ * 時刻・スロット実行済み判定を無視して即時起動する。
+ * 通常の定時実行用プロパティは更新しない。
  */
 function triggerSelectionMlProdNow() {
   triggerSelectionMlGitHubActions_("prod");
 }
 
 /**
- * dev手動実行用。devは定時実行しない。
+ * dev手動実行用。
+ * devは定時実行しない。
  */
 function triggerSelectionMlDevNow() {
   triggerSelectionMlGitHubActions_("dev");
@@ -166,13 +166,26 @@ function triggerSelectionMlGitHubActions_(targetSheet) {
   }
 }
 
-function _selectionMlIntegerProp_(props, key, defaultValue) {
-  const raw = props.getProperty(key);
-  if (raw === null || raw === "") return defaultValue;
+function isSelectionMlCurrentSlot_(currentMinutes, targetMinutes) {
+  return (
+    currentMinutes >= targetMinutes &&
+    currentMinutes < targetMinutes + SELECTION_ML_WATCH_WINDOW_MINUTES
+  );
+}
 
-  const value = Number(raw);
-  if (!Number.isInteger(value)) {
-    throw new Error('Script Property "' + key + '" must be an integer.');
+function buildSelectionMlSlotKey_(ymd, slot) {
+  return (
+    ymd +
+    "_" +
+    String(slot.hour).padStart(2, "0") +
+    String(slot.minute).padStart(2, "0")
+  );
+}
+
+function mustGetProp_(props, key) {
+  const value = props.getProperty(key);
+  if (value === null || String(value).trim() === "") {
+    throw new Error('Script Property "' + key + '" is required.');
   }
-  return value;
+  return String(value).trim();
 }
