@@ -18,6 +18,9 @@ Applied changes:
 - Optional Gemini reranking is added as a second-stage evaluator.
   It returns a 0-100 Gemini score using abstract editorial criteria, then
   final_score is set to the higher of ML score and Gemini score.
+- Same-day duplicate finalization now runs at the end of the process.
+  Duplicate groups are written to AD as 重複001, 重複002, ... and AA final scores
+  are aligned to the highest final score in each duplicate group.
 """
 
 from __future__ import annotations
@@ -44,7 +47,7 @@ SCOPES = [
 ARCHIVE_FILE_PREFIX = "prod_"
 ARCHIVE_SHEET_NAME = "prod"
 LOCAL_ADOPTED_ARCHIVE_SHEET_BY_TARGET = {"prod": "archive_prod", "dev": "archive_dev"}
-MODEL_VERSION = "selection-ml-v17-max-ml-gemini-score"
+MODEL_VERSION = "selection-ml-v18-gemini-priority-country-region-org"
 OUTPUT_HEADERS = [
     "MLスコア",
     "ML判定補足",
@@ -58,9 +61,16 @@ OUTPUT_HEADERS = [
     "最終スコア",
     "採用スコア種別",
     "Gemini詳細JSON",
+    "同日重複ID",
 ]
 OUTPUT_START_COLUMN = "R"
-OUTPUT_END_COLUMN = "AC"
+OUTPUT_END_COLUMN = "AD"
+OUTPUT_FINAL_SCORE_OFFSET = OUTPUT_HEADERS.index("最終スコア")
+OUTPUT_SCORE_SOURCE_OFFSET = OUTPUT_HEADERS.index("採用スコア種別")
+OUTPUT_GEMINI_REASON_OFFSET = OUTPUT_HEADERS.index("Gemini理由")
+OUTPUT_GEMINI_DETAIL_JSON_OFFSET = OUTPUT_HEADERS.index("Gemini詳細JSON")
+OUTPUT_SAME_DAY_DUPLICATE_ID_OFFSET = OUTPUT_HEADERS.index("同日重複ID")
+SAME_DAY_DUPLICATE_LABEL_PREFIX = "重複"
 MAX_REASON_FEATURES = 8
 MIN_COLUMNS = 32
 
@@ -1023,6 +1033,15 @@ def generic_similarity_score(a: str, b: str) -> float:
     return overlap / denom
 
 
+def should_check_adopted_archive_diff(row: ArticleRecord) -> bool:
+    """Return True only for rows whose O column flag is 2.
+
+    O列（過去2日同一TOPIC判定）が2の行だけ、過去採用記事との差分判定を行う。
+    Google Sheetsから 2 / 2.0 / "2" のいずれで渡っても対象にする。
+    """
+    return safe_int(row.same_topic_flag, -1) == 2
+
+
 def build_archive_adopted_context_map(
     current_rows: list[ArticleRecord],
     archive_rows: list[ArticleRecord],
@@ -1031,6 +1050,10 @@ def build_archive_adopted_context_map(
 
     The matching is intentionally generic: URL, Q duplicate key, normalized title,
     and text similarity. It does not copy selection.js's topic keyword rules.
+
+    過去採用記事との差分判定は、同行O列（過去2日同一TOPIC判定）の値が
+    2の現在記事だけを対象にする。対象外の行には adopted_archive_context を
+    渡さないため、Gemini側でも過去採用記事との差分判定は行われない。
     """
     adopted = [row for row in archive_rows if int(row.label or 0) == 1]
     out: dict[int, list[dict[str, Any]]] = {}
@@ -1038,6 +1061,9 @@ def build_archive_adopted_context_map(
         return out
 
     for current in current_rows:
+        if not should_check_adopted_archive_diff(current):
+            continue
+
         current_title_key = normalize_key_text(" ".join([current.headline_a, current.headline_final, current.headline_body]))
         current_text = archive_candidate_text(current)
         scored: list[tuple[float, ArticleRecord, str]] = []
@@ -1096,8 +1122,9 @@ def build_same_day_context_map(
 
     Gemini receives these candidates and decides whether the 4W elements
     (when / who / where / what) are actually the same. Python only performs a
-    broad, generic pre-filter using Q key, title equality, URL, and text
-    similarity to keep the prompt compact.
+    broad, generic pre-filter using URL, title equality, and text similarity
+    to keep the prompt compact. Q-column equality is intentionally not used
+    because Q values are not expected to match between same-day rows.
     """
     out: dict[int, list[dict[str, Any]]] = {}
     if len(current_rows) < 2:
@@ -1123,10 +1150,6 @@ def build_same_day_context_map(
             if current.url and other.url and current.url == other.url:
                 score += 100.0
                 reasons.append("url_exact")
-            if current.duplicate_key and other.duplicate_key and current.duplicate_key == other.duplicate_key:
-                score += 80.0
-                reasons.append("duplicate_key_exact")
-
             other_title_key = normalize_key_text(
                 " ".join([other.headline_a, other.headline_final, other.headline_body])
             )
@@ -1152,7 +1175,6 @@ def build_same_day_context_map(
                 "media": other.media,
                 "headline": truncate_text(article_short_title(other), 180),
                 "summary": truncate_text(other.summary, 320),
-                "duplicate_key_q": truncate_text(other.duplicate_key, 160),
                 "match_reason": reason,
                 "match_score": round(score, 2),
                 "url": truncate_text(other.url, 220),
@@ -1201,39 +1223,42 @@ def gemini_system_prompt() -> str:
 重要な前提:
 - 媒体名は参考情報に過ぎません。媒体名に Myanmar / ミャンマー が含まれていても、それだけで直接関連・高評価にしません。
 - 判定に使う本文情報は、原則として E/F/G/I列相当の headline_e / headline_f / headline_g / summary です。URLや媒体名だけを根拠にしません。
-- O/P列の過去2日同一トピック情報は主判定に使いません。重複・続編・別観点の判定は adopted_archive_context と Q列 duplicate_key_q を優先します。
+- O/P列の過去2日同一トピック情報は主判定に使いません。ただし、過去採用記事との差分判定は O列 same_topic_flag_o が 2 の記事だけが対象です。O列が2以外の記事では adopted_archive_context は空になり、過去採用記事との差分判定は行いません。対象記事の重複・続編・別観点の判定は adopted_archive_context と Q列 duplicate_key_q を優先します。
 
 最重要の採点方針:
 1. ミャンマー直接関連・無関係記事の定義
 - E/F/G/I列相当の入力から、ミャンマーへの直接関係が確認できる記事を高く評価します。
 - ミャンマーに関係ない記事と判定するのは、E/F/G/I列相当の入力に、ミャンマー関連キーワードが一切含まれない場合に限定します。
-- ミャンマー関連キーワードには、ミャンマー、ビルマ、ヤンゴン、ネピドー、マンダレー、ミンアウンフライン、国軍、CBM、チャットなど、ミャンマー固有の地名・人物・機関・制度・通貨・経済行政用語を含めます。
-- 特に「ヤンゴン」を含む記事は、ミャンマー国内地名のヒットとして扱い、ミャンマー関連の選定候補として残します。ヤンゴンのヒットはトピック内容よりも優先し、無関係記事・低優先記事として扱わないでください。
+- ミャンマー関連キーワードには、ミャンマー、ビルマ、ヤンゴン、ネピドー、マンダレー、ミンアウンフライン、国軍、CBM、チャット、ミャンマー国内の個別企業名など、ミャンマー固有の地名・人物・企業・機関・制度・通貨・経済行政用語を含めます。
+- ミャンマーの個別企業名を含む記事は、企業活動・投資・雇用・規制・物流・消費・金融などへの実務影響が読み取れる可能性が高いため、強い採用候補として評価してください。
+- 特に「ヤンゴン」を含む記事は、国名優先度1位と同列の国内地名ヒットとして扱い、ミャンマー関連の強い選定候補として残します。ヤンゴンのヒットはトピック内容よりも優先し、無関係記事・低優先記事として扱わないでください。
 - 上記のようなミャンマー関連キーワードが一切なく、直接関係も確認できない海外一般ニュースは、話題性・国名・政府機関・法改正・選挙・芸能・スポーツなどがあっても低くします。
 - ミャンマー関連キーワードが一切なく、直接関係も確認できない場合のみ、0〜20を目安にします。
 
 2. 国名・外交の扱い
-- 国の重要度は、トピックの重要度よりも優先します。既に選定基準として含まれている国名が E/F/G/I列相当の入力に含まれている場合は、その国名ヒット自体を選定候補化の根拠として扱い、トピック単体の軽重だけで低くしないでください。
-- 中国・米国・日本・ロシアは最上位国として扱います。中国・ラオス・タイ・バングラデシュ・インド・ブルネイ・カンボジア・インドネシア・マレーシア・フィリピン・シンガポール・東ティモール・ベトナムは次点、韓国は補助的に扱います。
-- 国名は、政府・当局・企業・団体・国民・国籍・人物・商品・制度・場所など、その国名自体が含まれていればヒットと判定して構いません。例: 中国政府、中国企業、中国人、中国籍、中国製、タイ国境、日本人、米国企業。
-- 貿易、投資、安全保障、制裁、援助、国境、物流、企業活動、労働、制度変更など、ミャンマーへの具体的影響がある場合は高く評価します。
-- 外交会談、訪問、表敬、声明、式典、挨拶など外交儀礼的な側面が強い記事でも、それだけを理由にスコアを下げる必要はありません。重要国との関係や今後の影響が読み取れる場合は、選定候補として評価します。
+- 国名・地域名・国際機関名の優先度は、トピックの重要度よりも優先します。既に選定基準として含まれている国名・地域名・国際機関名が E/F/G/I列相当の入力に含まれている場合は、そのヒット自体を選定候補化の根拠として扱い、トピック単体の軽重だけで低くしないでください。
+- 優先度1位の国名・地域名・枠組みは、中国、米国、アメリカ、USA、日本、タイ、インド、ロシア、ASEAN、欧州、EU、European Union、バングラデシュ、ヤンゴンです。これらを含む記事は強い選定候補として扱います。
+- 優先度2位の国名・国際機関・枠組みは、韓国、国連、UN、United Nations、UNHCR、世界銀行、World Bank、UNDP、UNFPAです。これらを含む記事は選定候補として扱います。
+- 国名・地域名・国際機関名は、政府・当局・企業・団体・国民・国籍・人物・商品・制度・場所・国境・支援・報告・声明など、その名称自体が含まれていればヒットと判定して構いません。例: 中国政府、中国企業、中国人、中国籍、中国製、タイ国境、日本人、米国企業、ASEAN会合、EU制裁、国連報告、UNHCR支援。
+- 国名・地域名・国際機関名の優先度にヒットした場合、そのヒットを選定候補化の根拠として維持し、外交儀礼性・トピックの軽さ・実務影響の薄さだけを理由に、ヒット前提からさらに減点しないでください。
+- 貿易、投資、安全保障、制裁、援助、国境、物流、企業活動、労働、制度変更など、ミャンマーへの具体的影響がある場合はさらに高く評価します。
+- 外交会談、訪問、表敬、声明、式典、挨拶など外交儀礼的な側面が強い記事でも、それだけを理由にスコアを下げません。優先度1位・2位の国名、地域名、国際機関名との関係や今後の影響が読み取れる場合は、選定候補として評価します。
 - ただし、ミャンマー関連キーワードや直接関係が確認できない国際一般ニュースは、重要国が登場しても高評価にしません。
 
-3. 紛争・空爆・戦闘・攻撃
-- 空爆、戦闘、攻撃に関する記事は、住民・市民・子ども・避難民など民間人の死亡者が1人以上存在する場合に選定対象候補とします。
-- 住民の死亡者が存在せず、避難、けが人、住居破壊、施設被害などにとどまる場合は、原則として選定対象から外します。
-- 国軍兵士、治安部隊、抵抗勢力、民族武装勢力の死亡者のみが存在し、住民の死亡者が存在しない場合も、原則として選定対象から外します。
-- 住民死亡者が確認できる場合は、死亡者数、地域、攻撃主体、被害の広がり、行政・軍事・国境・物流上の意味を踏まえて評価します。
-- 補給路、主要都市、国境、港湾、空港、経済回廊、支配地域、選挙、停戦、行政支配など、住民死亡に加えて戦略的意味がある場合はより高く評価します。
-- 住民死亡の有無が不明な場合は、過大評価せず、risk_flagsに「住民死亡の有無不明」と明記してください。
+3. 紛争・空爆・戦闘・衝突・攻撃
+- 空爆、衝突、戦闘、攻撃に関する記事は、市民、民間人、住民、子ども、避難民など非戦闘員の死亡被害が1人以上含まれている場合に選定対象候補とします。
+- 市民・民間人・住民・子ども・避難民などの死亡被害が含まれておらず、避難、けが人、住居破壊、施設被害などにとどまる場合は、原則として選定対象から外します。
+- 国軍兵士、治安部隊、抵抗勢力、民族武装勢力の死亡者のみが存在し、市民・民間人・住民・子ども・避難民などの死亡被害が存在しない場合も、原則として選定対象から外します。
+- 市民・民間人・住民・子ども・避難民などの死亡被害が確認できる場合は、死亡者数、地域、攻撃主体、被害の広がり、行政・軍事・国境・物流上の意味を踏まえて評価します。
+- 補給路、主要都市、国境、港湾、空港、経済回廊、支配地域、選挙、停戦、行政支配など、民間人死亡に加えて戦略的意味がある場合はより高く評価します。
+- 民間人死亡の有無が不明な場合は、過大評価せず、risk_flagsに「民間人死亡の有無不明」と明記してください。
 
 4. 国内地域
 - ヤンゴン、エーヤワディー、バゴーなどの地域名は、ミャンマー関連性の判断と、同じ事象の代表記事選びの補助として使います。
-- 「ヤンゴン」を含む記事は、ミャンマー国内地名のヒットとして選定候補に残します。ヤンゴンのヒットはトピック内容よりも優先し、低優先・無関係扱いにはしないでください。
+- 「ヤンゴン」を含む記事は、国名優先度1位と同列の国内地名ヒットとして強い選定候補に残します。ヤンゴンのヒットはトピック内容よりも優先し、低優先・無関係扱いにはしないでください。
 
 5. 優先トピック
-以下のトピックを扱う場合は高評価します。ただし、既に選定基準として含まれている国名、またはミャンマー国内の「ヤンゴン」がヒットしている記事は、トピック重要度よりも国名・地名ヒットを優先して判断します。
+以下のトピックを扱う場合は高評価します。ただし、既に選定基準として含まれている国名・地域名・国際機関名、またはミャンマー国内の「ヤンゴン」がヒットしている記事は、トピック重要度よりも国名・地名・機関名ヒットを優先して判断します。
 - 公的機関による政策・制度・規制・法改正・許認可・行政手続き・税制・関税・輸出入・出入国・労働・企業活動に関わる発表、通達、告示、承認、決定、開始、停止、廃止。
 - 物価、燃料価格、為替、外貨規制、価格統制、外貨使用制限。
 - 中央銀行・CBMによる外貨売却、外貨配分、外貨供給、輸入決済、食用油・燃料・医薬品・生活必需品輸入向けの外貨配分。
@@ -1242,6 +1267,7 @@ def gemini_system_prompt() -> str:
 - 雇用、労働政策、労働組合、賃金、労使関係。
 - 政府・省庁・当局・公的機関が関わる開発計画、インフラ、電力需要・電力供給計画。
 - ビジネス環境、中小企業、企業支援、融資、商工業者、企業活動に影響する制度や政策。
+- ミャンマーの個別企業名を含み、企業活動・投資・雇用・規制・物流・金融・消費・事業環境への影響が読み取れる記事。
 - ミンアウンフライン、国軍総司令官、ミャンマー政府・省庁などによる、読者に影響する政策・制度・税制・燃料・物価・環境・防災・経済・労働・電力・インフラ・貿易などの提案、発表、声明、指示、承認、決定。
 - 法案提出、議会提出、上程、審議入り、可決、成立、法改正、罰則強化。
 - 通信規制、監視、インターネット制限、情報統制。
@@ -1252,17 +1278,20 @@ def gemini_system_prompt() -> str:
 - ミャンマー関連キーワードが一切なく、直接関係も確認できない海外一般ニュースは低くします。
 - チャット/ドル等の金額表示だけで、物価・為替・外貨トピックにしません。
 - 開発・インフラ・電力・港湾などの単語だけでは高評価にせず、公的発表・実務影響・数量的更新があるかを見ます。
+- 国名・地域名・国際機関名の優先度にヒットした記事は、そのヒットを起点に選定候補として扱い、外交儀礼性・トピックの軽さ・実務影響の薄さだけを理由に追加減点しません。ただし、ミャンマー関連キーワードや直接関係が全く確認できない記事は、既存仕様通り低くします。
 - 外交儀礼的な会談・表敬訪問・式典・声明であること、人権団体の声明ベースであることは、それ単体では減点理由にしません。
 
 同日内の同一事象候補の扱い:
-- same_day_context は、同じスプレッドシート内の同日記事から、見出し/要約類似度で抽出された候補です。
+- same_day_context は、同じスプレッドシート内の同日記事から、URL一致、見出し一致、見出し/要約類似度で抽出された候補です。Q列の値一致は同日同一事象判定の前提にしません。
 - same_day_context に候補がある場合は、現在記事と候補記事の「いつ・誰が・どこで・何を」を必ず比較してください。
-- 「いつ・誰が・どこで・何を」がほぼ同じなら same_day_event_relation を same_event_duplicate にし、同じ same_day_event_key を付けてください。Python側で同一キーの記事のGeminiスコアを、グループ内の最高Geminiスコアへ揃えます。
+- 「いつ・誰が・どこで・何を」がほぼ同じなら same_day_event_relation を same_event_duplicate にし、同じ same_day_event_key を付けてください。Python側の最終処理で同一キーの記事にAD列の重複IDを付け、AA列の最終スコアをグループ内の最高最終スコアへ揃えます。
 - 同じ大テーマでも、日付、主体、場所、行為、結果、数字、制度、被害、反応、実務影響のいずれかが明確に異なる場合は、same_event_duplicate ではなく continuation_update / different_angle / related_but_different を選んでください。
 - 国名・地域名・一般トピックが似ているだけでは同一事象にしないでください。4W一致を必須条件にしてください。
 
 archive採用済み記事候補の扱い:
-- adopted_archive_context は、同じスプレッドシート内で実行対象シートに対応するarchiveシート（prod実行時はarchive_prod、dev実行時はarchive_dev）のK列=a行、および月次アーカイブ内のK列=a行から抽出された過去採用済み記事候補です。
+- 過去採用記事との差分判定は、同行O列 same_topic_flag_o（過去2日同一TOPIC判定）の値が 2 の記事だけが対象です。
+- adopted_archive_context は、O列 same_topic_flag_o が 2 の記事に限り、同じスプレッドシート内で実行対象シートに対応するarchiveシート（prod実行時はarchive_prod、dev実行時はarchive_dev）のK列=a行、および月次アーカイブ内のK列=a行から抽出された過去採用済み記事候補です。
+- O列 same_topic_flag_o が 2 以外、または adopted_archive_context が空の記事では、過去採用記事との差分判定を行わず、adopted_archive_relation は no_archive_adopted としてください。
 - 現在記事と過去採用済み記事の「いつ・誰が・どこで・何を」がほぼ同じで、新しい進展・数字・反応・被害情報・制度変更・観点がなければ、過去採用済み記事との重複として低くします。
 - 同じトピックでも、数字更新、被害拡大、新制度、関係者反応、実務影響の拡大など明確な続報なら高く評価します。
 - 同じ大きなテーマでも、焦点・当事者・地域・政策面・経済面・市民被害面など観点が異なる場合は、単純重複ではなく別観点として評価します。
@@ -1272,7 +1301,7 @@ Geminiスコアの目安:
 - 70〜84: 採用候補として強い。
 - 55〜69: 候補にはなるが、他記事との比較が必要。
 - 35〜54: 参考・バックアップ程度。
-- 0〜34: 原則低優先。ミャンマー関連キーワードがない、住民死亡のない空爆・戦闘・攻撃、既出に近い等。ただし、既に選定基準として含まれている国名、またはヤンゴンがヒットしている新規記事は、トピック内容だけを理由に0〜34へ落とさないでください。
+- 0〜34: 原則低優先。ミャンマー関連キーワードがない、民間人死亡のない空爆・衝突・戦闘・攻撃、既出に近い等。ただし、既に選定基準として含まれている国名・地域名・国際機関名、またはヤンゴンがヒットしている新規記事は、外交儀礼性やトピック内容だけを理由に0〜34へ落とさないでください。
 
 必ずJSONのみを返してください。説明文やMarkdownは不要です。
 """.strip()
@@ -1289,7 +1318,7 @@ def build_gemini_rerank_prompt(payloads: list[dict[str, Any]]) -> str:
                         "decision": "強い採用候補 | 採用候補 | 比較候補 | 低優先",
                         "rank_group": "A | B | C | D",
                         "direct_myanmar_relevance": "高 | 中 | 低",
-                        "country_weight_tier": "none | top_china_us_japan_russia | neighbor_country | korea_country",
+                        "country_weight_tier": "none | priority1_country_region_yangon | priority2_country_or_international_org",
                         "domestic_region_tier": "none | yangon | ayeyarwady | bago | other_myanmar_region",
                         "conflict_damage_target": "none | civilian_death | civilian_injury_or_damage_only | military_or_resistance_death_only | mixed | unclear",
                         "event_when": "string: extracted when/date/time of the event, empty if unclear",
@@ -1313,6 +1342,7 @@ def build_gemini_rerank_prompt(payloads: list[dict[str, Any]]) -> str:
                             "development_infrastructure",
                             "power_demand_project_plan",
                             "business_sme",
+                            "myanmar_company_name_business_impact",
                             "government_personnel_statement",
                             "myanmar_leadership_policy_statement",
                             "law_revision",
@@ -1341,10 +1371,10 @@ def build_gemini_rerank_prompt(payloads: list[dict[str, Any]]) -> str:
             "selection_criteria_from_js": {
                 "use_input_columns": "Evaluate headline_e, headline_f, headline_g, and summary. Do not rely on media name or URL alone.",
                 "direct_myanmar_relevance": "Classify an article as unrelated to Myanmar only when headline_e/headline_f/headline_g/summary contain no Myanmar-related keywords such as Myanmar, Burma, Yangon, Naypyidaw, Mandalay, Min Aung Hlaing, Tatmadaw, CBM, kyat, or other Myanmar-specific names/institutions/terms.",
-                "country_weight": "Country hits have priority over topic importance. China/US/Japan/Russia are top-tier countries; neighboring or ASEAN-related countries are second tier; South Korea is supplementary. If any listed country name appears in headline_e/headline_f/headline_g/summary in any form or context, treat it as a country hit and keep the article as a selection candidate when Myanmar relevance is present or a Myanmar domestic location such as Yangon appears.",
-                "diplomacy_treatment": "Do not down-rank an article merely because it has a diplomatic courtesy, visit, meeting, ceremony, or statement aspect. If an important country is involved and Myanmar relevance is present, keep it as a selection candidate even when practical impact is not fully decided yet.",
-                "conflict": "For airstrikes, fighting, and attacks, keep as a selection candidate only when at least one resident/civilian death is present. Exclude cases with evacuation, injuries, house damage, or military/resistance deaths only when no resident/civilian death is present.",
-                "domestic_region": "Use domestic regions for Myanmar relevance and representative/tie-break signals. Articles containing Yangon must remain selection candidates. A Yangon hit has priority over topic importance and must not be down-ranked to low priority merely because the topic is a general incident or not a policy/economic topic.",
+                "country_weight": "Country/region/international-organization hits have priority over topic importance. Priority 1: China, United States/America/USA, Japan, Thailand, India, Russia, ASEAN, Europe/EU/European Union, Bangladesh, and Yangon. Priority 1 hits are strong selection candidates when Myanmar relevance is present. Priority 2: South Korea, United Nations/UN, UNHCR, World Bank, UNDP, and UNFPA. Priority 2 hits are selection candidates when Myanmar relevance is present. If any listed name appears in headline_e/headline_f/headline_g/summary in any form or context, treat it as a hit and do not further down-rank merely for diplomatic courtesy, light topic content, or limited practical impact. Articles with no Myanmar-related keyword/direct relevance remain low as before.",
+                "diplomacy_treatment": "Do not down-rank an article because it has a diplomatic courtesy, visit, meeting, ceremony, greeting, or statement aspect. If a priority 1 or priority 2 country/region/international organization is involved and Myanmar relevance is present, keep it as a selection candidate even when practical impact is not fully decided yet.",
+                "conflict": "For airstrikes, clashes, fighting, and attacks, keep as a selection candidate only when at least one civilian/non-combatant death is present, including residents, civilians, children, or displaced people. Exclude cases with evacuation, injuries, house damage, facility damage, or military/resistance deaths only when no civilian/non-combatant death is present.",
+                "domestic_region": "Use domestic regions for Myanmar relevance and representative/tie-break signals. Articles containing Yangon must remain strong selection candidates at the same level as priority 1 country/region hits. A Yangon hit has priority over topic importance and must not be down-ranked to low priority merely because the topic is a general incident, diplomatic courtesy, or not a policy/economic topic.",
                 "priority_topics": [
                     "official policy/regulation/law/procedure announcement by Myanmar public bodies",
                     "prices, fuel, forex, foreign-currency controls",
@@ -1355,14 +1385,15 @@ def build_gemini_rerank_prompt(payloads: list[dict[str, Any]]) -> str:
                     "labor policy and labor relations",
                     "government-backed development/infrastructure and power supply plans",
                     "business/SME support with practical impact",
+                    "articles containing individual Myanmar company names with potential business, investment, labor, logistics, finance, consumer, or regulatory impact",
                     "Myanmar leadership or ministries making policy statements with public/economic impact",
                     "law revision or bill submission",
                     "telecom, surveillance, information control",
                     "food, medicine, quality and hygiene standards",
                     "sanctions, human rights statements, reports, requests, or recommendations by international organizations or human rights groups; do not down-rank only because the item is statement-based rather than a finalized sanctions decision",
                 ],
-                "same_day": "Use same_day_context to compare when/who/where/what. If all 4W elements are substantially the same, return same_day_event_relation=same_event_duplicate and the same same_day_event_key for the duplicate rows. These duplicate rows will later share the highest Gemini score in that same-day event group.",
-                "archive": "Use adopted_archive_context from the paired local archive sheet K=a rows (TARGET_SHEET=prod uses archive_prod; TARGET_SHEET=dev uses archive_dev) and monthly archive K=a rows to classify duplicate_same_content, continuation_update, different_angle, related_but_different, unrelated, or unknown.",
+                "same_day": "Use same_day_context to compare when/who/where/what. Do not assume Q-column duplicate_key equality because Q values are not expected to match between same-day rows. If all 4W elements are substantially the same, return same_day_event_relation=same_event_duplicate and the same same_day_event_key for the duplicate rows. The final Python step will write a duplicate ID to column AD and align column AA final scores to the highest final score in that same-day event group.",
+                "archive": "Run adopted-archive difference checking only when same_topic_flag_o is 2. For rows whose same_topic_flag_o is not 2, adopted_archive_context will be empty and adopted_archive_relation must be no_archive_adopted. When same_topic_flag_o is 2, use adopted_archive_context from the paired local archive sheet K=a rows (TARGET_SHEET=prod uses archive_prod; TARGET_SHEET=dev uses archive_dev) and monthly archive K=a rows to classify duplicate_same_content, continuation_update, different_angle, related_but_different, unrelated, or unknown.",
                 "avoid_overfitting": "Do not copy exact JS keyword dictionaries or fixed score formulas. Apply the criteria semantically.",
             },
             "scoring_guide": {
@@ -1370,11 +1401,11 @@ def build_gemini_rerank_prompt(payloads: list[dict[str, Any]]) -> str:
                 "70_to_84": "採用候補として強い",
                 "55_to_69": "候補にはなるが他記事との比較が必要",
                 "35_to_54": "参考・バックアップ程度",
-                "0_to_34": "原則低優先。直接関連薄い、既出、実務影響薄い等",
+                "0_to_34": "原則低優先。ミャンマー関連キーワードなし、民間人死亡のない空爆・衝突・戦闘・攻撃、既出に近い等。優先度1位/2位の国名・地域名・国際機関名またはヤンゴンの新規ヒットは、外交儀礼性やトピック内容だけで0〜34へ落とさない",
                 "non_myanmar_cap": "ミャンマー関連キーワードが一切なく、直接関係も確認できない場合のみ原則0〜20",
-                "diplomacy_country_treatment": "外交儀礼的な会談・表敬・声明であること自体は減点理由にしない。重要国かつミャンマー関連なら選定候補として残す",
+                "diplomacy_country_treatment": "外交儀礼的な会談・表敬・声明であること自体は減点理由にしない。優先度1位/2位の国名・地域名・国際機関名、またはヤンゴンがヒットし、ミャンマー関連なら選定候補として残す",
             },
-            "important_instruction": "MLスコアに引きずられすぎず、JSの指定5基準を抽象化した意味判断としてGeminiスコアを付けてください。同日内の4W一致判定と過去採用済み記事との差分判定は必ず行ってください。ただし最終スコアはPython側でMLスコアとGeminiスコアの高い方を採用します。Geminiだけで採否を決めないでください。",
+            "important_instruction": "MLスコアに引きずられすぎず、国名・地域名・国際機関名・ヤンゴン・ミャンマー企業名・民間人死亡有無の基準を優先してGeminiスコアを付けてください。同日内の4W一致判定は必ず行ってください。同日判定ではQ列の一致を前提にしないでください。過去採用済み記事との差分判定は same_topic_flag_o が 2 の記事だけ行い、2以外の記事では行わないでください。ただし最終スコアはPython側でMLスコアとGeminiスコアの高い方を採用し、その後の最終処理で同日重複グループ内のAA列を最高最終スコアに揃えます。Geminiだけで採否を決めないでください。",
             "articles": payloads,
         },
         ensure_ascii=False,
@@ -1648,7 +1679,7 @@ def normalize_gemini_result(item: dict[str, Any]) -> dict[str, Any]:
         "risk_flags": [truncate_text(str(flag), 90) for flag in risk_flags if cell_text(flag)][:4],
     }
 
-def same_day_score_share_group_key(
+def same_day_duplicate_group_key(
     row: ArticleRecord,
     result: dict[str, Any],
 ) -> str:
@@ -1672,60 +1703,6 @@ def same_day_score_share_group_key(
         return ""
     return f"{row.date_key or 'current'}:{normalized_key}"
 
-
-def apply_same_day_score_sharing(
-    rows: list[ArticleRecord],
-    results: dict[int, dict[str, Any]],
-) -> dict[int, dict[str, Any]]:
-    """Set same-day duplicate-event Gemini scores to the group maximum.
-
-    Gemini decides the semantic 4W match and returns same_day_event_relation / key.
-    This deterministic post-process then enforces the user's rule: if multiple
-    same-day articles describe the same when/who/where/what event, their Gemini
-    score becomes the highest score in that same-event group.
-    """
-    if not results:
-        return results
-
-    row_by_index = {row.row_index: row for row in rows}
-    groups: dict[str, list[int]] = {}
-    for row_index, result in results.items():
-        row = row_by_index.get(row_index)
-        if row is None:
-            continue
-        group_key = same_day_score_share_group_key(row, result)
-        if not group_key:
-            continue
-        groups.setdefault(group_key, []).append(row_index)
-
-    adjusted_count = 0
-    for group_rows in groups.values():
-        unique_rows = sorted(set(group_rows))
-        if len(unique_rows) < 2:
-            continue
-        max_score = max(clamp_score(results[row_index].get("gemini_score"), 0) for row_index in unique_rows)
-        for row_index in unique_rows:
-            result = results[row_index]
-            original_score = clamp_score(result.get("gemini_score"), 0)
-            result["same_day_score_source_rows"] = unique_rows[:12]
-            if original_score < max_score:
-                result["gemini_score"] = max_score
-                result["same_day_score_adjustment_ja"] = (
-                    f"同日同一事象グループ{len(unique_rows)}件の最高Geminiスコア"
-                    f"{max_score}点に揃えました。元スコア: {original_score}点。"
-                )[:220]
-                adjusted_count += 1
-            elif not result.get("same_day_score_adjustment_ja"):
-                result["same_day_score_adjustment_ja"] = (
-                    f"同日同一事象グループ{len(unique_rows)}件の最高Geminiスコアとして使用。"
-                )[:220]
-
-    if adjusted_count:
-        print(
-            f"[selection-ml-classifier] same_day_score_sharing adjusted_rows={adjusted_count} "
-            f"groups={sum(1 for rows_ in groups.values() if len(set(rows_)) >= 2)}"
-        )
-    return results
 
 
 def run_gemini_rerank(
@@ -1820,12 +1797,12 @@ def run_gemini_rerank(
         if last_error is None:
             pass
 
-    results = apply_same_day_score_sharing(rows, results)
     print(
         f"[selection-ml-classifier] gemini_rerank=done model={model_name} "
         f"fallback_model={fallback_model_name} candidates={len(candidates)} "
         f"results={len(results)} same_day_context_rows={len(same_day_context_map)} "
         f"archive_context_rows={len(archive_context_map)} "
+        f"archive_context_target_rows_o_eq_2={sum(1 for row in rows if should_check_adopted_archive_diff(row))} "
         f"model_usage={json.dumps(model_usage_counts, ensure_ascii=False)}"
     )
     return results
@@ -2065,10 +2042,125 @@ def build_output_values(
             final_score,
             build_final_reason(ml_score, gemini_result, final_score),
             build_gemini_detail_json(gemini_result),
+            "",
         ]
 
     blank = [""] * len(OUTPUT_HEADERS)
     return [by_row_index.get(row_index, blank) for row_index in range(2, row_count + 2)]
+
+
+
+
+def apply_same_day_duplicate_finalization(
+    rows: list[ArticleRecord],
+    output_values: list[list[Any]],
+    gemini_results: dict[int, dict[str, Any]] | None = None,
+) -> list[list[Any]]:
+    """Finalize same-day duplicate handling at the very end of scoring.
+
+    This is the only function that writes the same-day duplicate marker. It runs
+    after ML score, Gemini score, and the initial AA final score have already
+    been calculated. For each Gemini-confirmed same-day duplicate group:
+    - AD receives 重複001, 重複002, ...
+    - AA is overwritten with the highest AA final score in the group
+
+    Re-running the workflow is safe because R:AD is overwritten each time.
+    """
+    gemini_results = gemini_results or {}
+    if not rows or not output_values or not gemini_results:
+        return output_values
+
+    row_by_index = {row.row_index: row for row in rows}
+    groups: dict[str, set[int]] = {}
+
+    for row in rows:
+        result = gemini_results.get(row.row_index)
+        if not result:
+            continue
+        group_key = same_day_duplicate_group_key(row, result)
+        if not group_key:
+            continue
+
+        group_rows = groups.setdefault(group_key, set())
+        group_rows.add(row.row_index)
+
+        # Gemini may optionally return source row numbers. Use them only when
+        # they are same-date rows in the current sheet. The main grouping key is
+        # still the semantic same_day_event_key, not Q-column equality.
+        for source_row_index in result.get("same_day_score_source_rows", []) or []:
+            source_row_index = safe_int(source_row_index, -1)
+            source_row = row_by_index.get(source_row_index)
+            if source_row and (source_row.date_key or "current") == (row.date_key or "current"):
+                group_rows.add(source_row_index)
+
+    duplicate_groups: list[list[int]] = []
+    for group_rows in groups.values():
+        valid_rows = sorted(
+            row_index
+            for row_index in group_rows
+            if 2 <= row_index <= len(output_values) + 1
+        )
+        if len(valid_rows) >= 2:
+            duplicate_groups.append(valid_rows)
+
+    duplicate_groups.sort(key=lambda item: (item[0], len(item)))
+
+    finalized_groups: list[list[int]] = []
+    already_assigned: set[int] = set()
+    for group_rows in duplicate_groups:
+        if already_assigned & set(group_rows):
+            # Avoid assigning one row to multiple labels. Merge-overlap handling
+            # is intentionally conservative and keeps the first stable group.
+            continue
+        finalized_groups.append(group_rows)
+        already_assigned.update(group_rows)
+
+    adjusted_rows = 0
+    for group_number, group_rows in enumerate(finalized_groups, start=1):
+        duplicate_id = f"{SAME_DAY_DUPLICATE_LABEL_PREFIX}{group_number:03d}"
+        final_scores = [
+            clamp_score(output_values[row_index - 2][OUTPUT_FINAL_SCORE_OFFSET], 0)
+            for row_index in group_rows
+        ]
+        max_final_score = max(final_scores) if final_scores else 0
+
+        for row_index in group_rows:
+            output_row = output_values[row_index - 2]
+            original_final_score = clamp_score(output_row[OUTPUT_FINAL_SCORE_OFFSET], 0)
+            output_row[OUTPUT_SAME_DAY_DUPLICATE_ID_OFFSET] = duplicate_id
+            output_row[OUTPUT_FINAL_SCORE_OFFSET] = max_final_score
+
+            result = gemini_results.get(row_index)
+            if result is not None:
+                result["same_day_duplicate_id_ad"] = duplicate_id
+                result["same_day_score_source_rows"] = group_rows[:12]
+                if original_final_score < max_final_score:
+                    result["same_day_score_adjustment_ja"] = (
+                        f"{duplicate_id}の同日重複グループ{len(group_rows)}件の最高最終スコア"
+                        f"{max_final_score}点にAA列を揃えました。元スコア: {original_final_score}点。"
+                    )[:220]
+                elif not result.get("same_day_score_adjustment_ja"):
+                    result["same_day_score_adjustment_ja"] = (
+                        f"{duplicate_id}の同日重複グループ{len(group_rows)}件の最高最終スコアとして使用。"
+                    )[:220]
+                output_row[OUTPUT_GEMINI_REASON_OFFSET] = format_gemini_reason(result)
+                output_row[OUTPUT_GEMINI_DETAIL_JSON_OFFSET] = build_gemini_detail_json(result)
+
+            if original_final_score != max_final_score:
+                source_text = cell_text(output_row[OUTPUT_SCORE_SOURCE_OFFSET])
+                output_row[OUTPUT_SCORE_SOURCE_OFFSET] = (
+                    f"{source_text}＋同日重複最高スコア反映"
+                    if source_text
+                    else "同日重複最高スコア反映"
+                )[:120]
+                adjusted_rows += 1
+
+    print(
+        f"[selection-ml-classifier] same_day_duplicate_finalization "
+        f"groups={len(finalized_groups)} rows={sum(len(rows_) for rows_ in finalized_groups)} "
+        f"adjusted_rows={adjusted_rows} output_column=AD"
+    )
+    return output_values
 
 
 def approximate_json_bytes(value: Any) -> int:
@@ -2266,6 +2358,11 @@ def run() -> None:
         row_count,
         prediction_details,
         model.info,
+        gemini_results,
+    )
+    output_values = apply_same_day_duplicate_finalization(
+        current_rows,
+        output_values,
         gemini_results,
     )
     write_predictions(sheets, spreadsheet_id, target_sheet, output_values)
