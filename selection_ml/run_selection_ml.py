@@ -2060,9 +2060,17 @@ def apply_same_day_duplicate_finalization(
 
     This is the only function that writes the same-day duplicate marker. It runs
     after ML score, Gemini score, and the initial AA final score have already
-    been calculated. For each Gemini-confirmed same-day duplicate group:
+    been calculated. For each Gemini-confirmed same-day duplicate component:
     - AD receives 重複001, 重複002, ...
-    - AA is overwritten with the highest AA final score in the group
+    - AA is overwritten with the highest AA final score in the component
+
+    Important:
+    Gemini may identify same-day duplicates as pairwise or partially overlapping
+    groups, for example A-B, B-C, and C-D. The previous implementation skipped
+    later overlapping groups, which could leave some duplicated rows without an
+    AD value. This implementation treats duplicate candidates as a graph and
+    merges every overlapping/connected duplicate set, so all rows in the same
+    duplicate component receive the same AD duplicate ID.
 
     Re-running the workflow is safe because R:AD is overwritten each time.
     """
@@ -2071,8 +2079,45 @@ def apply_same_day_duplicate_finalization(
         return output_values
 
     row_by_index = {row.row_index: row for row in rows}
-    groups: dict[str, set[int]] = {}
+    valid_output_row_indexes = {
+        row_index
+        for row_index in row_by_index
+        if 2 <= row_index <= len(output_values) + 1
+    }
 
+    duplicate_candidate_sets: list[set[int]] = []
+
+    for row in rows:
+        result = gemini_results.get(row.row_index)
+        if not result:
+            continue
+
+        group_key = same_day_duplicate_group_key(row, result)
+        if not group_key:
+            continue
+
+        candidate_rows: set[int] = {row.row_index}
+
+        # Gemini may optionally return source row numbers. Use them only when
+        # they are same-date rows in the current sheet. The main duplicate
+        # signal is still Gemini's semantic same_event_duplicate judgment.
+        for source_row_index in result.get("same_day_score_source_rows", []) or []:
+            source_row_index = safe_int(source_row_index, -1)
+            source_row = row_by_index.get(source_row_index)
+            if source_row and (source_row.date_key or "current") == (row.date_key or "current"):
+                candidate_rows.add(source_row_index)
+
+        candidate_rows = {
+            row_index
+            for row_index in candidate_rows
+            if row_index in valid_output_row_indexes
+        }
+        if len(candidate_rows) >= 2:
+            duplicate_candidate_sets.append(candidate_rows)
+
+    # Rows that share the same semantic same_day_event_key should be in the same
+    # candidate set even when Gemini did not list every source row explicitly.
+    rows_by_group_key: dict[str, set[int]] = {}
     for row in rows:
         result = gemini_results.get(row.row_index)
         if not result:
@@ -2080,40 +2125,53 @@ def apply_same_day_duplicate_finalization(
         group_key = same_day_duplicate_group_key(row, result)
         if not group_key:
             continue
+        if row.row_index in valid_output_row_indexes:
+            rows_by_group_key.setdefault(group_key, set()).add(row.row_index)
 
-        group_rows = groups.setdefault(group_key, set())
-        group_rows.add(row.row_index)
+    for group_rows in rows_by_group_key.values():
+        if len(group_rows) >= 2:
+            duplicate_candidate_sets.append(set(group_rows))
 
-        # Gemini may optionally return source row numbers. Use them only when
-        # they are same-date rows in the current sheet. The main grouping key is
-        # still the semantic same_day_event_key, not Q-column equality.
-        for source_row_index in result.get("same_day_score_source_rows", []) or []:
-            source_row_index = safe_int(source_row_index, -1)
-            source_row = row_by_index.get(source_row_index)
-            if source_row and (source_row.date_key or "current") == (row.date_key or "current"):
-                group_rows.add(source_row_index)
-
-    duplicate_groups: list[list[int]] = []
-    for group_rows in groups.values():
-        valid_rows = sorted(
-            row_index
-            for row_index in group_rows
-            if 2 <= row_index <= len(output_values) + 1
+    if not duplicate_candidate_sets:
+        print(
+            "[selection-ml-classifier] same_day_duplicate_finalization "
+            "groups=0 rows=0 adjusted_rows=0 output_column=AD"
         )
-        if len(valid_rows) >= 2:
-            duplicate_groups.append(valid_rows)
+        return output_values
 
-    duplicate_groups.sort(key=lambda item: (item[0], len(item)))
+    # Merge all overlapping duplicate candidate sets as connected components.
+    # Example: {2, 3}, {3, 4}, {4, 5} becomes {2, 3, 4, 5}.
+    parent: dict[int, int] = {}
 
-    finalized_groups: list[list[int]] = []
-    already_assigned: set[int] = set()
-    for group_rows in duplicate_groups:
-        if already_assigned & set(group_rows):
-            # Avoid assigning one row to multiple labels. Merge-overlap handling
-            # is intentionally conservative and keeps the first stable group.
-            continue
-        finalized_groups.append(group_rows)
-        already_assigned.update(group_rows)
+    def find(value: int) -> int:
+        parent.setdefault(value, value)
+        if parent[value] != value:
+            parent[value] = find(parent[value])
+        return parent[value]
+
+    def union(left: int, right: int) -> None:
+        root_left = find(left)
+        root_right = find(right)
+        if root_left != root_right:
+            parent[root_right] = root_left
+
+    for candidate_set in duplicate_candidate_sets:
+        ordered_rows = sorted(candidate_set)
+        first = ordered_rows[0]
+        find(first)
+        for row_index in ordered_rows[1:]:
+            union(first, row_index)
+
+    component_rows_by_root: dict[int, set[int]] = {}
+    for row_index in parent:
+        component_rows_by_root.setdefault(find(row_index), set()).add(row_index)
+
+    finalized_groups = [
+        sorted(component_rows)
+        for component_rows in component_rows_by_root.values()
+        if len(component_rows) >= 2
+    ]
+    finalized_groups.sort(key=lambda item: item[0])
 
     adjusted_rows = 0
     for group_number, group_rows in enumerate(finalized_groups, start=1):
