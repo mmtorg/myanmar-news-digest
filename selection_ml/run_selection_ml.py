@@ -65,6 +65,8 @@ OUTPUT_HEADERS = [
 ]
 OUTPUT_START_COLUMN = "R"
 OUTPUT_END_COLUMN = "AD"
+OUTPUT_START_COL_INDEX = 17  # R, zero-based in A:AF values
+OUTPUT_END_COL_INDEX = 29    # AD, zero-based in A:AF values
 OUTPUT_FINAL_SCORE_OFFSET = OUTPUT_HEADERS.index("最終スコア")
 OUTPUT_SCORE_SOURCE_OFFSET = OUTPUT_HEADERS.index("採用スコア種別")
 OUTPUT_GEMINI_REASON_OFFSET = OUTPUT_HEADERS.index("Gemini理由")
@@ -105,6 +107,7 @@ COL_ADOPTED = 10   # K
 COL_SAME_TOPIC_FLAG = 14  # O
 COL_SAME_TOPIC_NOTE = 15  # P
 COL_Q_KEY = 16     # Q
+COL_FINAL_SCORE = 26  # AA
 
 
 @dataclass(frozen=True)
@@ -549,21 +552,57 @@ def load_archive_records(
     return rows, len(archive_files)
 
 
+def extract_existing_output_values(
+    sheet_values: list[list[Any]],
+    row_count: int,
+) -> list[list[Any]]:
+    """Return current R:AD values so non-pending rows are preserved.
+
+    Scheduled runs score only rows where A has a value and AA is blank. When a
+    run is triggered for new rows, existing scored rows must not be blanked by
+    the R:AD write. This function copies the existing output range into the
+    output matrix before newly scored rows are overlaid.
+    """
+    output_values: list[list[Any]] = []
+    blank = [""] * len(OUTPUT_HEADERS)
+
+    for row_number in range(2, row_count + 2):
+        raw_row = sheet_values[row_number - 1] if row_number - 1 < len(sheet_values) else []
+        values_row = padded_row(raw_row)
+        output_row = values_row[OUTPUT_START_COL_INDEX : OUTPUT_END_COL_INDEX + 1]
+        if len(output_row) < len(OUTPUT_HEADERS):
+            output_row = output_row + [""] * (len(OUTPUT_HEADERS) - len(output_row))
+        output_values.append(output_row[: len(OUTPUT_HEADERS)] if output_row else blank.copy())
+
+    return output_values
+
+
+def is_pending_score_row(raw_row: Iterable[Any]) -> bool:
+    """A列に値があり、AA列（最終スコア）が空の行だけを新規スコア対象にする。"""
+    values = padded_row(raw_row)
+    return bool(cell_text(values[COL_DATE])) and not bool(cell_text(values[COL_FINAL_SCORE]))
+
+
 def load_current_rows(
     sheets: Any,
     spreadsheet_id: str,
     sheet_name: str,
-) -> tuple[list[ArticleRecord], int]:
+) -> tuple[list[ArticleRecord], list[ArticleRecord], int, list[list[Any]]]:
     values = read_sheet_values(sheets, spreadsheet_id, f"{sheet_name}!A:AF")
     sheet_row_count = max(0, len(values) - 1)
     rows: list[ArticleRecord] = []
+    pending_rows: list[ArticleRecord] = []
 
     for row_index, raw_row in enumerate(values[1:], start=2):
         record = make_article_record(raw_row, row_index, None, group_key="current")
-        if is_usable_article(record):
-            rows.append(record)
+        if not is_usable_article(record):
+            continue
+        rows.append(record)
+        if is_pending_score_row(raw_row):
+            pending_rows.append(record)
 
-    return rows, sheet_row_count
+    existing_output_values = extract_existing_output_values(values, sheet_row_count)
+    return rows, pending_rows, sheet_row_count, existing_output_values
 
 
 def build_local_adopted_records_from_sheet(
@@ -1328,6 +1367,7 @@ def build_gemini_rerank_prompt(payloads: list[dict[str, Any]]) -> str:
                         "same_day_event_relation": "no_same_day_context | same_event_duplicate | continuation_update | different_angle | related_but_different | unrelated | unknown",
                         "same_day_event_key": "string: stable key only when same_day_event_relation is same_event_duplicate; represent when|who|where|what",
                         "same_day_diff_ja": "string: difference from same-day context article, empty if same event or no context",
+                        "same_day_score_source_rows": "array[int]: when same_day_event_relation is same_event_duplicate, include the row_index values from same_day_context that are the same event",
                         "priority_topic_tags": [
                             "official_policy_regulation_announcement",
                             "prices_fuel_forex",
@@ -1392,7 +1432,7 @@ def build_gemini_rerank_prompt(payloads: list[dict[str, Any]]) -> str:
                     "food, medicine, quality and hygiene standards",
                     "sanctions, human rights statements, reports, requests, or recommendations by international organizations or human rights groups; do not down-rank only because the item is statement-based rather than a finalized sanctions decision",
                 ],
-                "same_day": "Use same_day_context to compare when/who/where/what. Do not assume Q-column duplicate_key equality because Q values are not expected to match between same-day rows. If all 4W elements are substantially the same, return same_day_event_relation=same_event_duplicate and the same same_day_event_key for the duplicate rows. The final Python step will write a duplicate ID to column AD and align column AA final scores to the highest final score in that same-day event group.",
+                "same_day": "Use same_day_context to compare when/who/where/what. Do not assume Q-column duplicate_key equality because Q values are not expected to match between same-day rows. If all 4W elements are substantially the same, return same_day_event_relation=same_event_duplicate, same_day_event_key, and same_day_score_source_rows containing the matching row_index values from same_day_context. The final Python step will write a duplicate ID to column AD and align column AA final scores to the highest final score in that same-day event group.",
                 "archive": "Run adopted-archive difference checking only when same_topic_flag_o is 2. For rows whose same_topic_flag_o is not 2, adopted_archive_context will be empty and adopted_archive_relation must be no_archive_adopted. When same_topic_flag_o is 2, use adopted_archive_context from the paired local archive sheet K=a rows (TARGET_SHEET=prod uses archive_prod; TARGET_SHEET=dev uses archive_dev) and monthly archive K=a rows to classify duplicate_same_content, continuation_update, different_angle, related_but_different, unrelated, or unknown.",
                 "avoid_overfitting": "Do not copy exact JS keyword dictionaries or fixed score formulas. Apply the criteria semantically.",
             },
@@ -1405,7 +1445,7 @@ def build_gemini_rerank_prompt(payloads: list[dict[str, Any]]) -> str:
                 "non_myanmar_cap": "ミャンマー関連キーワードが一切なく、直接関係も確認できない場合のみ原則0〜20",
                 "diplomacy_country_treatment": "外交儀礼的な会談・表敬・声明であること自体は減点理由にしない。優先度1位/2位の国名・地域名・国際機関名、またはヤンゴンがヒットし、ミャンマー関連なら選定候補として残す",
             },
-            "important_instruction": "MLスコアに引きずられすぎず、国名・地域名・国際機関名・ヤンゴン・ミャンマー企業名・民間人死亡有無の基準を優先してGeminiスコアを付けてください。同日内の4W一致判定は必ず行ってください。同日判定ではQ列の一致を前提にしないでください。過去採用済み記事との差分判定は same_topic_flag_o が 2 の記事だけ行い、2以外の記事では行わないでください。ただし最終スコアはPython側でMLスコアとGeminiスコアの高い方を採用し、その後の最終処理で同日重複グループ内のAA列を最高最終スコアに揃えます。Geminiだけで採否を決めないでください。",
+            "important_instruction": "MLスコアに引きずられすぎず、国名・地域名・国際機関名・ヤンゴン・ミャンマー企業名・民間人死亡有無の基準を優先してGeminiスコアを付けてください。同日内の4W一致判定は必ず行ってください。同日判定ではQ列の一致を前提にしないでください。同日重複と判断した場合は same_day_score_source_rows に same_day_context 内の一致行番号を必ず入れてください。過去採用済み記事との差分判定は same_topic_flag_o が 2 の記事だけ行い、2以外の記事では行わないでください。ただし最終スコアはPython側でMLスコアとGeminiスコアの高い方を採用し、その後の最終処理で同日重複グループ内のAA列を最高最終スコアに揃えます。Geminiだけで採否を決めないでください。",
             "articles": payloads,
         },
         ensure_ascii=False,
@@ -1709,6 +1749,7 @@ def run_gemini_rerank(
     rows: list[ArticleRecord],
     prediction_details: list[dict[str, Any]],
     archive_records: list[ArticleRecord] | None = None,
+    same_day_context_rows: list[ArticleRecord] | None = None,
 ) -> dict[int, dict[str, Any]]:
     if not ENABLE_GEMINI_RERANK:
         # This branch is kept only as a code-level emergency switch.
@@ -1748,7 +1789,7 @@ def run_gemini_rerank(
     results: dict[int, dict[str, Any]] = {}
     model_usage_counts: dict[str, int] = {}
     archive_context_map = build_archive_adopted_context_map(rows, archive_records or [])
-    same_day_context_map = build_same_day_context_map(rows)
+    same_day_context_map = build_same_day_context_map(same_day_context_rows or rows)
 
     for start in range(0, len(candidates), batch_size):
         batch = candidates[start : start + batch_size]
@@ -2017,10 +2058,23 @@ def build_output_values(
     prediction_details: list[dict[str, Any]],
     model_info: dict[str, Any],
     gemini_results: dict[int, dict[str, Any]] | None = None,
+    base_output_values: list[list[Any]] | None = None,
 ) -> list[list[Any]]:
     gemini_results = gemini_results or {}
-    by_row_index: dict[int, list[Any]] = {}
+
+    if base_output_values is None:
+        output_values = [[""] * len(OUTPUT_HEADERS) for _ in range(row_count)]
+    else:
+        output_values = []
+        for row_values in base_output_values[:row_count]:
+            padded_values = list(row_values) + [""] * max(0, len(OUTPUT_HEADERS) - len(row_values))
+            output_values.append(padded_values[: len(OUTPUT_HEADERS)])
+        while len(output_values) < row_count:
+            output_values.append([""] * len(OUTPUT_HEADERS))
+
     for row, detail in zip(rows, prediction_details, strict=True):
+        if not (2 <= row.row_index <= row_count + 1):
+            continue
         ml_score = int(detail.get("score", 0))
         gemini_result = gemini_results.get(row.row_index)
         gemini_score = (
@@ -2029,7 +2083,7 @@ def build_output_values(
             else None
         )
         final_score = calculate_final_score(ml_score, gemini_score)
-        by_row_index[row.row_index] = [
+        output_values[row.row_index - 2] = [
             ml_score,
             score_reason(ml_score, model_info),
             MODEL_VERSION,
@@ -2045,8 +2099,7 @@ def build_output_values(
             "",
         ]
 
-    blank = [""] * len(OUTPUT_HEADERS)
-    return [by_row_index.get(row_index, blank) for row_index in range(2, row_count + 2)]
+    return output_values
 
 
 
@@ -2381,6 +2434,19 @@ def run() -> None:
     target_sheet = parse_target_sheet(required_env("TARGET_SHEET"))
     drive, sheets = get_services()
 
+    current_rows, pending_rows, row_count, existing_output_values = load_current_rows(
+        sheets,
+        spreadsheet_id,
+        target_sheet,
+    )
+    if not pending_rows:
+        print(
+            f"[selection-ml-classifier] skipped reason=no_pending_rows "
+            f"sheet={target_sheet} condition=A_has_value_and_AA_blank "
+            f"sheet_rows={row_count} api_calls=0 gemini_results=0"
+        )
+        return
+
     archive_records, archive_file_count = load_archive_records(
         drive,
         sheets,
@@ -2398,25 +2464,27 @@ def run() -> None:
         f"archive_rows={len(archive_records)} "
         f"positives={sum(1 for row in archive_records if int(row.label or 0) > 0)} "
         f"local_adopted_archive_rows={len(local_adopted_archive_records)} "
+        f"pending_rows={len(pending_rows)} "
         "rules=off priority_topics=off media_feature=off prev_day=off recency_weight=off gemini=max_score "
         "model=logistic_regression_classifier manual_order_weight=on"
     )
 
     model = train_model(archive_records)
 
-    current_rows, row_count = load_current_rows(sheets, spreadsheet_id, target_sheet)
-    prediction_details = model.prediction_details(current_rows)
+    prediction_details = model.prediction_details(pending_rows)
     gemini_results = run_gemini_rerank(
-        current_rows,
+        pending_rows,
         prediction_details,
         gemini_archive_context_records,
+        same_day_context_rows=current_rows,
     )
     output_values = build_output_values(
-        current_rows,
+        pending_rows,
         row_count,
         prediction_details,
         model.info,
         gemini_results,
+        base_output_values=existing_output_values,
     )
     output_values = apply_same_day_duplicate_finalization(
         current_rows,
@@ -2426,7 +2494,8 @@ def run() -> None:
     write_predictions(sheets, spreadsheet_id, target_sheet, output_values)
     print(
         f"[selection-ml-classifier] sheet={target_sheet} "
-        f"sheet_rows={row_count} scored_rows={len(current_rows)} "
+        f"sheet_rows={row_count} scored_rows={len(pending_rows)} "
+        f"all_current_rows={len(current_rows)} "
         f"classification_training_rows={model.info.get('classification_training_rows', 0)} "
         f"positives={model.info.get('positive_count', 0)} "
         f"gemini_results={len(gemini_results)} output_columns={OUTPUT_START_COLUMN}:{OUTPUT_END_COLUMN}"
