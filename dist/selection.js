@@ -1622,7 +1622,7 @@ function callSelectionGeminiWithKey_(apiKey, prompt, tag, propName) {
     String(gemini25.error || "").slice(0, 300),
   );
 
-  // 3. Gemini 2.5 Flash も失敗したら OpenAI gpt-5-mini へ1回だけフォールバック
+  // 3. Gemini 2.5 Flash も失敗したら OpenAI gpt-5.4-mini へ1回だけフォールバック
   const openai = _callSelectionOpenAiGpt5Mini_(prompt, tag + ":fallbackOpenAI");
 
   if (openai.ok) {
@@ -1822,7 +1822,7 @@ function _waitBeforeSelectionGeminiCall_() {
 }
 
 /**
- * Gemini fallbackも失敗した場合にOpenAI gpt-5-miniへ1回だけ投げる。
+ * Gemini fallbackも失敗した場合にOpenAI gpt-5.4-miniへ1回だけ投げる。
  */
 function _callSelectionOpenAiGpt5Mini_(prompt, tag) {
   const props = PropertiesService.getScriptProperties();

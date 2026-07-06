@@ -536,7 +536,7 @@ def call_llm_with_fallback(
     base_delay: float = GEMINI_BASE_DELAY,
     max_delay: float = GEMINI_MAX_DELAY,
     usage_tag: str = "generic",
-    openai_model: str = "gpt-5-mini",
+    openai_model: str = "gpt-5.4-mini",
 ):
     """
     まず Gemini（既存リトライ込み）を実行。
@@ -5867,7 +5867,7 @@ def translate_fulltexts_for_business(urls_in_order_or_items, url_to_source_title
                 try:
                     gpt_text = openai_call_with_retry_(
                         _OPENAI_CLIENT,
-                        model="gpt-5-mini",
+                        model="gpt-5.4-mini",
                         input_text=prompt,
                         usage_tag="fulltext-retry",
                         max_tries=2,
