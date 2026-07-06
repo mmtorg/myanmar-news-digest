@@ -4314,6 +4314,9 @@ COMMON_TRANSLATION_RULES = """
 - 「1068 ဒသမ 66 ဘီလီယံ」→ 1兆686億6000万チャット
 ※誤り：「N ဘီလီယံ」を「N億チャット」へ短縮するのは禁止（N × 10億チャットを保持する）
 円換算が必要な場合：まず正しいチャット建てを計算し、その後「約◯円」を併記すること。
+※複数の ဘီလီယံ 金額が同じ記事内にある場合、各金額を別々の事実として扱い、対応する対象・文脈を混同しないこと。
+- 例：「5 ဘီလီယံ」は50億チャット、「ဘီလီယံ 50」は500億チャットであり、同じ記事内に両方が出ても一方の金額で他方を上書きしない。
+- 要約・翻訳では、金額に触れる場合、原文のどの金額表現に対応するかを確認し、別の金額表現の数値を流用しない。
 
 ■ 語尾（လောက်：〜くらい / ကျော်：〜超 / ခန့်：およそ）が付く場合
 上記ルールで数値と単位を解釈し、語尾のニュアンスを日本語に反映する。
@@ -5157,6 +5160,7 @@ def build_myanmar_amount_facts_prompt(title_raw: str, body_raw: str) -> str:
         "要約・翻訳でこの金額に触れる場合のみ、必ずこの解釈に従ってください。必ず本文に入れる必要はありません。",
         "概数表現は「規模」として表記し、日本円換算はしないでください。",
         "単位を落として「数百チャット」「数千チャット」などと訳すことは禁止です。",
+        "複数の金額表現がある場合は、各金額を別々の事実として扱い、片方の解釈で別の金額を上書きしないでください。",
     ]
     lines.extend(f"- 「{f['raw']}」= {f['ja']}" for f in facts)
     return "\n".join(lines) + "\n"
@@ -5212,15 +5216,58 @@ def fix_myanmar_billion_kyat_mistranslation(
     """
     原文に「N ဘီလီယံ」がある時、LLMが「N億チャット」と誤訳した箇所を
     「N×10億チャット」に補正する。
+
+    ただし、同じ記事内に別の「M ဘီလီယံ」があり、出力中の「N億チャット」が
+    その別金額の正しい日本語表記として成立する場合は、機械的に上書きしない。
+    例：原文に「5 ဘီလီယံ」と「ဘီလီယံ 50」が両方ある場合、
+    「50億チャット」は「5 ဘီလီယံ」の正しい訳である可能性があるため、
+    「ဘီလီယံ 50」由来の補正として「500億チャット」へ一律置換しない。
     """
     if not text:
         return text
+
     s = str(text)
-    for f in extract_myanmar_billion_facts_for_repair(title_raw, body_raw):
-        candidates = {f["num_plain"], f["num_comma"]}
+    facts = extract_myanmar_billion_facts_for_repair(title_raw, body_raw)
+    if not facts:
+        return s
+
+    def _amount_variants_for_protection(f: dict) -> set[str]:
+        vals = set()
+        for key in ("correct_base", "correct_qualified"):
+            v = str(f.get(key) or "").strip()
+            if v:
+                vals.add(v)
+        return vals
+
+    protected_by_other_fact: dict[str, set[int]] = {}
+    for idx, fact in enumerate(facts):
+        for amount in _amount_variants_for_protection(fact):
+            protected_by_other_fact.setdefault(amount, set()).add(idx)
+
+    for idx, f in enumerate(facts):
+        candidates = {f.get("num_plain"), f.get("num_comma")}
         # 小数付き表記が「1,068.66億チャット」のように出た場合も軽く吸収
-        candidates = {c for c in candidates if c}
+        candidates = {str(c) for c in candidates if c}
+        own_correct = _amount_variants_for_protection(f)
+
         for nlabel in sorted(candidates, key=len, reverse=True):
+            wrong_literal = f"{nlabel}億チャット"
+
+            # 汎用安全策：wrong_literal が別の原文金額の正しい訳として成立する場合は、
+            # この後処理では置換しない。特定記事の YBS / Omni Focus 等の個別文脈語には依存しない。
+            possible_outputs = {
+                wrong_literal,
+                wrong_literal + "超",
+                wrong_literal + "程度",
+                wrong_literal + "くらい",
+                wrong_literal + "およそ",
+            }
+            if any(
+                amount not in own_correct and (protected_by_other_fact.get(amount) or set()) - {idx}
+                for amount in possible_outputs
+            ):
+                continue
+
             wrong = re.escape(nlabel) + r"億チャット"
             pat = re.compile(wrong + r"(?:超|程度|くらい|およそ)?(?:（約[^）]*円）)?")
 

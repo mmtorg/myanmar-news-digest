@@ -3825,6 +3825,15 @@ function formatKyatAmountJa_(kyatValue) {
   return out + "チャット";
 }
 
+function _compactMyanmarAmountContext_(src, start, end) {
+  const left = Math.max(0, Number(start || 0) - 80);
+  const right = Math.min(String(src || "").length, Number(end || 0) + 80);
+  return String(src || "")
+    .slice(left, right)
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function extractMyanmarKyatAmountFacts_(titleRaw, bodyRaw) {
   const src = normalizeMyanmarAmountText_(
     String(titleRaw || "") + "\n" + String(bodyRaw || ""),
@@ -3833,23 +3842,28 @@ function extractMyanmarKyatAmountFacts_(titleRaw, bodyRaw) {
   const facts = [];
   const seen = {};
 
-  function addFact(raw, ja) {
+  function addFact(raw, ja, context) {
     raw = String(raw || "").trim();
     ja = String(ja || "").trim();
+    context = String(context || "").trim();
     if (!raw || !ja) return;
 
-    const key = raw + "|" + ja;
+    const key = raw + "|" + ja + "|" + context;
     if (seen[key]) return;
 
     seen[key] = true;
-    facts.push({ raw: raw, ja: ja });
+    facts.push({ raw: raw, ja: ja, context: context });
   }
 
   function addApproxFacts(re, ja) {
     let m;
     while ((m = re.exec(src)) !== null) {
       if (hasKyatMarkerNear_(src, m.index, m.index + m[0].length)) {
-        addFact(m[0], ja);
+        addFact(
+          m[0],
+          ja,
+          _compactMyanmarAmountContext_(src, m.index, m.index + m[0].length),
+        );
       }
     }
   }
@@ -3870,7 +3884,11 @@ function extractMyanmarKyatAmountFacts_(titleRaw, bodyRaw) {
       const kyatJa = formatKyatAmountJa_(kyatValue) + qualifier;
       const yenJa = formatYenJa_(kyatToYenInt_(kyatValue));
 
-      addFact(m[0], kyatJa + "（約" + yenJa + "）");
+      addFact(
+        m[0],
+        kyatJa + "（約" + yenJa + "）",
+        _compactMyanmarAmountContext_(src, m.index, m.index + m[0].length),
+      );
     }
   }
 
@@ -3932,10 +3950,85 @@ function extractMyanmarBillionFactsForRepair_(titleRaw, bodyRaw) {
       qualifier: qualifier,
       correctNoQualifier: correctKyat + correctYen,
       correctWithQualifier: correctKyat + qualifier + correctYen,
+      context: _compactMyanmarAmountContext_(
+        src,
+        m.index,
+        m.index + m[0].length,
+      ),
     });
   }
 
   return facts;
+}
+
+function normalizeKyatAmountSurfaceForCompare_(text) {
+  return zenkakuDigitsToAscii_(String(text || ""))
+    .replace(/[,，\s]/g, "")
+    .replace(/（約[^）]*円）/g, "")
+    .trim();
+}
+
+function buildValidKyatAmountSurfaceSetFromBillionFacts_(facts) {
+  const out = {};
+
+  (facts || []).forEach(function (f) {
+    [f.correctNoQualifier, f.correctWithQualifier].forEach(function (v) {
+      const normalized = normalizeKyatAmountSurfaceForCompare_(v);
+      if (normalized) out[normalized] = true;
+    });
+  });
+
+  return out;
+}
+
+function isValidDifferentBillionAmountSurface_(wrong, validSurfaceSet) {
+  const base = normalizeKyatAmountSurfaceForCompare_(wrong);
+  if (!base) return false;
+
+  // 「50 ဘီလီယံ」の誤訳候補としての「50億チャット」は、
+  // 同じ記事内に「5 ဘီလီယံ」が存在する場合は、その正しい訳でもある。
+  // この場合は無条件に「500億チャット」へ上書きしてはいけない。
+  const variants = [base, base + "超", base + "程度"];
+  return variants.some(function (v) {
+    return !!validSurfaceSet[v];
+  });
+}
+
+function replaceMyanmarBillionCandidate_(
+  text,
+  wrong,
+  targetFact,
+  validSurfaceSet,
+) {
+  // 「50 ဘီလီယံ」の誤訳候補としての「50億チャット」が、
+  // 同じ記事内の「5 ဘီလီယံ」の正しい訳でもある場合は、
+  // 後処理では安全側に寄せて置換しない。
+  // 例：原文に「5 ဘီလီယံ」と「ဘီလီယံ 50」が共存する場合、
+  // 日本語の「50億チャット」は前者の正しい訳である可能性があるため、
+  // 「500億チャット」へ機械的に上書きしない。
+  if (isValidDifferentBillionAmountSurface_(wrong, validSurfaceSet)) {
+    return String(text || "");
+  }
+
+  let s = String(text || "");
+
+  // 例: 「2209億チャット（約79億5240万円）を超え」は、
+  // 「2兆2090億チャット（約795億2400万円）を超え」に補正する。
+  const reBeforeKoek = new RegExp(
+    escapeRegExp_(wrong) + "(?:（約[^）]*円）)?を超え",
+    "g",
+  );
+  s = s.replace(reBeforeKoek, targetFact.correctNoQualifier + "を超え");
+
+  // 例: 「2209億チャット」「2209億チャット超」「2209億チャット（約...円）」は、
+  // 原文側の qualifier も含めた正しい表記へ補正する。
+  const rePlain = new RegExp(
+    escapeRegExp_(wrong) + "(?:超|程度)?(?:（約[^）]*円）)?",
+    "g",
+  );
+  s = s.replace(rePlain, targetFact.correctWithQualifier);
+
+  return s;
 }
 
 function fixMyanmarBillionKyatMistranslation_(text, titleRaw, bodyRaw) {
@@ -3943,26 +4036,14 @@ function fixMyanmarBillionKyatMistranslation_(text, titleRaw, bodyRaw) {
 
   let s = String(text);
   const facts = extractMyanmarBillionFactsForRepair_(titleRaw, bodyRaw);
+  const validSurfaceSet =
+    buildValidKyatAmountSurfaceSetFromBillionFacts_(facts);
 
   facts.forEach(function (f) {
     const candidates = [f.numPlain + "億チャット", f.numComma + "億チャット"];
 
     candidates.forEach(function (wrong) {
-      // 例: 「2209億チャット（約79億5240万円）を超え」は、
-      // 「2兆2090億チャット（約795億2400万円）を超え」に補正する。
-      const reBeforeKoek = new RegExp(
-        escapeRegExp_(wrong) + "(?:（約[^）]*円）)?を超え",
-        "g",
-      );
-      s = s.replace(reBeforeKoek, f.correctNoQualifier + "を超え");
-
-      // 例: 「2209億チャット」「2209億チャット超」「2209億チャット（約...円）」は、
-      // 原文側の qualifier も含めた正しい表記へ補正する。
-      const rePlain = new RegExp(
-        escapeRegExp_(wrong) + "(?:超|程度)?(?:（約[^）]*円）)?",
-        "g",
-      );
-      s = s.replace(rePlain, f.correctWithQualifier);
+      s = replaceMyanmarBillionCandidate_(s, wrong, f, validSurfaceSet);
     });
   });
 
@@ -3977,12 +4058,15 @@ function buildMyanmarAmountFactsPrompt_(titleRaw, bodyRaw) {
     "【原文中の金額表現の機械解釈】",
     "以下は、原文で ကျပ် / Kyat / Ks / MMK が近くにある金額表現だけを機械的に抽出したものです。",
     "要約でこの金額に触れる場合のみ、必ずこの解釈に従ってください。要約に必ず入れる必要はありません。",
+    "同一記事内に複数の金額がある場合は、各金額が何の対象に対応しているかを前後文脈で確認し、別対象の金額へ置き換えないでください。",
+    "特に「5 ဘီလီယံ」=50億チャット、「50 ဘီလီယံ / ဘီလီယံ 50」=500億チャットであり、両方が同じ記事にある場合は別々の金額として扱ってください。",
     "概数表現は「規模」として表記し、日本円換算はしないでください。",
     "単位を落として「数百チャット」「数千チャット」などと訳すことは禁止です。",
   ]
     .concat(
       facts.map(function (f) {
-        return "- 「" + f.raw + "」= " + f.ja;
+        const ctx = f.context ? " / 前後文脈: 「" + f.context + "」" : "";
+        return "- 「" + f.raw + "」= " + f.ja + ctx;
       }),
     )
     .join("\n");
