@@ -1757,10 +1757,10 @@ const GEMINI_JS_MAX_RETRIES = 1; // 2 → 1
 const GEMINI_JS_BASE_DELAY_SEC = 8; // 5 → 8
 const GEMINI_JS_MAX_DELAY_SEC = 90; // 60 → 90
 
-// OpenAI(gpt-5-mini) 用リトライ設定
+// OpenAI(gpt-5.4-mini) 用リトライ設定
 // - 「リトライの条件」は Gemini と同じ判定ロジックに近い判定を使う
 // - 「回数」は最大2回（= 初回 + 2リトライの合計3回まで）
-const GPT5_MINI_MODEL = "gpt-5-mini";
+const GPT5_MINI_MODEL = "gpt-5.4-mini";
 const OPENAI_API_KEY_PROP = "OPENAI_API_KEY";
 const GPT_JS_MAX_RETRIES = 2; // 追加リトライ回数（最大2回）
 
@@ -2660,7 +2660,7 @@ function compressSummaryWithFallback_(sheetName, promptText, usageTagOpt) {
 }
 
 // ============================================================
-// OpenAI Responses API (gpt-5-mini)
+// OpenAI Responses API (gpt-5.4-mini)
 // ============================================================
 function _extractOutputTextFromResponses_(data) {
   if (!data) return "";
@@ -3083,7 +3083,7 @@ function processRow_(sheet, row, prevStatus) {
   const colM = 13; // タイトル原文
   const colN = 14; // 本文原文
 
-  // 通常Gemini NG(2) → gemini-2.5-flashを1回 → 失敗後にgpt-5-miniへ切替
+  // 通常Gemini NG(2) → gemini-2.5-flashを1回 → 失敗後にgpt-5.4-miniへ切替
   const useFlash = shouldUseGemini25Flash_(prevStatus || "");
   const useGpt = shouldUseGpt5Mini_(prevStatus || "");
   const gptRetryCount = parseGptRetryCount_(prevStatus || "");
@@ -3659,7 +3659,7 @@ const STATUS_COL = 12; // L列 (ステータス列の列番号)
 // 通常Geminiの最大試行回数（NG(2) になったら gemini-2.5-flash へ切替）
 const MAX_RETRY_COUNT = 2;
 
-// gemini-2.5-flash の最大試行回数（FLASHNG(1) になったら gpt-5-mini へ切替）
+// gemini-2.5-flash の最大試行回数（FLASHNG(1) になったら gpt-5.4-mini へ切替）
 const GEMINI_25_FLASH_MAX_RETRY_COUNT = 1;
 
 // ============================================================
@@ -4943,7 +4943,7 @@ function processRowsBatch() {
         const useFlash = shouldUseGemini25Flash_(status);
         const useGpt = shouldUseGpt5Mini_(status);
 
-        // gpt-5-mini 側のリトライ上限（GPTNG(2) になったら打ち切り）
+        // gpt-5.4-mini 側のリトライ上限（GPTNG(2) になったら打ち切り）
         if (useGpt && gptRetryCount >= GPT_JS_MAX_RETRIES) {
           Logger.log(
             "[processRowsBatch] skip row %s (gptRetryCount=%s >= %s)",
