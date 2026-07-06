@@ -17,7 +17,7 @@ on:
           - send-only
 
       schedule_cron:
-        description: "collect系で使う cron 文字列（例: 0 9 * * * / 40 17 * * *）。00:10相当は前日分。"
+        description: "collect系で使う cron 文字列。40 17は00:10前日分、0/15/30/45 18・0/15/30 19はKhit Thit Media前日分。"
         type: string
         required: false
         default: ""
@@ -164,11 +164,9 @@ jobs:
       #     CSV_EMAIL_RECIPIENTS: ${{ secrets.CSV_EMAIL_RECIPIENTS }}
 
   schedule-collect:
-    # 00:05 / 00:35 / 01:05 / 01:35 / 17:50 / 20:50 / 21:50 / 22:50 / 23:30 枠
-    if:
-      github.event_name == 'schedule' && contains(fromJson('["35 17 * * *","5 18 *
-      * *","35 18 * * *","5 19 * * *","17 11 * * *","17 14 * * *","17 15 * *
-      *","17 16 * * *","57 16 * * *"]'), github.event.schedule)
+    # 00:10 / 00:30 / 00:45 / 01:00 / 01:15 / 01:30 / 01:45 / 02:00 / 17:50 / 20:50 / 21:50 / 22:50 / 23:30 枠
+    if: >
+      github.event_name == 'schedule' && contains(fromJson('["40 17 * * *","0 18 * * *","15 18 * * *","30 18 * * *","45 18 * * *","0 19 * * *","15 19 * * *","30 19 * * *","17 11 * * *","17 14 * * *","17 15 * * *","17 16 * * *","57 16 * * *"]'), github.event.schedule)
     runs-on: ubuntu-latest
     environment: production
     concurrency:
@@ -252,10 +250,14 @@ jobs:
           set -euo pipefail
 
           case "${{ github.event.schedule }}" in
-            "35 17 * * *") SLOT_LABEL="00:05（前日分追記・全メディア）" ;;
-            "5 18 * * *") SLOT_LABEL="00:35（前日分追記・Khit Thit Mediaのみ）" ;;
-            "35 18 * * *") SLOT_LABEL="01:05（前日分追記・Khit Thit Mediaのみ）" ;;
-            "5 19 * * *") SLOT_LABEL="01:35（前日分追記・Khit Thit Mediaのみ）" ;;
+            "40 17 * * *") SLOT_LABEL="00:10（前日分追記・全メディア）" ;;
+            "0 18 * * *") SLOT_LABEL="00:30（前日分追記・Khit Thit Mediaのみ）" ;;
+            "15 18 * * *") SLOT_LABEL="00:45（前日分追記・Khit Thit Mediaのみ）" ;;
+            "30 18 * * *") SLOT_LABEL="01:00（前日分追記・Khit Thit Mediaのみ）" ;;
+            "45 18 * * *") SLOT_LABEL="01:15（前日分追記・Khit Thit Mediaのみ）" ;;
+            "0 19 * * *") SLOT_LABEL="01:30（前日分追記・Khit Thit Mediaのみ）" ;;
+            "15 19 * * *") SLOT_LABEL="01:45（前日分追記・Khit Thit Mediaのみ）" ;;
+            "30 19 * * *") SLOT_LABEL="02:00（前日分追記・Khit Thit Mediaのみ）" ;;
             "17 11 * * *") SLOT_LABEL="17:50" ;;
             "17 14 * * *") SLOT_LABEL="20:50" ;;
             "17 15 * * *") SLOT_LABEL="21:50" ;;
@@ -278,13 +280,17 @@ jobs:
 
       - name: Collect → append to sheet (includes yesterday-backfill runs)
         run: |
-          if [[ "${{ github.event.schedule }}" = "35 17 * * *" ]]; then
+          if [[ "${{ github.event.schedule }}" = "40 17 * * *" ]]; then
             python sheet_pipeline.py collect-to-sheet \
               --schedule-cron "${{ github.event.schedule }}" \
               --target-offset-days -1
-          elif [[ "${{ github.event.schedule }}" = "5 18 * * *" || \
-                "${{ github.event.schedule }}" = "35 18 * * *" || \
-                "${{ github.event.schedule }}" = "5 19 * * *" ]]; then
+          elif [[ "${{ github.event.schedule }}" = "0 18 * * *" || \
+                "${{ github.event.schedule }}" = "15 18 * * *" || \
+                "${{ github.event.schedule }}" = "30 18 * * *" || \
+                "${{ github.event.schedule }}" = "45 18 * * *" || \
+                "${{ github.event.schedule }}" = "0 19 * * *" || \
+                "${{ github.event.schedule }}" = "15 19 * * *" || \
+                "${{ github.event.schedule }}" = "30 19 * * *" ]]; then
             python sheet_pipeline.py collect-to-sheet \
               --schedule-cron "${{ github.event.schedule }}" \
               --target-offset-days -1 \
@@ -848,8 +854,11 @@ jobs:
             "0 16 * * *")  SLOT_LABEL="22:30（当日分・Irrawaddyあり）" ;;
             "50 16 * * *") SLOT_LABEL="23:20（当日分・Irrawaddyあり）" ;;
             "40 17 * * *") SLOT_LABEL="00:10（前日分）" ;;
+            "0 18 * * *")  SLOT_LABEL="00:30（前日分・Khit Thit Mediaのみ）" ;;
             "15 18 * * *") SLOT_LABEL="00:45（前日分・Khit Thit Mediaのみ）" ;;
+            "30 18 * * *") SLOT_LABEL="01:00（前日分・Khit Thit Mediaのみ）" ;;
             "45 18 * * *") SLOT_LABEL="01:15（前日分・Khit Thit Mediaのみ）" ;;
+            "0 19 * * *")  SLOT_LABEL="01:30（前日分・Khit Thit Mediaのみ）" ;;
             "15 19 * * *") SLOT_LABEL="01:45（前日分・Khit Thit Mediaのみ）" ;;
             "30 19 * * *") SLOT_LABEL="02:00（前日分・Khit Thit Mediaのみ）" ;;
             *)
@@ -901,7 +910,7 @@ jobs:
                     --schedule-cron "$CRON" \
                     --target-offset-days -1
                   ;;
-                "15 18 * * *"|"45 18 * * *"|"15 19 * * *"|"30 19 * * *")
+                "0 18 * * *"|"15 18 * * *"|"30 18 * * *"|"45 18 * * *"|"0 19 * * *"|"15 19 * * *"|"30 19 * * *")
                   python sheet_pipeline.py collect-to-sheet \
                     --schedule-cron "$CRON" \
                     --target-offset-days -1 \
