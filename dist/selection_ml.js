@@ -2,9 +2,11 @@
  * Selection ML GitHub Actions dispatcher.
  *
  * 目的:
- * - selectionMlWatcher を5分おきに実行するGASトリガーに設定する。
- * - コード側で 23:00 / 00:00 / 01:00 の各10分間だけ検知し、
- *   各スロットにつき1回だけ prod 用 Selection ML を起動する。
+ * - selectionMlWatcher を10分おきに実行するGASトリガーに設定する。
+ * - コード側で 00:00以上 / 02:00未満 の時間帯だけ検知する。
+ * - prodシートに「A列に日付あり、AA列が空」の未スコア新規記事がある場合だけ
+ *   GitHub Actions の selection-ml.yml を dispatch する。
+ * - 新規記事がない場合は GitHub API / Gemini API を呼ばずにスキップする。
  *
  * Script Properties:
  * - GITHUB_OWNER
@@ -15,29 +17,22 @@
  */
 
 const SELECTION_ML_TIMEZONE = "Asia/Yangon";
-const SELECTION_ML_WATCH_WINDOW_MINUTES = 10;
+const SELECTION_ML_RUN_START_MINUTES = 0; // 00:00
+const SELECTION_ML_RUN_END_MINUTES = 2 * 60; // 02:00 は含めない
+const SELECTION_ML_SLOT_MINUTES = 10;
 const SELECTION_ML_LAST_RUN_PREFIX = "SELECTION_ML_LAST_RUN_SLOT_";
+const SELECTION_ML_LAST_PENDING_SIGNATURE_KEY =
+  "SELECTION_ML_LAST_PENDING_SIGNATURE_PROD";
 
 /**
- * 実行したい時刻。
- * selectionMlWatcher が5分おきに起動され、各時刻から10分間の範囲に入った場合だけ
- * GitHub Actions の selection-ml.yml を dispatch する。
- */
-const SELECTION_ML_TARGET_SLOTS = [
-  { hour: 23, minute: 0 },
-  { hour: 0, minute: 0 },
-  { hour: 1, minute: 0 },
-];
-
-/**
- * 既存の selectionMlWatcher トリガーを置き換え、5分おきに実行する。
+ * 既存の selectionMlWatcher トリガーを置き換え、10分おきに実行する。
  *
  * GASの画面から手動でトリガー設定する場合、この関数は実行不要。
  * 手動設定する場合は、以下の内容で設定する。
  * - 実行する関数: selectionMlWatcher
  * - イベントのソース: 時間主導型
  * - 時間ベースのトリガーのタイプ: 分ベースのタイマー
- * - 間隔: 5分おき
+ * - 間隔: 10分おき
  */
 function installSelectionMlWatcherTrigger() {
   ScriptApp.getProjectTriggers().forEach(function (trigger) {
@@ -48,13 +43,13 @@ function installSelectionMlWatcherTrigger() {
 
   ScriptApp.newTrigger("selectionMlWatcher")
     .timeBased()
-    .everyMinutes(5)
+    .everyMinutes(SELECTION_ML_SLOT_MINUTES)
     .create();
 }
 
 /**
- * 23:00 / 00:00 / 01:00 の各10分間に入ったら、
- * 各スロットにつき1回だけ prod 用 Selection ML を起動する。
+ * 00:00〜01:59の間だけ、10分単位のスロットにつき最大1回、
+ * かつ未スコア行がある場合だけ prod 用 Selection ML を起動する。
  */
 function selectionMlWatcher() {
   const lock = LockService.getScriptLock();
@@ -64,33 +59,56 @@ function selectionMlWatcher() {
   }
 
   try {
-    const props = PropertiesService.getScriptProperties();
     const now = new Date();
-    const ymd = Utilities.formatDate(now, SELECTION_ML_TIMEZONE, "yyyyMMdd");
-    const currentMinutes =
-      Number(Utilities.formatDate(now, SELECTION_ML_TIMEZONE, "H")) * 60 +
-      Number(Utilities.formatDate(now, SELECTION_ML_TIMEZONE, "m"));
-
-    for (const slot of SELECTION_ML_TARGET_SLOTS) {
-      const targetMinutes = slot.hour * 60 + slot.minute;
-
-      if (!isSelectionMlCurrentSlot_(currentMinutes, targetMinutes)) {
-        continue;
-      }
-
-      const slotKey = buildSelectionMlSlotKey_(ymd, slot);
-      const lastRunPropKey = SELECTION_ML_LAST_RUN_PREFIX + slotKey;
-
-      if (props.getProperty(lastRunPropKey) === "done") {
-        Logger.log("[selection-ml] already dispatched for slot " + slotKey);
-        return;
-      }
-
-      triggerSelectionMlGitHubActions_("prod");
-      props.setProperty(lastRunPropKey, "done");
-      Logger.log("[selection-ml] prod dispatched for slot " + slotKey);
+    const currentMinutes = selectionMlCurrentMinutes_(now);
+    if (!isSelectionMlRunWindow_(currentMinutes)) {
+      Logger.log("[selection-ml] outside 00:00-02:00 window -> skip");
       return;
     }
+
+    const targetSheet = "prod";
+    const pendingInfo = getSelectionMlPendingInfo_(targetSheet);
+    if (!pendingInfo.hasPending) {
+      Logger.log(
+        "[selection-ml] no pending rows: A has value and AA is blank -> skip without GitHub API",
+      );
+      return;
+    }
+
+    const props = PropertiesService.getScriptProperties();
+    const ymd = Utilities.formatDate(now, SELECTION_ML_TIMEZONE, "yyyyMMdd");
+    const slotKey = buildSelectionMlSlotKey_(ymd, currentMinutes);
+    const lastRunPropKey = SELECTION_ML_LAST_RUN_PREFIX + slotKey;
+
+    if (props.getProperty(lastRunPropKey) === "done") {
+      Logger.log("[selection-ml] already dispatched for slot " + slotKey);
+      return;
+    }
+
+    const previousPendingSignature = props.getProperty(
+      SELECTION_ML_LAST_PENDING_SIGNATURE_KEY,
+    );
+    if (previousPendingSignature === pendingInfo.signature) {
+      Logger.log(
+        "[selection-ml] same pending rows were already dispatched -> skip " +
+          pendingInfo.signature,
+      );
+      props.setProperty(lastRunPropKey, "done");
+      return;
+    }
+
+    triggerSelectionMlGitHubActions_(targetSheet);
+    props.setProperty(lastRunPropKey, "done");
+    props.setProperty(
+      SELECTION_ML_LAST_PENDING_SIGNATURE_KEY,
+      pendingInfo.signature,
+    );
+    Logger.log(
+      "[selection-ml] prod dispatched slot=" +
+        slotKey +
+        " pending_rows=" +
+        pendingInfo.pendingRows.join(","),
+    );
   } finally {
     lock.releaseLock();
   }
@@ -111,6 +129,17 @@ function triggerSelectionMlProdNow() {
  */
 function triggerSelectionMlDevNow() {
   triggerSelectionMlGitHubActions_("dev");
+}
+
+/**
+ * pending signature をリセットする。
+ * GitHub Actions が失敗し、同じ未スコア行を定時処理で再dispatchしたい場合だけ手動実行する。
+ */
+function resetSelectionMlPendingSignature() {
+  PropertiesService.getScriptProperties().deleteProperty(
+    SELECTION_ML_LAST_PENDING_SIGNATURE_KEY,
+  );
+  Logger.log("[selection-ml] pending signature reset");
 }
 
 function triggerSelectionMlGitHubActions_(targetSheet) {
@@ -166,19 +195,73 @@ function triggerSelectionMlGitHubActions_(targetSheet) {
   }
 }
 
-function isSelectionMlCurrentSlot_(currentMinutes, targetMinutes) {
+function getSelectionMlPendingInfo_(sheetName) {
+  const sheet = SpreadsheetApp.getActive().getSheetByName(sheetName);
+  if (!sheet) {
+    throw new Error('Sheet "' + sheetName + '" was not found.');
+  }
+
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) {
+    return {
+      hasPending: false,
+      pendingRows: [],
+      signature: "none",
+    };
+  }
+
+  // A:AA を読む。A列=日付、AA列=最終スコア。
+  const values = sheet.getRange(2, 1, lastRow - 1, 27).getValues();
+  const pendingRows = [];
+
+  values.forEach(function (row, offset) {
+    const sheetRow = offset + 2;
+    const dateValue = row[0];
+    const finalScoreValue = row[26];
+    if (
+      hasSelectionMlCellValue_(dateValue) &&
+      !hasSelectionMlCellValue_(finalScoreValue)
+    ) {
+      pendingRows.push(sheetRow);
+    }
+  });
+
+  return {
+    hasPending: pendingRows.length > 0,
+    pendingRows: pendingRows,
+    signature: pendingRows.length > 0 ? pendingRows.join(",") : "none",
+  };
+}
+
+function hasSelectionMlCellValue_(value) {
+  if (value === null || value === undefined) {
+    return false;
+  }
+  return String(value).trim() !== "";
+}
+
+function selectionMlCurrentMinutes_(now) {
   return (
-    currentMinutes >= targetMinutes &&
-    currentMinutes < targetMinutes + SELECTION_ML_WATCH_WINDOW_MINUTES
+    Number(Utilities.formatDate(now, SELECTION_ML_TIMEZONE, "H")) * 60 +
+    Number(Utilities.formatDate(now, SELECTION_ML_TIMEZONE, "m"))
   );
 }
 
-function buildSelectionMlSlotKey_(ymd, slot) {
+function isSelectionMlRunWindow_(currentMinutes) {
   return (
-    ymd +
-    "_" +
-    String(slot.hour).padStart(2, "0") +
-    String(slot.minute).padStart(2, "0")
+    currentMinutes >= SELECTION_ML_RUN_START_MINUTES &&
+    currentMinutes < SELECTION_ML_RUN_END_MINUTES
+  );
+}
+
+function buildSelectionMlSlotKey_(ymd, currentMinutes) {
+  const slotStartMinutes =
+    Math.floor(currentMinutes / SELECTION_ML_SLOT_MINUTES) *
+    SELECTION_ML_SLOT_MINUTES;
+  const hour = Math.floor(slotStartMinutes / 60);
+  const minute = slotStartMinutes % 60;
+  return (
+    ymd + "_" + String(hour).padStart(2, "0") + String(minute).padStart(2, "0")
   );
 }
 
