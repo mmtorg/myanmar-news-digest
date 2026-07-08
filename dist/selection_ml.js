@@ -3,7 +3,7 @@
  *
  * 目的:
  * - selectionMlWatcher を10分おきに実行するGASトリガーに設定する。
- * - コード側で 00:00以上 / 02:00未満 の時間帯だけ検知する。
+ * - コード側で 00:00以上 / 03:00未満 の時間帯だけ検知する。
  * - prodシートに「A列に日付あり、AA列が空」の未スコア新規記事がある場合だけ
  *   GitHub Actions の selection-ml.yml を dispatch する。
  * - 新規記事がない場合は GitHub API / Gemini API を呼ばずにスキップする。
@@ -18,7 +18,7 @@
 
 const SELECTION_ML_TIMEZONE = "Asia/Yangon";
 const SELECTION_ML_RUN_START_MINUTES = 0; // 00:00
-const SELECTION_ML_RUN_END_MINUTES = 2 * 60; // 02:00 は含めない
+const SELECTION_ML_RUN_END_MINUTES = 3 * 60; // 03:00 は含めない
 const SELECTION_ML_SLOT_MINUTES = 10;
 const SELECTION_ML_LAST_RUN_PREFIX = "SELECTION_ML_LAST_RUN_SLOT_";
 const SELECTION_ML_LAST_PENDING_SIGNATURE_KEY =
@@ -48,7 +48,7 @@ function installSelectionMlWatcherTrigger() {
 }
 
 /**
- * 00:00〜01:59の間だけ、10分単位のスロットにつき最大1回、
+ * 00:00〜02:59の間だけ、10分単位のスロットにつき最大1回、
  * かつ未スコア行がある場合だけ prod 用 Selection ML を起動する。
  */
 function selectionMlWatcher() {
@@ -62,7 +62,7 @@ function selectionMlWatcher() {
     const now = new Date();
     const currentMinutes = selectionMlCurrentMinutes_(now);
     if (!isSelectionMlRunWindow_(currentMinutes)) {
-      Logger.log("[selection-ml] outside 00:00-02:00 window -> skip");
+      Logger.log("[selection-ml] outside 00:00-03:00 window -> skip");
       return;
     }
 

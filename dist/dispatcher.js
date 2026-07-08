@@ -25,7 +25,7 @@
  * - K列に a があり、config!A1 が当日未送信の場合だけ watch-build-send を workflow_dispatch する。
  * - 12:30 は collect16 と同じく、既存シートを整理してから当日分を収集する。
  * - 13:30〜23:20 は当日分、00:10 は前日分を GitHub Actions 側で判定する。
- * - 00:30〜02:00 は15分おきに、前日分の Khit Thit Media のみ収集する。
+ * - 00:30〜02:45 は15分おきに、前日分の Khit Thit Media のみ収集する。
  * - Irrawaddy は sheet_pipeline.py 側で 21:30 / 22:30 / 23:20 のみ収集する。
  */
 
@@ -57,7 +57,7 @@ const COLLECT_SLOTS = [
   // 前日分取得
   { hhmm: "00:10", cron: "40 17 * * *", mode: "collect" },
 
-  // 前日分取得（Khit Thit Media のみ / 00:30〜02:00、15分おき）
+  // 前日分取得（Khit Thit Media のみ / 00:30〜02:45、15分おき）
   { hhmm: "00:30", cron: "0 18 * * *", mode: "collect" },
   { hhmm: "00:45", cron: "15 18 * * *", mode: "collect" },
   { hhmm: "01:00", cron: "30 18 * * *", mode: "collect" },
@@ -65,6 +65,9 @@ const COLLECT_SLOTS = [
   { hhmm: "01:30", cron: "0 19 * * *", mode: "collect" },
   { hhmm: "01:45", cron: "15 19 * * *", mode: "collect" },
   { hhmm: "02:00", cron: "30 19 * * *", mode: "collect" },
+  { hhmm: "02:15", cron: "45 19 * * *", mode: "collect" },
+  { hhmm: "02:30", cron: "0 20 * * *", mode: "collect" },
+  { hhmm: "02:45", cron: "15 20 * * *", mode: "collect" },
 ];
 
 /**
