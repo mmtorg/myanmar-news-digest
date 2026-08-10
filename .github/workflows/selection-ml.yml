@@ -1,4 +1,5 @@
 name: Selection ML
+run-name: Selection ML / ${{ inputs.target_sheet }} / ${{ inputs.spreadsheet_id }}
 
 on:
   workflow_dispatch:

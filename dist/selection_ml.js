@@ -20,6 +20,7 @@ const SELECTION_ML_TIMEZONE = "Asia/Yangon";
 const SELECTION_ML_RUN_START_MINUTES = 0; // 00:00
 const SELECTION_ML_RUN_END_MINUTES = 3 * 60; // 03:00 は含めない
 const SELECTION_ML_SLOT_MINUTES = 10;
+const SELECTION_ML_STALE_WAITING_RUN_MINUTES = 45;
 const SELECTION_ML_LAST_RUN_PREFIX = "SELECTION_ML_LAST_RUN_SLOT_";
 const SELECTION_ML_LAST_PENDING_SIGNATURE_KEY =
   "SELECTION_ML_LAST_PENDING_SIGNATURE_PROD";
@@ -85,24 +86,13 @@ function selectionMlWatcher() {
       return;
     }
 
-    const previousPendingSignature = props.getProperty(
-      SELECTION_ML_LAST_PENDING_SIGNATURE_KEY,
-    );
-    if (previousPendingSignature === pendingInfo.signature) {
-      Logger.log(
-        "[selection-ml] same pending rows were already dispatched -> skip " +
-          pendingInfo.signature,
-      );
-      props.setProperty(lastRunPropKey, "done");
+    const dispatched = triggerSelectionMlGitHubActions_(targetSheet);
+    if (!dispatched) {
+      Logger.log("[selection-ml] active GitHub Actions run exists -> skip");
       return;
     }
 
-    triggerSelectionMlGitHubActions_(targetSheet);
     props.setProperty(lastRunPropKey, "done");
-    props.setProperty(
-      SELECTION_ML_LAST_PENDING_SIGNATURE_KEY,
-      pendingInfo.signature,
-    );
     Logger.log(
       "[selection-ml] prod dispatched slot=" +
         slotKey +
@@ -157,6 +147,10 @@ function triggerSelectionMlGitHubActions_(targetSheet) {
   const archiveFolderId = mustGetProp_(props, "ARCHIVE_DRIVE_FOLDER_ID");
   const spreadsheetId = SpreadsheetApp.getActive().getId();
 
+  if (hasBlockingSelectionMlWorkflowRun_(owner, repo, token, workflowFile)) {
+    return false;
+  }
+
   const url =
     "https://api.github.com/repos/" +
     encodeURIComponent(owner) +
@@ -193,6 +187,118 @@ function triggerSelectionMlGitHubActions_(targetSheet) {
       "Selection ML workflow_dispatch failed: HTTP " + code + " / " + body,
     );
   }
+  return true;
+}
+
+function hasBlockingSelectionMlWorkflowRun_(owner, repo, token, workflowFile) {
+  const cancelableWaitingStatuses = {
+    queued: true,
+    waiting: true,
+    requested: true,
+    pending: true,
+  };
+  const url =
+    "https://api.github.com/repos/" +
+    encodeURIComponent(owner) +
+    "/" +
+    encodeURIComponent(repo) +
+    "/actions/workflows/" +
+    encodeURIComponent(workflowFile) +
+    "/runs?branch=main&event=workflow_dispatch&per_page=20";
+
+  const response = UrlFetchApp.fetch(url, {
+    method: "get",
+    headers: {
+      Authorization: "Bearer " + token,
+      Accept: "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+    },
+    muteHttpExceptions: true,
+  });
+
+  const code = response.getResponseCode();
+  const body = response.getContentText();
+  if (code !== 200) {
+    throw new Error(
+      "Selection ML workflow run lookup failed: HTTP " + code + " / " + body,
+    );
+  }
+
+  const payload = JSON.parse(body);
+  const runs = Array.isArray(payload.workflow_runs) ? payload.workflow_runs : [];
+  for (const run of runs) {
+    const status = String(run.status || "");
+    if (status === "in_progress") {
+      Logger.log(
+        "[selection-ml] active workflow run id=" +
+          run.id +
+          " status=" +
+          run.status,
+      );
+      return true;
+    }
+    if (cancelableWaitingStatuses[status]) {
+      if (isSelectionMlStaleRun_(run)) {
+        cancelSelectionMlWorkflowRun_(owner, repo, token, run);
+        continue;
+      }
+      Logger.log(
+        "[selection-ml] recent workflow run id=" +
+          run.id +
+          " status=" +
+          status +
+          " -> skip dispatch",
+      );
+      return true;
+    }
+  }
+  return false;
+}
+
+function isSelectionMlStaleRun_(run) {
+  const createdAtMs = Date.parse(run.created_at || "");
+  if (!createdAtMs) {
+    return false;
+  }
+  const ageMinutes = (Date.now() - createdAtMs) / 60000;
+  return ageMinutes >= SELECTION_ML_STALE_WAITING_RUN_MINUTES;
+}
+
+function cancelSelectionMlWorkflowRun_(owner, repo, token, run) {
+  const url =
+    "https://api.github.com/repos/" +
+    encodeURIComponent(owner) +
+    "/" +
+    encodeURIComponent(repo) +
+    "/actions/runs/" +
+    encodeURIComponent(run.id) +
+    "/cancel";
+
+  const response = UrlFetchApp.fetch(url, {
+    method: "post",
+    headers: {
+      Authorization: "Bearer " + token,
+      Accept: "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+    },
+    muteHttpExceptions: true,
+  });
+
+  const code = response.getResponseCode();
+  const body = response.getContentText();
+  if (code !== 202 && code !== 409) {
+    throw new Error(
+      "Selection ML workflow run cancel failed: HTTP " + code + " / " + body,
+    );
+  }
+  Logger.log(
+    "[selection-ml] canceled stale workflow run id=" +
+      run.id +
+      " status=" +
+      run.status +
+      " created_at=" +
+      run.created_at,
+  );
 }
 
 function getSelectionMlPendingInfo_(sheetName) {
