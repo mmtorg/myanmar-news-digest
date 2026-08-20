@@ -750,9 +750,423 @@ MIZZIMA_CATEGORY_PATHS: List[Tuple[str, bool]] = [
     ),
 ]
 
+# Mizzima は GitHub Actions / datacenter IP から通常 requests が 403 等になることがあるため、
+# 一覧・記事ともに以下の固定順で取得する。
+#   1) direct requests
+#   2) curl_cffi
+#   3) cloudscraper
+#   4) Bright Data Web Unlocker
+# どの段階で失敗したかを必ず標準出力へ残す。
+MIZZIMA_FETCH_TIMEOUT = int(os.getenv("MIZZIMA_FETCH_TIMEOUT", "15"))
+
+_MIZZIMA_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/128.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "my-MM,my;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+    "Referer": "https://bur.mizzima.com/",
+}
+
+_MIZZIMA_LIST_LINK_SELECTORS = (
+    # 従来セレクタ（最優先）
+    "main.site-main article a.post-thumbnail[href]",
+    # テーマ変更に備えたフォールバック
+    "main.site-main article .entry-title a[href]",
+    "main.site-main article h2 a[href]",
+    "main.site-main article h3 a[href]",
+    "article a.post-thumbnail[href]",
+    "article .entry-title a[href]",
+)
+
+
 def _mizzima_has_myanmar_keyword(title: str, body: str) -> bool:
     haystack = unicodedata.normalize("NFC", f"{title or ''}\n{body or ''}")
     return MIZZIMA_MYANMAR_KEYWORD in haystack
+
+
+def _mizzima_response_text(res) -> str:
+    """requests / curl_cffi / cloudscraper の Response から安全にHTML文字列を得る。"""
+    try:
+        txt = getattr(res, "text", None)
+        if isinstance(txt, str):
+            return txt.strip()
+    except Exception:
+        pass
+
+    try:
+        content = getattr(res, "content", b"") or b""
+        if isinstance(content, bytes):
+            return content.decode("utf-8", "ignore").strip()
+        return str(content).strip()
+    except Exception:
+        return ""
+
+
+def _mizzima_looks_blocked_page(html: str) -> bool:
+    """HTTP 200 の soft block / CAPTCHA / Cloudflare challenge も失敗として扱う。"""
+    if not html:
+        return False
+    head = html[:12000].lower()
+    indicators = (
+        "just a moment",
+        "attention required",
+        "checking your browser",
+        "cf-browser-verification",
+        "challenge-platform",
+        "challenges.cloudflare.com",
+        "cf-chl-",
+        "cloudflare ray id",
+        "verify you are human",
+        "captcha",
+        "access denied",
+        "request blocked",
+        "security check",
+        "incapsula",
+        "<title>403 forbidden",
+        "<h1>403 forbidden",
+    )
+    return any(x in head for x in indicators)
+
+
+def _mizzima_extract_list_links(html: str, base_url: str = "https://bur.mizzima.com") -> List[str]:
+    """MizzimaカテゴリHTMLから記事URLだけを順序保持で抽出する。"""
+    if not html:
+        return []
+
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+    except Exception:
+        return []
+
+    links: List[str] = []
+    seen: set[str] = set()
+
+    for selector in _MIZZIMA_LIST_LINK_SELECTORS:
+        for a in soup.select(selector):
+            href = (a.get("href") or "").strip()
+            if not href:
+                continue
+            abs_url = urljoin(base_url + "/", href)
+            try:
+                p = urlsplit(abs_url)
+                host = (p.netloc or "").lower()
+                path = p.path or ""
+            except Exception:
+                continue
+
+            if not host.endswith("mizzima.com"):
+                continue
+            if any(
+                path.startswith(prefix)
+                for prefix in (
+                    "/category/",
+                    "/tag/",
+                    "/author/",
+                    "/page/",
+                    "/wp-content/",
+                    "/wp-admin/",
+                    "/wp-json/",
+                )
+            ):
+                continue
+
+            # query / fragment は記事の同一性に不要なので落とす。
+            normalized = urlunsplit((p.scheme or "https", p.netloc, p.path, "", ""))
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                links.append(normalized)
+
+    return links
+
+
+def _mizzima_html_usable(html: str, *, kind: str) -> bool:
+    """
+    取得結果をMizzimaページとして使用可能か判定する。
+    status=200 でも challenge HTML や構造不一致なら次の取得手段へ進む。
+    """
+    html = (html or "").strip()
+    if not html or _mizzima_looks_blocked_page(html):
+        return False
+
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+    except Exception:
+        return False
+
+    if kind == "list":
+        # 既知セレクタでリンクが取れる、または article 構造があること。
+        return bool(_mizzima_extract_list_links(html)) or bool(soup.select("main.site-main article, article"))
+
+    # article
+    meta = soup.find("meta", attrs={"property": "article:published_time"})
+    content = soup.select_one("div.entry-content")
+    title = soup.find("meta", attrs={"property": "og:title"}) or soup.select_one("h1.entry-title, h1")
+    return bool(meta or (content and title))
+
+
+def _mizzima_log_fetch_result(
+    *,
+    kind: str,
+    method: str,
+    url: str,
+    status,
+    html: str,
+    final_url: str = "",
+    exc: Exception | None = None,
+) -> None:
+    if exc is not None:
+        print(
+            f"[mizzima-fetch] kind={kind} method={method} result=EXC "
+            f"exc={type(exc).__name__}:{exc} url={url}"
+        )
+        return
+
+    blocked = _mizzima_looks_blocked_page(html)
+    usable = _mizzima_html_usable(html, kind=kind)
+    print(
+        f"[mizzima-fetch] kind={kind} method={method} status={status} "
+        f"len={len(html or '')} blocked={blocked} usable={usable} "
+        f"final={final_url or '-'} url={url}"
+    )
+
+
+def _mizzima_fetch_html(
+    url: str,
+    *,
+    kind: str,
+    direct_session: requests.Session | None = None,
+    curl_session=None,
+    timeout: int = MIZZIMA_FETCH_TIMEOUT,
+) -> Tuple[str, str]:
+    """
+    Mizzima専用4段階フェッチ。
+
+    順序は固定:
+      direct requests → curl_cffi → cloudscraper → Bright Data Web Unlocker
+
+    戻り値:
+      (html, source)
+      source = direct / curl_cffi / cloudscraper / unlocker / none
+    """
+
+    # 1) direct requests
+    sess = direct_session or _make_pooled_session()
+    try:
+        res = sess.get(
+            url,
+            headers=_MIZZIMA_HEADERS,
+            timeout=timeout,
+            allow_redirects=True,
+        )
+        html = _mizzima_response_text(res)
+        status = getattr(res, "status_code", None)
+        final_url = str(getattr(res, "url", "") or "")
+        _mizzima_log_fetch_result(
+            kind=kind,
+            method="direct",
+            url=url,
+            status=status,
+            html=html,
+            final_url=final_url,
+        )
+        if status == 200 and _mizzima_html_usable(html, kind=kind):
+            print(f"[mizzima-fetch] RECOVERED kind={kind} source=direct url={url}")
+            return html, "direct"
+    except Exception as e:
+        _mizzima_log_fetch_result(
+            kind=kind,
+            method="direct",
+            url=url,
+            status=None,
+            html="",
+            exc=e,
+        )
+
+    # 2) curl_cffi
+    try:
+        csession = curl_session or CurlSession(impersonate="chrome")
+        res = csession.get(
+            url,
+            headers=_MIZZIMA_HEADERS,
+            timeout=timeout,
+            allow_redirects=True,
+        )
+        html = _mizzima_response_text(res)
+        status = getattr(res, "status_code", None)
+        final_url = str(getattr(res, "url", "") or "")
+        _mizzima_log_fetch_result(
+            kind=kind,
+            method="curl_cffi",
+            url=url,
+            status=status,
+            html=html,
+            final_url=final_url,
+        )
+        if status == 200 and _mizzima_html_usable(html, kind=kind):
+            print(f"[mizzima-fetch] RECOVERED kind={kind} source=curl_cffi url={url}")
+            return html, "curl_cffi"
+    except Exception as e:
+        _mizzima_log_fetch_result(
+            kind=kind,
+            method="curl_cffi",
+            url=url,
+            status=None,
+            html="",
+            exc=e,
+        )
+
+    # 3) cloudscraper
+    try:
+        import cloudscraper
+
+        scraper = cloudscraper.create_scraper(
+            browser={"browser": "chrome", "platform": "windows", "desktop": True}
+        )
+        res = scraper.get(
+            url,
+            headers=_MIZZIMA_HEADERS,
+            timeout=timeout,
+            allow_redirects=True,
+        )
+        html = _mizzima_response_text(res)
+        status = getattr(res, "status_code", None)
+        final_url = str(getattr(res, "url", "") or "")
+        _mizzima_log_fetch_result(
+            kind=kind,
+            method="cloudscraper",
+            url=url,
+            status=status,
+            html=html,
+            final_url=final_url,
+        )
+        if status == 200 and _mizzima_html_usable(html, kind=kind):
+            print(f"[mizzima-fetch] RECOVERED kind={kind} source=cloudscraper url={url}")
+            return html, "cloudscraper"
+    except Exception as e:
+        _mizzima_log_fetch_result(
+            kind=kind,
+            method="cloudscraper",
+            url=url,
+            status=None,
+            html="",
+            exc=e,
+        )
+
+    # 4) Bright Data Web Unlocker
+    try:
+        html = (
+            fetch_html_via_brightdata_unlocker(
+                url,
+                timeout=BD_UNLOCKER_TIMEOUT,
+                retry_once=False,
+            )
+            or ""
+        ).strip()
+        _mizzima_log_fetch_result(
+            kind=kind,
+            method="unlocker",
+            url=url,
+            status=200 if html else None,
+            html=html,
+            final_url=url,
+        )
+        if _mizzima_html_usable(html, kind=kind):
+            print(f"[mizzima-fetch] RECOVERED kind={kind} source=unlocker url={url}")
+            return html, "unlocker"
+    except Exception as e:
+        _mizzima_log_fetch_result(
+            kind=kind,
+            method="unlocker",
+            url=url,
+            status=None,
+            html="",
+            exc=e,
+        )
+
+    print(
+        f"[mizzima-fetch] EXHAUSTED kind={kind} "
+        f"methods=direct,curl_cffi,cloudscraper,unlocker url={url}"
+    )
+    return "", "none"
+
+
+def _mizzima_extract_published_date_mmt(soup: BeautifulSoup) -> date | None:
+    """記事の公開日時をMMT日付へ変換。metaを優先し、time[datetime]も保険で見る。"""
+    raw = ""
+    meta_tag = soup.find("meta", attrs={"property": "article:published_time"})
+    if meta_tag and meta_tag.get("content"):
+        raw = (meta_tag.get("content") or "").strip()
+
+    if not raw:
+        meta_tag = soup.find("meta", attrs={"name": "article:published_time"})
+        if meta_tag and meta_tag.get("content"):
+            raw = (meta_tag.get("content") or "").strip()
+
+    if not raw:
+        t = soup.select_one("time.entry-date[datetime], time.published[datetime], time[datetime]")
+        if t and t.get("datetime"):
+            raw = (t.get("datetime") or "").strip()
+
+    if not raw:
+        return None
+
+    try:
+        dt = parse_date(raw)
+        if dt.tzinfo is None:
+            # WordPress側がoffsetを落とした場合の保険。MMTとして解釈する。
+            dt = dt.replace(tzinfo=MMT)
+        return dt.astimezone(MMT).date()
+    except Exception:
+        return None
+
+
+def _mizzima_extract_title(soup: BeautifulSoup) -> str:
+    meta = soup.find("meta", attrs={"property": "og:title"})
+    if meta and meta.get("content"):
+        return unicodedata.normalize("NFC", (meta.get("content") or "").strip())
+
+    h1 = soup.select_one("h1.entry-title, h1")
+    if h1:
+        return unicodedata.normalize("NFC", h1.get_text(" ", strip=True))
+
+    if soup.title:
+        return unicodedata.normalize("NFC", soup.title.get_text(" ", strip=True))
+    return ""
+
+
+def _mizzima_extract_body(soup: BeautifulSoup) -> str:
+    content_div = soup.select_one("div.entry-content")
+    if not content_div:
+        return ""
+
+    # 関連記事・共有・広告など、明らかな本文外ブロックを先に削る。
+    for node in content_div.select(
+        ".sharedaddy, .share, .social-share, .post-tags, .tags, "
+        ".related-posts, .jp-relatedposts, .code-block, script, style"
+    ):
+        try:
+            node.decompose()
+        except Exception:
+            pass
+
+    paras: List[str] = []
+    for p in content_div.find_all("p"):
+        # 従来挙動を維持: Related Posts 見出し以降は本文扱いしない。
+        prev_h2 = p.find_previous("h2")
+        if prev_h2 and re.search(r"Related Posts", prev_h2.get_text(" ", strip=True) or "", re.I):
+            break
+
+        txt = re.sub(r"\s+", " ", p.get_text(" ", strip=True) or "").strip()
+        if txt:
+            paras.append(txt)
+
+    return unicodedata.normalize("NFC", "\n".join(paras).strip())
+
 
 def collect_mizzima_all_for_date(target_date_mmt: date, max_pages: int = 15) -> List[Dict]:
     base_url = "https://bur.mizzima.com"
@@ -765,61 +1179,184 @@ def collect_mizzima_all_for_date(target_date_mmt: date, max_pages: int = 15) -> 
     # URLごとに「မြန်မာ キーワード必須か」を保持する。
     # 複数カテゴリに同一記事が出た場合、通常のミャンマーニュースカテゴリ経由なら必須条件なしで扱う。
     article_require_keyword: Dict[str, bool] = {}
-    session = _make_pooled_session()
+
+    direct_session = _make_pooled_session()
+    try:
+        curl_session = CurlSession(impersonate="chrome")
+    except Exception as e:
+        curl_session = None
+        print(f"[mizzima] curl_cffi session init failed: {type(e).__name__}:{e}")
+
+    list_stats = {
+        "attempted": 0,
+        "fetched": 0,
+        "failed": 0,
+        "direct": 0,
+        "curl_cffi": 0,
+        "cloudscraper": 0,
+        "unlocker": 0,
+        "no_links": 0,
+    }
+
+    # -----------------------------
+    # 1) カテゴリ一覧 → 記事URL収集
+    # -----------------------------
     for category_path, require_myanmar_keyword in MIZZIMA_CATEGORY_PATHS:
         for page_num in range(1, max_pages + 1):
-            url = f"{base_url}{category_path}" if page_num == 1 else f"{base_url}{category_path}/page/{page_num}/"
-            try:
-                res = session.get(url, timeout=10)
-                if res.status_code != 200:
-                    continue
-                soup = BeautifulSoup(res.content, "html.parser")
-                links = [a["href"] for a in soup.select("main.site-main article a.post-thumbnail[href]")]
-                for href in links:
-                    # 同一URLが複数カテゴリで見つかった場合は、False（制限なし）を優先する。
-                    article_require_keyword[href] = article_require_keyword.get(href, True) and require_myanmar_keyword
-            except Exception as e:
-                print(f"[mizzima] list fail {url}: {e}")
-                continue
+            url = (
+                f"{base_url}{category_path}"
+                if page_num == 1
+                else f"{base_url}{category_path}/page/{page_num}/"
+            )
+            list_stats["attempted"] += 1
 
+            html, source = _mizzima_fetch_html(
+                url,
+                kind="list",
+                direct_session=direct_session,
+                curl_session=curl_session,
+            )
+            if not html:
+                list_stats["failed"] += 1
+                print(
+                    f"[mizzima] list give-up category={category_path} page={page_num} "
+                    f"reason=all_fetch_methods_failed url={url}"
+                )
+                # 1ページ目すら取れない場合、同カテゴリの page/2 以降も同じ可能性が高いので打ち切る。
+                break
+
+            list_stats["fetched"] += 1
+            if source in list_stats:
+                list_stats[source] += 1
+
+            links = _mizzima_extract_list_links(html, base_url=base_url)
+            print(
+                f"[mizzima] list parsed category={category_path} page={page_num} "
+                f"source={source} candidates={len(links)} url={url}"
+            )
+
+            if not links:
+                list_stats["no_links"] += 1
+                print(
+                    f"[mizzima] list no-candidates category={category_path} page={page_num} "
+                    f"source={source} reason=recognized_article_links_not_found url={url}"
+                )
+                # ページ送りを無駄に続けない。
+                break
+
+            before_count = len(article_require_keyword)
+            for href in links:
+                # 同一URLが複数カテゴリで見つかった場合は、False（制限なし）を優先する。
+                article_require_keyword[href] = (
+                    article_require_keyword.get(href, True) and require_myanmar_keyword
+                )
+            added = len(article_require_keyword) - before_count
+            print(
+                f"[mizzima] list candidates merged page={page_num} added={added} "
+                f"unique_total={len(article_require_keyword)} source={source}"
+            )
+
+    print(
+        "[mizzima] list summary "
+        f"target={target_date_mmt.isoformat()} max_pages={max_pages} "
+        f"attempted={list_stats['attempted']} fetched={list_stats['fetched']} "
+        f"failed={list_stats['failed']} no_links={list_stats['no_links']} "
+        f"via_direct={list_stats['direct']} via_curl_cffi={list_stats['curl_cffi']} "
+        f"via_cloudscraper={list_stats['cloudscraper']} via_unlocker={list_stats['unlocker']} "
+        f"candidate_urls={len(article_require_keyword)}"
+    )
+
+    if not article_require_keyword:
+        print(
+            "[mizzima] RESULT=0 reason=no_candidate_urls "
+            "detail=category pages could not be fetched or no recognized article links were found"
+        )
+        return []
+
+    # -----------------------------
+    # 2) 記事ページ取得 → 対象日判定 → 本文抽出
+    # -----------------------------
     results: List[Dict] = []
+    article_stats = {
+        "attempted": 0,
+        "fetch_failed": 0,
+        "direct": 0,
+        "curl_cffi": 0,
+        "cloudscraper": 0,
+        "unlocker": 0,
+        "no_date": 0,
+        "date_mismatch": 0,
+        "no_title": 0,
+        "excluded_title": 0,
+        "no_body": 0,
+        "keyword_miss": 0,
+        "accepted": 0,
+    }
+
     for url, require_myanmar_keyword in article_require_keyword.items():
+        article_stats["attempted"] += 1
         try:
-            res = session.get(url, timeout=10)
-            if res.status_code != 200:
+            html, source = _mizzima_fetch_html(
+                url,
+                kind="article",
+                direct_session=direct_session,
+                curl_session=curl_session,
+            )
+            if not html:
+                article_stats["fetch_failed"] += 1
+                print(f"[mizzima] article skip reason=all_fetch_methods_failed url={url}")
                 continue
-            soup = BeautifulSoup(res.content, "html.parser")
 
-            meta_tag = soup.find("meta", property="article:published_time")
-            if not meta_tag or not meta_tag.has_attr("content"):
-                continue
-            dt = datetime.fromisoformat(meta_tag["content"]).astimezone(MMT)
-            if dt.date() != target_date_mmt:
+            if source in article_stats:
+                article_stats[source] += 1
+
+            soup = BeautifulSoup(html, "html.parser")
+
+            published_date = _mizzima_extract_published_date_mmt(soup)
+            if published_date is None:
+                article_stats["no_date"] += 1
+                print(f"[mizzima] article skip reason=published_date_not_found source={source} url={url}")
                 continue
 
-            title_tag = soup.find("meta", attrs={"property": "og:title"})
-            title = (title_tag["content"].strip() if title_tag and title_tag.has_attr("content") else "")
-            if not title:
+            if published_date != target_date_mmt:
+                article_stats["date_mismatch"] += 1
+                # 大量ログになり過ぎないよう個別URLは出すが本文等は出さない。
+                print(
+                    f"[mizzima] article skip reason=date_mismatch "
+                    f"published={published_date.isoformat()} target={target_date_mmt.isoformat()} "
+                    f"source={source} url={url}"
+                )
                 continue
-            title_nfc = unicodedata.normalize("NFC", title)
+
+            title_nfc = _mizzima_extract_title(soup)
+            if not title_nfc:
+                article_stats["no_title"] += 1
+                print(f"[mizzima] article skip reason=title_not_found source={source} url={url}")
+                continue
+
             if any(kw in title_nfc for kw in EXCLUDE_TITLE_KEYWORDS):
+                article_stats["excluded_title"] += 1
+                print(
+                    f"[mizzima] article skip reason=excluded_title_keyword "
+                    f"source={source} url={url} title={title_nfc!r}"
+                )
                 continue
 
-            content_div = soup.find("div", class_="entry-content")
-            if not content_div:
-                continue
-            paras = []
-            for p in content_div.find_all("p"):
-                if p.find_previous("h2", string=re.compile("Related Posts", re.I)):
-                    break
-                paras.append(p)
-            body_text = "\n".join(p.get_text(strip=True) for p in paras).strip()
-            body_nfc = unicodedata.normalize("NFC", body_text)
+            body_nfc = _mizzima_extract_body(soup)
             if not body_nfc:
+                article_stats["no_body"] += 1
+                print(
+                    f"[mizzima] article skip reason=body_not_found "
+                    f"source={source} url={url} title={title_nfc!r}"
+                )
                 continue
 
             if require_myanmar_keyword and not _mizzima_has_myanmar_keyword(title_nfc, body_nfc):
-                print(f"[mizzima] skip no မြန်မာ keyword in extra category → {url} | TITLE: {title_nfc}")
+                article_stats["keyword_miss"] += 1
+                print(
+                    f"[mizzima] article skip reason=no_မြန်မာ_keyword_in_extra_category "
+                    f"source={source} url={url} title={title_nfc!r}"
+                )
                 continue
 
             results.append(
@@ -831,9 +1368,54 @@ def collect_mizzima_all_for_date(target_date_mmt: date, max_pages: int = 15) -> 
                     "body": body_nfc,
                 }
             )
+            article_stats["accepted"] += 1
+            print(
+                f"[mizzima] article accepted source={source} "
+                f"date={target_date_mmt.isoformat()} body_len={len(body_nfc)} url={url}"
+            )
+
         except Exception as e:
-            print(f"[mizzima] article fail {url}: {e}")
+            article_stats["fetch_failed"] += 1
+            print(
+                f"[mizzima] article fail unexpected={type(e).__name__}:{e} url={url}"
+            )
             continue
+
+    if results:
+        before = len(results)
+        results = deduplicate_by_url(results)
+        if before != len(results):
+            print(f"[mizzima] dedup: {before} -> {len(results)}")
+
+    print(
+        "[mizzima] article summary "
+        f"target={target_date_mmt.isoformat()} attempted={article_stats['attempted']} "
+        f"fetch_failed={article_stats['fetch_failed']} "
+        f"via_direct={article_stats['direct']} via_curl_cffi={article_stats['curl_cffi']} "
+        f"via_cloudscraper={article_stats['cloudscraper']} via_unlocker={article_stats['unlocker']} "
+        f"no_date={article_stats['no_date']} date_mismatch={article_stats['date_mismatch']} "
+        f"no_title={article_stats['no_title']} excluded_title={article_stats['excluded_title']} "
+        f"no_body={article_stats['no_body']} keyword_miss={article_stats['keyword_miss']} "
+        f"accepted={article_stats['accepted']} final={len(results)}"
+    )
+
+    if not results:
+        # 最終0件の主因を機械的に要約して、GitHub Actionsのログだけで原因を判断しやすくする。
+        reason_candidates = {
+            "article_fetch_failed": article_stats["fetch_failed"],
+            "published_date_not_found": article_stats["no_date"],
+            "date_mismatch": article_stats["date_mismatch"],
+            "title_not_found": article_stats["no_title"],
+            "excluded_title": article_stats["excluded_title"],
+            "body_not_found": article_stats["no_body"],
+            "keyword_miss": article_stats["keyword_miss"],
+        }
+        main_reason = max(reason_candidates, key=reason_candidates.get)
+        main_count = reason_candidates[main_reason]
+        print(
+            f"[mizzima] RESULT=0 reason={main_reason} count={main_count} "
+            f"candidate_urls={len(article_require_keyword)}"
+        )
 
     return results
 
