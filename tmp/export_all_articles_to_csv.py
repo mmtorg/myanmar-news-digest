@@ -545,8 +545,26 @@ FACEBOOK_FALLBACK_POLL_SEC = max(
     1.0, float(os.getenv("FACEBOOK_FALLBACK_POLL_SEC", "10"))
 )
 FACEBOOK_FALLBACK_TIMEOUT_SEC = max(
-    30, int(os.getenv("FACEBOOK_FALLBACK_TIMEOUT_SEC", "300"))
+    30, int(os.getenv("FACEBOOK_FALLBACK_TIMEOUT_SEC", "900"))
 )
+
+BRIGHTDATA_ERROR_BODY_MAX_CHARS = max(
+    200, int(os.getenv("BRIGHTDATA_ERROR_BODY_MAX_CHARS", "2000"))
+)
+
+
+def _short_response_body(resp: requests.Response | None) -> str:
+    """Return a compact, single-line response body for API diagnostics."""
+    if resp is None:
+        return ""
+    try:
+        body = resp.text or ""
+    except Exception:
+        body = ""
+    body = re.sub(r"\s+", " ", body).strip()
+    if len(body) > BRIGHTDATA_ERROR_BODY_MAX_CHARS:
+        return body[:BRIGHTDATA_ERROR_BODY_MAX_CHARS].rstrip() + "..."
+    return body
 
 
 def _facebook_post_is_video(post: Dict) -> bool:
@@ -760,7 +778,15 @@ def _brightdata_facebook_page_posts(
             )
             return []
     except Exception as e:
-        print(f"[{log_prefix}-facebook] trigger failed: {type(e).__name__}: {e}")
+        status = getattr(locals().get("r", None), "status_code", None)
+        body = _short_response_body(locals().get("r", None))
+        detail = f" status={status}" if status is not None else ""
+        if body:
+            detail += f" body={body!r}"
+        print(
+            f"[{log_prefix}-facebook] trigger failed: "
+            f"{type(e).__name__}: {e}{detail}"
+        )
         return []
 
     raw_records = _brightdata_wait_and_download_snapshot(
