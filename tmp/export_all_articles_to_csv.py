@@ -529,13 +529,320 @@ def _make_pooled_session() -> requests.Session:
     })
     return s
 
+# ===== Bright Data Facebook Page Posts: final fallback =====
+# Official Facebook Page Posts dataset ID.
+# Override with an environment variable only if Bright Data changes the dataset ID.
+BRIGHTDATA_FACEBOOK_PAGE_POSTS_DATASET_ID = (
+    os.getenv("BRIGHTDATA_FACEBOOK_PAGE_POSTS_DATASET_ID")
+    or "gd_lkaxegm826bjpoo9m5"
+).strip()
+
+FACEBOOK_FALLBACK_ENABLED = str(
+    os.getenv("FACEBOOK_FALLBACK_ENABLED", "1")
+).strip().lower() not in ("0", "false", "off", "no")
+
+FACEBOOK_FALLBACK_POLL_SEC = max(
+    1.0, float(os.getenv("FACEBOOK_FALLBACK_POLL_SEC", "10"))
+)
+FACEBOOK_FALLBACK_TIMEOUT_SEC = max(
+    30, int(os.getenv("FACEBOOK_FALLBACK_TIMEOUT_SEC", "300"))
+)
+
+
+def _facebook_post_is_video(post: Dict) -> bool:
+    """Bright Data の Facebook Page Posts レコードが動画/Reel系なら True。"""
+    post_type = str(post.get("post_type") or "").strip().casefold()
+    content_type = str(post.get("content_type") or "").strip().casefold()
+    if any(word in post_type for word in ("video", "reel", "live")):
+        return True
+    if any(word in content_type for word in ("video", "reel", "live")):
+        return True
+
+    post_url = str(post.get("url") or "").strip().casefold()
+    video_url_markers = (
+        "/reel/",
+        "/reels/",
+        "/videos/",
+        "/watch/",
+        "/share/v/",
+    )
+    if any(marker in post_url for marker in video_url_markers):
+        return True
+
+    attachments = post.get("attachments") or []
+    if isinstance(attachments, dict):
+        attachments = [attachments]
+    if isinstance(attachments, list):
+        for att in attachments:
+            if not isinstance(att, dict):
+                continue
+            att_type = str(att.get("type") or "").strip().casefold()
+            att_url = str(
+                att.get("url") or att.get("attachment_url") or ""
+            ).strip().casefold()
+            if any(word in att_type for word in ("video", "reel", "live")):
+                return True
+            if str(att.get("video_url") or "").strip():
+                return True
+            if any(marker in att_url for marker in video_url_markers):
+                return True
+
+    return False
+
+
+def _facebook_post_date_mmt(post: Dict) -> Optional[date]:
+    """date_posted/timestamp を MMT 日付へ正規化する。"""
+    raw = str(post.get("date_posted") or post.get("timestamp") or "").strip()
+    if not raw:
+        return None
+    try:
+        dt = parse_date(raw)
+        if dt.tzinfo is None:
+            # Bright Data は通常 UTC offset/Z 付き。offset が無い場合は UTC として扱う。
+            from datetime import timezone as _timezone
+            dt = dt.replace(tzinfo=_timezone.utc)
+        return dt.astimezone(MMT).date()
+    except Exception:
+        return None
+
+
+def _facebook_title_from_content(content: str, max_chars: int = 220) -> str:
+    """Facebook 投稿本文の先頭非空行を記事タイトル代替として使う。"""
+    content = unicodedata.normalize("NFC", content or "").strip()
+    if not content:
+        return ""
+
+    for line in content.splitlines():
+        line = re.sub(r"\s+", " ", line).strip()
+        if line:
+            if len(line) <= max_chars:
+                return line
+            return line[: max_chars - 1].rstrip() + "…"
+
+    one_line = re.sub(r"\s+", " ", content).strip()
+    if len(one_line) <= max_chars:
+        return one_line
+    return one_line[: max_chars - 1].rstrip() + "…"
+
+
+def _brightdata_wait_and_download_snapshot(
+    snapshot_id: str,
+    *,
+    token: str,
+    log_prefix: str,
+) -> List[Dict]:
+    """Bright Data snapshot が ready になるまで待ち、JSON結果を返す。"""
+    headers = {"Authorization": f"Bearer {token}"}
+    deadline = time.monotonic() + FACEBOOK_FALLBACK_TIMEOUT_SEC
+    progress_url = f"https://api.brightdata.com/datasets/v3/progress/{snapshot_id}"
+
+    while time.monotonic() < deadline:
+        try:
+            r = requests.get(progress_url, headers=headers, timeout=20)
+            r.raise_for_status()
+            info = r.json() or {}
+            status = str(info.get("status") or "").strip().casefold()
+            print(
+                f"[{log_prefix}-facebook] snapshot={snapshot_id} status={status or '-'}"
+            )
+            if status == "ready":
+                break
+            if status == "failed":
+                print(
+                    f"[{log_prefix}-facebook] snapshot failed "
+                    f"id={snapshot_id} detail={info!r}"
+                )
+                return []
+        except Exception as e:
+            print(
+                f"[{log_prefix}-facebook] progress check failed "
+                f"id={snapshot_id}: {type(e).__name__}: {e}"
+            )
+        time.sleep(FACEBOOK_FALLBACK_POLL_SEC)
+    else:
+        print(
+            f"[{log_prefix}-facebook] timeout waiting snapshot "
+            f"id={snapshot_id} timeout_sec={FACEBOOK_FALLBACK_TIMEOUT_SEC}"
+        )
+        return []
+
+    try:
+        result_url = f"https://api.brightdata.com/datasets/v3/snapshot/{snapshot_id}"
+        r = requests.get(
+            result_url,
+            params={"format": "json"},
+            headers=headers,
+            timeout=60,
+        )
+        r.raise_for_status()
+        data = r.json()
+    except Exception as e:
+        print(
+            f"[{log_prefix}-facebook] snapshot download failed "
+            f"id={snapshot_id}: {type(e).__name__}: {e}"
+        )
+        return []
+
+    if isinstance(data, list):
+        return [x for x in data if isinstance(x, dict)]
+    if isinstance(data, dict):
+        # 将来 wrapper が付いた場合への保険。
+        for key in ("data", "results", "records"):
+            value = data.get(key)
+            if isinstance(value, list):
+                return [x for x in value if isinstance(x, dict)]
+        return [data]
+    return []
+
+
+def _brightdata_facebook_page_posts(
+    profile_url: str,
+    target_date_mmt: date,
+    *,
+    source_name: str,
+    log_prefix: str,
+) -> List[Dict]:
+    """
+    Bright Data Facebook Page Posts を使う最終フォールバック。
+
+    現行仕様に合わせ、/datasets/v3/trigger へ URL だけを送る。
+    Bright Data 側には start_date/end_date/num_of_posts を送らず、取得後に Python 側で
+    target_date_mmt と一致する投稿だけを残す。
+
+    動画/Reel投稿は除外し、投稿本文(content/post_text)を通常の記事schemaへ変換する。
+    """
+    if not FACEBOOK_FALLBACK_ENABLED:
+        print(f"[{log_prefix}-facebook] skip: FACEBOOK_FALLBACK_ENABLED=0")
+        return []
+
+    token = (os.getenv("BRIGHTDATA_API_TOKEN") or "").strip()
+    if not token:
+        print(f"[{log_prefix}-facebook] skip: BRIGHTDATA_API_TOKEN is not set")
+        return []
+
+    dataset_id = BRIGHTDATA_FACEBOOK_PAGE_POSTS_DATASET_ID
+    if not dataset_id:
+        print(f"[{log_prefix}-facebook] skip: dataset id is empty")
+        return []
+
+    # Production向けに async workflow を使う。
+    # Bright Data公式: trigger -> progress -> snapshot download。
+    trigger_url = "https://api.brightdata.com/datasets/v3/trigger"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+    payload = [{"url": profile_url}]
+
+    try:
+        print(
+            f"[{log_prefix}-facebook] fallback start profile={profile_url} "
+            f"target_mmt={target_date_mmt.isoformat()} dataset_id={dataset_id}"
+        )
+        r = requests.post(
+            trigger_url,
+            params={
+                "dataset_id": dataset_id,
+                "format": "json",
+                "include_errors": "true",
+            },
+            headers=headers,
+            json=payload,
+            timeout=30,
+        )
+        r.raise_for_status()
+        trigger_data = r.json() or {}
+        snapshot_id = str(trigger_data.get("snapshot_id") or "").strip()
+        if not snapshot_id:
+            print(
+                f"[{log_prefix}-facebook] trigger returned no snapshot_id: "
+                f"{trigger_data!r}"
+            )
+            return []
+    except Exception as e:
+        print(f"[{log_prefix}-facebook] trigger failed: {type(e).__name__}: {e}")
+        return []
+
+    raw_records = _brightdata_wait_and_download_snapshot(
+        snapshot_id,
+        token=token,
+        log_prefix=log_prefix,
+    )
+    if not raw_records:
+        print(f"[{log_prefix}-facebook] no records snapshot={snapshot_id}")
+        return []
+
+    out: List[Dict] = []
+    skipped_error = 0
+    skipped_date = 0
+    skipped_video = 0
+    skipped_empty = 0
+
+    for post in raw_records:
+        if post.get("error") or post.get("errors"):
+            skipped_error += 1
+            continue
+
+        post_date = _facebook_post_date_mmt(post)
+        if post_date != target_date_mmt:
+            skipped_date += 1
+            continue
+
+        if _facebook_post_is_video(post):
+            skipped_video += 1
+            continue
+
+        content = str(post.get("content") or post.get("post_text") or "")
+        content = unicodedata.normalize("NFC", content).strip()
+        if not content:
+            skipped_empty += 1
+            continue
+
+        post_url = str(post.get("url") or "").strip()
+        post_id = str(post.get("post_id") or post.get("shortcode") or "").strip()
+        if not post_url:
+            # URL が欠落した異常レコードは、後工程の重複管理を壊さないため採用しない。
+            skipped_empty += 1
+            continue
+
+        title = _facebook_title_from_content(content)
+        if not title:
+            skipped_empty += 1
+            continue
+
+        out.append(
+            {
+                "source": source_name,
+                "title": title,
+                "url": post_url,
+                "date": target_date_mmt.isoformat(),
+                "body": content,
+                "_row_key": f"facebook:{post_id}" if post_id else post_url,
+                "_fallback_source": "brightdata_facebook_page_posts",
+                "_facebook_post_id": post_id,
+            }
+        )
+
+    out = deduplicate_by_row_key_or_url(out)
+    print(
+        f"[{log_prefix}-facebook] fallback done snapshot={snapshot_id} "
+        f"raw={len(raw_records)} accepted={len(out)} "
+        f"skipped_error={skipped_error} skipped_date={skipped_date} "
+        f"skipped_video={skipped_video} skipped_empty={skipped_empty}"
+    )
+    return out
+
+
 # ===== Khit Thit Media =====
 def collect_khitthit_all_for_date(target_date_mmt: date, max_pages: int = 15) -> List[Dict]:
     """
-    fetch_articles.py と同じロジック:
-      ・カテゴリ一覧/記事取得ともに fetch_with_retry のみを使用
-      ・キーワード絞り込みは実施しない
-      ・ページ数は 15 まで拡大
+    Khit Thit Media の既存Webサイト取得を最優先する。
+
+    通常取得で対象日の利用可能な記事が1件でも取れた場合は、その結果を返して
+    Facebook API は呼ばない。
+
+    通常取得に fetch/HTML構造/記事parse/本文取得の失敗があり、かつ対象日の
+    利用可能記事が0件だった場合だけ、Facebook Page Posts を最終フォールバックにする。
     """
     CATEGORY_URLS = [
         "https://yktnews.com/category/news/",
@@ -544,6 +851,7 @@ def collect_khitthit_all_for_date(target_date_mmt: date, max_pages: int = 15) ->
         "https://yktnews.com/category/interview/",
         "https://yktnews.com/category/china-watch/",
     ]
+    FACEBOOK_PROFILE_URL = "https://www.facebook.com/khitthitnews"
 
     def _remove_hashtag_links(soup):
         for a in soup.select("a"):
@@ -554,46 +862,70 @@ def collect_khitthit_all_for_date(target_date_mmt: date, max_pages: int = 15) ->
     HASHTAG_TOKEN_RE = re.compile(r"(?:(?<=\s)|^)\#[^\s#]+")
 
     collected_urls = set()
+    normal_failure_count = 0
+    list_success_count = 0
+    list_structure_failure_count = 0
+
     for base_url in CATEGORY_URLS:
         for page in range(1, max_pages + 1):
             url = f"{base_url}page/{page}/" if page > 1 else base_url
             try:
                 res = fetch_with_retry(url)
+                list_success_count += 1
             except Exception as e:
+                normal_failure_count += 1
                 print(f"[khitthit] stop pagination: {url} -> {e}")
                 break
 
             soup = BeautifulSoup(res.content, "html.parser")
             entry_links = soup.select("p.entry-title.td-module-title a[href]")
             if not entry_links:
+                # page 2以降なら通常のページ終端として扱える。
+                # page 1で既知記事構造が0件なら、soft-block/構造変更の可能性があるため失敗扱い。
+                if page == 1:
+                    list_structure_failure_count += 1
                 print(f"[khitthit] no entries: {url}")
                 break
+
             for a in entry_links:
                 href = a.get("href")
                 if href and href not in collected_urls:
                     collected_urls.add(href)
 
     results: List[Dict] = []
+    target_body_failures = 0
+
     for url in collected_urls:
         try:
             res = fetch_with_retry(url)
             soup = BeautifulSoup(res.content, "html.parser")
 
-            # 発行日時 → MMT
             meta_tag = soup.find("meta", property="article:published_time")
             if not meta_tag or not meta_tag.has_attr("content"):
+                normal_failure_count += 1
+                print(f"[khitthit] article missing published_time: {url}")
                 continue
-            dt = datetime.fromisoformat(meta_tag["content"]).astimezone(MMT)
+
+            try:
+                dt = parse_date(meta_tag["content"])
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=MMT)
+                dt = dt.astimezone(MMT)
+            except Exception as e:
+                normal_failure_count += 1
+                print(f"[khitthit] article bad published_time {url}: {e}")
+                continue
+
             if dt.date() != target_date_mmt:
                 continue
 
-            # タイトル
             h1 = soup.find("h1") or soup.find("title")
             title = (h1.get_text(strip=True) if h1 else "").strip()
             if not title:
+                normal_failure_count += 1
+                print(f"[khitthit] target article missing title: {url}")
                 continue
 
-            # 本文（#除去）
             _remove_hashtag_links(soup)
             paragraphs = extract_paragraphs_with_wait(soup)
             body_text = "\n".join(
@@ -601,6 +933,13 @@ def collect_khitthit_all_for_date(target_date_mmt: date, max_pages: int = 15) ->
                 for p in paragraphs
                 if p.get_text(strip=True)
             ).strip()
+            body_text = unicodedata.normalize("NFC", body_text or "").strip()
+
+            if not body_text:
+                normal_failure_count += 1
+                target_body_failures += 1
+                print(f"[khitthit] target article empty body: {url}")
+                continue
 
             results.append(
                 {
@@ -608,14 +947,42 @@ def collect_khitthit_all_for_date(target_date_mmt: date, max_pages: int = 15) ->
                     "title": unicodedata.normalize("NFC", title),
                     "url": url,
                     "date": target_date_mmt.isoformat(),
-                    "body": unicodedata.normalize("NFC", body_text),
+                    "body": body_text,
                 }
             )
         except Exception as e:
+            normal_failure_count += 1
             print(f"[khitthit] article fail {url}: {e}")
             continue
 
-    return results
+    if results:
+        return deduplicate_by_url(results)
+
+    normal_failed = (
+        normal_failure_count > 0
+        or list_structure_failure_count > 0
+        or (list_success_count == 0 and not collected_urls)
+    )
+
+    if normal_failed:
+        print(
+            f"[khitthit] normal collector produced no usable rows after failures; "
+            f"facebook fallback enabled failures={normal_failure_count} "
+            f"list_structure_failures={list_structure_failure_count} "
+            f"target_body_failures={target_body_failures}"
+        )
+        return _brightdata_facebook_page_posts(
+            FACEBOOK_PROFILE_URL,
+            target_date_mmt,
+            source_name="Khit Thit Media",
+            log_prefix="khitthit",
+        )
+
+    print(
+        "[khitthit] no target-day articles and no normal acquisition failure; "
+        "facebook fallback not used"
+    )
+    return []
 
 # ===== DVB =====
 def collect_dvb_all_for_date(target_date_mmt: date) -> List[Dict]:
@@ -4121,16 +4488,15 @@ def collect_popular_all_for_date(
     debug: bool = False,
 ) -> List[Dict]:
     """
-    Popular Myanmar（Popular News Journal）の WordPress RSS から
-    対象 MMT 日付の記事を収集する。
+    Popular Myanmar の既存 RSS + 記事HTML取得を最優先する。
 
-    - RSS で当日記事の URL を一覧取得
-    - 各記事 HTML からタイトル / 本文 / カテゴリを抽出
-    - POPULAR_ALLOWED_CATEGORIES が空でなければ、そのカテゴリのみ収集
-    - PopularMyanmar ドメインは Cloudflare 対策が厳しいので、
-      Irrawaddy 用の curl_cffi + cloudscraper フェッチャを流用する。
+    - RSS取得/構造が失敗した場合: Facebookへフォールバック
+    - RSSに対象日記事が0件の場合: 正常な0件としてFacebookは呼ばない
+    - 対象日候補があるのに通常の記事取得/parseが全滅した場合: Facebookへフォールバック
+    - カテゴリ条件で意図的に全件除外された場合: Facebookは呼ばない
     """
     rss_url = "https://www.popularmyanmar.com/feed/"
+    FACEBOOK_PROFILE_URL = "https://www.facebook.com/popularnewsjournal"
 
     session = _make_pooled_session()
     try:
@@ -4138,13 +4504,26 @@ def collect_popular_all_for_date(
         res.raise_for_status()
     except Exception as e:
         print(f"[popular] RSS取得失敗: {e}")
-        return []
+        return _brightdata_facebook_page_posts(
+            FACEBOOK_PROFILE_URL,
+            target_date_mmt,
+            source_name="Popular Myanmar (国軍系メディア)",
+            log_prefix="popular",
+        )
 
     soup = BeautifulSoup(res.content, "xml")
+    rss_items = soup.find_all("item")
+    if not rss_items:
+        print("[popular] RSS returned no <item>; treating as acquisition/structure failure")
+        return _brightdata_facebook_page_posts(
+            FACEBOOK_PROFILE_URL,
+            target_date_mmt,
+            source_name="Popular Myanmar (国軍系メディア)",
+            log_prefix="popular",
+        )
 
-    # --- RSS → 当日記事URL抽出 ---
     candidates: List[Dict] = []
-    for item in soup.find_all("item"):
+    for item in rss_items:
         pub_tag = item.find("pubDate")
         link_tag = item.find("link")
         if not (pub_tag and link_tag):
@@ -4156,112 +4535,141 @@ def collect_popular_all_for_date(
             continue
 
         try:
-            dt = parse_date(pub_raw).astimezone(MMT)
+            dt = parse_date(pub_raw)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=MMT)
+            dt = dt.astimezone(MMT)
         except Exception:
             continue
 
-        if dt.date() != target_date_mmt:
-            continue
-
-        candidates.append({"url": url})
+        if dt.date() == target_date_mmt:
+            candidates.append({"url": url})
 
     if debug:
         print(f"[popular] RSS candidates for {target_date_mmt}: {len(candidates)}")
 
+    if not candidates:
+        print(
+            "[popular] RSS succeeded with 0 target-day candidates; "
+            "facebook fallback not used"
+        )
+        return []
+
     results: List[Dict] = []
+    acquisition_failure_count = 0
+    intentionally_excluded_count = 0
 
     for item in candidates:
         url = item["url"]
 
-        # --- 記事 HTML 取得（既存の retry ユーティリティを使用） ---
         try:
             res = fetch_with_retry_irrawaddy(url)
+            status = getattr(res, "status_code", 200)
+            if status and int(status) != 200:
+                raise RuntimeError(f"HTTP {status}")
         except Exception as e:
+            acquisition_failure_count += 1
             print(f"[popular] article fetch fail {url}: {e}")
             continue
 
-        html = getattr(res, "content", None) or getattr(res, "text", "")
-        article = BeautifulSoup(html, "html.parser")
+        try:
+            html = getattr(res, "content", None) or getattr(res, "text", "")
+            article = BeautifulSoup(html, "html.parser")
 
-        # --- タイトル抽出: og:title → h1.entry-title → <title> ---
-        title = ""
-        og = article.find("meta", attrs={"property": "og:title"})
-        if og and og.get("content"):
-            title = og["content"].strip()
+            title = ""
+            og = article.find("meta", attrs={"property": "og:title"})
+            if og and og.get("content"):
+                title = og["content"].strip()
 
-        if not title:
-            h1 = article.select_one("h1.entry-title") or article.find("h1")
-            if h1:
-                title = h1.get_text(strip=True)
+            if not title:
+                h1 = article.select_one("h1.entry-title") or article.find("h1")
+                if h1:
+                    title = h1.get_text(strip=True)
 
-        if not title and article.title:
-            title = article.title.get_text(strip=True)
+            if not title and article.title:
+                title = article.title.get_text(strip=True)
 
-        title = unicodedata.normalize("NFC", title or "")
-        if not title:
-            if debug:
+            title = unicodedata.normalize("NFC", title or "").strip()
+            if not title:
+                acquisition_failure_count += 1
                 print(f"[popular] skip empty title: {url}")
-            continue
-
-        # --- カテゴリ抽出 ---
-        category = _extract_popular_category(article)
-        category_norm = unicodedata.normalize("NFC", category or "").lower()
-
-        # ★ 複数カテゴリ対応のフィルタリング ★
-        if POPULAR_ALLOWED_CATEGORIES:
-            if not category_norm or category_norm not in POPULAR_ALLOWED_CATEGORIES:
-                if debug:
-                    print(
-                        f"[popular] skip by category: '{category}' (allowed={POPULAR_ALLOWED_CATEGORIES}) url={url}"
-                    )
                 continue
 
-        # --- 本文抽出 ---
-        host = article.select_one("div.td-post-content") or article
-        paragraphs = host.find_all("p")
+            category = _extract_popular_category(article)
+            category_norm = unicodedata.normalize("NFC", category or "").lower()
 
-        parts: List[str] = []
-        for p in paragraphs:
-            text = p.get_text(" ", strip=True)
-            if text:
-                text = re.sub(r"\s+", " ", text)
-                parts.append(text)
+            if POPULAR_ALLOWED_CATEGORIES:
+                if not category_norm or category_norm not in POPULAR_ALLOWED_CATEGORIES:
+                    intentionally_excluded_count += 1
+                    if debug:
+                        print(
+                            f"[popular] skip by category: '{category}' "
+                            f"(allowed={POPULAR_ALLOWED_CATEGORIES}) url={url}"
+                        )
+                    continue
 
-        body = "\n".join(parts).strip()
+            host = article.select_one("div.td-post-content") or article
+            paragraphs = host.find_all("p")
+            parts: List[str] = []
+            for p in paragraphs:
+                p_text = p.get_text(" ", strip=True)
+                if p_text:
+                    parts.append(re.sub(r"\s+", " ", p_text))
+            body = "\n".join(parts).strip()
 
-        # fallback: 共通の段落抽出ユーティリティを使用
-        if not body:
-            paras = extract_paragraphs_with_wait(article)
-            body = "\n".join(
-                re.sub(r"\s+", " ", p.get_text(" ", strip=True))
-                for p in paras
-                if p.get_text(strip=True)
-            ).strip()
+            if not body:
+                paras = extract_paragraphs_with_wait(article)
+                body = "\n".join(
+                    re.sub(r"\s+", " ", p.get_text(" ", strip=True))
+                    for p in paras
+                    if p.get_text(strip=True)
+                ).strip()
 
-        body = unicodedata.normalize("NFC", body or "")
-        if not body:
-            if debug:
+            body = unicodedata.normalize("NFC", body or "").strip()
+            if not body:
+                acquisition_failure_count += 1
                 print(f"[popular] skip empty body: {url}")
+                continue
+
+            results.append(
+                {
+                    "source": "Popular Myanmar (国軍系メディア)",
+                    "title": title,
+                    "url": url,
+                    "date": target_date_mmt.isoformat(),
+                    "body": body,
+                }
+            )
+        except Exception as e:
+            acquisition_failure_count += 1
+            print(f"[popular] article parse fail {url}: {type(e).__name__}: {e}")
             continue
 
-        results.append(
-            {
-                "source": "Popular Myanmar (国軍系メディア)",
-                "title": title,
-                "url": url,
-                "date": target_date_mmt.isoformat(),
-                "body": body,
-            }
-        )
-
-    # --- URL 重複除去（fetch_articles のユーティリティ利用） ---
     if results:
         before = len(results)
         results = deduplicate_by_url(results)
         if debug and before != len(results):
             print(f"[popular] dedup: {before} -> {len(results)}")
+        return results
 
-    return results
+    if acquisition_failure_count > 0:
+        print(
+            f"[popular] normal collector produced no usable rows after failures; "
+            f"facebook fallback enabled failures={acquisition_failure_count} "
+            f"candidates={len(candidates)} intentionally_excluded={intentionally_excluded_count}"
+        )
+        return _brightdata_facebook_page_posts(
+            FACEBOOK_PROFILE_URL,
+            target_date_mmt,
+            source_name="Popular Myanmar (国軍系メディア)",
+            log_prefix="popular",
+        )
+
+    print(
+        f"[popular] no usable rows but all {intentionally_excluded_count} candidate(s) "
+        "were intentionally excluded; facebook fallback not used"
+    )
+    return []
 
 # ===== Frontier Myanmar (RSS + WP REST + Google News + homepage fallback) =====
 def collect_frontier_all_for_date(
