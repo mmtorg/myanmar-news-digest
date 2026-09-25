@@ -100,9 +100,25 @@ def _nl2br(s: str) -> str:
     return s.replace("\n", "<br>")
 
 # ========= Gemini リトライ調整用の定数 =========
-GEMINI_MAX_RETRIES = 2          # 既定 4 → 2
-GEMINI_BASE_DELAY = 60.0        # 既定 120.0 → 60.0
-GEMINI_MAX_DELAY = 1200.0        # 既定 120.0 → 1200.0
+GEMINI_MAX_RETRIES = 1
+GEMINI_BASE_DELAY = 60.0
+GEMINI_MAX_DELAY = 1200.0
+
+# prompt.js と同じモデル構成。
+# 通常 Gemini → 軽量 Gemini フォールバック → 用途別 GPT の順で試す。
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
+GEMINI_FALLBACK_MODEL = os.getenv(
+    "GEMINI_FALLBACK_MODEL", "gemini-3.1-flash-lite"
+)
+OPENAI_SUMMARY_MODEL = os.getenv("OPENAI_SUMMARY_MODEL", "gpt-6-luna")
+OPENAI_HEADLINE_MODEL = os.getenv("OPENAI_HEADLINE_MODEL", "gpt-6-sol")
+OPENAI_REPAIR_MODEL = os.getenv("OPENAI_REPAIR_MODEL", "gpt-6-luna")
+OPENAI_REASONING_SUMMARY = os.getenv("OPENAI_REASONING_SUMMARY", "medium")
+OPENAI_REASONING_HEADLINE = os.getenv("OPENAI_REASONING_HEADLINE", "medium")
+OPENAI_REASONING_REPAIR = os.getenv("OPENAI_REASONING_REPAIR", "low")
+OPENAI_MAX_OUTPUT_SUMMARY = int(os.getenv("OPENAI_MAX_OUTPUT_SUMMARY", "6000"))
+OPENAI_MAX_OUTPUT_HEADLINE = int(os.getenv("OPENAI_MAX_OUTPUT_HEADLINE", "6000"))
+OPENAI_MAX_OUTPUT_REPAIR = int(os.getenv("OPENAI_MAX_OUTPUT_REPAIR", "2500"))
 
 # 翻訳のバッチサイズ（瞬間負荷を下げる）
 TRANSLATION_BATCH_SIZE = 2      # 既定 3 → 2
@@ -379,7 +395,7 @@ _FREE_TIER_MON = _FreeTierWatch() if _FREE_TIER_CHECK_ENABLED else None
 def call_gemini_with_retries(
     client,
     prompt: str,
-    model: str = "gemini-2.5-flash",
+    model: str = GEMINI_MODEL,
     max_retries: int = GEMINI_MAX_RETRIES,
     base_delay: float = GEMINI_BASE_DELAY,
     max_delay: float = GEMINI_MAX_DELAY,
@@ -498,7 +514,7 @@ def call_gemini_with_retries(
     raise last_exc if last_exc else RuntimeError("Gemini call failed with unknown error.")
 
 # =========================
-# Gemini → GPT-5 mini fallback
+# Gemini → fallback Gemini → GPT-6 fallback
 # =========================
 _OPENAI_CLIENT = None
 if OpenAI and (os.getenv("OPENAI_API_KEY") or "").strip():
@@ -531,16 +547,25 @@ def _should_fallback_to_openai(e: Exception) -> bool:
 def call_llm_with_fallback(
     client,
     prompt: str,
-    model: str = "gemini-2.5-flash",
+    model: str = GEMINI_MODEL,
     max_retries: int = GEMINI_MAX_RETRIES,
     base_delay: float = GEMINI_BASE_DELAY,
     max_delay: float = GEMINI_MAX_DELAY,
     usage_tag: str = "generic",
-    openai_model: str = "gpt-5.4-mini",
+    purpose: str = "summary",
+    fallback_model: Optional[str] = GEMINI_FALLBACK_MODEL,
+    openai_model: Optional[str] = None,
 ):
     """
-    まず Gemini（既存リトライ込み）を実行。
-    Gemini が一時障害/無料枠上限などで最終的に失敗した場合のみ GPT-5 mini にフォールバック。
+    prompt.js と同じ優先順で LLM を呼ぶ。
+    1) 通常 Gemini、2) gemini-3.1-flash-lite を1回、3) 用途別 GPT-6。
+
+    purpose:
+      - summary: GPT-6 Luna / medium
+      - headline: GPT-6 Sol / medium
+      - repair: GPT-6 Luna / low
+
+    通常 Gemini が一時障害/無料枠上限などで失敗した場合だけフォールバックする。
     戻り値は resp.text を持つオブジェクト（Geminiと同じ呼び出し側コードで扱えるようにする）。
     """
     try:
@@ -557,20 +582,65 @@ def call_llm_with_fallback(
         if not _should_fallback_to_openai(e):
             raise
 
+        last_error = e
+        fallback = (fallback_model or "").strip()
+        if fallback and fallback != model:
+            try:
+                logging.warning(
+                    "[fallback] Gemini failed; switching to fallback Gemini "
+                    f"model={fallback}. reason={e}"
+                )
+                return call_gemini_with_retries(
+                    client,
+                    prompt,
+                    model=fallback,
+                    max_retries=1,
+                    base_delay=base_delay,
+                    max_delay=max_delay,
+                    usage_tag=usage_tag,
+                )
+            except Exception as fallback_error:
+                last_error = fallback_error
+                logging.warning(
+                    "[fallback] fallback Gemini failed; switching to OpenAI. "
+                    f"model={fallback} reason={fallback_error}"
+                )
+
         if not _OPENAI_CLIENT:
             raise RuntimeError(
                 "Gemini failed and OPENAI_API_KEY is not set (or openai SDK not available), "
-                "so fallback to GPT-5 mini cannot run."
-            ) from e
+                "so fallback to GPT-6 cannot run."
+            ) from last_error
 
-        logging.warning(f"[fallback] Gemini failed; switching to OpenAI model={openai_model}. reason={e}")
+        purpose_key = (purpose or "summary").strip().lower()
+        if purpose_key == "headline":
+            default_openai_model = OPENAI_HEADLINE_MODEL
+            reasoning_effort = OPENAI_REASONING_HEADLINE
+            max_output_tokens = OPENAI_MAX_OUTPUT_HEADLINE
+        elif purpose_key == "repair":
+            default_openai_model = OPENAI_REPAIR_MODEL
+            reasoning_effort = OPENAI_REASONING_REPAIR
+            max_output_tokens = OPENAI_MAX_OUTPUT_REPAIR
+        else:
+            default_openai_model = OPENAI_SUMMARY_MODEL
+            reasoning_effort = OPENAI_REASONING_SUMMARY
+            max_output_tokens = OPENAI_MAX_OUTPUT_SUMMARY
+
+        selected_openai_model = openai_model or default_openai_model
+        logging.warning(
+            "[fallback] switching to OpenAI "
+            f"model={selected_openai_model} purpose={purpose_key} "
+            f"reasoning={reasoning_effort}. reason={last_error}"
+        )
         txt = openai_call_with_retry_(
             _OPENAI_CLIENT,
-            model=openai_model,
+            model=selected_openai_model,
             input_text=prompt,
             usage_tag=usage_tag,
-            max_tries=2,      # Gemini→GPTフォールバック時のGPT側リトライ回数
-            sleep_sec=10.0,   # 安全側（必要なら 3〜10秒で調整）
+            reasoning_effort=reasoning_effort,
+            max_output_tokens=max_output_tokens,
+            max_tries=3,      # 初回 + 追加リトライ2回（prompt.js と同じ）
+            sleep_sec=10.0,
         )
         return SimpleNamespace(text=(txt or ""))
 
@@ -580,7 +650,9 @@ def openai_call_with_retry_(
     model: str,
     input_text: str,
     usage_tag: str = "",
-    max_tries: int = 2,
+    reasoning_effort: str = "medium",
+    max_output_tokens: int = 6000,
+    max_tries: int = 3,
     sleep_sec: float = 10.0,
 ):
     """
@@ -593,7 +665,21 @@ def openai_call_with_retry_(
             r = openai_client.responses.create(
                 model=model,
                 input=input_text,
+                reasoning={"effort": reasoning_effort},
+                max_output_tokens=max_output_tokens,
             )
+            usage = getattr(r, "usage", None)
+            if usage:
+                logging.info(
+                    "[openai-usage] tag=%s model=%s reasoning=%s "
+                    "input=%s output=%s total=%s",
+                    usage_tag or "openai",
+                    model,
+                    reasoning_effort,
+                    getattr(usage, "input_tokens", 0),
+                    getattr(usage, "output_tokens", 0),
+                    getattr(usage, "total_tokens", 0),
+                )
             text = getattr(r, "output_text", None) or ""
             # 空文字が返るのも失敗扱いにして再試行したいなら次の2行を有効化
             if not text.strip():
@@ -3720,11 +3806,12 @@ def dedupe_articles_with_llm(
         resp = call_llm_with_fallback(
             client,
             prompt,
-            model="gemini-2.5-flash",
+            model=GEMINI_MODEL,
             max_retries=GEMINI_MAX_RETRIES,
             base_delay=GEMINI_BASE_DELAY,
             max_delay=GEMINI_MAX_DELAY,
             usage_tag="dedupe",
+            purpose="repair",
         )
         data = _safe_json_loads_maybe_extract(resp.text)
 
@@ -5396,7 +5483,11 @@ def process_translation_batches(batch_size=TRANSLATION_BATCH_SIZE, wait_seconds=
                 )
 
                 resp = call_llm_with_fallback(
-                    client_summary, prompt, model="gemini-2.5-flash"
+                    client_summary,
+                    prompt,
+                    model=GEMINI_MODEL,
+                    usage_tag="summary",
+                    purpose="summary",
                 )
                 output_text = resp.text.strip()
 
@@ -5848,8 +5939,9 @@ def translate_fulltexts_for_business(urls_in_order_or_items, url_to_source_title
             resp = call_llm_with_fallback(
                 client_fulltext,
                 prompt,
-                model="gemini-3.1-flash-lite",
+                model=GEMINI_MODEL,
                 usage_tag="fulltext-retry",
+                purpose="repair",
             )
 
             llm_text = getattr(resp, "text", None) or ""
@@ -5867,10 +5959,12 @@ def translate_fulltexts_for_business(urls_in_order_or_items, url_to_source_title
                 try:
                     gpt_text = openai_call_with_retry_(
                         _OPENAI_CLIENT,
-                        model="gpt-5.4-mini",
+                        model=OPENAI_REPAIR_MODEL,
                         input_text=prompt,
                         usage_tag="fulltext-retry",
-                        max_tries=2,
+                        reasoning_effort=OPENAI_REASONING_REPAIR,
+                        max_output_tokens=OPENAI_MAX_OUTPUT_REPAIR,
+                        max_tries=3,
                         sleep_sec=10.0,
                     )
                     arr = _safe_json_loads_extract(gpt_text)
@@ -5974,8 +6068,9 @@ def translate_fulltexts_for_business(urls_in_order_or_items, url_to_source_title
             resp = call_llm_with_fallback(
                 client_fulltext,
                 prompt,
-                model="gemini-3.1-flash-lite",
+                model=GEMINI_MODEL,
                 usage_tag="fulltext",
+                purpose="repair",
             )
             text = getattr(resp, "text", None) or ""
             arr = _safe_json_loads_extract(text)

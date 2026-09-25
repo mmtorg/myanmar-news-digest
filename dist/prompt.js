@@ -358,6 +358,144 @@ ${lines}
 `;
 }
 
+// ============================================================
+// OpenAI(GPT) 専用：見出しFew-shotの類似事例選択
+// - Gemini側の buildArchiveTeacherSection_() / 最新30件は一切変更しない。
+// - OpenAI見出し生成だけ、今回要約に近い事例を5〜8件へ絞って入力tokenを削減する。
+// - A/B確認用：Script Property OPENAI_FEWSHOT_MODE に "recent30" を設定すると、
+//   OpenAI側だけ従来の最新30件を使用する。未設定/"similar" は類似事例を使用する。
+// ============================================================
+const OPENAI_FEWSHOT_MODE_PROP = "OPENAI_FEWSHOT_MODE";
+const OPENAI_FEWSHOT_SIMILAR_COUNT = 6; // 5〜8件の範囲内
+
+function _normalizeTextForOpenAiFewShotSimilarity_(text) {
+  let s = String(text || "").toLowerCase();
+  try {
+    s = s.normalize("NFKC");
+  } catch (e) {}
+  return s
+    .replace(/【要約】/g, "")
+    .replace(/[\s\u3000]+/g, "")
+    .replace(
+      /[、。・「」『』（）()［］\[\]【】〈〉《》！？!?：:；;,.\-—―_\/\\]/g,
+      "",
+    );
+}
+
+function _charBigramSetForOpenAiFewShot_(text) {
+  const s = _normalizeTextForOpenAiFewShotSimilarity_(text);
+  const out = {};
+  if (!s) return out;
+  if (s.length === 1) {
+    out[s] = true;
+    return out;
+  }
+  for (let i = 0; i < s.length - 1; i++) {
+    out[s.substring(i, i + 2)] = true;
+  }
+  return out;
+}
+
+function _diceSimilarityForOpenAiFewShot_(a, b) {
+  const sa = _charBigramSetForOpenAiFewShot_(a);
+  const sb = _charBigramSetForOpenAiFewShot_(b);
+  const ka = Object.keys(sa);
+  const kb = Object.keys(sb);
+  if (!ka.length || !kb.length) return 0;
+
+  let inter = 0;
+  const small = ka.length <= kb.length ? ka : kb;
+  const other = ka.length <= kb.length ? sb : sa;
+  small.forEach(function (k) {
+    if (other[k]) inter += 1;
+  });
+  return (2 * inter) / (ka.length + kb.length);
+}
+
+function _getOpenAiFewShotMode_() {
+  try {
+    const raw = String(
+      PropertiesService.getScriptProperties().getProperty(
+        OPENAI_FEWSHOT_MODE_PROP,
+      ) || "similar",
+    )
+      .trim()
+      .toLowerCase();
+    return raw === "recent30" ? "recent30" : "similar";
+  } catch (e) {
+    return "similar";
+  }
+}
+
+function selectOpenAiTitleCorrectionExamples_(queryText) {
+  const all = loadTitleCorrectionExamples_(); // Geminiと同じ最新30件キャッシュを読むだけ
+  if (!all || all.length === 0) return [];
+
+  const mode = _getOpenAiFewShotMode_();
+  if (mode === "recent30") return all.slice();
+
+  const q = String(queryText || "").trim();
+  if (!q) {
+    return all.slice(Math.max(0, all.length - OPENAI_FEWSHOT_SIMILAR_COUNT));
+  }
+
+  return all
+    .map(function (ex, idx) {
+      // 本文要約を主に比較し、確定見出し・候補も弱く補助に使う。
+      const candidateText = [
+        ex.summary || "",
+        ex.after || "",
+        (ex.candidates || []).join(" "),
+      ].join(" ");
+      return {
+        ex: ex,
+        score: _diceSimilarityForOpenAiFewShot_(q, candidateText),
+        idx: idx,
+      };
+    })
+    .sort(function (a, b) {
+      if (b.score !== a.score) return b.score - a.score;
+      // 同点なら、loadTitleCorrectionExamples_() の後ろほど新しいため新しいものを優先
+      return b.idx - a.idx;
+    })
+    .slice(0, OPENAI_FEWSHOT_SIMILAR_COUNT)
+    .map(function (x) {
+      return x.ex;
+    });
+}
+
+function buildOpenAiArchiveTeacherSection_(queryText) {
+  const examples = selectOpenAiTitleCorrectionExamples_(queryText);
+  if (!examples || examples.length === 0) return "";
+
+  const mode = _getOpenAiFewShotMode_();
+  const lines = examples
+    .map(function (ex, idx) {
+      const parts = ["事例" + (idx + 1)];
+      (ex.candidates || []).forEach(function (c, ci) {
+        parts.push("見出し案" + (ci + 1) + ": " + c);
+      });
+      parts.push("本文要約: " + (ex.summary || ""));
+      parts.push("確定見出し: " + (ex.after || ""));
+      return parts.join("\n");
+    })
+    .join("\n\n");
+
+  return `【OpenAI見出しアーカイブ（教師データ・Task2'専用）】
+選択方式: ${mode === "recent30" ? "最新30件（A/B比較用）" : "今回要約との類似上位" + examples.length + "件"}
+以下は、過去のAI見出し案・本文要約から編集者が確定見出しを決めた事例です。
+今回も、主体・地名・数値・因果・対立軸・ニュース価値の取捨選択と語順を参考にしてください。
+
+${lines}
+
+【Task2' の進め方】
+- 今回の見出しA、見出しB'、本文要約を合わせて判断する。
+- 過去事例は表現と情報選択の傾向を参考にするために使う。
+- 本文要約にない事実を追加・推測しない。
+- 出力は最終見出しのみで、分析過程は出力しない。
+`;
+}
+
 // タイトルの出力ルール（TITLE_OUTPUT_RULES 相当）
 const TITLE_OUTPUT_RULES = `
 出力は見出し文だけを1行で返してください。
@@ -778,6 +916,274 @@ JSON オブジェクトを1つだけ出力してください。
 - JSON以外の文字は出力しない
 - コードブロック禁止
 `.trim();
+}
+
+// ============================================================
+// OpenAI専用 prompt builder
+// - Geminiの既存prompt builderはそのまま残す。
+// - 固定ルールを developer message に、記事固有データを user message に分離する。
+// - developer側だけをExplicit Prompt Cacheの再利用prefixにできる構造。
+// ============================================================
+function buildOpenAISummaryRequestPartsForRow_(params) {
+  const { titleRaw, bodyRaw, bodyGlossaryRules, sourceVal } = params;
+  const amountFactsPrompt = buildMyanmarAmountFactsPrompt_(titleRaw, bodyRaw);
+
+  const developerText = `
+あなたは日本語報道要約の編集者です。
+記事本文だけを根拠にし、推測で事実を補わないでください。
+
+【共通ルール（最優先）】
+${COMMON_TRANSLATION_RULES}
+
+--- SUMMARY_TASK ---
+${SUMMARY_TASK}
+--------------------
+
+${PROMPT_SELF_CHECK_RULE}
+
+【出力】
+Structured Outputs のスキーマに従い、summary のみを返してください。
+`.trim();
+
+  const userText = `
+以下は1つのニュース記事です。本文要約だけを生成してください。見出しは生成しないでください。
+
+[メディア]
+${sourceVal || ""}
+
+${buildSourceSpecificTranslationRules_(sourceVal)}
+
+[記事タイトル]
+${titleRaw || ""}
+
+[記事本文]
+${bodyRaw || ""}
+
+${amountFactsPrompt || ""}
+
+【本文用 用語固定ルール】
+${bodyGlossaryRules || "(なし)"}
+`.trim();
+
+  return { developerText: developerText, userText: userText };
+}
+
+function buildOpenAIHeadlineRequestPartsForRow_(params) {
+  const {
+    titleRaw,
+    bodyRaw,
+    summaryJa,
+    titleGlossaryRules,
+    bodyGlossaryRules,
+    sourceVal,
+  } = params;
+
+  const effectiveHeadlineGlossaryRules =
+    bodyGlossaryRules ||
+    buildRegionRulesForHeadlineTexts_([
+      titleRaw || "",
+      bodyRaw || "",
+      summaryJa || "",
+    ]);
+  const archiveTeacherSection = buildOpenAiArchiveTeacherSection_(
+    summaryJa || titleRaw || "",
+  );
+
+  const developerText = `
+あなたは日本語ニュースの見出しデスクです。
+推測で事実を補わず、入力された記事タイトルと生成済み本文要約だけを根拠にしてください。
+
+【共通ルール（最優先）】
+${COMMON_TRANSLATION_RULES}
+
+--- Task1 見出しAルール ---
+${HEADLINE_PROMPT_1}
+
+--- Task2 見出しB'ルール ---
+${HEADLINE_PROMPT_3}
+
+--- Task2' 見出しFルール ---
+${F_HEADLINE_EDIT_RULES}
+${HEADLINE_STRUCTURE_RULES}
+${TITLE_OUTPUT_RULES}
+${HEADLINE_OUTPUT_SELF_CHECK_RULE}
+
+【出力】
+Structured Outputs のスキーマに従い、headlineA / headlineBPrime / headlineBPrimeFewShot の3項目だけを返してください。
+`.trim();
+
+  const userText = `
+以下は1つのニュース記事です。本文要約は生成済みです。
+見出しAは記事タイトル、見出しB'と見出しFは生成済み本文要約を主な根拠として生成してください。
+
+[メディア]
+${sourceVal || ""}
+
+${buildSourceSpecificTranslationRules_(sourceVal)}
+
+[記事タイトル]
+${titleRaw || ""}
+
+[生成済み本文要約]
+${summaryJa || ""}
+
+【タイトル用 用語固定ルール】
+${titleGlossaryRules || "(なし)"}
+
+【見出し用 用語固定ルール】
+${effectiveHeadlineGlossaryRules || "(なし)"}
+
+【Task2' 教師データ】
+${archiveTeacherSection || "(なし)"}
+
+【Task2' 補足】
+- 見出しB'（要約ベース）を主ベースとし、見出しAの要素も参考にする。
+- 編集者が最終的に確定しそうな1行見出しを生成する。
+- 生成済み本文要約にない事実は補わない。
+`.trim();
+
+  return { developerText: developerText, userText: userText };
+}
+
+function buildOpenAISummaryRequestPartsForRows_(items) {
+  const developerText = `
+あなたは日本語報道要約の編集者です。
+記事本文だけを根拠にし、推測で事実を補わないでください。
+
+【共通ルール（全ARTICLEの要約に適用・最優先）】
+${COMMON_TRANSLATION_RULES}
+
+--- SUMMARY_TASK ---
+${SUMMARY_TASK}
+--------------------
+
+${PROMPT_SELF_CHECK_RULE}
+
+【出力】
+Structured Outputs のスキーマに従い、入力順のitems配列で id と summary を返してください。
+id は入力値を一字一句そのまま文字列で返してください。
+`.trim();
+
+  const blocks = (items || [])
+    .map(function (it, idx) {
+      const amountFactsPrompt = buildMyanmarAmountFactsPrompt_(
+        it.titleRaw,
+        it.bodyRaw,
+      );
+      return `
+====================
+[ARTICLE ${idx + 1}]
+id: ${it.id}
+[メディア]
+${it.sourceVal || ""}
+
+${buildSourceSpecificTranslationRules_(it.sourceVal)}
+
+[記事タイトル]
+${it.titleRaw || ""}
+
+[記事本文]
+${it.bodyRaw || ""}
+
+${amountFactsPrompt || ""}
+
+【本文用 用語固定ルール】
+${it.bodyGlossaryRules || "(なし)"}
+`.trim();
+    })
+    .join("\n\n");
+
+  const userText = `
+以下は複数のニュース記事です（最大2件）。
+各記事について本文要約だけを生成してください。見出しは生成しないでください。
+
+${blocks}
+`.trim();
+
+  return { developerText: developerText, userText: userText };
+}
+
+function buildOpenAIHeadlineRequestPartsForRows_(items) {
+  const developerText = `
+あなたは日本語ニュースの見出しデスクです。
+推測で事実を補わず、記事タイトルと生成済み本文要約だけを根拠にしてください。
+
+【共通ルール（全ARTICLEの見出し生成に適用・最優先）】
+${COMMON_TRANSLATION_RULES}
+
+--- Task1 見出しAルール ---
+${HEADLINE_PROMPT_1}
+
+--- Task2 見出しB'ルール ---
+${HEADLINE_PROMPT_3}
+
+--- Task2' 見出しFルール ---
+${F_HEADLINE_EDIT_RULES}
+${HEADLINE_STRUCTURE_RULES}
+${TITLE_OUTPUT_RULES}
+${HEADLINE_OUTPUT_SELF_CHECK_RULE}
+
+【出力】
+Structured Outputs のスキーマに従い、入力順のitems配列で id / headlineA / headlineBPrime / headlineBPrimeFewShot を返してください。
+id は入力値を一字一句そのまま文字列で返してください。
+`.trim();
+
+  const blocks = (items || [])
+    .map(function (it, idx) {
+      const effectiveHeadlineGlossaryRules =
+        it.headlineGlossaryRules ||
+        buildRegionRulesForHeadlineTexts_([
+          it.titleRaw || "",
+          it.bodyRaw || "",
+          it.summaryJa || "",
+        ]);
+      const archiveTeacherSection = buildOpenAiArchiveTeacherSection_(
+        it.summaryJa || it.titleRaw || "",
+      );
+
+      return `
+====================
+[ARTICLE ${idx + 1}]
+id: ${it.id}
+[メディア]
+${it.sourceVal || ""}
+
+${buildSourceSpecificTranslationRules_(it.sourceVal)}
+
+[記事タイトル]
+${it.titleRaw || ""}
+
+[生成済み本文要約]
+${it.summaryJa || ""}
+
+【タイトル用 用語固定ルール】
+${it.titleGlossaryRules || "(なし)"}
+
+【見出し用 用語固定ルール】
+${effectiveHeadlineGlossaryRules || "(なし)"}
+
+【Task2' 教師データ】
+${archiveTeacherSection || "(なし)"}
+
+【Task2' 補足】
+- 見出しB'（要約ベース）を主ベースとし、見出しAの要素も参考にする。
+- 編集者が最終的に確定しそうな1行見出しを生成する。
+- 生成済み本文要約にない事実は補わない。
+`.trim();
+    })
+    .join("\n\n");
+
+  const userText = `
+以下は複数のニュース記事です（最大2件）。
+各記事について次の3つの見出しだけを生成してください。
+1) 見出しA（タイトル翻訳ベース）
+2) 見出しB'（生成済み本文要約ベース）
+3) 見出しF（教師データ参考・編集者確定見出し）
+
+${blocks}
+`.trim();
+
+  return { developerText: developerText, userText: userText };
 }
 
 function _stripJsonCodeFence_(text) {
@@ -1757,12 +2163,24 @@ const GEMINI_JS_MAX_RETRIES = 1; // 2 → 1
 const GEMINI_JS_BASE_DELAY_SEC = 8; // 5 → 8
 const GEMINI_JS_MAX_DELAY_SEC = 90; // 60 → 90
 
-// OpenAI(gpt-5.4-mini) 用リトライ設定
-// - 「リトライの条件」は Gemini と同じ判定ロジックに近い判定を使う
-// - 「回数」は最大2回（= 初回 + 2リトライの合計3回まで）
-const GPT5_MINI_MODEL = "gpt-5.4-mini";
+// OpenAI(GPT-6) 用設定
+// - GPT経路だけを変更する。Gemini側のモデル・プロンプト・フォールバック条件は変更しない。
+// - 要約: GPT-6 Luna / medium（コスト重視）
+// - 見出し: GPT-6 Sol / medium（品質重視）
+// - 圧縮などの修復: GPT-6 Luna / low
+const OPENAI_SUMMARY_MODEL = "gpt-6-luna";
+const OPENAI_HEADLINE_MODEL = "gpt-6-sol";
+const OPENAI_REPAIR_MODEL = "gpt-6-luna";
+const OPENAI_REASONING_SUMMARY = "medium";
+const OPENAI_REASONING_HEADLINE = "medium";
+const OPENAI_REASONING_REPAIR = "low";
 const OPENAI_API_KEY_PROP = "OPENAI_API_KEY";
 const GPT_JS_MAX_RETRIES = 2; // 追加リトライ回数（最大2回）
+
+// Explicit Prompt Cache は、同一run内で同一タスクのprefixを再利用できる場合だけ有効化する。
+// 1〜2件しかGPT対象がない場合はcache writeだけ発生し得るため、単体呼び出しでは使わない。
+const OPENAI_EXPLICIT_CACHE_MIN_GROUP_ITEMS = 3;
+const OPENAI_PROMPT_CACHE_TTL = "30m";
 
 // 乱数ジッター付き指数バックオフ: attempt=0,1,2,... → 待機ミリ秒
 function _expBackoffMs_(attempt) {
@@ -1832,10 +2250,10 @@ function _usageFromData_(data) {
 }
 
 // Gemini 呼び出しモデル（通常時）
-const GEMINI_MODEL = "gemini-3.1-flash-lite";
+const GEMINI_MODEL = "gemini-3.5-flash-lite";
 
-// 通常GeminiがNG(2)になった後に1回だけ試すフォールバックモデル
-const GEMINI_FALLBACK_MODEL = "gemini-2.5-flash";
+// 通常GeminiがNG(4)になった後に1回だけ試すフォールバックモデル
+const GEMINI_FALLBACK_MODEL = "gemini-3.1-flash-lite";
 
 // usage ログ（標準出力＝Apps Script 実行ログ）
 function _logGeminiUsage_(data, usageTag, model) {
@@ -2014,8 +2432,8 @@ function _shouldMoveToFlashOnThisHighDemand_(status) {
 }
 
 function _setStatusForGeminiHighDemandWaitExceeded_(sheet, rowIndex, tagOpt) {
-  // 通常Geminiで high demand 待機上限に達した場合は、次回 gemini-2.5-flash へ進めるため
-  // WAIT_GEMINI を NG(2) 相当へ明示的に進める。
+  // 通常Geminiで high demand 待機上限に達した場合は、次回 gemini-3.1-flash-lite へ進めるため
+  // WAIT_GEMINI を通常Geminiの上限 NG(MAX_RETRY_COUNT) 相当へ明示的に進める。
   const statusText =
     "NG(" +
     MAX_RETRY_COUNT +
@@ -2075,7 +2493,7 @@ function _deferRowsForGeminiHighDemand_(
   const retryKind = retryKindForGroup || "NG";
 
   promptItems.forEach(function (pi) {
-    // gemini-2.5-flash は high demand でも WAIT に入れず、1回失敗として扱う。
+    // gemini-3.1-flash-lite は high demand でも WAIT に入れず、1回失敗として扱う。
     // FLASHNG(1) になれば、次回 shouldUseGpt5Mini_() により GPT へ進む。
     if (retryKind === "FLASHNG") {
       _applyOutputsToRow_(
@@ -2098,7 +2516,7 @@ function _deferRowsForGeminiHighDemand_(
     }
 
     // 2回目の high demand は WAIT_GEMINI(2|nextAtMs) で待たせず、
-    // NG(2) 相当にして次回すぐ gemini-2.5-flash へ進める。
+    // 通常Geminiの上限 NG(MAX_RETRY_COUNT) 相当にして次回すぐ gemini-3.1-flash-lite へ進める。
     if (_shouldMoveToFlashOnThisHighDemand_(pi.prevStatus || "")) {
       _setStatusForGeminiHighDemandWaitExceeded_(
         sheet,
@@ -2655,12 +3073,18 @@ function compressSummaryWithFallback_(sheetName, promptText, usageTagOpt) {
   }
 
   const oaKey = getOpenAiApiKey_(usageTagOpt);
-  // 圧縮はJSON不要なので formatTypeOpt="none"
-  return callGpt5MiniWithKey_(oaKey, promptText, usageTagOpt, "none");
+  // 圧縮はJSON不要。既存のGemini→OpenAIフォールバック順は変えず、
+  // OpenAI側だけ GPT-6 Luna / low に置き換える。
+  return callOpenAIWithKey_(oaKey, promptText, usageTagOpt, "none", {
+    model: OPENAI_REPAIR_MODEL,
+    reasoningEffort: OPENAI_REASONING_REPAIR,
+    maxOutputTokens: 2500,
+    enableExplicitCache: false,
+  });
 }
 
 // ============================================================
-// OpenAI Responses API (gpt-5.4-mini)
+// OpenAI Responses API (GPT-6 Luna / Sol)
 // ============================================================
 function _extractOutputTextFromResponses_(data) {
   if (!data) return "";
@@ -2710,8 +3134,29 @@ function _isRetriableOpenAIError_(httpCode, data, rawText) {
   return _isRetriableError_(httpCode, mapped);
 }
 
+// OpenAI Structured Outputs 用スキーマ
+const OPENAI_SUMMARY_SINGLE_SCHEMA_ = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    summary: { type: "string" },
+  },
+  required: ["summary"],
+};
+
+const OPENAI_HEADLINE_SINGLE_SCHEMA_ = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    headlineA: { type: "string" },
+    headlineBPrime: { type: "string" },
+    headlineBPrimeFewShot: { type: "string" },
+  },
+  required: ["headlineA", "headlineBPrime", "headlineBPrimeFewShot"],
+};
+
 // multi2（2件まとめ）の Structured Outputs 用スキーマ
-// ★ json_schema は最上位が object 必須なので、items 配列を object で包む
+// json_schema は最上位が object 必須なので、items 配列を object で包む
 const GPT_MULTI2_WRAPPED_SCHEMA_ = {
   type: "object",
   additionalProperties: false,
@@ -2788,60 +3233,193 @@ const GPT_HEADLINE_BATCH_WRAPPED_SCHEMA_ = {
   required: ["items"],
 };
 
-// formatTypeOpt:
-//   - "json_object" (default): 単体行のオブジェクト出力向け
-//   - "json_schema_batch": multi2（2件まとめ）で配列を厳密に返させたいとき
-//   - "json_schema_summary_batch": 分割後の要約だけを厳密に返させたいとき
-//   - "json_schema_headline_batch": 分割後の見出しだけを厳密に返させたいとき
-//   - "none": text.format を付けずに呼ぶ（最終手段）
-function callGpt5MiniWithKey_(apiKey, promptText, usageTagOpt, formatTypeOpt) {
+function _openAiPricePerMillionForModel_(model) {
+  const m = String(model || "");
+  if (m.indexOf("gpt-6-sol") === 0) {
+    return { input: 2.0, cached: 0.2, cacheWrite: 2.5, output: 10.0 };
+  }
+  if (m.indexOf("gpt-6-luna") === 0) {
+    return { input: 0.1, cached: 0.01, cacheWrite: 0.125, output: 0.5 };
+  }
+  return null;
+}
+
+function _logOpenAIUsage_(data, usageTagOpt, requestMetaOpt) {
+  try {
+    const usage = data && data.usage;
+    if (!usage) return;
+
+    const inputDetails = usage.input_tokens_details || {};
+    const outputDetails = usage.output_tokens_details || {};
+    const inputTokens = Number(usage.input_tokens || 0);
+    const cachedTokens = Number(inputDetails.cached_tokens || 0);
+    const cacheWriteTokens = Number(inputDetails.cache_write_tokens || 0);
+    const ordinaryInputTokens = Math.max(
+      0,
+      inputTokens - cachedTokens - cacheWriteTokens,
+    );
+    const outputTokens = Number(usage.output_tokens || 0);
+    const reasoningTokens = Number(outputDetails.reasoning_tokens || 0);
+    const totalTokens = Number(usage.total_tokens || 0);
+    const model = String(
+      (data && data.model) || (requestMetaOpt && requestMetaOpt.model) || "",
+    );
+    const price = _openAiPricePerMillionForModel_(model);
+    let estimatedCostUsd = null;
+    if (price) {
+      estimatedCostUsd =
+        (ordinaryInputTokens * price.input +
+          cachedTokens * price.cached +
+          cacheWriteTokens * price.cacheWrite +
+          outputTokens * price.output) /
+        1000000;
+    }
+
+    const cacheEnabled = !!(
+      requestMetaOpt && requestMetaOpt.enableExplicitCache
+    );
+    const reasoningEffort = String(
+      (requestMetaOpt && requestMetaOpt.reasoningEffort) || "",
+    );
+    const msg = [
+      "OpenAI usage",
+      "model=" + model,
+      "reasoning=" + reasoningEffort,
+      "cache=" + (cacheEnabled ? "explicit" : "off"),
+      "input=" + inputTokens,
+      "ordinary=" + ordinaryInputTokens,
+      "cached=" + cachedTokens,
+      "cache_write=" + cacheWriteTokens,
+      "output=" + outputTokens,
+      "reasoning_tokens=" + reasoningTokens,
+      "total=" + totalTokens,
+      estimatedCostUsd == null
+        ? "estimated_usd=n/a"
+        : "estimated_usd=" + estimatedCostUsd.toFixed(6),
+    ].join(" ");
+
+    Logger.log("[openai-usage] " + msg);
+    _appendGeminiLog_("SUCCESS", usageTagOpt || "openai", msg);
+  } catch (e) {
+    Logger.log("[openai-usage] log failed: " + e);
+  }
+}
+
+function _buildOpenAIResponsesInput_(inputSpec, enableExplicitCache) {
+  if (
+    inputSpec &&
+    typeof inputSpec === "object" &&
+    (inputSpec.developerText != null || inputSpec.userText != null)
+  ) {
+    const developerBlock = {
+      type: "input_text",
+      text: String(inputSpec.developerText || ""),
+    };
+    if (enableExplicitCache) {
+      developerBlock.prompt_cache_breakpoint = { mode: "explicit" };
+    }
+
+    return [
+      {
+        role: "developer",
+        content: [developerBlock],
+      },
+      {
+        role: "user",
+        content: [
+          {
+            type: "input_text",
+            text: String(inputSpec.userText || ""),
+          },
+        ],
+      },
+    ];
+  }
+
+  return String(inputSpec || "");
+}
+
+function _openAIJsonSchemaForFormat_(fmt) {
+  if (fmt === "json_schema_summary_single") {
+    return {
+      name: "summary_single",
+      schema: OPENAI_SUMMARY_SINGLE_SCHEMA_,
+    };
+  }
+  if (fmt === "json_schema_headline_single") {
+    return {
+      name: "headline_single",
+      schema: OPENAI_HEADLINE_SINGLE_SCHEMA_,
+    };
+  }
+  if (fmt === "json_schema_batch") {
+    return { name: "multi2_array", schema: GPT_MULTI2_WRAPPED_SCHEMA_ };
+  }
+  if (fmt === "json_schema_summary_batch") {
+    return {
+      name: "summary_batch_array",
+      schema: GPT_SUMMARY_BATCH_WRAPPED_SCHEMA_,
+    };
+  }
+  if (fmt === "json_schema_headline_batch") {
+    return {
+      name: "headline_batch_array",
+      schema: GPT_HEADLINE_BATCH_WRAPPED_SCHEMA_,
+    };
+  }
+  return null;
+}
+
+// inputSpec:
+// - OpenAI専用builderの {developerText,userText}
+// - 圧縮などは従来どおり文字列でも可
+// optionsOpt:
+// - model
+// - reasoningEffort
+// - maxOutputTokens
+// - enableExplicitCache
+function callOpenAIWithKey_(
+  apiKey,
+  inputSpec,
+  usageTagOpt,
+  formatTypeOpt,
+  optionsOpt,
+) {
   if (!apiKey) {
     return "ERROR: missing " + OPENAI_API_KEY_PROP;
   }
 
-  const url = "https://api.openai.com/v1/responses";
+  const cfg = optionsOpt || {};
+  const model = String(cfg.model || OPENAI_SUMMARY_MODEL);
+  const reasoningEffort = String(cfg.reasoningEffort || "medium");
+  const maxOutputTokens = Number(cfg.maxOutputTokens || 6000);
+  const enableExplicitCache = cfg.enableExplicitCache === true;
   const fmt = String(formatTypeOpt || "json_object");
-  const isBatchJsonSchema = fmt === "json_schema_batch";
-  const isSummaryBatchJsonSchema = fmt === "json_schema_summary_batch";
-  const isHeadlineBatchJsonSchema = fmt === "json_schema_headline_batch";
-  const isAnyBatchJsonSchema =
-    isBatchJsonSchema || isSummaryBatchJsonSchema || isHeadlineBatchJsonSchema;
+  const url = "https://api.openai.com/v1/responses";
+
   const payload = {
-    model: GPT5_MINI_MODEL,
-    input: String(promptText || ""),
+    model: model,
+    input: _buildOpenAIResponsesInput_(inputSpec, enableExplicitCache),
+    reasoning: { effort: reasoningEffort },
+    max_output_tokens: maxOutputTokens,
   };
 
-  // バッチ処理（2件まとめ・Structured Outputs）時だけ、要約精度向上用の指示を追加する。
-  // formatTypeOpt="none" の圧縮フォールバック等には副作用を出さない。
-  if (isAnyBatchJsonSchema) {
-    payload.instructions = [
-      "あなたは日本語報道要約・見出し生成の編集者です。",
-      "記事本文だけを根拠にし、推測で事実を補わないでください。",
-      "要約は、誰が・どこで・何をした・結果・規模を優先してください。",
-      "COMMON_TRANSLATION_RULES、SUMMARY_TASK、JSONスキーマを厳守してください。",
-    ].join("\n");
-    payload.reasoning = { effort: "medium" };
-    payload.max_output_tokens = 6000;
+  if (enableExplicitCache) {
+    payload.prompt_cache_options = {
+      mode: "explicit",
+      ttl: OPENAI_PROMPT_CACHE_TTL,
+    };
   }
 
   if (fmt !== "none") {
-    if (isAnyBatchJsonSchema) {
-      // Structured Outputs: JSON Schema を強制（配列を返せる）
-      let schemaName = "multi2_array";
-      let schema = GPT_MULTI2_WRAPPED_SCHEMA_;
-      if (isSummaryBatchJsonSchema) {
-        schemaName = "summary_batch_array";
-        schema = GPT_SUMMARY_BATCH_WRAPPED_SCHEMA_;
-      } else if (isHeadlineBatchJsonSchema) {
-        schemaName = "headline_batch_array";
-        schema = GPT_HEADLINE_BATCH_WRAPPED_SCHEMA_;
-      }
+    const schemaDef = _openAIJsonSchemaForFormat_(fmt);
+    if (schemaDef) {
       payload.text = {
         format: {
           type: "json_schema",
-          name: schemaName,
+          name: schemaDef.name,
           strict: true,
-          schema: schema,
+          schema: schemaDef.schema,
         },
       };
     } else {
@@ -2859,8 +3437,29 @@ function callGpt5MiniWithKey_(apiKey, promptText, usageTagOpt, formatTypeOpt) {
     payload: JSON.stringify(payload),
   };
 
+  const requestMeta = {
+    model: model,
+    reasoningEffort: reasoningEffort,
+    enableExplicitCache: enableExplicitCache,
+  };
+
   for (let attempt = 0; attempt <= GPT_JS_MAX_RETRIES; attempt++) {
     try {
+      _appendGeminiLog_(
+        "INFO",
+        usageTagOpt || "openai",
+        "OpenAI try " +
+          (attempt + 1) +
+          "/" +
+          (GPT_JS_MAX_RETRIES + 1) +
+          " model=" +
+          model +
+          " reasoning=" +
+          reasoningEffort +
+          " cache=" +
+          (enableExplicitCache ? "explicit" : "off"),
+      );
+
       const res = UrlFetchApp.fetch(url, options);
       const code = res.getResponseCode();
       const bodyText = res.getContentText() || "";
@@ -2873,6 +3472,9 @@ function callGpt5MiniWithKey_(apiKey, promptText, usageTagOpt, formatTypeOpt) {
       }
 
       if (code >= 200 && code < 300) {
+        // 成功/不完全を問わず、課金されたusageがあれば必ず記録する。
+        _logOpenAIUsage_(data, usageTagOpt, requestMeta);
+
         if (data && data.status === "incomplete") {
           const reason =
             data.incomplete_details && data.incomplete_details.reason
@@ -2889,7 +3491,7 @@ function callGpt5MiniWithKey_(apiKey, promptText, usageTagOpt, formatTypeOpt) {
 
         const outText = _extractOutputTextFromResponses_(data);
         if (outText) return outText;
-        // 200 なのに本文が取れない場合も一旦エラー扱い
+
         const msg = "ERROR: OpenAI response has no output_text";
         if (attempt < GPT_JS_MAX_RETRIES) {
           Utilities.sleep(_expBackoffMs_(attempt));
@@ -2898,10 +3500,10 @@ function callGpt5MiniWithKey_(apiKey, promptText, usageTagOpt, formatTypeOpt) {
         return msg;
       }
 
-      // 非2xx
       const retriable = _isRetriableOpenAIError_(code, data, bodyText);
       const shortBody = bodyText ? bodyText.slice(0, 300) : "";
       const errMsg = "ERROR: OpenAI HTTP " + code + " " + shortBody;
+      _appendGeminiLog_("WARN", usageTagOpt || "openai", errMsg);
 
       if (retriable && attempt < GPT_JS_MAX_RETRIES) {
         Utilities.sleep(_expBackoffMs_(attempt));
@@ -2910,6 +3512,7 @@ function callGpt5MiniWithKey_(apiKey, promptText, usageTagOpt, formatTypeOpt) {
       return errMsg;
     } catch (e) {
       const err = "ERROR: OpenAI fetch exception: " + e;
+      _appendGeminiLog_("ERROR", usageTagOpt || "openai", err);
       if (attempt < GPT_JS_MAX_RETRIES) {
         Utilities.sleep(_expBackoffMs_(attempt));
         continue;
@@ -2919,6 +3522,16 @@ function callGpt5MiniWithKey_(apiKey, promptText, usageTagOpt, formatTypeOpt) {
   }
 
   return "ERROR: OpenAI retries exhausted";
+}
+
+// 互換ラッパー：古い呼び出しが残っていてもOpenAI共通関数へ流す。
+// 新規コードでは callOpenAIWithKey_ を直接使用する。
+function callGpt5MiniWithKey_(apiKey, promptText, usageTagOpt, formatTypeOpt) {
+  return callOpenAIWithKey_(apiKey, promptText, usageTagOpt, formatTypeOpt, {
+    model: OPENAI_SUMMARY_MODEL,
+    reasoningEffort: OPENAI_REASONING_SUMMARY,
+    enableExplicitCache: false,
+  });
 }
 
 /************************************************************
@@ -3083,8 +3696,8 @@ function processRow_(sheet, row, prevStatus) {
   const colM = 13; // タイトル原文
   const colN = 14; // 本文原文
 
-  // 通常Gemini NG(2) → gemini-2.5-flashを1回 → 失敗後にgpt-5.4-miniへ切替
-  const useFlash = shouldUseGemini25Flash_(prevStatus || "");
+  // 通常Gemini NG(4) → gemini-3.1-flash-liteを1回 → 失敗後にOpenAI(GPT-6)へ切替
+  const useFlash = shouldUseGeminiFallback_(prevStatus || "");
   const useGpt = shouldUseGpt5Mini_(prevStatus || "");
   const gptRetryCount = parseGptRetryCount_(prevStatus || "");
   if (useGpt && gptRetryCount >= GPT_JS_MAX_RETRIES) {
@@ -3152,24 +3765,40 @@ function processRow_(sheet, row, prevStatus) {
     });
     const tagSummary = sheetName + "#row" + row + ":I(summary)";
 
-    let summaryResp = useGpt
-      ? callGpt5MiniWithKey_(
-          getOpenAiApiKey_(tagSummary),
-          summaryPrompt,
-          tagSummary,
-        )
-      : callGeminiJsonByPurposeWithRotation_(
-          sheetName,
-          sourceVal,
-          summaryPrompt,
-          tagSummary,
-          "summary",
-          geminiModelForThisRun,
-        );
+    let summaryResp = "";
+    if (useGpt) {
+      const openAiSummaryInput = buildOpenAISummaryRequestPartsForRow_({
+        titleRaw: titleRaw || "",
+        bodyRaw: bodyRaw || "",
+        bodyGlossaryRules: bodyGlossaryRules || "",
+        sourceVal: sourceVal || "",
+      });
+      summaryResp = callOpenAIWithKey_(
+        getOpenAiApiKey_(tagSummary),
+        openAiSummaryInput,
+        tagSummary,
+        "json_schema_summary_single",
+        {
+          model: OPENAI_SUMMARY_MODEL,
+          reasoningEffort: OPENAI_REASONING_SUMMARY,
+          maxOutputTokens: 6000,
+          enableExplicitCache: false, // 単体はcache writeだけになり得るため無効
+        },
+      );
+    } else {
+      summaryResp = callGeminiJsonByPurposeWithRotation_(
+        sheetName,
+        sourceVal,
+        summaryPrompt,
+        tagSummary,
+        "summary",
+        geminiModelForThisRun,
+      );
+    }
 
     if (!useGpt && _isGeminiHighDemandErrorResponse_(summaryResp)) {
       if (useFlash) {
-        // gemini-2.5-flash は high demand でも WAIT に入れず、1回失敗として扱う。
+        // gemini-3.1-flash-lite は high demand でも WAIT に入れず、1回失敗として扱う。
         _applyOutputsToRow_(
           sheet,
           row,
@@ -3316,24 +3945,42 @@ function processRow_(sheet, row, prevStatus) {
       });
       const tagHeadline = sheetName + "#row" + row + ":EFG(headline)";
 
-      const headlineResp = useGpt
-        ? callGpt5MiniWithKey_(
-            getOpenAiApiKey_(tagHeadline),
-            headlinePrompt,
-            tagHeadline,
-          )
-        : callGeminiJsonByPurposeWithRotation_(
-            sheetName,
-            sourceVal,
-            headlinePrompt,
-            tagHeadline,
-            "headline",
-            geminiModelForThisRun,
-          );
+      let headlineResp = "";
+      if (useGpt) {
+        const openAiHeadlineInput = buildOpenAIHeadlineRequestPartsForRow_({
+          titleRaw: titleRaw || "",
+          bodyRaw: bodyRaw || "",
+          summaryJa: summaryJa || "",
+          titleGlossaryRules: titleGlossaryRules || "",
+          bodyGlossaryRules: headlineGlossaryRules || "",
+          sourceVal: sourceVal || "",
+        });
+        headlineResp = callOpenAIWithKey_(
+          getOpenAiApiKey_(tagHeadline),
+          openAiHeadlineInput,
+          tagHeadline,
+          "json_schema_headline_single",
+          {
+            model: OPENAI_HEADLINE_MODEL,
+            reasoningEffort: OPENAI_REASONING_HEADLINE,
+            maxOutputTokens: 6000,
+            enableExplicitCache: false, // 単体はcache writeだけになり得るため無効
+          },
+        );
+      } else {
+        headlineResp = callGeminiJsonByPurposeWithRotation_(
+          sheetName,
+          sourceVal,
+          headlinePrompt,
+          tagHeadline,
+          "headline",
+          geminiModelForThisRun,
+        );
+      }
 
       if (!useGpt && _isGeminiHighDemandErrorResponse_(headlineResp)) {
         if (useFlash) {
-          // gemini-2.5-flash は high demand でも WAIT に入れず、1回失敗として扱う。
+          // gemini-3.1-flash-lite は high demand でも WAIT に入れず、1回失敗として扱う。
           _applyOutputsToRow_(
             sheet,
             row,
@@ -3576,7 +4223,7 @@ function parseFlashRetryCount_(status) {
   return Number(m[1]);
 }
 
-function shouldUseGemini25Flash_(status) {
+function shouldUseGeminiFallback_(status) {
   const s = String(status || "");
   if (s.startsWith("RUNNING(FLASH)")) return true;
 
@@ -3589,7 +4236,7 @@ function shouldUseGemini25Flash_(status) {
     return true;
   }
 
-  // 通常GeminiがNG(2)以上になった行は、GPTへ行く前にgemini-2.5-flashを1回だけ試す
+  // 通常GeminiがNG(4)以上になった行は、GPTへ行く前にgemini-3.1-flash-liteを1回だけ試す
   const m = s.match(/^NG\((\d+)\)/);
   if (!m) return false;
   return Number(m[1]) >= MAX_RETRY_COUNT;
@@ -3600,9 +4247,9 @@ function shouldUseGpt5Mini_(status) {
   if (s.startsWith("RUNNING(GPT)")) return true;
   if (s.startsWith("GPTNG(")) return true;
 
-  // gemini-2.5-flashも1回失敗したら、従来どおりGPTへ切り替える
+  // gemini-3.1-flash-liteも1回失敗したら、従来どおりGPTへ切り替える
   const fm = s.match(/^FLASHNG\((\d+)\)/);
-  if (fm) return Number(fm[1]) >= GEMINI_25_FLASH_MAX_RETRY_COUNT;
+  if (fm) return Number(fm[1]) >= GEMINI_FALLBACK_MAX_RETRY_COUNT;
 
   return false;
 }
@@ -3656,11 +4303,11 @@ function cleanupStaleRunningStatuses_() {
 const MAX_ROWS_PER_RUN = 5; // 1回の実行で処理する最大行数
 const STATUS_COL = 12; // L列 (ステータス列の列番号)
 
-// 通常Geminiの最大試行回数（NG(2) になったら gemini-2.5-flash へ切替）
-const MAX_RETRY_COUNT = 2;
+// 通常Geminiの最大試行回数（NG(4) になったら gemini-3.1-flash-lite へ切替）
+const MAX_RETRY_COUNT = 4;
 
-// gemini-2.5-flash の最大試行回数（FLASHNG(1) になったら gpt-5.4-mini へ切替）
-const GEMINI_25_FLASH_MAX_RETRY_COUNT = 1;
+// gemini-3.1-flash-lite の最大試行回数（FLASHNG(1) になったら OpenAI(GPT-6) へ切替）
+const GEMINI_FALLBACK_MAX_RETRY_COUNT = 1;
 
 // ============================================================
 // ★ バッチ化（キー別まとめ投げ）＋推定トークンで 1件/2件自動調整
@@ -4940,10 +5587,10 @@ function processRowsBatch() {
         // ★ 再試行回数チェック
         const gemRetryCount = parseRetryCount_(status);
         const gptRetryCount = parseGptRetryCount_(status);
-        const useFlash = shouldUseGemini25Flash_(status);
+        const useFlash = shouldUseGeminiFallback_(status);
         const useGpt = shouldUseGpt5Mini_(status);
 
-        // gpt-5.4-mini 側のリトライ上限（GPTNG(2) になったら打ち切り）
+        // OpenAI(GPT-6) 側のリトライ上限（GPTNG(2) になったら打ち切り）
         if (useGpt && gptRetryCount >= GPT_JS_MAX_RETRIES) {
           Logger.log(
             "[processRowsBatch] skip row %s (gptRetryCount=%s >= %s)",
@@ -4954,7 +5601,7 @@ function processRowsBatch() {
           continue;
         }
 
-        // 通常Gemini側は NG(2) になったら、スキップせず gemini-2.5-flash へ進める
+        // 通常Gemini側は NG(4) になったら、スキップせず gemini-3.1-flash-lite へ進める
         if (!useGpt && !useFlash && gemRetryCount >= MAX_RETRY_COUNT) {
           Logger.log(
             "[processRowsBatch] skip row %s (gemRetryCount=%s >= %s)",
@@ -4983,7 +5630,7 @@ function processRowsBatch() {
 
         // groupKey:
         // - OpenAI は "__OPENAI__" でまとめてOK（キー単一）
-        // - Gemini は通常モデルと gemini-2.5-flash を分けてまとめる
+        // - Gemini は通常モデルと gemini-3.1-flash-lite を分けてまとめる
         const groupKey = useGpt
           ? "__OPENAI__"
           : (useFlash ? "__GEMINI_FLASH__:" : "__GEMINI_MAIN__:") +
@@ -5009,6 +5656,12 @@ function processRowsBatch() {
         const groupKey = groupOrder[gi];
         const items = groups[groupKey] || [];
         if (!items.length) continue;
+
+        // Explicit Prompt Cacheは、同一タスクprefixをこのrun内で再利用できる見込みがある
+        // OpenAI対象3件以上のグループだけ有効化する（1〜2件はwrite課金回避）。
+        const enableOpenAiExplicitCacheForGroup =
+          groupKey === "__OPENAI__" &&
+          items.length >= OPENAI_EXPLICIT_CACHE_MIN_GROUP_ITEMS;
 
         let p = 0;
         while (p < items.length) {
@@ -5112,11 +5765,19 @@ function processRowsBatch() {
 
           let summaryResp = "";
           if (isOpenAiGroup) {
-            summaryResp = callGpt5MiniWithKey_(
+            const openAiSummaryInput =
+              buildOpenAISummaryRequestPartsForRows_(promptItems);
+            summaryResp = callOpenAIWithKey_(
               getOpenAiApiKey_(tagSummary),
-              summaryPrompt,
+              openAiSummaryInput,
               tagSummary,
               "json_schema_summary_batch",
+              {
+                model: OPENAI_SUMMARY_MODEL,
+                reasoningEffort: OPENAI_REASONING_SUMMARY,
+                maxOutputTokens: 6000,
+                enableExplicitCache: enableOpenAiExplicitCacheForGroup,
+              },
             );
           } else {
             summaryResp = callGeminiJsonByPurposeWithRotation_(
@@ -5213,11 +5874,19 @@ function processRowsBatch() {
 
             let headlineResp = "";
             if (isOpenAiGroup) {
-              headlineResp = callGpt5MiniWithKey_(
+              const openAiHeadlineInput =
+                buildOpenAIHeadlineRequestPartsForRows_(promptItems);
+              headlineResp = callOpenAIWithKey_(
                 getOpenAiApiKey_(tagHeadline),
-                headlinePrompt,
+                openAiHeadlineInput,
                 tagHeadline,
                 "json_schema_headline_batch",
+                {
+                  model: OPENAI_HEADLINE_MODEL,
+                  reasoningEffort: OPENAI_REASONING_HEADLINE,
+                  maxOutputTokens: 6000,
+                  enableExplicitCache: enableOpenAiExplicitCacheForGroup,
+                },
               );
             } else {
               headlineResp = callGeminiJsonByPurposeWithRotation_(

@@ -103,6 +103,7 @@ try:
         MMT,                      # UTC+6:30
         call_llm_with_fallback,   # Gemini→OpenAI フォールバック
         client_summary,
+        GEMINI_MODEL,
         deduplicate_by_url,
         build_myanmar_amount_facts_prompt,
         fix_myanmar_billion_kyat_mistranslation,
@@ -113,6 +114,7 @@ except Exception:
     MMT = timezone(timedelta(hours=6, minutes=30))
     call_llm_with_fallback = None
     client_summary = None
+    GEMINI_MODEL = "gemini-3.5-flash-lite"
     def deduplicate_by_url(items):
         seen, out = set(), []
         for it in items:
@@ -1400,7 +1402,7 @@ def _headline_variants_ja(title: str, source: str, url: str, body: str = "") -> 
         t = unicodedata.normalize("NFC", title or "").strip()
         return [t, t, t]
 
-    model = os.getenv("GEMINI_HEADLINE_MODEL", "gemini-2.5-flash")
+    model = os.getenv("GEMINI_HEADLINE_MODEL", GEMINI_MODEL)
 
     # タイトルに出現した語 → D列（見出し訳）を採用
     # 本文に出現した語 → C列（本文訳）を採用
@@ -1417,6 +1419,8 @@ def _headline_variants_ja(title: str, source: str, url: str, body: str = "") -> 
             client,
             f"{COMMON_RULES_HEADER}{source_rules}\n{HEADLINE_PROMPT_1}{glossary}\n\n原題: {title}\nsource:{source}\nurl:{url}",
             model=model,
+            usage_tag="headline-a",
+            purpose="headline",
         )
         v1 = unicodedata.normalize("NFC", (resp1.text or "").strip())
     except Exception:
@@ -1427,7 +1431,13 @@ def _headline_variants_ja(title: str, source: str, url: str, body: str = "") -> 
         if _LIMITER:
             _LIMITER.wait()
         prompt2 = COMMON_RULES_HEADER + source_rules + "\n" + (glossary or "") + make_headline_prompt_2_from(v1)
-        resp2 = call_llm_with_fallback(client, prompt2, model=model)
+        resp2 = call_llm_with_fallback(
+            client,
+            prompt2,
+            model=model,
+            usage_tag="headline-b",
+            purpose="headline",
+        )
         v2 = unicodedata.normalize("NFC", (resp2.text or "").strip())
     except Exception:
         v2 = v1
@@ -1449,7 +1459,13 @@ def _headline_variants_ja(title: str, source: str, url: str, body: str = "") -> 
                 + "【本文】\n" + body_for_prompt + "\n\n"
                 f"（参考）原題: {title}\nsource:{source}\nurl:{url}\n"
             )
-            resp3 = call_llm_with_fallback(client, prompt3, model=model)
+            resp3 = call_llm_with_fallback(
+                client,
+                prompt3,
+                model=model,
+                usage_tag="headline-b-prime",
+                purpose="headline",
+            )
             v3 = unicodedata.normalize("NFC", (resp3.text or "").strip())
     except Exception:
         v3 = v1
@@ -1502,7 +1518,9 @@ def _summary_ja(source: str, title: str, body: str, url: str) -> str:
         resp = call_llm_with_fallback(
             client,
             prompt,
-            model=os.getenv("GEMINI_SUMMARY_MODEL", "gemini-2.5-flash"),
+            model=os.getenv("GEMINI_SUMMARY_MODEL", GEMINI_MODEL),
+            usage_tag="summary",
+            purpose="summary",
         )
         text = unicodedata.normalize("NFC", (resp.text or "").strip())
         text = _apply_region_glossary_to_text(text)
