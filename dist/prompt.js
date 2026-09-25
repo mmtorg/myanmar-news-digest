@@ -2252,7 +2252,7 @@ function _usageFromData_(data) {
 // Gemini 呼び出しモデル（通常時）
 const GEMINI_MODEL = "gemini-3.1-flash-lite";
 
-// 通常GeminiがNG(2)になった後に1回だけ試すフォールバックモデル
+// 通常GeminiがNG(4)になった後に1回だけ試すフォールバックモデル
 const GEMINI_FALLBACK_MODEL = "gemini-2.5-flash";
 
 // usage ログ（標準出力＝Apps Script 実行ログ）
@@ -2433,7 +2433,7 @@ function _shouldMoveToFlashOnThisHighDemand_(status) {
 
 function _setStatusForGeminiHighDemandWaitExceeded_(sheet, rowIndex, tagOpt) {
   // 通常Geminiで high demand 待機上限に達した場合は、次回 gemini-2.5-flash へ進めるため
-  // WAIT_GEMINI を NG(2) 相当へ明示的に進める。
+  // WAIT_GEMINI を通常Geminiの上限 NG(MAX_RETRY_COUNT) 相当へ明示的に進める。
   const statusText =
     "NG(" +
     MAX_RETRY_COUNT +
@@ -2516,7 +2516,7 @@ function _deferRowsForGeminiHighDemand_(
     }
 
     // 2回目の high demand は WAIT_GEMINI(2|nextAtMs) で待たせず、
-    // NG(2) 相当にして次回すぐ gemini-2.5-flash へ進める。
+    // 通常Geminiの上限 NG(MAX_RETRY_COUNT) 相当にして次回すぐ gemini-2.5-flash へ進める。
     if (_shouldMoveToFlashOnThisHighDemand_(pi.prevStatus || "")) {
       _setStatusForGeminiHighDemandWaitExceeded_(
         sheet,
@@ -3696,7 +3696,7 @@ function processRow_(sheet, row, prevStatus) {
   const colM = 13; // タイトル原文
   const colN = 14; // 本文原文
 
-  // 通常Gemini NG(2) → gemini-2.5-flashを1回 → 失敗後にOpenAI(GPT-6)へ切替
+  // 通常Gemini NG(4) → gemini-2.5-flashを1回 → 失敗後にOpenAI(GPT-6)へ切替
   const useFlash = shouldUseGemini25Flash_(prevStatus || "");
   const useGpt = shouldUseGpt5Mini_(prevStatus || "");
   const gptRetryCount = parseGptRetryCount_(prevStatus || "");
@@ -4236,7 +4236,7 @@ function shouldUseGemini25Flash_(status) {
     return true;
   }
 
-  // 通常GeminiがNG(2)以上になった行は、GPTへ行く前にgemini-2.5-flashを1回だけ試す
+  // 通常GeminiがNG(4)以上になった行は、GPTへ行く前にgemini-2.5-flashを1回だけ試す
   const m = s.match(/^NG\((\d+)\)/);
   if (!m) return false;
   return Number(m[1]) >= MAX_RETRY_COUNT;
@@ -4303,8 +4303,8 @@ function cleanupStaleRunningStatuses_() {
 const MAX_ROWS_PER_RUN = 5; // 1回の実行で処理する最大行数
 const STATUS_COL = 12; // L列 (ステータス列の列番号)
 
-// 通常Geminiの最大試行回数（NG(2) になったら gemini-2.5-flash へ切替）
-const MAX_RETRY_COUNT = 2;
+// 通常Geminiの最大試行回数（NG(4) になったら gemini-2.5-flash へ切替）
+const MAX_RETRY_COUNT = 4;
 
 // gemini-2.5-flash の最大試行回数（FLASHNG(1) になったら OpenAI(GPT-6) へ切替）
 const GEMINI_25_FLASH_MAX_RETRY_COUNT = 1;
@@ -5601,7 +5601,7 @@ function processRowsBatch() {
           continue;
         }
 
-        // 通常Gemini側は NG(2) になったら、スキップせず gemini-2.5-flash へ進める
+        // 通常Gemini側は NG(4) になったら、スキップせず gemini-2.5-flash へ進める
         if (!useGpt && !useFlash && gemRetryCount >= MAX_RETRY_COUNT) {
           Logger.log(
             "[processRowsBatch] skip row %s (gemRetryCount=%s >= %s)",
