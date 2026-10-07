@@ -6,7 +6,7 @@ export_all_articles_to_csv.py
 新規処理:
 ・各メディアの「キーワード絞り込み前」の記事一覧を取得
 ・MMTで 2025-08-23(土) 以降
-・タイトルを gemini-2.5-flash で日本語翻訳（バッチ翻訳対応）
+・タイトルを gemini-3.1-flash-lite で日本語翻訳（バッチ翻訳対応）
 ・CSV (UTF-8 BOM) に A:メディア名 / B:日本語タイトル / C:発行日(MMT) / D:URL
 ・無料枠対策: レートリミット (RPM/最小インターバル/ジッター) + バッチ翻訳
 
@@ -5776,7 +5776,7 @@ def collect_news_eleven_all_for_date(target_date_mmt: date) -> List[Dict]:
     return deduplicate_by_url(results)
 
 # ===== 単体翻訳（既存プロンプト流用） =====
-def translate_title_only(item: Dict, *, model: str = "gemini-2.5-flash") -> str:
+def translate_title_only(item: Dict, *, model: str = "gemini-3.1-flash-lite") -> str:
     """
     build_prompt(..., skip_filters=True) を使い、タイトルのみ日本語化。
     生成結果から「【タイトル】 …」を抽出。失敗時は原題を返す。
@@ -5807,7 +5807,7 @@ def translate_title_only(item: Dict, *, model: str = "gemini-2.5-flash") -> str:
         return payload["title"]
 
 # ===== バッチ翻訳 =====
-def translate_titles_in_batch(items: List[Dict], *, model: str = "gemini-2.5-flash") -> List[str]:
+def translate_titles_in_batch(items: List[Dict], *, model: str = "gemini-3.1-flash-lite") -> List[str]:
     """
     items: dict の配列（source/title/url程度）。同数の日本語訳タイトル配列を返す。
     失敗時は空リストを返し、呼び出し側でフォールバック。

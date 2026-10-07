@@ -4,7 +4,7 @@
 
 const CONFIG = {
   FOLDER_ID: folderId,
-  MODEL: "gemini-2.5-flash", // 利用可能モデルは環境で変わることがあります
+  MODEL: "gemini-3.1-flash-lite", // 利用可能モデルは環境で変わることがあります
   BATCH_SIZE: 30, // 1回のAPI呼び出しでまとめて翻訳する行数
   START_ROW: 2, // 1行目はヘッダ想定
 };
@@ -75,7 +75,7 @@ function processSheet_(sh) {
     CONFIG.START_ROW,
     COL.H_TITLE,
     numRows,
-    COL.S_ZH_BODY - COL.H_TITLE + 1
+    COL.S_ZH_BODY - COL.H_TITLE + 1,
   );
   const values = range.getValues();
 
@@ -133,14 +133,14 @@ function processSheet_(sh) {
  */
 function callGeminiTranslateBatch_(batch) {
   const apiKey = PropertiesService.getScriptProperties().getProperty(
-    "GEMINI_TRANSLATE_API_KEY"
+    "GEMINI_TRANSLATE_API_KEY",
   );
   if (!apiKey)
     throw new Error("Missing GEMINI_TRANSLATE_API_KEY in Script Properties.");
 
   // generateContent REST endpoint :contentReference[oaicite:2]{index=2}
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
-    CONFIG.MODEL
+    CONFIG.MODEL,
   )}:generateContent?key=${encodeURIComponent(apiKey)}`;
 
   const items = batch.map((x, idx) => ({

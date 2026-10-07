@@ -379,7 +379,7 @@ _FREE_TIER_MON = _FreeTierWatch() if _FREE_TIER_CHECK_ENABLED else None
 def call_gemini_with_retries(
     client,
     prompt: str,
-    model: str = "gemini-2.5-flash",
+    model: str = "gemini-3.1-flash-lite",
     max_retries: int = GEMINI_MAX_RETRIES,
     base_delay: float = GEMINI_BASE_DELAY,
     max_delay: float = GEMINI_MAX_DELAY,
@@ -531,7 +531,7 @@ def _should_fallback_to_openai(e: Exception) -> bool:
 def call_llm_with_fallback(
     client,
     prompt: str,
-    model: str = "gemini-2.5-flash",
+    model: str = "gemini-3.1-flash-lite",
     max_retries: int = GEMINI_MAX_RETRIES,
     base_delay: float = GEMINI_BASE_DELAY,
     max_delay: float = GEMINI_MAX_DELAY,
@@ -3720,7 +3720,7 @@ def dedupe_articles_with_llm(
         resp = call_llm_with_fallback(
             client,
             prompt,
-            model="gemini-2.5-flash",
+            model="gemini-3.1-flash-lite",
             max_retries=GEMINI_MAX_RETRIES,
             base_delay=GEMINI_BASE_DELAY,
             max_delay=GEMINI_MAX_DELAY,
@@ -5396,7 +5396,7 @@ def process_translation_batches(batch_size=TRANSLATION_BATCH_SIZE, wait_seconds=
                 )
 
                 resp = call_llm_with_fallback(
-                    client_summary, prompt, model="gemini-2.5-flash"
+                    client_summary, prompt, model="gemini-3.1-flash-lite"
                 )
                 output_text = resp.text.strip()
 
