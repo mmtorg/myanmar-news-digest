@@ -4,7 +4,7 @@ export_today_articles_to_csv_and_mail.py
 
 目的:
 - 各メディアの「キーワード絞り込み前」の“本日(MMT)”の記事を収集
-- タイトルを gemini-2.5-flash で日本語に一括(バッチ)翻訳
+- タイトルを gemini-3.1-flash-lite で日本語に一括(バッチ)翻訳
 - CSV (UTF-8 BOM) を 1列目:発行日(MMT) / 2列目:メディア名 / 3列目:日本語タイトル で出力
 # 以前の URL 列は削除（将来復活のため該当処理はコメントアウト）
 - CSV を Gmail API で指定アドレスへ送付（fetch_articles.py と同方式）

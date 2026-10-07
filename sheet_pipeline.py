@@ -1400,7 +1400,7 @@ def _headline_variants_ja(title: str, source: str, url: str, body: str = "") -> 
         t = unicodedata.normalize("NFC", title or "").strip()
         return [t, t, t]
 
-    model = os.getenv("GEMINI_HEADLINE_MODEL", "gemini-2.5-flash")
+    model = os.getenv("GEMINI_HEADLINE_MODEL", "gemini-3.1-flash-lite")
 
     # タイトルに出現した語 → D列（見出し訳）を採用
     # 本文に出現した語 → C列（本文訳）を採用
@@ -1502,7 +1502,7 @@ def _summary_ja(source: str, title: str, body: str, url: str) -> str:
         resp = call_llm_with_fallback(
             client,
             prompt,
-            model=os.getenv("GEMINI_SUMMARY_MODEL", "gemini-2.5-flash"),
+            model=os.getenv("GEMINI_SUMMARY_MODEL", "gemini-3.1-flash-lite"),
         )
         text = unicodedata.normalize("NFC", (resp.text or "").strip())
         text = _apply_region_glossary_to_text(text)

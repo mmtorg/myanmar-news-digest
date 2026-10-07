@@ -9,7 +9,7 @@ A:メディア名 / B:日本語タイトル / C:発行日(MMT) / D:URL を出力
 - 一覧ページ: 1〜15ページを巡回（カードの英語日付で一次フィルタ）
 - 一覧ページ取得は各ページ最大3回トライし、失敗したページはスキップ（処理は継続）
 - 記事ページ取得は fetch_with_retry_dvb を使用
-- タイトルの日本語化は gemini-2.5-flash-lite（バッチ翻訳→失敗時は単体翻訳）
+- タイトルの日本語化は gemini-3.1-flash-lite-lite（バッチ翻訳→失敗時は単体翻訳）
 - 無料枠配慮のレートリミット（rpm/min_interval/jitter + batch-size）
 """
 
@@ -73,7 +73,7 @@ class RateLimiter:
         self._win.append(self._last)
 
 # ========== 翻訳 ==========
-def translate_title_only(item: Dict, *, model: str = "gemini-2.5-flash-lite") -> str:
+def translate_title_only(item: Dict, *, model: str = "gemini-3.1-flash-lite-lite") -> str:
     """タイトルのみ日本語化（既存プロンプトを流用）"""
     payload = {
         "source": item.get("source") or "",
@@ -100,7 +100,7 @@ def translate_title_only(item: Dict, *, model: str = "gemini-2.5-flash-lite") ->
     except Exception:
         return payload["title"]
 
-def translate_titles_in_batch(items: List[Dict], *, model: str = "gemini-2.5-flash-lite") -> List[str]:
+def translate_titles_in_batch(items: List[Dict], *, model: str = "gemini-3.1-flash-lite-lite") -> List[str]:
     """厳密JSONで返させるバッチ翻訳（失敗時は空リスト→呼び出し側で単体翻訳にフォールバック）"""
     numbered = []
     for i, it in enumerate(items, 1):
@@ -305,12 +305,12 @@ def main(argv=None):
         idxs = pending_idx[s:s+bs]
         batch_items = [rows[i] for i in idxs]
         limiter.wait()
-        ja_list = translate_titles_in_batch(batch_items, model="gemini-2.5-flash-lite")
+        ja_list = translate_titles_in_batch(batch_items, model="gemini-3.1-flash-lite-lite")
         if len(ja_list) != len(batch_items) or any(j == "" for j in ja_list):
             print(f"[batch-translate] fallback single: {len(batch_items)} items")
             for k, item in zip(idxs, batch_items):
                 limiter.wait()
-                rows[k]["title_ja"] = translate_title_only(item, model="gemini-2.5-flash-lite")
+                rows[k]["title_ja"] = translate_title_only(item, model="gemini-3.1-flash-lite-lite")
         else:
             for k, ja in zip(idxs, ja_list):
                 rows[k]["title_ja"] = ja

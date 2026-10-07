@@ -33,7 +33,7 @@
 const GEMINI_SELECTION_MODEL = "gemini-3.1-flash-lite";
 
 // 429 / 503 / high demand 時のGemini側フォールバック
-const GEMINI_SELECTION_FALLBACK_MODEL = "gemini-2.5-flash";
+const GEMINI_SELECTION_FALLBACK_MODEL = "gemini-3.1-flash-lite";
 
 // Geminiがだめな場合の最終フォールバック
 
