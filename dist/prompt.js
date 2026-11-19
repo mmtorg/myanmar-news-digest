@@ -110,7 +110,7 @@ const COMMON_TRANSLATION_RULES = `
 
 【通貨換算ルール】
 ミャンマー通貨「チャット（Kyat、ကျပ်）」が出た場合は日本円に換算して併記する。
-- 換算レート：1チャット = 0.0335円（他レート禁止）
+- 換算レート：1チャット = 0.0310円（他レート禁止）
 - 形式：「◯チャット（約◯円）」、日本円は小数点以下四捨五入、兆・億・万に機械的に分解。
 - チャット以外（バーツ・米ドル等）には換算しない。
 - 見出しでは換算しない（TITLE_OUTPUT_RULESの見出し専用ルールを優先）。
@@ -2250,7 +2250,7 @@ function _usageFromData_(data) {
 }
 
 // Gemini 呼び出しモデル（通常時）
-const GEMINI_MODEL = "gemini-3.1-flash-lite";
+const GEMINI_MODEL = "gemini-3.5-flash-lite";
 
 // 通常GeminiがNG(4)になった後に1回だけ試すフォールバックモデル
 const GEMINI_FALLBACK_MODEL = "gemini-3.1-flash-lite";
@@ -2669,9 +2669,7 @@ function callGeminiWithKey_(
     ],
     generationConfig: {
       responseMimeType: "application/json",
-      temperature: 0.1,
-      topP: 0.8,
-      topK: 20,
+      ...(model === GEMINI_MODEL ? {} : { temperature: 0.1, topP: 0.8, topK: 20 }),
     },
   };
 
@@ -2748,6 +2746,20 @@ function callGeminiWithKey_(
     }
 
     const code = res.getResponseCode();
+    if (code === 429 && model === GEMINI_MODEL) {
+      Logger.log(
+        "[gemini] model=%s rate limited; using %s",
+        model,
+        GEMINI_FALLBACK_MODEL,
+      );
+      return callGeminiWithKey_(
+        apiKey,
+        prompt,
+        usageTag,
+        apiKeyPropNameOpt,
+        GEMINI_FALLBACK_MODEL,
+      );
+    }
     const text = res.getContentText();
 
     let data;
@@ -2952,12 +2964,8 @@ function callGeminiTextWithKey_(
 
   const payload = {
     contents: [{ parts: [{ text: String(prompt || "") }] }],
-    generationConfig: {
-      // ★ json強制しない（テキスト出力にする）
-      temperature: 0.1,
-      topP: 0.8,
-      topK: 20,
-    },
+    generationConfig:
+      model === GEMINI_MODEL ? {} : { temperature: 0.1, topP: 0.8, topK: 20 },
   };
 
   const options = {
@@ -2985,6 +2993,20 @@ function callGeminiTextWithKey_(
     }
 
     const code = res.getResponseCode();
+    if (code === 429 && model === GEMINI_MODEL) {
+      Logger.log(
+        "[gemini] model=%s rate limited; using %s",
+        model,
+        GEMINI_FALLBACK_MODEL,
+      );
+      return callGeminiTextWithKey_(
+        apiKey,
+        prompt,
+        usageTag,
+        apiKeyPropNameOpt,
+        GEMINI_FALLBACK_MODEL,
+      );
+    }
     const text = res.getContentText();
 
     let data;
@@ -3696,7 +3718,7 @@ function processRow_(sheet, row, prevStatus) {
   const colM = 13; // タイトル原文
   const colN = 14; // 本文原文
 
-  // 通常Gemini NG(4) → gemini-2.5-flashを1回 → 失敗後にOpenAI(GPT-6)へ切替
+  // 通常Gemini NG(4) → gemini-3.1-flash-liteを1回 → 失敗後にOpenAI(GPT-6)へ切替
   const useFlash = shouldUseGemini25Flash_(prevStatus || "");
   const useGpt = shouldUseGpt5Mini_(prevStatus || "");
   const gptRetryCount = parseGptRetryCount_(prevStatus || "");
@@ -4236,7 +4258,7 @@ function shouldUseGemini25Flash_(status) {
     return true;
   }
 
-  // 通常GeminiがNG(4)以上になった行は、GPTへ行く前にgemini-2.5-flashを1回だけ試す
+  // 通常GeminiがNG(4)以上になった行は、GPTへ行く前にgemini-3.1-flash-liteを1回だけ試す
   const m = s.match(/^NG\((\d+)\)/);
   if (!m) return false;
   return Number(m[1]) >= MAX_RETRY_COUNT;
@@ -4247,7 +4269,7 @@ function shouldUseGpt5Mini_(status) {
   if (s.startsWith("RUNNING(GPT)")) return true;
   if (s.startsWith("GPTNG(")) return true;
 
-  // gemini-2.5-flashも1回失敗したら、従来どおりGPTへ切り替える
+  // gemini-3.1-flash-liteも1回失敗したら、従来どおりGPTへ切り替える
   const fm = s.match(/^FLASHNG\((\d+)\)/);
   if (fm) return Number(fm[1]) >= GEMINI_25_FLASH_MAX_RETRY_COUNT;
 
@@ -4330,9 +4352,9 @@ function estimateTokensFromChars_(nChars) {
 // 通貨換算・金額分解を機械側で固定（円表記の再発防止）
 // ============================================================
 
-// 1チャット=0.0335円、四捨五入
+// 1チャット=0.0310円、四捨五入
 function kyatToYenInt_(kyatInt) {
-  return Math.round(Number(kyatInt) * 0.0335);
+  return Math.round(Number(kyatInt) * 0.0310);
 }
 
 // 例: 21060000000 -> "210億6000万円" / 987654321 -> "9億8765万4321円"
@@ -4659,8 +4681,8 @@ function replaceMyanmarBillionCandidate_(
 
   let s = String(text || "");
 
-  // 例: 「2209億チャット（約79億5240万円）を超え」は、
-  // 「2兆2090億チャット（約795億2400万円）を超え」に補正する。
+  // 例: 「2209億チャット（約68億4790万円）を超え」は、
+  // 「2兆2090億チャット（約684億7900万円）を超え」に補正する。
   const reBeforeKoek = new RegExp(
     escapeRegExp_(wrong) + "(?:（約[^）]*円）)?を超え",
     "g",
