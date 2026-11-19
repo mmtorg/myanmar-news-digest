@@ -6,7 +6,7 @@ export_all_articles_to_csv.py
 新規処理:
 ・各メディアの「キーワード絞り込み前」の記事一覧を取得
 ・MMTで 2025-08-23(土) 以降
-・タイトルを gemini-3.1-flash-lite で日本語翻訳（バッチ翻訳対応）
+・タイトルを gemini-3.5-flash-lite で日本語翻訳（バッチ翻訳対応）
 ・CSV (UTF-8 BOM) に A:メディア名 / B:日本語タイトル / C:発行日(MMT) / D:URL
 ・無料枠対策: レートリミット (RPM/最小インターバル/ジッター) + バッチ翻訳
 
@@ -27,7 +27,7 @@ Gemini API の認証は fetch_articles.py の実装に従います。
     - D列：記事のURL
 - タイムゾーンはミャンマー時間です
 - ミャンマー時間で8月23日土曜日以降の記事が取得対象です
-- 記事のタイトルを日本語に翻訳するには、添付したコードと同様に、gemini-2.5-flashを使ってください。プロンプトは添付したコードのタイトルを日本語に翻訳するプロンプトを使ってOKです
+- 記事のタイトルを日本語に翻訳するには、添付したコードと同様に、gemini-3.5-flash-liteを使ってください。プロンプトは添付したコードのタイトルを日本語に翻訳するプロンプトを使ってOKです
 - CSVに吐き出す日本語は文字化けしないように注意してください
 """
 
@@ -55,6 +55,7 @@ from curl_cffi.requests import Session as CurlSession
 
 # --- 添付コード（fetch_articles.py）から利用する関数/定数 ---
 from fetch_articles import (
+    DEFAULT_GEMINI_MODEL,
     MMT,
     build_prompt,
     call_gemini_with_retries,
@@ -5776,7 +5777,7 @@ def collect_news_eleven_all_for_date(target_date_mmt: date) -> List[Dict]:
     return deduplicate_by_url(results)
 
 # ===== 単体翻訳（既存プロンプト流用） =====
-def translate_title_only(item: Dict, *, model: str = "gemini-3.1-flash-lite") -> str:
+def translate_title_only(item: Dict, *, model: str = DEFAULT_GEMINI_MODEL) -> str:
     """
     build_prompt(..., skip_filters=True) を使い、タイトルのみ日本語化。
     生成結果から「【タイトル】 …」を抽出。失敗時は原題を返す。
@@ -5807,7 +5808,7 @@ def translate_title_only(item: Dict, *, model: str = "gemini-3.1-flash-lite") ->
         return payload["title"]
 
 # ===== バッチ翻訳 =====
-def translate_titles_in_batch(items: List[Dict], *, model: str = "gemini-3.1-flash-lite") -> List[str]:
+def translate_titles_in_batch(items: List[Dict], *, model: str = DEFAULT_GEMINI_MODEL) -> List[str]:
     """
     items: dict の配列（source/title/url程度）。同数の日本語訳タイトル配列を返す。
     失敗時は空リストを返し、呼び出し側でフォールバック。
@@ -5891,8 +5892,8 @@ def main(argv=None):
     parser.add_argument("--out", type=str, default="articles_since_2025-08-23_MMT.csv", help="出力CSVパス")
 
     # レート制御（CLI > 環境変数 > 既定）
-    parser.add_argument("--rpm", type=int, default=int(os.getenv("GEMINI_REQS_PER_MIN", "30")),
-                        help="Requests per minute limit (default: env GEMINI_REQS_PER_MIN or 30)")
+    parser.add_argument("--rpm", type=int, default=int(os.getenv("GEMINI_REQS_PER_MIN", "12")),
+                        help="Requests per minute limit (default: env GEMINI_REQS_PER_MIN or 12)")
     parser.add_argument("--min-interval", type=float, default=float(os.getenv("GEMINI_MIN_INTERVAL_SEC", "0.5")),
                         help="Minimum seconds between requests (default: env GEMINI_MIN_INTERVAL_SEC or 0.5)")
     parser.add_argument("--jitter", type=float, default=float(os.getenv("GEMINI_JITTER_SEC", "0.0")),

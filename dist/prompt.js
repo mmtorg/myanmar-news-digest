@@ -2250,7 +2250,7 @@ function _usageFromData_(data) {
 }
 
 // Gemini 呼び出しモデル（通常時）
-const GEMINI_MODEL = "gemini-3.1-flash-lite";
+const GEMINI_MODEL = "gemini-3.5-flash-lite";
 
 // 通常GeminiがNG(4)になった後に1回だけ試すフォールバックモデル
 const GEMINI_FALLBACK_MODEL = "gemini-3.1-flash-lite";
@@ -2669,9 +2669,7 @@ function callGeminiWithKey_(
     ],
     generationConfig: {
       responseMimeType: "application/json",
-      temperature: 0.1,
-      topP: 0.8,
-      topK: 20,
+      ...(model === GEMINI_MODEL ? {} : { temperature: 0.1, topP: 0.8, topK: 20 }),
     },
   };
 
@@ -2748,6 +2746,20 @@ function callGeminiWithKey_(
     }
 
     const code = res.getResponseCode();
+    if (code === 429 && model === GEMINI_MODEL) {
+      Logger.log(
+        "[gemini] model=%s rate limited; using %s",
+        model,
+        GEMINI_FALLBACK_MODEL,
+      );
+      return callGeminiWithKey_(
+        apiKey,
+        prompt,
+        usageTag,
+        apiKeyPropNameOpt,
+        GEMINI_FALLBACK_MODEL,
+      );
+    }
     const text = res.getContentText();
 
     let data;
@@ -2952,12 +2964,8 @@ function callGeminiTextWithKey_(
 
   const payload = {
     contents: [{ parts: [{ text: String(prompt || "") }] }],
-    generationConfig: {
-      // ★ json強制しない（テキスト出力にする）
-      temperature: 0.1,
-      topP: 0.8,
-      topK: 20,
-    },
+    generationConfig:
+      model === GEMINI_MODEL ? {} : { temperature: 0.1, topP: 0.8, topK: 20 },
   };
 
   const options = {
@@ -2985,6 +2993,20 @@ function callGeminiTextWithKey_(
     }
 
     const code = res.getResponseCode();
+    if (code === 429 && model === GEMINI_MODEL) {
+      Logger.log(
+        "[gemini] model=%s rate limited; using %s",
+        model,
+        GEMINI_FALLBACK_MODEL,
+      );
+      return callGeminiTextWithKey_(
+        apiKey,
+        prompt,
+        usageTag,
+        apiKeyPropNameOpt,
+        GEMINI_FALLBACK_MODEL,
+      );
+    }
     const text = res.getContentText();
 
     let data;
@@ -3696,7 +3718,7 @@ function processRow_(sheet, row, prevStatus) {
   const colM = 13; // タイトル原文
   const colN = 14; // 本文原文
 
-  // 通常Gemini NG(4) → gemini-2.5-flashを1回 → 失敗後にOpenAI(GPT-6)へ切替
+  // 通常Gemini NG(4) → gemini-3.1-flash-liteを1回 → 失敗後にOpenAI(GPT-6)へ切替
   const useFlash = shouldUseGemini25Flash_(prevStatus || "");
   const useGpt = shouldUseGpt5Mini_(prevStatus || "");
   const gptRetryCount = parseGptRetryCount_(prevStatus || "");
@@ -4236,7 +4258,7 @@ function shouldUseGemini25Flash_(status) {
     return true;
   }
 
-  // 通常GeminiがNG(4)以上になった行は、GPTへ行く前にgemini-2.5-flashを1回だけ試す
+  // 通常GeminiがNG(4)以上になった行は、GPTへ行く前にgemini-3.1-flash-liteを1回だけ試す
   const m = s.match(/^NG\((\d+)\)/);
   if (!m) return false;
   return Number(m[1]) >= MAX_RETRY_COUNT;
@@ -4247,7 +4269,7 @@ function shouldUseGpt5Mini_(status) {
   if (s.startsWith("RUNNING(GPT)")) return true;
   if (s.startsWith("GPTNG(")) return true;
 
-  // gemini-2.5-flashも1回失敗したら、従来どおりGPTへ切り替える
+  // gemini-3.1-flash-liteも1回失敗したら、従来どおりGPTへ切り替える
   const fm = s.match(/^FLASHNG\((\d+)\)/);
   if (fm) return Number(fm[1]) >= GEMINI_25_FLASH_MAX_RETRY_COUNT;
 
