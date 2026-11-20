@@ -25,7 +25,7 @@ jobs:
       OUT: ${{ inputs.out != '' && inputs.out || format('articles_since_{0}_MMT.csv', inputs.start) }}
       GEMINI_API_SUMMARY_KEY: ${{ secrets.GEMINI_API_EXPORT_SUMMARY_KEY }}
       GEMINI_API_DEDUPE_KEY: ${{ secrets.GEMINI_API_EXPORT_DEDUPE_KEY }}
-      GEMINI_REQS_PER_MIN: "12"
+      GEMINI_REQS_PER_MIN: "20"
       GEMINI_MIN_INTERVAL_SEC: "1.5"
       GEMINI_JITTER_SEC: "0.3"
 
@@ -55,7 +55,7 @@ jobs:
 
       - name: Run export
         run: |
-          python -m tmp.export_all_articles_to_csv \
+          python export_all_articles_to_csv.py \
             --start "${{ inputs.start }}" \
             --out   "${{ env.OUT }}"
 
