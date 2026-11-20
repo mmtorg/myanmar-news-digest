@@ -30,7 +30,7 @@
  * Gemini selection.js 専用設定
  ************************************************************/
 
-const GEMINI_SELECTION_MODEL = "gemini-3.5-flash-lite";
+const GEMINI_SELECTION_MODEL = "gemini-3.1-flash-lite";
 
 // 429 / 503 / high demand 時のGemini側フォールバック
 const GEMINI_SELECTION_FALLBACK_MODEL = "gemini-3.1-flash-lite";
@@ -1597,32 +1597,32 @@ function callSelectionGeminiWithKey_(apiKey, prompt, tag, propName) {
 
   Utilities.sleep(SELECT_MODEL_FALLBACK_WAIT_MS);
 
-  // 2. Gemini 3.1 Flash-Lite に1回だけフォールバック
-  const fallbackGemini = _callSelectionGeminiModelWithKey_(
+  // 2. Gemini 2.5 Flash に1回だけフォールバック
+  const gemini25 = _callSelectionGeminiModelWithKey_(
     apiKey,
     GEMINI_SELECTION_FALLBACK_MODEL,
     prompt,
-    tag + ":fallbackGemini",
+    tag + ":fallbackGemini25Flash",
     propName,
   );
 
-  if (fallbackGemini.ok) {
+  if (gemini25.ok) {
     Logger.log(
       "[selection-score] fallback Gemini succeeded model=%s tag=%s",
       GEMINI_SELECTION_FALLBACK_MODEL,
       tag,
     );
-    return fallbackGemini.text;
+    return gemini25.text;
   }
 
   Logger.log(
     "[selection-score] fallback Gemini failed model=%s code=%s error=%s",
     GEMINI_SELECTION_FALLBACK_MODEL,
-    fallbackGemini.code,
-    String(fallbackGemini.error || "").slice(0, 300),
+    gemini25.code,
+    String(gemini25.error || "").slice(0, 300),
   );
 
-  // 3. Gemini 3.1 Flash-Lite も失敗したら OpenAI gpt-5.4-mini へ1回だけフォールバック
+  // 3. Gemini 2.5 Flash も失敗したら OpenAI gpt-5.4-mini へ1回だけフォールバック
   const openai = _callSelectionOpenAiGpt5Mini_(prompt, tag + ":fallbackOpenAI");
 
   if (openai.ok) {
@@ -1634,8 +1634,8 @@ function callSelectionGeminiWithKey_(apiKey, prompt, tag, propName) {
     "ERROR: Selection all model fallbacks failed. " +
     "primary=" +
     String(primary.error || "").slice(0, 180) +
-    " / fallbackGemini=" +
-    String(fallbackGemini.error || "").slice(0, 180) +
+    " / gemini25=" +
+    String(gemini25.error || "").slice(0, 180) +
     " / openai=" +
     String(openai.error || "").slice(0, 180)
   );
@@ -1668,9 +1668,10 @@ function _callSelectionGeminiModelWithKey_(
       },
     ],
     generationConfig: {
-      responseMimeType: "application/json",
+      temperature: 0.2,
+      topP: 0.9,
       maxOutputTokens: SELECT_MAX_OUTPUT_TOKENS,
-      ...(modelName === GEMINI_SELECTION_MODEL ? {} : { temperature: 0.2, topP: 0.9 }),
+      responseMimeType: "application/json",
     },
   };
 

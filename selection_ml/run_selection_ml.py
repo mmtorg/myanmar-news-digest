@@ -85,7 +85,7 @@ SHEETS_WRITE_RETRY_MAX_SECONDS_DEFAULT = 32.0
 # Gemini reranking is enabled by default in code.
 # GEMINI_API_KEY must be supplied from GitHub Actions Secrets or another environment variable.
 ENABLE_GEMINI_RERANK = True
-DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite"
+DEFAULT_GEMINI_MODEL = "gemini-3.1-flash-lite"
 DEFAULT_GEMINI_FALLBACK_MODEL = "gemini-3.1-flash-lite"
 GEMINI_MODEL_FALLBACK_WAIT_SECONDS_DEFAULT = 2.0
 GEMINI_DEFAULT_MIN_ML_SCORE = 0
@@ -1611,7 +1611,7 @@ def generate_gemini_content_once(
             model=model_name,
             contents=contents,
             config=types.GenerateContentConfig(
-                temperature=None if model_name == DEFAULT_GEMINI_MODEL else 0,
+                temperature=0,
                 response_mime_type="application/json",
                 response_schema=GEMINI_RERANK_RESPONSE_SCHEMA,
             ),
@@ -1622,7 +1622,7 @@ def generate_gemini_content_once(
             model=model_name,
             contents=contents,
             config=types.GenerateContentConfig(
-                temperature=None if model_name == DEFAULT_GEMINI_MODEL else 0,
+                temperature=0,
                 response_mime_type="application/json",
             ),
         )

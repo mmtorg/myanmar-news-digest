@@ -100,9 +100,6 @@ def _nl2br(s: str) -> str:
     return s.replace("\n", "<br>")
 
 # ========= Gemini リトライ調整用の定数 =========
-DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite"
-GEMINI_FALLBACK_MODEL = "gemini-3.1-flash-lite"
-
 GEMINI_MAX_RETRIES = 2          # 既定 4 → 2
 GEMINI_BASE_DELAY = 60.0        # 既定 120.0 → 60.0
 GEMINI_MAX_DELAY = 1200.0        # 既定 120.0 → 1200.0
@@ -185,7 +182,7 @@ def _is_free_tier_quota_error(e: Exception) -> bool:
     Gemini Free tier の「generate_content_free_tier_requests」系 429 を検出。
     このエラーはその日これ以上打てないので、即座に諦めてリトライしない。
     """
-    if getattr(e, "code", None) != 429 and not isinstance(e, ResourceExhausted):
+    if not isinstance(e, ResourceExhausted):
         return False
     # google.api_core.exceptions.ResourceExhausted は .message を持つことが多いが、
     # 念のため str(e) もフォールバックとして見る
@@ -382,7 +379,7 @@ _FREE_TIER_MON = _FreeTierWatch() if _FREE_TIER_CHECK_ENABLED else None
 def call_gemini_with_retries(
     client,
     prompt: str,
-    model: str = DEFAULT_GEMINI_MODEL,
+    model: str = "gemini-3.1-flash-lite",
     max_retries: int = GEMINI_MAX_RETRIES,
     base_delay: float = GEMINI_BASE_DELAY,
     max_delay: float = GEMINI_MAX_DELAY,
@@ -392,8 +389,7 @@ def call_gemini_with_retries(
     Gemini 呼び出しの共通リトライラッパー。
     - 503/UNAVAILABLE/一時的ネットワークエラーは指数バックオフ+ジッターで再試行
       （503 が一定回数連続したら、さらに長めのクールダウンを入れる）
-    - 通常モデルが 429 を返した場合は Flash-Lite へ切り替える
-    - その他の 429/レート系は待機して再試行
+    - 429/レート系は待機して再試行（Gemini Free の瞬間上限に当たることが多い）
     - Free tier の「generate_content_free_tier_requests」系 429 は即諦める
     - それ以外の恒久的エラーは即時 raise
     """
@@ -406,10 +402,6 @@ def call_gemini_with_retries(
     except Exception:
         cooldown_default = 60.0
 
-    config = types.GenerateContentConfig()
-    if model != DEFAULT_GEMINI_MODEL:
-        config = types.GenerateContentConfig(temperature=0.1, top_p=0.8, top_k=20)
-
     for attempt in range(max_retries):
         try:
             logging.info(
@@ -420,7 +412,11 @@ def call_gemini_with_retries(
             resp = client.models.generate_content(
                 model=model,
                 contents=prompt,
-                config=config,
+                config=types.GenerateContentConfig(
+                    temperature=0.1,
+                    top_p=0.8,
+                    top_k=20,
+                ),
             )
 
             # 成功したので 503 カウンタはリセット
@@ -450,22 +446,6 @@ def call_gemini_with_retries(
         except Exception as e:
             msg = str(e)
             last_exc = e
-
-            if model == DEFAULT_GEMINI_MODEL and (
-                getattr(e, "code", None) == 429 or _is_free_tier_quota_error(e)
-            ):
-                logging.warning(
-                    "[gemini] model=%s rate limited; using %s", model, GEMINI_FALLBACK_MODEL
-                )
-                return call_gemini_with_retries(
-                    client,
-                    prompt,
-                    model=GEMINI_FALLBACK_MODEL,
-                    max_retries=max_retries,
-                    base_delay=base_delay,
-                    max_delay=max_delay,
-                    usage_tag=usage_tag,
-                )
 
             # 🔴 free tier quota exceeded は即諦める
             if _is_free_tier_quota_error(e):
@@ -551,7 +531,7 @@ def _should_fallback_to_openai(e: Exception) -> bool:
 def call_llm_with_fallback(
     client,
     prompt: str,
-    model: str = DEFAULT_GEMINI_MODEL,
+    model: str = "gemini-3.1-flash-lite",
     max_retries: int = GEMINI_MAX_RETRIES,
     base_delay: float = GEMINI_BASE_DELAY,
     max_delay: float = GEMINI_MAX_DELAY,
@@ -3740,7 +3720,7 @@ def dedupe_articles_with_llm(
         resp = call_llm_with_fallback(
             client,
             prompt,
-            model=DEFAULT_GEMINI_MODEL,
+            model="gemini-3.1-flash-lite",
             max_retries=GEMINI_MAX_RETRIES,
             base_delay=GEMINI_BASE_DELAY,
             max_delay=GEMINI_MAX_DELAY,
@@ -5416,7 +5396,7 @@ def process_translation_batches(batch_size=TRANSLATION_BATCH_SIZE, wait_seconds=
                 )
 
                 resp = call_llm_with_fallback(
-                    client_summary, prompt, model=DEFAULT_GEMINI_MODEL
+                    client_summary, prompt, model="gemini-3.1-flash-lite"
                 )
                 output_text = resp.text.strip()
 
@@ -5868,7 +5848,7 @@ def translate_fulltexts_for_business(urls_in_order_or_items, url_to_source_title
             resp = call_llm_with_fallback(
                 client_fulltext,
                 prompt,
-                model=DEFAULT_GEMINI_MODEL,
+                model="gemini-3.1-flash-lite",
                 usage_tag="fulltext-retry",
             )
 
@@ -5994,7 +5974,7 @@ def translate_fulltexts_for_business(urls_in_order_or_items, url_to_source_title
             resp = call_llm_with_fallback(
                 client_fulltext,
                 prompt,
-                model=DEFAULT_GEMINI_MODEL,
+                model="gemini-3.1-flash-lite",
                 usage_tag="fulltext",
             )
             text = getattr(resp, "text", None) or ""
