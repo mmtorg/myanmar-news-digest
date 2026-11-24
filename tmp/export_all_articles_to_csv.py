@@ -5789,7 +5789,7 @@ def translate_title_only(item: Dict, *, model: str = "gemini-3.1-flash-lite") ->
     }
     try:
         prompt = build_prompt(payload, skip_filters=True, body_max=0)
-        resp = call_gemini_with_retries(client_summary, prompt, model=model)
+        resp = call_gemini_with_retries(client_summary, prompt, model=model, usage_tag="title-translate")
         text = (resp.text or "").strip()
         lines = [unicodedata.normalize("NFC", ln).strip() for ln in text.splitlines() if ln.strip()]
         idx = next((i for i, ln in enumerate(lines) if re.match(r"^【\s*タイトル\s*】", ln)), None)
@@ -5835,6 +5835,7 @@ def translate_titles_in_batch(items: List[Dict], *, model: str = "gemini-3.1-fla
             client_summary,
             f"{sys_prompt}\n\n{user_prompt}",
             model=model,
+            usage_tag="title-translate",
         )
         text = (resp.text or "").strip()
 

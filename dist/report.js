@@ -1,8 +1,11 @@
 const SPREADSHEET_ID = ""; // コンテナバインドGASなら空でOK。単独GASならスプレッドシートIDを入れる
 const SHEET_NAME = "archive_prod";
+const PROD_SHEET_NAME = "prod";
 
 const NOTIFY_EMAIL_TO_PROD_PROP = "NOTIFY_EMAIL_TO_PROD";
-const REPORT_SUBJECT = "【MNA】収集報告";
+
+const ARCHIVE_PROD_REPORT_SUBJECT = "【MNA 記事前日報告】";
+const PROD_GNLM_REPORT_SUBJECT = "【MNA 記事当日報告】";
 
 const MEDIA_PATTERN_1 = [
   "Popular Myanmar (国軍系メディア)",
@@ -144,15 +147,84 @@ function checkArchiveProdAndSendMail() {
     noBodyMedia,
   );
 
-  MailApp.sendEmail({
-    to: reportTo,
-    subject: REPORT_SUBJECT,
-    body,
-  });
+  sendReportEmail_(reportTo, ARCHIVE_PROD_REPORT_SUBJECT, body);
 }
 
 /**
- * メール本文を作成する。
+ * prodシートをチェックし、GNLMの本文未取得がある場合のみメール送信する。
+ *
+ * 既存のarchive_prod向け処理とは分離し、別トリガーで実行する想定。
+ */
+function checkProdGnlmNoBodyAndSendMail() {
+  const ss = SPREADSHEET_ID
+    ? SpreadsheetApp.openById(SPREADSHEET_ID)
+    : SpreadsheetApp.getActiveSpreadsheet();
+
+  const noBodyMediaSet = new Set();
+
+  addProdGnlmNoBodyMedia(ss, noBodyMediaSet);
+
+  if (noBodyMediaSet.size === 0) return;
+
+  const reportTo = getArchiveProdReportEmailTo_();
+
+  if (!reportTo) {
+    Logger.log(
+      `[checkProdGnlmNoBodyAndSendMail] missing script property: ${NOTIFY_EMAIL_TO_PROD_PROP}`,
+    );
+    return;
+  }
+
+  const noBodyMedia = Array.from(noBodyMediaSet);
+  const body = buildProdGnlmReportBody_(noBodyMedia);
+
+  sendReportEmail_(reportTo, PROD_GNLM_REPORT_SUBJECT, body);
+}
+
+/**
+ * prodシートでGlobal New Light Of Myanmar (国営紙)の本文未取得をチェックする。
+ *
+ * 対象条件：
+ * - C列がGlobal New Light Of Myanmar (国営紙)
+ * - N列が空白
+ * - M列が "6 May 2026" のような日付タイトルではない
+ *
+ * 条件に合う行が1件以上ある場合、本文未取得メディアとしてGNLMを追加する。
+ */
+function addProdGnlmNoBodyMedia(ss, noBodyMediaSet) {
+  const sheet = ss.getSheetByName(PROD_SHEET_NAME);
+
+  if (!sheet) {
+    throw new Error(`シートが見つかりません: ${PROD_SHEET_NAME}`);
+  }
+
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return;
+
+  // A:N まで取得
+  const values = sheet.getRange(2, 1, lastRow - 1, 14).getValues();
+
+  const hasNoBody = values.some((row) => {
+    const media = normalizeText_(row[2]); // C列
+    const titleOriginal = row[12]; // M列
+    const bodyOriginal = row[13]; // N列
+
+    if (media !== GNLM) return false;
+    if (!isBlank_(bodyOriginal)) return false;
+
+    // M列が日付を示すタイトルの場合は、本文未取得として扱わない
+    if (isEnglishDateLike_(titleOriginal)) return false;
+
+    return true;
+  });
+
+  if (hasNoBody) {
+    noBodyMediaSet.add(GNLM);
+  }
+}
+
+/**
+ * archive_prod向けメール本文を作成する。
  */
 function buildReportBody_(
   previousDayMissingMedia,
@@ -160,15 +232,36 @@ function buildReportBody_(
   noBodyMedia,
 ) {
   return [
-    "【前日未収集メディア】",
+    "【前日未収集】",
     ...previousDayMissingMedia,
     "",
-    "【過去2日未収集メディア】",
+    "【過去2日未収集】",
     ...pastTwoDaysMissingMedia,
     "",
-    "【本文未取得メディア】",
+    "【前日本文未取得】",
     ...noBodyMedia,
   ].join("\n");
+}
+
+/**
+ * prodシートGNLM向けメール本文を作成する。
+ */
+function buildProdGnlmReportBody_(noBodyMedia) {
+  return ["【当日本文未取得】", ...noBodyMedia].join("\n");
+}
+
+/**
+ * カンマ区切りの宛先にレポートメールを送信する。
+ * 既存prompt.js側に合わせてGmailAppを使う。
+ */
+function sendReportEmail_(reportTo, subject, body) {
+  String(reportTo || "")
+    .split(",")
+    .map((email) => email.trim())
+    .filter(Boolean)
+    .forEach((emailTo) => {
+      GmailApp.sendEmail(emailTo, subject, body);
+    });
 }
 
 /**
@@ -231,7 +324,7 @@ function isEnglishDateLike_(value) {
   if (!text) return false;
 
   const datePattern =
-    /^\d{1,2}\s+(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t)?(?:ember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{4}$/i;
+    /^\d{1,2}\s+(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t)?(?:ember)?|Oct(?:ober)?|Nov(?:ember)?)\s+\d{4}$/i;
 
   if (!datePattern.test(text)) return false;
 

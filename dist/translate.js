@@ -4,7 +4,6 @@
 
 const CONFIG = {
   FOLDER_ID: folderId,
-  MODEL: "gemini-3.1-flash-lite", // 利用可能モデルは環境で変わることがあります
   BATCH_SIZE: 30, // 1回のAPI呼び出しでまとめて翻訳する行数
   START_ROW: 2, // 1行目はヘッダ想定
 };
@@ -107,9 +106,11 @@ function processSheet_(sh) {
 
   if (targets.length === 0) return;
 
-  // バッチでGeminiに投げて埋める
-  for (let start = 0; start < targets.length; start += CONFIG.BATCH_SIZE) {
-    const batch = targets.slice(start, start + CONFIG.BATCH_SIZE);
+  // バッチでLLMに投げて埋める
+  // Claude は出力（英語・中国語の本文）が長くなるため、1回の件数を減らして時間切れを避ける
+  const batchSize = isClaudePrimary_() ? CLAUDE_TRANSLATE_BATCH_SIZE : CONFIG.BATCH_SIZE;
+  for (let start = 0; start < targets.length; start += batchSize) {
+    const batch = targets.slice(start, start + batchSize);
     const translations = callGeminiTranslateBatch_(batch);
 
     // 書き込み用2次元配列（P〜Sの4列）
@@ -131,17 +132,78 @@ function processSheet_(sh) {
  *  ...
  * ]
  */
+const CLAUDE_TRANSLATE_BATCH_SIZE = 10;
+
+const CLAUDE_TRANSLATE_SCHEMA_ = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    items: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          idx: { type: "integer" },
+          en_title: { type: "string" },
+          en_body: { type: "string" },
+          zh_title: { type: "string" },
+          zh_body: { type: "string" },
+        },
+        required: ["idx", "en_title", "en_body", "zh_title", "zh_body"],
+      },
+    },
+  },
+  required: ["items"],
+};
+
+/**
+ * Claude Haiku 5.5 で複数行をまとめて翻訳する（返却形式は callGeminiTranslateBatch_ と同じ配列）
+ */
+function callClaudeTranslateBatch_(batch) {
+  const items = batch.map((x, idx) => ({
+    idx,
+    title: x.title,
+    body: x.body,
+  }));
+
+  const prompt = [
+    "あなたはプロの翻訳者です。",
+    "以下の日本語テキストを (1) 英語、(2) 中国語（簡体字）に翻訳してください。",
+    "入力の各要素について、idx をそのまま返し、en_title / en_body / zh_title / zh_body を埋めてください。",
+    "本文の改行/空行/括弧は保持してください。",
+    "固有名詞は必要に応じて原文を維持してください。",
+    "",
+    "入力(JSON):",
+    JSON.stringify(items),
+  ].join("\n");
+
+  const resp = callClaude_(prompt, "translate", {
+    model: CLAUDE_MODEL_LIGHT,
+    schema: CLAUDE_TRANSLATE_SCHEMA_,
+    maxTokens: 32000,
+  });
+
+  if (String(resp).indexOf("ERROR:") === 0) {
+    throw new Error("Claude translate error: " + resp);
+  }
+
+  const obj = JSON.parse(resp);
+  const arr = obj && Array.isArray(obj.items) ? obj.items : null;
+  if (!arr) throw new Error("Claude output has no items array.");
+  return arr;
+}
+
 function callGeminiTranslateBatch_(batch) {
+  if (isClaudePrimary_()) {
+    return callClaudeTranslateBatch_(batch);
+  }
+
   const apiKey = PropertiesService.getScriptProperties().getProperty(
     "GEMINI_TRANSLATE_API_KEY",
   );
   if (!apiKey)
     throw new Error("Missing GEMINI_TRANSLATE_API_KEY in Script Properties.");
-
-  // generateContent REST endpoint :contentReference[oaicite:2]{index=2}
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
-    CONFIG.MODEL,
-  )}:generateContent?key=${encodeURIComponent(apiKey)}`;
 
   const items = batch.map((x, idx) => ({
     idx,
@@ -165,17 +227,30 @@ function callGeminiTranslateBatch_(batch) {
 
   const payload = {
     contents: [{ role: "user", parts: [{ text: prompt }] }],
-    generationConfig: {
-      temperature: 0.0,
-    },
   };
 
-  const res = UrlFetchApp.fetch(url, {
-    method: "post",
-    contentType: "application/json",
-    payload: JSON.stringify(payload),
-    muteHttpExceptions: true,
-  });
+  const request = (model) => {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+      model,
+    )}:generateContent?key=${encodeURIComponent(apiKey)}`;
+    return UrlFetchApp.fetch(url, {
+      method: "post",
+      contentType: "application/json",
+      payload: JSON.stringify({
+        ...payload,
+        generationConfig:
+          model === GEMINI_MODEL
+            ? { responseMimeType: "application/json" }
+            : { temperature: 0.0 },
+      }),
+      muteHttpExceptions: true,
+    });
+  };
+
+  let res = request(GEMINI_MODEL);
+  if (res.getResponseCode() === 429) {
+    res = request(GEMINI_FALLBACK_MODEL);
+  }
 
   const code = res.getResponseCode();
   const text = res.getContentText();

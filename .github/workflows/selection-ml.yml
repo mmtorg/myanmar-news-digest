@@ -68,6 +68,8 @@ jobs:
           TARGET_SHEET: ${{ inputs.target_sheet }}
           MODE: ${{ inputs.mode }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_API_MODEL_MAIN: claude-haiku-5-5
           SHEETS_WRITE_CHUNK_ROWS: "25"
           SHEETS_WRITE_MAX_PAYLOAD_BYTES: "1800000"
           SHEETS_WRITE_MAX_RETRIES: "6"

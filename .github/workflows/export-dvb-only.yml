@@ -24,6 +24,8 @@ jobs:
     env:
       OUT: ${{ inputs.out != '' && inputs.out || format('dvb_articles_since_{0}_MMT.csv', inputs.start) }}
       GEMINI_API_SUMMARY_KEY: ${{ secrets.GEMINI_API_EXPORT_SUMMARY_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      CLAUDE_API_MODEL_MAIN: claude-haiku-5-5
       GEMINI_API_DEDUPE_KEY: ${{ secrets.GEMINI_API_EXPORT_DEDUPE_KEY }}
       GEMINI_REQS_PER_MIN: "20"
       GEMINI_MIN_INTERVAL_SEC: "1.5"

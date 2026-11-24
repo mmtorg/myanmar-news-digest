@@ -76,6 +76,8 @@ jobs:
       MNA_SHEET_NAME: "prod"
       # ===== fetch_articles.pyで使う環境変数（production）=====
       GEMINI_API_SUMMARY_KEY: ${{ secrets.GEMINI_API_SUMMARY_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      CLAUDE_API_MODEL_MAIN: claude-haiku-5-5
       GEMINI_API_DEDUPE_KEY: ${{ secrets.GEMINI_API_DEDUPE_KEY }}
       GEMINI_API_FULLTEXT_KEY: ${{ secrets.GEMINI_API_FULLTEXT_KEY }}
       # ===== OpenAI（全文翻訳: GPT-5 mini）=====
@@ -174,6 +176,8 @@ jobs:
       MNA_SHEET_NAME: "prod"
       # ===== fetch_articles.pyで使う環境変数（production）=====
       GEMINI_API_SUMMARY_KEY: ${{ secrets.GEMINI_API_SUMMARY_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      CLAUDE_API_MODEL_MAIN: claude-haiku-5-5
       GEMINI_API_DEDUPE_KEY: ${{ secrets.GEMINI_API_DEDUPE_KEY }}
       GEMINI_API_FULLTEXT_KEY: ${{ secrets.GEMINI_API_FULLTEXT_KEY }}
       # ===== OpenAI（全文翻訳: GPT-5 mini）=====
@@ -283,6 +287,8 @@ jobs:
       MNA_SHEET_NAME: "prod"
       # ===== fetch_articles.pyで使う環境変数（production）=====
       GEMINI_API_SUMMARY_KEY: ${{ secrets.GEMINI_API_SUMMARY_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      CLAUDE_API_MODEL_MAIN: claude-haiku-5-5
       GEMINI_API_DEDUPE_KEY: ${{ secrets.GEMINI_API_DEDUPE_KEY }}
       GEMINI_API_FULLTEXT_KEY: ${{ secrets.GEMINI_API_FULLTEXT_KEY }}
       # ===== OpenAI（全文翻訳: GPT-5 mini）=====

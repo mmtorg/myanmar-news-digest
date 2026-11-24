@@ -39,6 +39,8 @@ from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from typing import Any, Iterable
 
+from claude_llm import call_claude, is_claude_primary
+
 SCOPES = [
     "https://www.googleapis.com/auth/drive.readonly",
     "https://www.googleapis.com/auth/spreadsheets",
@@ -1503,6 +1505,21 @@ GEMINI_RERANK_RESPONSE_SCHEMA: dict[str, Any] = {
     "required": ["articles"],
 }
 
+def _with_no_additional_properties(schema: Any) -> Any:
+    """Claude Structured Outputs は全 object に additionalProperties: false が必須なので付与したコピーを返す。"""
+    if isinstance(schema, dict):
+        out = {k: _with_no_additional_properties(v) for k, v in schema.items()}
+        if out.get("type") == "object":
+            out["additionalProperties"] = False
+        return out
+    if isinstance(schema, list):
+        return [_with_no_additional_properties(v) for v in schema]
+    return schema
+
+
+CLAUDE_RERANK_RESPONSE_SCHEMA: dict[str, Any] = _with_no_additional_properties(GEMINI_RERANK_RESPONSE_SCHEMA)
+
+
 def parse_gemini_json_response(text_value: str) -> dict[str, Any]:
     text_value = cell_text(text_value)
     if text_value.startswith("```"):
@@ -1760,7 +1777,13 @@ def run_gemini_rerank(
     # Store the API key in GitHub Actions Secrets as GEMINI_API_KEY and expose it
     # to the job environment. Missing key should fail loudly instead of silently
     # producing ML-only output.
-    api_key = required_env("GEMINI_API_KEY")
+    # LLM_PROVIDER=claude（既定）のときは Claude Haiku 5.5 で再スコアする（GEMINI_API_KEY は不要）
+    use_claude = is_claude_primary()
+    if use_claude:
+        required_env("ANTHROPIC_API_KEY")
+        api_key = ""
+    else:
+        api_key = required_env("GEMINI_API_KEY")
 
     candidates = select_gemini_rerank_candidates(rows, prediction_details)
     if not candidates:
@@ -1782,10 +1805,13 @@ def run_gemini_rerank(
         60.0,
     )
 
-    from google import genai
-    from google.genai import types
+    client = None
+    types = None
+    if not use_claude:
+        from google import genai
+        from google.genai import types
 
-    client = genai.Client(api_key=api_key)
+        client = genai.Client(api_key=api_key)
     results: dict[int, dict[str, Any]] = {}
     model_usage_counts: dict[str, int] = {}
     archive_context_map = build_archive_adopted_context_map(rows, archive_records or [])
@@ -1808,14 +1834,24 @@ def run_gemini_rerank(
         last_error: Exception | None = None
         for attempt in range(retry_count + 1):
             try:
-                response, used_model_name = generate_gemini_content_with_model_fallback(
-                    client,
-                    types,
-                    model_name,
-                    fallback_model_name,
-                    contents,
-                    fallback_wait_seconds,
-                )
+                if use_claude:
+                    # 固定の system プロンプトはキャッシュし、バッチ間で再利用する
+                    response = call_claude(
+                        prompt,
+                        usage_tag="selection-rerank",
+                        system=gemini_system_prompt(),
+                        json_schema=CLAUDE_RERANK_RESPONSE_SCHEMA,
+                    )
+                    used_model_name = response.model
+                else:
+                    response, used_model_name = generate_gemini_content_with_model_fallback(
+                        client,
+                        types,
+                        model_name,
+                        fallback_model_name,
+                        contents,
+                        fallback_wait_seconds,
+                    )
                 model_usage_counts[used_model_name] = model_usage_counts.get(used_model_name, 0) + len(batch)
                 parsed = parse_gemini_json_response(response.text)
                 for item in parsed.get("articles", []):
