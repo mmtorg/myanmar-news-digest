@@ -83,7 +83,7 @@ def translate_title_only(item: Dict, *, model: str = "gemini-3.1-flash-lite-lite
     }
     try:
         prompt = build_prompt(payload, skip_filters=True, body_max=0)
-        resp = call_gemini_with_retries(client_summary, prompt, model=model)
+        resp = call_gemini_with_retries(client_summary, prompt, model=model, usage_tag="title-translate")
         text = (resp.text or "").strip()
         lines = [unicodedata.normalize("NFC", ln).strip() for ln in text.splitlines() if ln.strip()]
         # 「【タイトル】…」の行を抽出
@@ -119,7 +119,7 @@ def translate_titles_in_batch(items: List[Dict], *, model: str = "gemini-3.1-fla
         '出力は次のJSONのみ: {"results":[{"i":1,"ja":"..."},{"i":2,"ja":"..."}]}'
 
     try:
-        resp = call_gemini_with_retries(client_summary, f"{sys_prompt}\n\n{user_prompt}", model=model)
+        resp = call_gemini_with_retries(client_summary, f"{sys_prompt}\n\n{user_prompt}", model=model, usage_tag="title-translate")
         text = (resp.text or "").strip()
         start = text.find("{"); end = text.rfind("}")
         if start == -1 or end == -1:

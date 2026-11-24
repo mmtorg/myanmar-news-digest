@@ -1544,6 +1544,19 @@ function _writeSelectionScoreResultToRow_(sheet, rowIndex, result) {
  * - GEMINI_SELECTION_API_KEY
  */
 function getSelectionGeminiApiKeyBundle_(sheetName, source, tag) {
+  // Claude 経路では ANTHROPIC_API_KEY を使う（claude.js）
+  if (isClaudePrimary_()) {
+    const claudeKey = getClaudeApiKey_();
+    if (!claudeKey) {
+      throw new Error(
+        "Claude API key is not set. Set " +
+          CLAUDE_API_KEY_PROP +
+          " in Script Properties.",
+      );
+    }
+    return { apiKey: claudeKey, propName: CLAUDE_API_KEY_PROP };
+  }
+
   const props = PropertiesService.getScriptProperties();
   const apiKey = String(
     props.getProperty("GEMINI_SELECTION_API_KEY") || "",
@@ -1567,6 +1580,14 @@ function getSelectionGeminiApiKeyBundle_(sheetName, source, tag) {
 function callSelectionGeminiWithKey_(apiKey, prompt, tag, propName) {
   if (!apiKey) {
     return "ERROR: Selection Gemini API key is empty";
+  }
+
+  // Claude 経路: Haiku 5.5 で判定する（Gemini / OpenAI へのフォールバックはしない）
+  if (isClaudePrimary_()) {
+    return callClaude_(prompt, tag + ":claude", {
+      model: CLAUDE_MODEL_LIGHT,
+      maxTokens: SELECT_MAX_OUTPUT_TOKENS + 8000, // 思考トークン分を上乗せ
+    });
   }
 
   // 1. primary Gemini

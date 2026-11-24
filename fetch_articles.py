@@ -14,6 +14,7 @@ from email.utils import formataddr
 import unicodedata
 from google import genai
 from google.genai import types
+from claude_llm import call_claude, is_claude_primary
 from collections import defaultdict
 import time
 import json
@@ -121,11 +122,25 @@ def _exp_backoff_sleep(attempt: int, base_delay: float, max_delay: float) -> flo
     return min(max_delay, delay + random.random())
 
 
-# Gemini本番用
-client_summary = genai.Client(api_key=os.getenv("GEMINI_API_SUMMARY_KEY"))
-client_dedupe = genai.Client(api_key=os.getenv("GEMINI_API_DEDUPE_KEY"))
+def _make_genai_client(env_name: str):
+    """
+    Gemini client を作る。Claude 経路では使わないため、キー未設定でも import を失敗させない。
+    （google-genai はキーが無いと Client 作成時に例外を投げる）
+    """
+    try:
+        return genai.Client(api_key=os.getenv(env_name))
+    except Exception as e:
+        if not is_claude_primary():
+            raise
+        logging.info(f"[gemini] client not created ({env_name}): {e} (unused on Claude path)")
+        return None
+
+
+# Gemini本番用（LLM_PROVIDER=gemini のときだけ使われる）
+client_summary = _make_genai_client("GEMINI_API_SUMMARY_KEY")
+client_dedupe = _make_genai_client("GEMINI_API_DEDUPE_KEY")
 # === Gemini（全文翻訳用） ===
-client_fulltext = genai.Client(api_key=os.getenv("GEMINI_API_FULLTEXT_KEY"))
+client_fulltext = _make_genai_client("GEMINI_API_FULLTEXT_KEY")
 
 def _is_retriable_exc(e: Exception) -> bool:
     msg = (str(e) or "").lower()
@@ -385,6 +400,7 @@ def call_gemini_with_retries(
     base_delay: float = GEMINI_BASE_DELAY,
     max_delay: float = GEMINI_MAX_DELAY,
     usage_tag: str = "generic",
+    system_prompt: Optional[str] = None,
 ):
     """
     Gemini 呼び出しの共通リトライラッパー。
@@ -393,7 +409,19 @@ def call_gemini_with_retries(
     - 429/レート系は待機して再試行（Gemini Free の瞬間上限に当たることが多い）
     - Free tier の「generate_content_free_tier_requests」系 429 は即諦める
     - それ以外の恒久的エラーは即時 raise
+
+    LLM_PROVIDER=claude（既定）のときは Claude に切り替える（client / model 引数は無視し、
+    usage_tag から Sonnet / Haiku を選ぶ。リトライは anthropic SDK が行う）。
+
+    system_prompt: 記事によらない固定ルール。Claude では system に置いてキャッシュし、
+    Gemini では従来どおり「system_prompt + 空行 + prompt」の1つの文字列にして送る。
     """
+    if is_claude_primary():
+        return call_claude(prompt, usage_tag=usage_tag, system=system_prompt)
+
+    if system_prompt:
+        prompt = f"{system_prompt}\n\n{prompt}"
+
     last_exc = None
     consecutive_503 = 0  # 503 の連発検出用
 
@@ -538,12 +566,22 @@ def call_llm_with_fallback(
     max_delay: float = GEMINI_MAX_DELAY,
     usage_tag: str = "generic",
     openai_model: str = "gpt-5.4-mini",
+    system_prompt: Optional[str] = None,
 ):
     """
     まず Gemini（既存リトライ込み）を実行。
     Gemini が一時障害/無料枠上限などで最終的に失敗した場合のみ GPT-5 mini にフォールバック。
     戻り値は resp.text を持つオブジェクト（Geminiと同じ呼び出し側コードで扱えるようにする）。
+
+    LLM_PROVIDER=claude（既定）のときは Claude を呼び、OpenAI へはフォールバックしない。
     """
+    if is_claude_primary():
+        return call_claude(prompt, usage_tag=usage_tag, system=system_prompt)
+
+    # Gemini / OpenAI には固定ルールと記事部分を連結した従来形式で送る
+    if system_prompt:
+        prompt = f"{system_prompt}\n\n{prompt}"
+
     try:
         return call_gemini_with_retries(
             client,
@@ -4902,6 +4940,42 @@ def build_prompt(item: dict, *, skip_filters: bool, body_max: int) -> str:
     # ルール → 入力、の順でプロンプトを構成
     return header + COMMON_RULES_HEADER + source_rules + "\n" + pre + STEP3_TASK + rg_title + rg_body + term_rules + amount_facts + "\n" + input_block
 
+
+def build_prompt_parts(item: dict, *, skip_filters: bool, body_max: int) -> tuple[str, str]:
+    """
+    Claude のプロンプトキャッシュ用に build_prompt を2つに分けたもの。
+    - 1つ目（system）: どの記事でも同じ固定ルール（Irrawaddy とそれ以外で2種類）→ キャッシュされる
+    - 2つ目（user）  : メディア別ルール・用語固定・金額の機械解釈・記事本文
+    固定ルールを先頭に集めるため、メディア別ルールの位置だけ build_prompt と異なる。
+    """
+    header = "次の手順で記事を判定・処理してください。\n\n"
+    pre = SKIP_NOTE_IRRAWADDY if skip_filters else STEP12_FILTERS + "\n\n"
+    system_text = header + COMMON_RULES_HEADER + "\n" + pre + STEP3_TASK
+
+    title_src = (item.get("title") or "")
+    body_src = (item.get("body") or "")[:body_max]
+    rg_title = _build_region_glossary_prompt_for(
+        _select_region_entries_for_text(title_src, _load_regions_cached()),
+        use_headline_ja=True,   # タイトルは D 列（見出し訳）
+    )
+    rg_body = _build_region_glossary_prompt_for(
+        _select_region_entries_for_text(body_src, _load_regions_cached()),
+        use_headline_ja=False,  # 本文は C 列（本文訳）
+    )
+    source_rules = _build_source_specific_translation_rules(item.get("source") or "")
+    term_rules = _build_term_rules_prompt(title_src, body_src)
+    amount_facts = build_myanmar_amount_facts_prompt(title_src, body_src)
+    input_block = (
+        "入力データ：\n"
+        "###\n[記事タイトル]\n###\n"
+        f"{item['title']}\n\n"
+        "[記事本文]\n###\n"
+        f"{item['body'][:body_max]}\n"
+        "###\n"
+    )
+    user_text = source_rules + "\n" + rg_title + rg_body + term_rules + amount_facts + "\n" + input_block
+    return system_text, user_text
+
 # ============================================================
 # 通貨換算・金額分解（Python版・機械固定）
 # ============================================================
@@ -5393,12 +5467,23 @@ def process_translation_batches(batch_size=TRANSLATION_BATCH_SIZE, wait_seconds=
                 is_irrawaddy = (item.get("source") == "Irrawaddy") or (
                     "irrawaddy.com" in (item.get("url") or "")
                 )
-                prompt = build_prompt(
-                    item, skip_filters=is_irrawaddy, body_max=BODY_MAX_CHARS
-                )
+                if is_claude_primary():
+                    # 固定ルールを system に分けてキャッシュさせる
+                    system_prompt, prompt = build_prompt_parts(
+                        item, skip_filters=is_irrawaddy, body_max=BODY_MAX_CHARS
+                    )
+                else:
+                    system_prompt = None
+                    prompt = build_prompt(
+                        item, skip_filters=is_irrawaddy, body_max=BODY_MAX_CHARS
+                    )
 
                 resp = call_llm_with_fallback(
-                    client_summary, prompt, model="gemini-3.1-flash-lite"
+                    client_summary,
+                    prompt,
+                    model="gemini-3.1-flash-lite",
+                    usage_tag="summary",
+                    system_prompt=system_prompt,
                 )
                 output_text = resp.text.strip()
 
@@ -5839,11 +5924,81 @@ def translate_fulltexts_for_business(urls_in_order_or_items, url_to_source_title
             json.dumps(input_array, ensure_ascii=False),
         )
         return "".join(prompt_parts)
-    
+
+    # Claude のプロンプトキャッシュ用：どの記事でも同じ固定ルール（system に置く）
+    FULLTEXT_SYSTEM_PROMPT = (
+        "次のニュース記事の【本文だけ】を**自然な日本語**に完全翻訳してください。\n"
+        "・固有名詞は一般的な日本語表記に\n"
+        "・ビルマ語/英語が混在していてもOK\n"
+        "・タイトル（見出し）は訳さない／出力しない\n"
+        "・本文は改行と段落を活かして読みやすく\n"
+        "・文体は だ・である調。必要に応じて体言止めを用いる（乱用は避ける）\n"
+        "・冗長な修飾は削り、できるだけ簡潔に表現する\n"
+        "・半角の()括弧はすべて全角の（ ）に統一すること\n\n"
+        f"{COMMON_TRANSLATION_RULES}\n"
+        f"{PROMPT_SELF_CHECK_RULE}\n"
+        "【本文以外は必ず除外（この関数専用）】\n"
+        "以下は原文に含まれていても翻訳・出力しないこと（含めたら減点）。\n"
+        "- 写真キャプション／クレジット（先頭が「写真:」「ဓာတ်ပုံ」「Photo」「(写真」「(Photo」「（写真」などの行）\n"
+        "- 媒体名だけの行（例: South China Morning Post / BBC Burmese / DVB / Myanmar Now などの媒体名のみ）\n"
+        "- 出典や翻訳注記（例:「このニュースは…を翻訳したものです。」「Translated by …」「Source: …」「(China’s Ministry of Public Security)」等）\n"
+        "- 記者名や配信ラベルだけの行（例: By … / Reuters / AP / SCMP などの単独行）\n"
+        "- 発行地＋日付（Dateline）のみの行（例: "
+        "'Yangon, Sept. 30' / 'Nay Pyi Taw, 30 September' / "
+        "'ရန်ကုန်၊ စက်တင်ဘာ ၃၀' / 'နေပြည်တော်၊ ဖေဖော်ဝါရီ ၁၅' / "
+        "'ヤンゴン、9月30日' / 'ネピドー、2024年2月15日' など）。\n"
+        "  ※行頭や本文冒頭に置かれている場合も必ず除去すること。\n\n"
+        "【入力クレンジング手順】\n"
+        "1) 行単位で走査し、上記の非本文要素に一致する行をすべて削除する。\n"
+        "2) 連続する空行は1つに圧縮し、本文段落のみ残す。\n"
+        "3) 残った本文のみを翻訳対象とする（キャプション・媒体名・注記・Datelineは訳さない）。\n\n"
+        "【出力仕様】出力はJSONのみ：\n"
+        '[{"item_id":str, "url":str, "body_ja":str}, …]'
+    )
+
+    def _build_fulltext_user_prompt(input_array: list[dict]) -> str:
+        """Claude 用：記事ごとに変わる部分（メディア別ルール・金額解釈・地域名・入力）"""
+        source_specific_rules = "\n".join(
+            (
+                f"【item_id={x.get('item_id','')} のメディア別表記ルール】\n"
+                + _build_source_specific_translation_rules(x.get("source") or "")
+            )
+            for x in input_array
+        )
+        amount_facts_rules = "\n".join(
+            (
+                f"【item_id={x.get('item_id','')} の原文中の金額表現の機械解釈】\n"
+                + build_myanmar_amount_facts_prompt(x.get("title") or "", x.get("body") or "")
+            )
+            for x in input_array
+            if build_myanmar_amount_facts_prompt(x.get("title") or "", x.get("body") or "")
+        )
+        region_rules = _build_region_glossary_prompt_for(
+            _select_region_entries_for_text(" ".join([x.get("body", "") for x in input_array]), _load_regions_cached()),
+            use_headline_ja=False,
+        )
+        return (
+            f"{source_specific_rules}\n"
+            f"{amount_facts_rules}\n"
+            f"{region_rules}\n"
+            "input = "
+            + json.dumps(input_array, ensure_ascii=False)
+        )
+
+    def _fulltext_prompt_args(input_array: list[dict]) -> dict:
+        """call_llm_with_fallback に渡す prompt / system_prompt（Claude は分割、Gemini は従来の1本）"""
+        if is_claude_primary():
+            return {
+                "prompt": _build_fulltext_user_prompt(input_array),
+                "system_prompt": FULLTEXT_SYSTEM_PROMPT,
+            }
+        return {"prompt": _build_fulltext_prompt(input_array), "system_prompt": None}
+
     # === 未翻訳検知時の“単発リトライ”（同じプロンプトを単一要素配列で再利用） ===
     def _single_fulltext_retry(item_id: str, url: str, raw_body: str, source: str = "", max_chars: int = 6000) -> str:
         body_trim = trim_by_chars(raw_body or "", max_chars)
-        prompt = _build_fulltext_prompt([{"item_id": item_id, "url": url, "body": body_trim, "source": source}])
+        prompt_args = _fulltext_prompt_args([{"item_id": item_id, "url": url, "body": body_trim, "source": source}])
+        prompt = prompt_args["prompt"]
 
         precheck_sleep(rough_token_estimate(prompt), tag="fulltext-retry")
         try:
@@ -5852,6 +6007,7 @@ def translate_fulltexts_for_business(urls_in_order_or_items, url_to_source_title
                 prompt,
                 model="gemini-3.1-flash-lite",
                 usage_tag="fulltext-retry",
+                system_prompt=prompt_args["system_prompt"],
             )
 
             llm_text = getattr(resp, "text", None) or ""
@@ -5860,6 +6016,11 @@ def translate_fulltexts_for_business(urls_in_order_or_items, url_to_source_title
             except Exception as e_json:
                 # Geminiは返ってきたがJSON抽出に失敗 → GPTで同一プロンプトを再試行
                 logging.warning(f"[warn] fulltext retry: invalid JSON from Gemini; switching to GPT. url={url} err={e_json}")
+                # Claude 経路では OpenAI へフォールバックしない
+                if is_claude_primary():
+                    raise RuntimeError(
+                        "JSON extraction failed from Claude response (no OpenAI fallback on Claude path)."
+                    ) from e_json
                 if not _OPENAI_CLIENT:
                     raise RuntimeError(
                         "JSON extraction failed from Gemini response, and OPENAI_API_KEY is not set (or openai SDK not available)."
@@ -5968,7 +6129,8 @@ def translate_fulltexts_for_business(urls_in_order_or_items, url_to_source_title
                 effective_batch_size = 1
 
         input_array = [{"item_id": b["item_id"], "url": b["url"], "source": b.get("source", ""), "title": b.get("title", ""), "body": b["body"]} for b in batch]
-        prompt = _build_fulltext_prompt(input_array)
+        prompt_args = _fulltext_prompt_args(input_array)
+        prompt = prompt_args["prompt"]
 
         precheck_sleep(rough_token_estimate(prompt), tag="fulltext-batch")
 
@@ -5978,6 +6140,7 @@ def translate_fulltexts_for_business(urls_in_order_or_items, url_to_source_title
                 prompt,
                 model="gemini-3.1-flash-lite",
                 usage_tag="fulltext",
+                system_prompt=prompt_args["system_prompt"],
             )
             text = getattr(resp, "text", None) or ""
             arr = _safe_json_loads_extract(text)

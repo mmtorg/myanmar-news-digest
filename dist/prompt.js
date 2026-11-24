@@ -3049,6 +3049,14 @@ const GEMINI_SUMMARY_COMPRESS_PROP_DEV = "GEMINI_API_TEST_KEY_SUMMARY_COMPRESS";
 
 // 圧縮プロンプト専用：Gemini(専用キー) → 失敗ならOpenAIへフォールバック
 function compressSummaryWithFallback_(sheetName, promptText, usageTagOpt) {
+  // Claude 経路: Sonnet 5.5 でプレーンテキストを返させる（OpenAI へはフォールバックしない）
+  if (isClaudePrimary_()) {
+    return callClaude_(promptText, usageTagOpt, {
+      model: CLAUDE_MODEL_MAIN,
+      maxTokens: 4000,
+    });
+  }
+
   const props = PropertiesService.getScriptProperties();
   const priorityBundle = _getPriorityGeminiApiKeyBundleIfAvailable_(
     sheetName,
@@ -4229,6 +4237,9 @@ function parseFlashRetryCount_(status) {
 }
 
 function shouldUseGemini25Flash_(status) {
+  // Claude 経路では Flash / GPT への段階的フォールバックは使わない
+  if (isClaudePrimary_()) return false;
+
   const s = String(status || "");
   if (s.startsWith("RUNNING(FLASH)")) return true;
 
@@ -4248,6 +4259,9 @@ function shouldUseGemini25Flash_(status) {
 }
 
 function shouldUseGpt5Mini_(status) {
+  // Claude 経路では OpenAI へフォールバックしない
+  if (isClaudePrimary_()) return false;
+
   const s = String(status || "");
   if (s.startsWith("RUNNING(GPT)")) return true;
   if (s.startsWith("GPTNG(")) return true;
@@ -5580,8 +5594,10 @@ function processRowsBatch() {
 
         // Gemini high demand は1回目だけ指定時刻まで待機する。
         // WAIT_GEMINI(2|nextAtMs) は待たずに、この実行でFlash対象にする。
+        // （Claude 経路では WAIT_GEMINI 行も待たずに Claude で処理する）
         const highDemandWait = _parseGeminiHighDemandWaitStatus_(status);
         if (
+          !isClaudePrimary_() &&
           highDemandWait &&
           highDemandWait.count < GEMINI_HIGH_DEMAND_WAIT_MAX_DEFERS &&
           !_isGeminiHighDemandWaitDue_(status)
@@ -5641,10 +5657,14 @@ function processRowsBatch() {
         // groupKey:
         // - OpenAI は "__OPENAI__" でまとめてOK（キー単一）
         // - Gemini は通常モデルと gemini-3.1-flash-lite を分けてまとめる
-        const groupKey = useGpt
-          ? "__OPENAI__"
-          : (useFlash ? "__GEMINI_FLASH__:" : "__GEMINI_MAIN__:") +
-            normalizeSourceName_(sourceVal || "");
+        // - Claude はキー単一なのでメディアをまたいで "__CLAUDE__" にまとめる
+        //   （固定プロンプトのキャッシュをメディア間で共有できる）
+        const groupKey = isClaudePrimary_()
+          ? "__CLAUDE__"
+          : useGpt
+            ? "__OPENAI__"
+            : (useFlash ? "__GEMINI_FLASH__:" : "__GEMINI_MAIN__:") +
+              normalizeSourceName_(sourceVal || "");
         if (!groups[groupKey]) {
           groups[groupKey] = [];
           groupOrder.push(groupKey);
@@ -5758,6 +5778,7 @@ function processRowsBatch() {
             ")";
 
           // ★ 呼び出し直前に「今使うべきキー」を毎回選ぶ（429後に即切替するため）
+          const isClaudeGroup = groupKey === "__CLAUDE__";
           const isOpenAiGroup = groupKey === "__OPENAI__";
           const isFlashGroup =
             String(groupKey).indexOf("__GEMINI_FLASH__:") === 0;
@@ -5774,7 +5795,18 @@ function processRowsBatch() {
           const tagSummary = tagBase + ":I(summary)";
 
           let summaryResp = "";
-          if (isOpenAiGroup) {
+          if (isClaudeGroup) {
+            // 固定ルール（developerText）を system にしてキャッシュ、記事データを user に置く
+            summaryResp = callClaude_(
+              buildOpenAISummaryRequestPartsForRows_(promptItems),
+              tagSummary,
+              {
+                model: CLAUDE_MODEL_MAIN,
+                formatType: "json_schema_summary_batch",
+                maxTokens: 8000,
+              },
+            );
+          } else if (isOpenAiGroup) {
             const openAiSummaryInput =
               buildOpenAISummaryRequestPartsForRows_(promptItems);
             summaryResp = callOpenAIWithKey_(
@@ -5802,6 +5834,7 @@ function processRowsBatch() {
 
           if (
             !isOpenAiGroup &&
+            !isClaudeGroup &&
             _isGeminiHighDemandErrorResponse_(summaryResp)
           ) {
             _deferRowsForGeminiHighDemand_(
@@ -5883,7 +5916,17 @@ function processRowsBatch() {
             const tagHeadline = tagBase + ":EFG(headline)";
 
             let headlineResp = "";
-            if (isOpenAiGroup) {
+            if (isClaudeGroup) {
+              headlineResp = callClaude_(
+                buildOpenAIHeadlineRequestPartsForRows_(promptItems),
+                tagHeadline,
+                {
+                  model: CLAUDE_MODEL_MAIN,
+                  formatType: "json_schema_headline_batch",
+                  maxTokens: 8000,
+                },
+              );
+            } else if (isOpenAiGroup) {
               const openAiHeadlineInput =
                 buildOpenAIHeadlineRequestPartsForRows_(promptItems);
               headlineResp = callOpenAIWithKey_(
@@ -5911,6 +5954,7 @@ function processRowsBatch() {
 
             if (
               !isOpenAiGroup &&
+              !isClaudeGroup &&
               _isGeminiHighDemandErrorResponse_(headlineResp)
             ) {
               _deferRowsForGeminiHighDemand_(
@@ -6121,6 +6165,12 @@ function checkAndNotifyAllDoneIfNeededForSheet_(sheetName) {
       if (retryCount >= GPT_JS_MAX_RETRIES) {
         isDone = true;
       }
+    } else if (
+      isClaudePrimary_() &&
+      parseRetryCount_(status) >= MAX_RETRY_COUNT
+    ) {
+      // Claude 経路では NG(4) が最終状態（フォールバック先が無い）
+      isDone = true;
     }
 
     if (!isDone) {

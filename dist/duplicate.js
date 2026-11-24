@@ -601,10 +601,13 @@ function _processTopicCheckForSheet_(sheet, archiveSheet, sheetName) {
   const resultsByRowTotal = {};
 
   Object.keys(pendingByMedia).forEach(function (media) {
-    const apiKey = _getDuplicateGeminiApiKeyByMedia_(
-      media,
-      sheetName + "#topicCheck#" + media,
-    );
+    // Claude 経路ではメディア別キーではなく ANTHROPIC_API_KEY を使う
+    const apiKey = isClaudePrimary_()
+      ? getClaudeApiKey_()
+      : _getDuplicateGeminiApiKeyByMedia_(
+          media,
+          sheetName + "#topicCheck#" + media,
+        );
 
     if (!apiKey) {
       Logger.log(
@@ -1152,6 +1155,7 @@ function _resolveDuplicateGeminiKeyPropertyNameByMedia_(media) {
     m === "Myanmar Now" ||
     m === "BBC Burmese" ||
     m === "Frontier Myanmar" ||
+    m === "News Eleven" ||
     m === "JETROビジネス短信"
   ) {
     return DUP_GEMINI_KEY_PROP_MAP.OTHER;
@@ -1227,12 +1231,40 @@ function _isDuplicateCheckTarget_(row) {
  * @param {string} usageTag ログ用タグ
  * @returns {Object<number, {count:number, matched:string[]}>} rowIndex -> 判定結果
  */
+// Claude Structured Outputs 用（_parseTopicCheckBatchResult_ が期待する形）
+const TOPIC_CHECK_CLAUDE_SCHEMA_ = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    results: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          rowIndex: { type: "integer" },
+          count: { type: "integer" },
+          matched: { type: "array", items: { type: "string" } },
+        },
+        required: ["rowIndex", "count", "matched"],
+      },
+    },
+  },
+  required: ["results"],
+};
+
 function _countSameTopicArticlesBatch_(batchItems, apiKey, usageTag) {
   const resultsByRow = {};
   if (!batchItems || batchItems.length === 0) return resultsByRow;
 
   const prompt = _buildTopicCheckPromptForBatch_(batchItems);
-  const result = callGeminiWithKey_(apiKey, prompt, usageTag);
+  const result = isClaudePrimary_()
+    ? callClaude_(prompt, usageTag, {
+        model: CLAUDE_MODEL_LIGHT,
+        schema: TOPIC_CHECK_CLAUDE_SCHEMA_,
+        maxTokens: 4000,
+      })
+    : callGeminiWithKey_(apiKey, prompt, usageTag);
 
   if (!result || String(result).indexOf("ERROR:") === 0) {
     Logger.log("[_countSameTopicArticlesBatch_] Gemini error: " + result);

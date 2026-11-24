@@ -1361,6 +1361,7 @@ def _gemini_key_for_source(source: str) -> str | None:
     return key or None
 
 from fetch_articles import genai 
+from claude_llm import is_claude_primary
 
 # --- 媒体ごとの Gemini client を返すヘルパー ---
 _CLIENT_CACHE: dict[str, genai.Client] = {}
@@ -1401,7 +1402,8 @@ def _headline_variants_ja(title: str, source: str, url: str, body: str = "") -> 
     client = _client_for_source(source)
 
     # client が用意できない場合は安全フォールバック
-    if not (call_llm_with_fallback and client):
+    # Claude 経路では媒体別 Gemini client は不要（ANTHROPIC_API_KEY を使う）
+    if not (call_llm_with_fallback and (client or is_claude_primary())):
         t = unicodedata.normalize("NFC", title or "").strip()
         return [t, t, t]
 
@@ -1422,6 +1424,7 @@ def _headline_variants_ja(title: str, source: str, url: str, body: str = "") -> 
             client,
             f"{COMMON_RULES_HEADER}{source_rules}\n{HEADLINE_PROMPT_1}{glossary}\n\n原題: {title}\nsource:{source}\nurl:{url}",
             model=model,
+            usage_tag="headline",
         )
         v1 = unicodedata.normalize("NFC", (resp1.text or "").strip())
     except Exception:
@@ -1432,7 +1435,7 @@ def _headline_variants_ja(title: str, source: str, url: str, body: str = "") -> 
         if _LIMITER:
             _LIMITER.wait()
         prompt2 = COMMON_RULES_HEADER + source_rules + "\n" + (glossary or "") + make_headline_prompt_2_from(v1)
-        resp2 = call_llm_with_fallback(client, prompt2, model=model)
+        resp2 = call_llm_with_fallback(client, prompt2, model=model, usage_tag="headline")
         v2 = unicodedata.normalize("NFC", (resp2.text or "").strip())
     except Exception:
         v2 = v1
@@ -1454,7 +1457,7 @@ def _headline_variants_ja(title: str, source: str, url: str, body: str = "") -> 
                 + "【本文】\n" + body_for_prompt + "\n\n"
                 f"（参考）原題: {title}\nsource:{source}\nurl:{url}\n"
             )
-            resp3 = call_llm_with_fallback(client, prompt3, model=model)
+            resp3 = call_llm_with_fallback(client, prompt3, model=model, usage_tag="headline")
             v3 = unicodedata.normalize("NFC", (resp3.text or "").strip())
     except Exception:
         v3 = v1
@@ -1470,7 +1473,8 @@ def _summary_ja(source: str, title: str, body: str, url: str) -> str:
     # ★ 媒体ごとの client を取得
     client = _client_for_source(source)
 
-    if not (call_llm_with_fallback and client):
+    # Claude 経路では媒体別 Gemini client は不要（ANTHROPIC_API_KEY を使う）
+    if not (call_llm_with_fallback and (client or is_claude_primary())):
         # グローバルキー無し前提：媒体別キーが無い場合は安全フォールバック＋警告
         try:
             import sys
@@ -1508,6 +1512,7 @@ def _summary_ja(source: str, title: str, body: str, url: str) -> str:
             client,
             prompt,
             model=os.getenv("GEMINI_SUMMARY_MODEL", "gemini-3.1-flash-lite"),
+            usage_tag="summary",
         )
         text = unicodedata.normalize("NFC", (resp.text or "").strip())
         text = _apply_region_glossary_to_text(text)
