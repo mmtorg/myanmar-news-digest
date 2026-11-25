@@ -4238,6 +4238,36 @@ COMMON_TRANSLATION_RULES = """
 【その他の用語統一】
 サイドカー → サイカー / SpaceX → スペースX / KK Park → KKパーク / Starlink → スターリンク
 
+【企業名の表記ルール】
+原文で企業名が英語で書かれている場合は、次のように表記する。
+- 平易な英単語の組み合わせで読みやすい社名は、英語のまま記載する。
+- 読みが難しい社名は、初出のみ「カタカナ表記（英語社名）」とし、2回目以降はカタカナ表記のみとする。
+- 日系企業で、日本語のほうが読者に分かりやすく、かつ正式な日本語社名が確実に分かる場合は、日本語社名で表記する。
+- 「Co., Ltd.」「Company Limited」「Pte. Ltd.」「Inc.」など会社の種類を示す部分や、アポストロフィなどの記号は省略する。
+- 企業であることが文脈から分かりにくい場合は、社名の後に「社」を付ける。文脈から明らかな場合は付けなくてよい。
+- 「その他の用語統一」や本文用固定訳で表記が指定されている名称は、その指定を優先する。
+例：
+- 「Good Brothers’ Co., Ltd.」→「Good Brothers社」（企業であることが分かりにくい文脈の場合）
+- 「Good Brothers’ Co., Ltd. signed a contract with...」→「Good Brothersは〜と契約を結んだ」（文脈から企業と分かる場合）
+- 「Thiri Zabu Htet Co., Ltd.」→ 初出「ティリザブーテッ（Thiri Zabu Htet）」、2回目以降「ティリザブーテッ」
+- 「Toyota Tsusho Corporation」→「豊田通商」
+
+【人名の表記ルール】
+- ミャンマー人の人名の先頭に付く敬称は省略し、訳さない。対象は次のとおり。
+  ・「U」「ဦး」（ウ／ウー）
+  ・「Daw」「ဒေါ်」（ドー）
+  ・「Ko」「ကို」（コー）
+  ・「Ma」「မ」（マ）
+- 省略するのは名前の先頭に付く敬称のみとする。名前の途中や末尾にある同じ語（例：Min Ko Naing の「Ko」、Ye Win Oo の「Oo」）は名前の一部なので省略しない。
+- このルールは、引用符内の発言に出てくる人名にも適用する。
+例：
+- 「U Kyaw Kyaw」→「チョーチョー」
+- 「Daw Aung San Suu Kyi」→「アウンサンスーチー」
+- 「Ko Zaw Min」→「ゾーミン」
+- 「Ma Hnin Wai」→「ニンウェー」
+- 「Min Ko Naing」→「ミンコーナイン」（「Ko」は名前の一部なので残す）
+- 「Ye Win Oo」→「イェ・ウィン・ウー」（「Oo」は名前の一部なので残す）
+
 【翻訳時の特別ルール】
 「ဖမ်းဆီး」の訳語は文脈によって使い分けること。
 - 犯罪容疑や法律違反に対する文脈 → 「逮捕」
@@ -4316,6 +4346,10 @@ COMMON_TRANSLATION_RULES = """
 - 形式：「◯チャット（約◯円）」。
 - チャット以外（バーツ・米ドル等）には換算しない。
 - 見出しでは換算しない（タイトル・見出しではチャット建てのみを優先）。
+- 為替レート（外貨1単位あたりのチャット額など、チャットと他通貨の交換比率）を示すチャット額は、日本円に換算しない。
+  例：「100元＝7万7800チャット」「1ドル＝5250チャット」は、「（約◯円）」を付けずにそのまま記載する。
+- 「1万5000〜2万チャット」のように範囲で示された金額は、下限と上限をそれぞれ日本円に換算し、「◯〜◯チャット（約◯〜◯円）」の形で併記する。片方だけを換算してはならない。
+  例：「1万5000〜2万チャット」→「1万5000〜2万チャット（約465〜620円）」
 
 【日本円換算額の丸め方】
 - 円換算額の整数部分が4桁以上なら、最上位から5桁目で四捨五入し、上位4桁を残す。
@@ -4676,7 +4710,7 @@ STEP3_TASK = (
     "- 「【タイトル】<半角スペース1つ><訳したタイトル>」以外の文言は回答に含めない。\n\n"
     "本文要約：\n"
     "- 以下の記事本文について重要なポイントをまとめ、最大500字で具体的に要約する（500字を超えない）。\n"
-    "- 自然な日本語に翻訳する。文体は だ・である調。必要に応じて体言止めを用いる（乱用は避ける）。\n"
+    "- 自然な日本語に翻訳する。結論を先に、簡潔かつ具体的に書く。文体は だ・である調。必要に応じて体言止めを用いる（乱用は避ける）。\n"
     "- 個別記事の本文のみを対象とし、メディア説明やページ全体の解説は不要です。\n"
     "- レスポンスでは要約のみを返してください、それ以外の文言は不要です。\n\n"
     "本文要約の出力条件：\n"
@@ -4909,6 +4943,36 @@ def _build_region_glossary_prompt_for(entries: list[dict], *, use_headline_ja: b
         elif en:
             lines.append(f"- 「{en}」が出たら、必ず「{ja}」と訳す。")
     return ("【用語固定（必須）】\n" + "\n".join(lines) + "\n") if lines else ""
+
+def _apply_region_glossary_to_text(text: str, *, use_headline_ja: bool = False) -> str:
+    """
+    生成後の日本語テキストへの最終置換（保険）。
+    regions シートの A(Myanmar)/B(English) が訳文中に残っていた場合、
+    本文は C 列、見出しは D 列の訳に置き換える。
+    sheet_pipeline.py（要約・見出し・全文翻訳PDF）から import される。
+    """
+    import re
+    s = text or ""
+    if not s:
+        return s
+    entries = _load_regions_cached()
+    if not entries:
+        return s
+    mm_block = r"က-႟"
+    for e in entries:
+        if use_headline_ja:
+            ja = (e.get("ja_headline") or e.get("ja") or "").strip()
+        else:
+            ja = (e.get("ja_body") or e.get("ja") or "").strip()
+        if not ja:
+            continue
+        mm = unicodedata.normalize("NFC", (e.get("mm") or "").strip())
+        en = (e.get("en") or "").strip()
+        if mm and mm != ja:
+            s = re.sub(rf"(?<![{mm_block}]){re.escape(mm)}(?![{mm_block}])", ja, s)
+        if en and en != ja:
+            s = re.sub(rf"(?<![A-Za-z]){re.escape(en)}(?![A-Za-z])", ja, s, flags=re.IGNORECASE)
+    return s
 
 def build_prompt(item: dict, *, skip_filters: bool, body_max: int) -> str:
     header = "次の手順で記事を判定・処理してください。\n\n"
